@@ -13,14 +13,14 @@ import (
 type Kind int
 
 const (
-	KindInternal    Kind = iota
-	KindInvalid          // 400: validation failed
-	KindNotFound         // 404
-	KindConflict         // 409: duplicate, state conflict
-	KindForbidden        // 403: not allowed in this state / by policy
-	KindUnavailable      // 503: dependency offline (e.g. storage)
-	KindUnauthorized     // 401
-	KindTooMany          // 429: rate limited
+	KindInternal     Kind = iota
+	KindInvalid           // 400: validation failed
+	KindNotFound          // 404
+	KindConflict          // 409: duplicate, state conflict
+	KindForbidden         // 403: not allowed in this state / by policy
+	KindUnavailable       // 503: dependency offline (e.g. storage)
+	KindUnauthorized      // 401
+	KindTooMany           // 429: rate limited
 )
 
 // Error is a user-facing error. Message must be safe to show to the admin

@@ -70,6 +70,25 @@ func Open(keyFile string) (*Box, error) {
 	return &Box{key: key, Source: keyFile}, nil
 }
 
+// Load loads the master key like Open but never generates one (root CLI).
+func Load(keyFile string) (*Box, error) {
+	candidates := []string{}
+	if dir := os.Getenv("CREDENTIALS_DIRECTORY"); dir != "" {
+		candidates = append(candidates, filepath.Join(dir, "picache-master-key"))
+	}
+	candidates = append(candidates, "/run/secrets/picache_master_key", keyFile)
+	for _, c := range candidates {
+		key, err := readKey(c)
+		if err == nil {
+			return &Box{key: key, Source: c}, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("secrets: %s: %w", c, err)
+		}
+	}
+	return nil, fmt.Errorf("secrets: no master key found (looked at %s)", strings.Join(candidates, ", "))
+}
+
 // New returns a Box for a raw 32-byte key (tests).
 func New(key []byte) (*Box, error) {
 	if len(key) != chacha20poly1305.KeySize {

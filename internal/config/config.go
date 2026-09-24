@@ -36,13 +36,15 @@ type Config struct {
 	LogLevel  slog.Level // PICACHE_LOG_LEVEL: debug|info|warn|error
 	LogFormat string     // PICACHE_LOG_FORMAT: text|json
 
-	AdminUser     string // PICACHE_ADMIN_USER (default "admin"), used with AdminPassword
-	AdminPassword string // PICACHE_ADMIN_PASSWORD or PICACHE_ADMIN_PASSWORD_FILE: provisions the first admin
+	AdminUser string // PICACHE_ADMIN_USER (default "admin"), used with AdminPassword
+	// AdminPassword (PICACHE_ADMIN_PASSWORD_FILE preferred, or PICACHE_ADMIN_PASSWORD)
+	// provisions the first admin. The app clears it after provisioning.
+	AdminPassword        string `json:"-"`
+	AdminPasswordFromEnv bool   `json:"-"` // true if the plain env var was used (warn)
 
 	MasterKeyFile string // PICACHE_MASTER_KEY_FILE: optional external master key
 
-	EnableMounts bool   // PICACHE_ENABLE_MOUNTS: allow in-process NAS mounts (needs CAP_SYS_ADMIN)
-	MountRoot    string // PICACHE_MOUNT_ROOT: parent dir for mounts, default /srv/picache
+	MountRoot string // PICACHE_MOUNT_ROOT: the only place NAS stores may live, default /srv/picache
 
 	Dev bool // PICACHE_DEV: development mode (relaxed platform checks, verbose errors in log)
 }
@@ -185,7 +187,7 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 		}
 		c.LogLevel = lvl
 	}
-	for key, dst := range map[string]*bool{"PICACHE_ENABLE_MOUNTS": &c.EnableMounts, "PICACHE_DEV": &c.Dev} {
+	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev} {
 		if v := getenv(key); v != "" {
 			b, err := strconv.ParseBool(v)
 			if err != nil {
@@ -204,6 +206,7 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 		c.AdminPassword = strings.TrimRight(string(b), "\r\n")
 	} else if v := getenv("PICACHE_ADMIN_PASSWORD"); v != "" {
 		c.AdminPassword = v
+		c.AdminPasswordFromEnv = true
 	}
 	return nil
 }

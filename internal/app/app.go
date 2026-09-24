@@ -1,6 +1,6 @@
 // Package app wires all components together and runs the process:
-// bind listeners → drop privileges → open databases → start components →
-// serve → graceful shutdown (docs/ARCHITECTURE.md 2, 6.2).
+// bind listeners → drop privileges → prepare directories → open databases →
+// start components → serve → graceful shutdown (docs/ARCHITECTURE.md 2, 6.2).
 package app
 
 import (
@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -41,6 +40,13 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/webui"
 )
 
+// ErrRestart is returned by Run when a restart was requested through the
+// API; the command exits with ExitRestart so systemd/Docker restart it.
+var ErrRestart = errors.New("restart requested")
+
+// ExitRestart is the process exit code for a requested restart.
+const ExitRestart = 75
+
 // App is the running process state. It implements api.Runtime.
 type App struct {
 	cfg        *config.Config
@@ -50,6 +56,7 @@ type App struct {
 	instanceID string
 
 	cdb      *db.DB
+	ldb      *db.DB // nil if logs are disabled
 	set      *settings.Store
 	box      *secrets.Box
 	acl      *netutil.ACLWatcher
@@ -67,45 +74,68 @@ type App struct {
 
 	ln listeners
 
-	store      atomic.Pointer[cachestore.Store]
-	storeMu    sync.Mutex // serialises store open/close
-	storeState atomic.Pointer[api.StoreState]
-	storeKick  chan struct{}
+	store          atomic.Pointer[cachestore.Store]
+	storeMu        sync.Mutex // serialises store open/close
+	storeState     atomic.Pointer[api.StoreState]
+	storeKick      chan struct{}
+	storeFull      atomic.Bool
+	lastStoreErr   string
+	lastStoreErrAt time.Time
 
 	verifyMu sync.Mutex
 	verify   api.VerifyState
+
+	health     atomic.Pointer[api.Health]
+	restoredAt time.Time // set when a staged restore was applied at this start
+	restart    chan struct{}
 }
 
-// Run starts PiCache and blocks until ctx is cancelled or a fatal error occurs.
+// Run starts PiCache and blocks until ctx is cancelled, a restart is
+// requested (ErrRestart) or a fatal error occurs.
 func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
-	a := &App{cfg: cfg, paths: cfg.Paths(), log: log, started: time.Now(), storeKick: make(chan struct{}, 1)}
+	a := &App{cfg: cfg, paths: cfg.Paths(), log: log, started: time.Now(),
+		storeKick: make(chan struct{}, 1), restart: make(chan struct{}, 1)}
 	info := version.Get()
 	log.Info("starting PiCache", slog.String("version", info.Version), slog.String("commit", info.Commit),
 		slog.String("go", info.GoVersion), slog.String("data_dir", cfg.DataDir), slog.String("cache_dir", cfg.CacheDir))
+	if cfg.AdminPasswordFromEnv {
+		log.Warn("PICACHE_ADMIN_PASSWORD is set in the environment; prefer PICACHE_ADMIN_PASSWORD_FILE (environment variables are visible to other processes and `docker inspect`)")
+	}
 
-	// 1. Bind every listener while we may still be privileged.
+	// 1. Bind listeners while we may still be privileged. DNS and at least
+	//    one web listener are mandatory; the others fail softly.
 	if err := a.bindListeners(); err != nil {
 		return err
 	}
 	defer a.ln.closeAll()
 
-	// 2. Prepare directories, then drop privileges (Docker: root → 65532).
-	if err := a.prepareDirs(); err != nil {
-		return err
-	}
+	// 2. Drop privileges (Docker: root → PICACHE_RUN_AS) before touching files.
 	if err := a.dropPrivileges(); err != nil {
 		return err
 	}
 	if os.Geteuid() == 0 {
-		log.Warn("running as root; set PICACHE_RUN_AS or run under the provided systemd unit (only needed for in-process NAS mounts)")
+		log.Warn("running as root; use the provided systemd unit or set PICACHE_RUN_AS (Docker)")
+	}
+	if err := a.prepareDirs(); err != nil {
+		return err
 	}
 
-	// 3. Open state and build components.
-	if err := a.applyStagedRestore(); err != nil {
+	// 3. Open state (with restore rollback) and build components.
+	restored, err := a.applyStagedRestore()
+	if err != nil {
 		return err
 	}
 	if err := a.build(ctx); err != nil {
 		a.closeState()
+		if restored {
+			if rbErr := a.rollbackRestore(); rbErr == nil {
+				log.Error("the restored backup could not be started; the previous configuration was put back", slog.Any("err", err))
+				if err2 := a.build(ctx); err2 == nil {
+					defer a.closeState()
+					return a.serve(ctx)
+				}
+			}
+		}
 		return err
 	}
 	defer a.closeState()
@@ -115,16 +145,18 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 }
 
 func (a *App) prepareDirs() error {
-	for _, d := range []string{a.cfg.DataDir, a.paths.CacheIndexDir, a.paths.ListsDir, a.paths.CacheDomainsDir, a.paths.TLSDir, filepath.Join(a.cfg.DataDir, "tmp")} {
+	for _, d := range []string{a.cfg.DataDir, a.paths.CacheIndexDir, a.paths.ListsDir, a.paths.CacheDomainsDir,
+		a.paths.TLSDir, filepath.Join(a.cfg.DataDir, "tmp"), filepath.Join(a.cfg.DataDir, "backups"),
+		filepath.Join(a.cfg.DataDir, "storage-requests")} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
-			return fmt.Errorf("create %s: %w", d, err)
+			return fmt.Errorf("create %s: %w (the data directory must be writable by the PiCache user)", d, err)
 		}
 	}
 	if err := os.MkdirAll(a.paths.KeysDir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", a.paths.KeysDir, err)
 	}
 	if err := os.MkdirAll(a.cfg.CacheDir, 0o750); err != nil {
-		return fmt.Errorf("create cache dir %s: %w", a.cfg.CacheDir, err)
+		return fmt.Errorf("create cache dir %s: %w (it must be writable by the PiCache user)", a.cfg.CacheDir, err)
 	}
 	return nil
 }
@@ -135,8 +167,14 @@ func (a *App) build(ctx context.Context) error {
 	if a.cdb, err = db.Open(a.paths.ConfigDB, 4); err != nil {
 		return err
 	}
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		log.Warn("pre-upgrade backup failed", slog.Any("err", err))
+	}
 	if a.set, err = settings.Open(ctx, a.cdb, log); err != nil {
 		return err
+	}
+	if a.set.Created() {
+		a.applyDetectedDefaults(ctx)
 	}
 	if a.box, err = secrets.Open(a.paths.MasterKeyFile); err != nil {
 		return err
@@ -146,9 +184,8 @@ func (a *App) build(ctx context.Context) error {
 	}
 	a.acl = netutil.NewACLWatcher(a.set)
 
-	if a.logs, err = logs.Open(ctx, a.paths.LogsDB, a.set, log); err != nil {
-		return fmt.Errorf("logs: %w", err)
-	}
+	a.openLogs(ctx)
+
 	if a.up, err = upstream.New(a.set, log); err != nil {
 		return fmt.Errorf("upstream: %w", err)
 	}
@@ -156,54 +193,60 @@ func (a *App) build(ctx context.Context) error {
 	lookup4 := func(ctx context.Context, host string) ([]netip.Addr, error) { return a.up.LookupIP(ctx, host, false) }
 	fetch := newFetchClient(lookup46)
 
-	if a.clients, err = clients.New(ctx, a.cdb, log); err != nil {
+	if a.clients, err = clients.New(ctx, a.cdb, a.ldb, log); err != nil {
 		return fmt.Errorf("clients: %w", err)
 	}
-	a.clients.SetPTRResolver(func(ctx context.Context, ip netip.Addr) (string, error) {
-		servers := a.set.Get().DNS.LocalPTRUpstreams
-		if len(servers) == 0 {
-			return "", nil
-		}
-		return a.up.LookupPTR(ctx, ip, servers)
-	})
+	a.clients.SetPTRResolver(a.lookupClientName)
 	if a.filter, err = filter.New(ctx, a.cdb, a.set, fetch, a.paths.ListsDir, log); err != nil {
 		return fmt.Errorf("filter: %w", err)
 	}
-	a.clients.OnChange(a.filter.Recompile)
 	if a.services, err = services.New(ctx, a.cdb, a.set, fetch, a.paths.CacheDomainsDir, log); err != nil {
 		return fmt.Errorf("services: %w", err)
 	}
-	if a.auth, err = auth.New(ctx, a.cdb, a.set, a.paths.SetupTokenFile, log); err != nil {
+	if a.auth, err = auth.New(ctx, a.cdb, a.set, a.box, a.paths.SetupTokenFile, log); err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}
-	if a.cfg.AdminPassword != "" {
-		if err := a.auth.Provision(ctx, a.cfg.AdminUser, a.cfg.AdminPassword); err != nil {
+	if !a.restoredAt.IsZero() {
+		if err := a.cdb.Tx(ctx, func(tx *sqlTx) error { return auth.PurgeCredentials(ctx, tx) }); err != nil {
+			log.Warn("could not purge sessions/tokens after restore", slog.Any("err", err))
+		} else {
+			log.Warn("configuration restored from backup: all sessions and API tokens were revoked; re-issue API tokens")
+		}
+	}
+	if pw := a.cfg.AdminPassword; pw != "" {
+		err := a.auth.Provision(ctx, a.cfg.AdminUser, pw)
+		a.cfg.AdminPassword = ""
+		if err != nil {
 			return fmt.Errorf("provision admin: %w", err)
 		}
 	}
-	if a.storage, err = storage.New(ctx, a.cdb, a.box, a.cfg, lookup46, log); err != nil {
+	sliceSize := func() int64 { return a.set.Get().Cache.SliceSizeBytes }
+	if a.storage, err = storage.New(ctx, a.cdb, a.box, a.cfg, sliceSize, log); err != nil {
 		return fmt.Errorf("storage: %w", err)
 	}
 	a.storage.OnStatusChange(func(string, storage.Status) { a.kickStore() })
 	a.set.Subscribe(func(o, n *settings.All) {
-		if o.Cache.ActiveStoreID != n.Cache.ActiveStoreID {
+		if o.Cache.ActiveStoreID != n.Cache.ActiveStoreID || o.Cache.MinFreeBytes != n.Cache.MinFreeBytes {
 			a.kickStore()
 		}
 	})
 
 	if a.dns, err = dnsserver.New(ctx, dnsserver.Deps{
 		DB: a.cdb, Settings: a.set, Upstream: a.up, Filter: a.filter, Clients: a.clients,
-		Services: a.services, Logs: a.logs, ACL: a.acl, Log: log,
+		Services: a.services, Logs: a.logs, ACL: a.acl, LanCacheReady: a.lanCacheReady,
+		Container: a.storage.Capabilities().Container, Log: log,
 	}); err != nil {
 		return fmt.Errorf("dns: %w", err)
 	}
 	if a.proxy, err = proxy.New(ctx, proxy.Deps{
-		DB: a.cdb, Settings: a.set, Services: a.services, Lookup: lookup4, Store: a.ActiveStore,
-		Clients: a.clients, Logs: a.logs, ACL: a.acl, InstanceID: a.instanceID, Log: log,
+		DB: a.cdb, Settings: a.set, Services: a.services, Lookup: lookup4, Store: a.proxyStore,
+		StoreFull: a.storeFull.Load, Clients: a.clients, Logs: a.logs, ACL: a.acl,
+		InstanceID: a.instanceID, Log: log,
 	}); err != nil {
 		return fmt.Errorf("proxy: %w", err)
 	}
-	a.sni = sni.New(sni.Deps{Settings: a.set, Services: a.services, Lookup: lookup4, Logs: a.logs, ACL: a.acl, Log: log})
+	a.sni = sni.New(sni.Deps{Settings: a.set, Services: a.services, Lookup: lookup4, Clients: a.clients,
+		Logs: a.logs, ACL: a.acl, Log: log})
 	a.api = api.New(api.Deps{
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
@@ -213,33 +256,113 @@ func (a *App) build(ctx context.Context) error {
 	return nil
 }
 
+// openLogs opens logs.db. A broken database is moved aside and recreated;
+// if that fails too, logging is disabled (DNS must never depend on logs).
+func (a *App) openLogs(ctx context.Context) {
+	open := func() (*db.DB, *logs.Store, error) {
+		d, err := db.Open(a.paths.LogsDB, 4)
+		if err != nil {
+			return nil, nil, err
+		}
+		st, err := logs.New(ctx, d, a.set, a.log)
+		if err != nil {
+			d.Close()
+			return nil, nil, err
+		}
+		return d, st, nil
+	}
+	d, st, err := open()
+	if err != nil {
+		a.log.Error("logs.db cannot be opened; moving it aside and starting a fresh one", slog.Any("err", err))
+		ts := time.Now().UTC().Format("20060102T150405")
+		for _, sfx := range []string{"", "-wal", "-shm"} {
+			_ = os.Rename(a.paths.LogsDB+sfx, a.paths.LogsDB+sfx+".broken-"+ts)
+		}
+		d, st, err = open()
+	}
+	if err != nil {
+		a.log.Error("logging disabled: logs.db unusable", slog.Any("err", err))
+		a.logs = logs.Discard(err.Error(), a.log)
+		return
+	}
+	a.ldb, a.logs = d, st
+}
+
+// proxyStore returns the active store as the proxy interface (nil stays nil).
+func (a *App) proxyStore() proxy.SliceStore {
+	if s := a.store.Load(); s != nil {
+		return s
+	}
+	return nil
+}
+
+// lanCacheReady gates DNS overrides: the cache listener must be bound.
+// (dnsserver additionally checks that a valid cache IP is known.)
+func (a *App) lanCacheReady() (bool, string) {
+	if len(a.ln.cache) == 0 {
+		if msg, ok := a.ln.failed["cache"]; ok {
+			return false, "cache HTTP listener not bound: " + msg
+		}
+		return false, "cache HTTP listener is disabled (PICACHE_CACHE_LISTEN)"
+	}
+	return true, ""
+}
+
+func (a *App) lookupClientName(ctx context.Context, ip netip.Addr) (string, error) {
+	servers := a.set.Get().DNS.LocalPTRUpstreams
+	if len(servers) == 0 {
+		if r := a.dns.Router(); r.Address != "" && r.Answers {
+			servers = []string{r.Address}
+		}
+	}
+	if len(servers) == 0 {
+		return "", nil
+	}
+	return a.up.LookupPTR(ctx, ip, servers)
+}
+
+// applyDetectedDefaults adapts first-start defaults to the environment
+// (local domain from /etc/resolv.conf).
+func (a *App) applyDetectedDefaults(ctx context.Context) {
+	search := netutil.ResolvConfSearch()
+	if len(search) == 0 {
+		return
+	}
+	d := search[0]
+	if _, err := a.set.Update(ctx, func(s *settings.All) error { s.DNS.LocalDomain = d; return nil }); err == nil {
+		a.log.Info("detected local domain", slog.String("domain", d))
+	}
+}
+
 func (a *App) serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 16)
-	var wg sync.WaitGroup
+	var srv, bg sync.WaitGroup
 	goRun := func(name string, fn func() error) {
-		wg.Go(func() {
+		srv.Go(func() {
 			if err := fn(); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
 				errc <- fmt.Errorf("%s: %w", name, err)
 			}
 		})
 	}
+	for _, fn := range []func(context.Context){
+		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
+		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop,
+		func(ctx context.Context) { a.acl.Run(ctx.Done(), 5*time.Minute) },
+	} {
+		bg.Go(func() { fn(ctx) })
+	}
 
-	go a.logs.Start(ctx)
-	go a.up.Start(ctx)
-	go a.clients.Start(ctx)
-	go a.filter.Start(ctx)
-	go a.services.Start(ctx)
-	go a.auth.Start(ctx)
-	go a.storage.Start(ctx)
-	go a.acl.Run(ctx.Done(), 5*time.Minute)
-	go a.storeLoop(ctx)
-	go a.evictLoop(ctx)
-
-	goRun("dns", func() error { return a.dns.Serve(ctx, a.ln.dnsUDP, a.ln.dnsTCP) })
+	aclFn := a.acl.Get
+	var dnsTCP []netListener
+	for _, ln := range a.ln.dnsTCP {
+		dnsTCP = append(dnsTCP, netutil.LimitListener(ln, aclFn, 32, 1024))
+	}
+	goRun("dns", func() error { return a.dns.Serve(ctx, a.ln.dnsUDP, dnsTCP) })
 	for _, ln := range a.ln.sni {
-		goRun("sni", func() error { return a.sni.Serve(ctx, ln) })
+		limited := netutil.LimitListener(ln, aclFn, 256, 4096)
+		goRun("sni", func() error { return a.sni.Serve(ctx, limited) })
 	}
 
 	var servers []*http.Server
@@ -252,30 +375,13 @@ func (a *App) serve(ctx context.Context) error {
 	}
 	servers = append(servers, cacheSrv)
 	for _, ln := range a.ln.cache {
-		goRun("cache", func() error { return cacheSrv.Serve(ln) })
+		limited := netutil.LimitListener(ln, aclFn, 256, 4096)
+		goRun("cache", func() error { return cacheSrv.Serve(limited) })
 	}
 
-	webSrv := &http.Server{
-		Handler:           a.api.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      120 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    32 << 10,
-		ErrorLog:          slog.NewLogLogger(a.log.Handler(), slog.LevelDebug),
-	}
-	servers = append(servers, webSrv)
-	for _, ln := range a.ln.web {
-		goRun("web", func() error { return webSrv.Serve(ln) })
-	}
-	if len(a.ln.webTLS) > 0 {
-		tlsCfg, err := a.webTLSConfig()
-		if err != nil {
-			return err
-		}
-		webTLS := &http.Server{
+	newWeb := func() *http.Server {
+		return &http.Server{
 			Handler:           a.api.Handler(),
-			TLSConfig:         tlsCfg,
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       60 * time.Second,
 			WriteTimeout:      120 * time.Second,
@@ -283,9 +389,23 @@ func (a *App) serve(ctx context.Context) error {
 			MaxHeaderBytes:    32 << 10,
 			ErrorLog:          slog.NewLogLogger(a.log.Handler(), slog.LevelDebug),
 		}
-		servers = append(servers, webTLS)
-		for _, ln := range a.ln.webTLS {
-			goRun("web-tls", func() error { return webTLS.ServeTLS(ln, "", "") })
+	}
+	webSrv := newWeb()
+	servers = append(servers, webSrv)
+	for _, ln := range a.ln.web {
+		goRun("web", func() error { return webSrv.Serve(ln) })
+	}
+	if len(a.ln.webTLS) > 0 {
+		tlsCfg, err := a.webTLSConfig()
+		if err != nil {
+			a.log.Error("HTTPS web listener disabled", slog.Any("err", err))
+		} else {
+			webTLS := newWeb()
+			webTLS.TLSConfig = tlsCfg
+			servers = append(servers, webTLS)
+			for _, ln := range a.ln.webTLS {
+				goRun("web-tls", func() error { return webTLS.ServeTLS(ln, "", "") })
+			}
 		}
 	}
 
@@ -295,23 +415,30 @@ func (a *App) serve(ctx context.Context) error {
 	case <-ctx.Done():
 	case runErr = <-errc:
 		a.log.Error("fatal error, shutting down", slog.Any("err", runErr))
+	case <-a.restart:
+		a.log.Warn("restart requested via the API")
+		runErr = ErrRestart
 	}
 	cancel()
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutCancel()
 	for _, s := range servers {
 		_ = s.Shutdown(shutCtx)
 	}
 	a.ln.closeAll()
+	waitTimeout(&srv, shutCtx)
+	waitTimeout(&bg, shutCtx)
+	a.log.Info("stopped")
+	return runErr
+}
+
+func waitTimeout(wg *sync.WaitGroup, ctx context.Context) {
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-shutCtx.Done():
-		a.log.Warn("shutdown timed out")
+	case <-ctx.Done():
 	}
-	a.log.Info("stopped")
-	return runErr
 }
 
 func (a *App) closeState() {
@@ -322,21 +449,28 @@ func (a *App) closeState() {
 	a.storeMu.Unlock()
 	if a.logs != nil {
 		_ = a.logs.Close()
+		a.logs = nil
+	}
+	if a.ldb != nil {
+		_ = a.ldb.Close()
+		a.ldb = nil
 	}
 	if a.up != nil {
 		_ = a.up.Close()
+		a.up = nil
 	}
 	if a.cdb != nil {
 		_ = a.cdb.Close()
+		a.cdb = nil
 	}
 }
 
 // newFetchClient is the HTTP client for list and cache-domains downloads:
-// resolution via the bypass resolver, private destinations allowed (users may
-// host lists locally), no environment proxy.
+// resolution via the bypass resolver, SSRF guard (private destinations only
+// with netutil.WithAllowPrivate), no redirects (callers follow them
+// manually), no environment proxy.
 func newFetchClient(lookup netutil.Resolver) *http.Client {
-	d := &netutil.SafeDialer{Resolve: lookup, AllowPrivate: func() bool { return true }, Timeout: 15 * time.Second,
-		OwnAddrs: func() []netip.Addr { return nil }}
+	d := &netutil.SafeDialer{Resolve: lookup, Timeout: 15 * time.Second}
 	return &http.Client{
 		Timeout: 5 * time.Minute,
 		Transport: &http.Transport{
@@ -348,15 +482,7 @@ func newFetchClient(lookup netutil.Resolver) *http.Client {
 			MaxIdleConnsPerHost:   2,
 			IdleConnTimeout:       60 * time.Second,
 		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("too many redirects")
-			}
-			if req.URL.Scheme != "https" && via[0].URL.Scheme == "https" {
-				return errors.New("refusing redirect from https to http")
-			}
-			return nil
-		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
 
@@ -377,58 +503,23 @@ func loadInstanceID(path string) (string, error) {
 
 // --- api.Runtime ---
 
-func (a *App) StartedAt() time.Time        { return a.started }
-func (a *App) InstanceID() string          { return a.instanceID }
-func (a *App) Config() *config.Config      { return a.cfg }
+func (a *App) StartedAt() time.Time           { return a.started }
+func (a *App) InstanceID() string             { return a.instanceID }
+func (a *App) Config() *config.Config         { return a.cfg }
 func (a *App) ActiveStore() *cachestore.Store { return a.store.Load() }
+func (a *App) MasterKeySource() string        { return a.box.Source }
 
-func (a *App) Listeners() map[string][]string {
-	addrs := func(ls []net.Listener) []string {
-		out := make([]string, 0, len(ls))
-		for _, l := range ls {
-			out = append(out, l.Addr().String())
+// Restart asks Run to exit with ErrRestart (after the current response).
+func (a *App) Restart() {
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		select {
+		case a.restart <- struct{}{}:
+		default:
 		}
-		return out
-	}
-	udp := make([]string, 0, len(a.ln.dnsUDP))
-	for _, pc := range a.ln.dnsUDP {
-		udp = append(udp, pc.LocalAddr().String())
-	}
-	return map[string][]string{
-		"dns-udp": udp, "dns-tcp": addrs(a.ln.dnsTCP), "cache": addrs(a.ln.cache),
-		"sni": addrs(a.ln.sni), "web": addrs(a.ln.web), "web-tls": addrs(a.ln.webTLS),
-	}
+	}()
 }
 
-func (a *App) Health(ctx context.Context) api.Health {
-	h := api.Health{OK: true, Checks: map[string]string{}}
-	fail := func(k, v string) { h.OK = false; h.Checks[k] = v }
-	h.Checks["dns"] = "ok"
-	healthy := false
-	for _, s := range a.up.Stats() {
-		if s.Healthy {
-			healthy = true
-		}
-	}
-	if healthy || len(a.up.Stats()) == 0 {
-		h.Checks["upstreams"] = "ok"
-	} else {
-		fail("upstreams", "no healthy upstream")
-	}
-	if st := a.services.Status(); st.Ready {
-		h.Checks["cache-domains"] = "ok"
-	} else if a.set.Get().LanCache.Enabled {
-		fail("cache-domains", "no cache-domains snapshot loaded: "+st.Error)
-	}
-	if ss := a.StoreState(); ss.Online {
-		h.Checks["cache-store"] = "ok"
-	} else {
-		fail("cache-store", "offline: "+ss.Reason)
-	}
-	if m := a.logs.Metrics(); m.Dropped > 0 {
-		h.Checks["logs"] = fmt.Sprintf("ok (%d events dropped)", m.Dropped)
-	} else {
-		h.Checks["logs"] = "ok"
-	}
-	return h
+func (a *App) Listeners() api.ListenerInfo {
+	return a.ln.info()
 }

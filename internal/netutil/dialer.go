@@ -14,16 +14,34 @@ import (
 // ErrForbiddenDestination is returned when the SSRF guard refuses an address.
 var ErrForbiddenDestination = errors.New("destination address not allowed")
 
+type allowPrivateKey struct{}
+
+// WithAllowPrivate marks ctx so that SafeDialer (with AllowPrivate == nil)
+// may dial private (RFC 1918/ULA/CGNAT) destinations for this request. Use it
+// only when the admin configured an explicit private IP literal (e.g. a
+// blocklist hosted on the LAN), never after a redirect to another host.
+func WithAllowPrivate(ctx context.Context) context.Context {
+	return context.WithValue(ctx, allowPrivateKey{}, true)
+}
+
+func privateAllowedByCtx(ctx context.Context) bool {
+	v, _ := ctx.Value(allowPrivateKey{}).(bool)
+	return v
+}
+
 // SafeDialer dials TCP connections to hostnames resolved with Resolve and
 // refuses destinations that are not public unicast addresses (unless
-// AllowPrivate returns true) or that belong to this machine.
+// allowed), that are link-local/multicast (always), or that belong to this
+// machine.
 //
 // Use it as http.Transport.DialContext for every outbound fetch triggered by
-// client traffic (proxy, SNI) so a client cannot make PiCache connect to
-// internal services.
+// client traffic or external data (proxy, SNI, list and cache-domains
+// downloads) so nobody can make PiCache connect to internal services.
 type SafeDialer struct {
-	Resolve      Resolver
-	AllowPrivate func() bool // nil = never
+	Resolve Resolver
+	// AllowPrivate reports whether private destinations are allowed. nil
+	// means: allowed only if ctx was marked with WithAllowPrivate.
+	AllowPrivate func(ctx context.Context) bool
 	Timeout      time.Duration
 	// OwnAddrs returns this machine's addresses (loop protection). nil = LocalAddrs.
 	OwnAddrs func() []netip.Addr
@@ -41,7 +59,7 @@ func (d *SafeDialer) DialContext(ctx context.Context, network, address string) (
 	}
 	var addrs []netip.Addr
 	if ip, err := netip.ParseAddr(host); err == nil {
-		addrs = []netip.Addr{ip.Unmap()}
+		addrs = []netip.Addr{Canon(ip)}
 	} else {
 		if d.Resolve == nil {
 			return nil, errors.New("safe dialer: no resolver")
@@ -54,7 +72,7 @@ func (d *SafeDialer) DialContext(ctx context.Context, network, address string) (
 			return nil, fmt.Errorf("no addresses for %s", host)
 		}
 	}
-	allowed, err := d.Filter(addrs)
+	allowed, err := d.Filter(ctx, addrs)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", host, err)
 	}
@@ -78,8 +96,13 @@ func (d *SafeDialer) DialContext(ctx context.Context, network, address string) (
 }
 
 // Filter returns the addresses that may be dialed, in order.
-func (d *SafeDialer) Filter(addrs []netip.Addr) ([]netip.Addr, error) {
-	allowPrivate := d.AllowPrivate != nil && d.AllowPrivate()
+func (d *SafeDialer) Filter(ctx context.Context, addrs []netip.Addr) ([]netip.Addr, error) {
+	allowPrivate := false
+	if d.AllowPrivate != nil {
+		allowPrivate = d.AllowPrivate(ctx)
+	} else {
+		allowPrivate = privateAllowedByCtx(ctx)
+	}
 	own := d.OwnAddrs
 	if own == nil {
 		own = LocalAddrs
@@ -87,8 +110,8 @@ func (d *SafeDialer) Filter(addrs []netip.Addr) ([]netip.Addr, error) {
 	mine := own()
 	var out []netip.Addr
 	for _, ip := range addrs {
-		ip = ip.Unmap()
-		if !ip.IsValid() || ip.IsUnspecified() || ip.IsMulticast() || slices.Contains(mine, ip) || ip.IsLoopback() {
+		ip = Canon(ip)
+		if !ip.IsValid() || ip.IsUnspecified() || ip.IsLoopback() || inAny(ip, alwaysForbidden) || slices.Contains(mine, ip) {
 			continue
 		}
 		if !allowPrivate && !IsPublicUnicast(ip) {

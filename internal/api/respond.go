@@ -22,9 +22,10 @@ import (
 type perm int
 
 const (
-	permPublic perm = iota // no authentication
-	permRead               // any authenticated principal (read or admin scope)
-	permAdmin              // admin scope
+	permPublic  perm = iota // no authentication
+	permRead                // any authenticated principal (read or admin scope)
+	permAdmin               // admin scope (browser session or admin API token)
+	permSession             // interactive browser session of an admin (never API tokens): account security
 )
 
 // handlerFunc is an API handler that returns an error instead of writing it.
@@ -45,8 +46,12 @@ func (s *Server) route(pattern string, p perm, h handlerFunc) {
 				writeError(w, r, s.log, err)
 				return
 			}
-			if p == permAdmin && pr.Scope != auth.ScopeAdmin {
-				writeError(w, r, s.log, apperr.Forbidden("this action requires an admin token"))
+			if (p == permAdmin || p == permSession) && pr.Scope != auth.ScopeAdmin {
+				writeError(w, r, s.log, apperr.Forbidden("this action requires admin rights"))
+				return
+			}
+			if p == permSession && pr.TokenID != 0 {
+				writeError(w, r, s.log, apperr.Forbidden("this action requires an interactive login"))
 				return
 			}
 			r = r.WithContext(context.WithValue(r.Context(), principalKey, pr))
@@ -291,15 +296,32 @@ func pathID(r *http.Request, name string) (int64, error) {
 	return n, nil
 }
 
+// extendDeadlines lifts the server read/write timeouts for this request:
+// d > 0 sets both deadlines to now+d, d == 0 removes them (streams). Call it
+// first in handlers that wait long (list/source refresh, storage test,
+// backup/restore).
+func extendDeadlines(w http.ResponseWriter, d time.Duration) {
+	rc := http.NewResponseController(w)
+	var t time.Time
+	if d > 0 {
+		t = time.Now().Add(d)
+	}
+	_ = rc.SetReadDeadline(t)
+	_ = rc.SetWriteDeadline(t)
+}
+
 // sse streams events from ch as Server-Sent Events until the client
-// disconnects or ch is closed. A comment heartbeat is sent every 15 s.
-func sse[T any](w http.ResponseWriter, r *http.Request, event string, ch <-chan T) error {
+// disconnects, ch is closed, alive() returns false (checked every 15 s with
+// the heartbeat: session revoked or expired) or the stream is 1 h old (the
+// browser reconnects).
+func sse[T any](w http.ResponseWriter, r *http.Request, event string, ch <-chan T, alive func() bool) error {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		return fmt.Errorf("streaming unsupported")
 	}
-	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Time{}) // streams outlive the server WriteTimeout
+	extendDeadlines(w, 0)
+	deadline := time.NewTimer(time.Hour)
+	defer deadline.Stop()
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
@@ -312,7 +334,12 @@ func sse[T any](w http.ResponseWriter, r *http.Request, event string, ch <-chan 
 		select {
 		case <-r.Context().Done():
 			return nil
+		case <-deadline.C:
+			return nil
 		case <-tick.C:
+			if alive != nil && !alive() {
+				return nil
+			}
 			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
 				return nil
 			}

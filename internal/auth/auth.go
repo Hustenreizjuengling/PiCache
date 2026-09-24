@@ -1,16 +1,43 @@
 // Package auth implements web authentication: users with argon2id password
 // hashes, sessions, API tokens, optional TOTP, login throttling, the
 // first-run setup token and the audit log (docs/ARCHITECTURE.md 6.1, 12).
+//
+// Tables (picache.db, component "auth"): auth_users, auth_sessions,
+// auth_tokens, auth_audit. Sessions and tokens are stored as SHA-256 hashes
+// of the random secret. Authenticate reads the session row from the DB on
+// every request (no in-memory cache), so revocations by the CLI or another
+// session take effect immediately.
+//
+// Rules:
+//   - Passwords: argon2id m=19456 KiB, t=2, p=1, PHC string, rehash on login
+//     when parameters change; ≥ 10 characters; max 2 concurrent hash
+//     computations (semaphore).
+//   - Throttling: per netutil.ClientKey and per username; 5 failures → 15 min
+//     lockout; TOTP failures count too; global cap of 10 attempts/s.
+//   - TOTP (RFC 6238, SHA-1, 6 digits, 30 s, ±1 step): the secret is sealed
+//     with the secrets.Box (AAD "picache/auth/totp/<userID>"); each step can
+//     be used only once (auth_users.totp_last_step).
+//   - Setup: token compared in constant time; the first user is created in
+//     one BEGIN IMMEDIATE transaction that checks that no user exists; the
+//     setup-token file is deleted on success.
+//   - Audit: details are marshalled to JSON and every object member whose
+//     lower-cased name is one of password, currentpassword, newpassword,
+//     setuptoken, token, secret, code, totp is replaced by "[redacted]"
+//     (recursively); details are truncated to 4 KiB. Retention: 365 days or
+//     100 000 rows; failed logins are aggregated per client key per 10 min.
 package auth
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -27,6 +54,12 @@ const (
 	ScopeRead  Scope = "read"
 )
 
+// ErrTOTPRequired is returned by Login when TOTP is enabled and the code is
+// missing or wrong (the UI shows the code field when Field == "totp").
+func ErrTOTPRequired() error {
+	return &apperr.Error{Kind: apperr.KindUnauthorized, Field: "totp", Message: "enter the code from your authenticator app"}
+}
+
 // User is an account (v1: a single admin, the model allows more).
 type User struct {
 	ID          int64     `json:"id"`
@@ -40,8 +73,8 @@ type User struct {
 type Principal struct {
 	UserID    int64
 	Username  string
-	SessionID string // hashed session id (for revocation / "current" marking), "" for tokens
-	TokenID   int64  // API token id, 0 for sessions
+	SessionID string // session id (hash prefix) for "current" marking; "" for tokens
+	TokenID   int64  // API token id, 0 for browser sessions
 	Scope     Scope
 }
 
@@ -104,17 +137,18 @@ type AuditQuery struct {
 type Service struct {
 	db  *db.DB
 	set *settings.Store
+	box *secrets.Box
 	log *slog.Logger
 }
 
 // New creates the service. setupTokenFile is where the one-time setup token
-// is written (0600) while no user exists.
-func New(ctx context.Context, d *db.DB, set *settings.Store, setupTokenFile string, log *slog.Logger) (*Service, error) {
-	return &Service{db: d, set: set, log: log}, nil
+// is written (0600) while no user exists; the token is also logged at WARN.
+func New(ctx context.Context, d *db.DB, set *settings.Store, box *secrets.Box, setupTokenFile string, log *slog.Logger) (*Service, error) {
+	return &Service{db: d, set: set, box: box, log: log}, nil
 }
 
-// Start runs session cleanup until ctx ends.
-func (a *Service) Start(ctx context.Context) {}
+// Start runs session and audit cleanup until ctx ends (blocks until done).
+func (a *Service) Start(ctx context.Context) { <-ctx.Done() }
 
 // Provision creates the first admin from bootstrap config if no user exists.
 func (a *Service) Provision(ctx context.Context, username, password string) error {
@@ -140,8 +174,12 @@ func (a *Service) Logout(ctx context.Context, token string) error { return errNo
 // Authenticate resolves the principal from the session cookie or a Bearer
 // token and refreshes the session idle timer. Returns apperr.Unauthorized.
 func (a *Service) Authenticate(r *http.Request) (*Principal, error) {
-	return nil, errNotImplemented
+	return nil, apperr.Unauthorized("not authenticated")
 }
+
+// Valid reports whether p's session or token is still active (used by
+// long-lived SSE streams every 15 s).
+func (a *Service) Valid(ctx context.Context, p *Principal) bool { return false }
 
 // Cookie builds the session cookie (secure = request came over HTTPS).
 func (a *Service) Cookie(s *Session, secure bool) *http.Cookie { return &http.Cookie{} }
@@ -150,7 +188,9 @@ func (a *Service) Cookie(s *Session, secure bool) *http.Cookie { return &http.Co
 func (a *Service) ClearCookie(secure bool) *http.Cookie { return &http.Cookie{} }
 
 // Me returns the user of a principal.
-func (a *Service) Me(ctx context.Context, p *Principal) (User, error) { return User{}, errNotImplemented }
+func (a *Service) Me(ctx context.Context, p *Principal) (User, error) {
+	return User{}, errNotImplemented
+}
 
 // ChangePassword changes the password and revokes all other sessions.
 func (a *Service) ChangePassword(ctx context.Context, p *Principal, current, next string) error {
@@ -193,7 +233,7 @@ func (a *Service) TOTPDisable(ctx context.Context, p *Principal, password string
 	return errNotImplemented
 }
 
-// Audit records an action (never blocks the request for long; errors are logged).
+// Audit records an action with redacted details (errors are logged).
 func (a *Service) Audit(ctx context.Context, p *Principal, ip, action, target string, details any) {}
 
 // AuditLog returns audit entries.
@@ -201,8 +241,11 @@ func (a *Service) AuditLog(ctx context.Context, q AuditQuery) ([]AuditEntry, int
 	return nil, 0, errNotImplemented
 }
 
-// ResetPassword sets a user's password (CLI `picache reset-password`), creating
-// the user if missing, and revokes all sessions.
+// ResetPassword sets a user's password (CLI `picache reset-password`),
+// creating the user if missing, disables TOTP and revokes all sessions.
 func ResetPassword(ctx context.Context, d *db.DB, username, password string) error {
 	return errNotImplemented
 }
+
+// PurgeCredentials deletes all sessions and API tokens (after a restore).
+func PurgeCredentials(ctx context.Context, tx *sql.Tx) error { return errNotImplemented }

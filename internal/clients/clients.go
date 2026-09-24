@@ -6,6 +6,21 @@
 // always exists and cannot be deleted. Only enabled groups are returned in an
 // Identity. Identify is on the DNS hot path and must be cheap (cached per IP,
 // invalidated on any change).
+//
+// Schema (picache.db, component "clients"): table
+// client_groups(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, comment,
+// enabled, created_at); migration v1 inserts (1, 'Default'). Other packages
+// reference client_groups(id) ON DELETE CASCADE. Clients: client_clients,
+// client_identifiers, client_memberships.
+// Seen/known addresses are runtime data and live in logs.db (component
+// "clients-seen", table clients_seen), pruned after 30 days; IPv6 entries are
+// keyed by MAC when the neighbour table knows it.
+//
+// Bounds: the identity cache and the seen map hold at most 65 536 entries
+// (LRU); PTR lookups for names run in one worker with a de-duplicated queue
+// of ≤ 1024 (dropped when full). Seen is called only after ACL and rate-limit
+// checks. Group changes do not require a filter recompile (the filter gets
+// group IDs per query).
 package clients
 
 import (
@@ -70,7 +85,7 @@ type Identity struct {
 	ClientID       int64   // 0 if no configured client matched
 	Name           string  // configured name, else resolved hostname, else ""
 	MAC            string  // if known
-	GroupIDs       []int64 // enabled groups only (sorted); may be empty if all groups are disabled
+	GroupIDs       []int64 // enabled groups only (sorted); may be empty if all its groups are disabled
 	LanCacheBypass bool
 	IgnoreLogs     bool
 }
@@ -87,7 +102,7 @@ type Known struct {
 	Queries   int64     `json:"queries"`
 }
 
-// PTRResolver resolves the hostname of a client address (local PTR upstreams).
+// PTRResolver resolves the hostname of a client address (router / local PTR upstreams).
 type PTRResolver func(ctx context.Context, ip netip.Addr) (string, error)
 
 // Registry holds groups, clients and the identity cache.
@@ -96,14 +111,15 @@ type Registry struct {
 	log *slog.Logger
 }
 
-// New opens the registry (runs migrations, ensures the Default group).
-func New(ctx context.Context, d *db.DB, log *slog.Logger) (*Registry, error) {
-	return &Registry{db: d, log: log}, nil
+// New opens the registry: cdb = picache.db (configuration), ldb = logs.db
+// (seen data; may be nil when logs are disabled).
+func New(ctx context.Context, cdb, ldb *db.DB, log *slog.Logger) (*Registry, error) {
+	return &Registry{db: cdb, log: log}, nil
 }
 
 // Start runs background refreshes (ARP table every 30 s, hostnames hourly,
-// flushing "seen" data every minute) until ctx ends.
-func (r *Registry) Start(ctx context.Context) {}
+// flushing "seen" data every minute, daily pruning). Blocks until ctx is done.
+func (r *Registry) Start(ctx context.Context) { <-ctx.Done() }
 
 // SetPTRResolver sets the resolver used for client hostnames.
 func (r *Registry) SetPTRResolver(fn PTRResolver) {}

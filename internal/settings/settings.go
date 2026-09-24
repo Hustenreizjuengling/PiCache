@@ -38,14 +38,19 @@ type DNS struct {
 	UpstreamMode      string   `json:"upstreamMode"` // load_balance | parallel | strict
 	UpstreamTimeoutMs int      `json:"upstreamTimeoutMs"`
 	LocalPTRUpstreams []string `json:"localPtrUpstreams"` // resolvers for private reverse zones (e.g. the router)
-	LocalDomain       string   `json:"localDomain"`       // e.g. "lan"; never forwarded upstream
+	LocalDomain       string   `json:"localDomain"`       // e.g. "lan" or "fritz.box"; never sent to public upstreams
 	ServerNames       []string `json:"serverNames"`       // names answered with this server's addresses
+	// RouterResolver answers private reverse zones, the local domain,
+	// home.arpa and resolv.conf search domains when no forwarder or local PTR
+	// upstream covers them: "auto" = the IPv4 default gateway (only if it
+	// answers DNS), "" = off, or an explicit IP.
+	RouterResolver string `json:"routerResolver"`
 
 	AllowedNetworks  []string `json:"allowedNetworks"`  // extra client CIDRs beyond the private defaults
 	AllowAllNetworks bool     `json:"allowAllNetworks"` // DANGEROUS: open resolver
-	RateLimitQPS     int      `json:"rateLimitQps"`     // per client IP; 0 disables
+	RateLimitQPS     int      `json:"rateLimitQps"`     // per client (/32, /64); 0 disables
 	RateLimitBurst   int      `json:"rateLimitBurst"`
-	RateLimitExempt  []string `json:"rateLimitExempt"` // CIDRs
+	RateLimitExempt  []string `json:"rateLimitExempt"` // CIDRs (loopback, router and forwarder targets are exempt automatically)
 	RefuseANY        bool     `json:"refuseAny"`
 
 	CacheEnabled        bool   `json:"cacheEnabled"`
@@ -59,9 +64,9 @@ type DNS struct {
 
 // Filter configures blocking.
 type Filter struct {
-	Enabled                 bool       `json:"enabled"`               // false = blocking disabled until re-enabled
+	Enabled                 bool       `json:"enabled"`              // false = blocking disabled until re-enabled
 	PausedUntil             *time.Time `json:"pausedUntil,omitzero"` // timed pause (blocking off until then)
-	BlockingMode            string     `json:"blockingMode"`          // null | nxdomain | nodata | refused | custom_ip
+	BlockingMode            string     `json:"blockingMode"`         // null | nxdomain | nodata | refused | custom_ip
 	BlockingIPv4            string     `json:"blockingIpv4"`
 	BlockingIPv6            string     `json:"blockingIpv6"`
 	BlockedTTL              uint32     `json:"blockedTtl"`
@@ -73,41 +78,38 @@ type Filter struct {
 
 // LanCache configures DNS overrides and the proxy front ends.
 type LanCache struct {
-	Enabled               bool     `json:"enabled"`
-	CacheIPv4             []string `json:"cacheIpv4"` // empty = auto-detect primary LAN IPv4
-	CacheIPv6             []string `json:"cacheIpv6"` // empty = AAAA answered with NODATA
+	Enabled               bool     `json:"enabled"`   // off by default; enabled in the UI after checking IP and storage
+	CacheIPv4             []string `json:"cacheIpv4"` // RFC 1918 only; empty = auto-detect
+	CacheIPv6             []string `json:"cacheIpv6"` // ULA (fc00::/7) only; empty = AAAA answered with NODATA
 	DNSTTL                uint32   `json:"dnsTtl"`
-	PassthroughClients    []string `json:"passthroughClients"` // CIDRs that get real answers
-	DomainsSource         string   `json:"domainsSource"`      // base URL of cache-domains (raw)
+	DomainsSource         string   `json:"domainsSource"` // base URL of cache-domains (raw, https)
 	UpdateIntervalHours   int      `json:"updateIntervalHours"`
 	DisabledServices      []string `json:"disabledServices"`
-	SNIPassthrough        bool     `json:"sniPassthrough"`
+	NocacheClients        []string `json:"nocacheClients"`        // CIDRs whose ?nocache=1 is honoured (default: none)
 	AllowPrivateUpstreams bool     `json:"allowPrivateUpstreams"` // DANGEROUS: disables the SSRF guard
-	SteamNameLookup       bool     `json:"steamNameLookup"`       // opt-in online depot→app name lookup
 }
 
 // Cache configures the slice store and retention.
 type Cache struct {
-	SliceSizeBytes     int64          `json:"sliceSizeBytes"` // applies to newly created stores
-	MaxSizeBytes       int64          `json:"maxSizeBytes"`   // 0 = no limit (bounded by MinFreeBytes)
-	MinFreeBytes       int64          `json:"minFreeBytes"`
-	MaxAgeDays         int            `json:"maxAgeDays"` // inactive retention
-	ServiceMaxAgeDays  map[string]int `json:"serviceMaxAgeDays"`
-	NoSliceServices    []string       `json:"noSliceServices"`
-	ReadAheadSlices    int            `json:"readAheadSlices"`
-	MaxConcurrentFills int            `json:"maxConcurrentFills"`
-	ActiveStoreID      string         `json:"activeStoreId"` // storage target id; "local" = built-in
+	SliceSizeBytes     int64  `json:"sliceSizeBytes"`     // applies to newly created stores
+	MaxSizeBytes       int64  `json:"maxSizeBytes"`       // 0 = no limit (bounded by free space)
+	MinFreeBytes       int64  `json:"minFreeBytes"`       // effective: min(this, 10 % of the filesystem), ≥ 2 GiB if shared with the data dir
+	MaxAgeDays         int    `json:"maxAgeDays"`         // inactive retention
+	ReadAheadSlices    int    `json:"readAheadSlices"`    // per request
+	MaxConcurrentFills int    `json:"maxConcurrentFills"` // global; × slice size ≤ 1 GiB
+	MaxFillsPerClient  int    `json:"maxFillsPerClient"`  // per client key, incl. read-ahead
+	ActiveStoreID      string `json:"activeStoreId"`      // storage target id; "local" = built-in (change via the storage API)
 }
 
 // Logs configures retention and privacy.
 type Logs struct {
-	QueryLogEnabled        bool     `json:"queryLogEnabled"`
-	QueryLogRetentionHours int      `json:"queryLogRetentionHours"`
-	CacheLogRetentionHours int      `json:"cacheLogRetentionHours"`
-	SessionRetentionDays   int      `json:"sessionRetentionDays"`
-	StatsRetentionDays     int      `json:"statsRetentionDays"`
-	AnonymizeClientIPs     bool     `json:"anonymizeClientIps"`
-	IgnoreClients          []string `json:"ignoreClients"` // CIDRs excluded from logs and stats
+	QueryLogEnabled        bool `json:"queryLogEnabled"` // false: no query rows, statistics still counted
+	QueryLogRetentionHours int  `json:"queryLogRetentionHours"`
+	CacheLogRetentionHours int  `json:"cacheLogRetentionHours"`
+	SessionRetentionDays   int  `json:"sessionRetentionDays"`
+	StatsRetentionDays     int  `json:"statsRetentionDays"`
+	AnonymizeClientIPs     bool `json:"anonymizeClientIps"`
+	MaxDBSizeMiB           int  `json:"maxDbSizeMiB"` // logs.db cap; the oldest raw events are pruned first
 }
 
 // Web configures the UI/API.
@@ -159,6 +161,7 @@ type Store struct {
 	mu        sync.Mutex // serialises updates and listener registration
 	listeners map[int]Listener
 	nextID    int
+	created   bool
 }
 
 var migrations = []string{
@@ -186,13 +189,16 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 		if err := s.persist(ctx, &cur); err != nil {
 			return nil, err
 		}
+		s.created = true
 	case err != nil:
 		return nil, fmt.Errorf("settings: load: %w", err)
 	default:
-		// Decode on top of defaults so absent fields keep their defaults.
+		// Decode on top of defaults so absent fields keep their defaults;
+		// fields removed in newer versions are ignored.
 		if err := json.Unmarshal([]byte(doc), &cur); err != nil {
 			return nil, fmt.Errorf("settings: decode stored document: %w", err)
 		}
+		cur.normalize()
 		if err := cur.Validate(); err != nil {
 			s.log.Warn("stored settings are invalid; keeping them but fix them in the UI", slog.Any("err", err))
 		}
@@ -200,6 +206,10 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 	s.cur.Store(&cur)
 	return s, nil
 }
+
+// Created reports whether the settings document was created by this Open
+// (first start); the app then applies environment-detected defaults.
+func (s *Store) Created() bool { return s.created }
 
 // Get returns the current immutable snapshot.
 func (s *Store) Get() *All { return s.cur.Load() }

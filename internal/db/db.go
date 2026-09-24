@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // driver "sqlite"
@@ -71,9 +72,31 @@ func Open(path string, readers int) (*DB, error) {
 	return &DB{W: w, R: r, Path: path}, nil
 }
 
+// OpenReadOnly opens an existing database read-only (no file creation, no
+// WAL/SHM creation by this process). W is nil. Used by root CLI commands.
+func OpenReadOnly(path string) (*DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("db: %w", err)
+	}
+	r, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)")
+	if err != nil {
+		return nil, err
+	}
+	r.SetMaxOpenConns(1)
+	if err := r.Ping(); err != nil {
+		r.Close()
+		return nil, fmt.Errorf("db: open %s read-only: %w", path, err)
+	}
+	return &DB{R: r, Path: path}, nil
+}
+
 // Close closes both pools.
 func (d *DB) Close() error {
-	return errors.Join(d.R.Close(), d.W.Close())
+	var errW error
+	if d.W != nil {
+		errW = d.W.Close()
+	}
+	return errors.Join(d.R.Close(), errW)
 }
 
 // Tx runs fn in a write transaction (BEGIN IMMEDIATE) and commits if fn
@@ -95,6 +118,7 @@ func (d *DB) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
 // recorded in schema_migrations; steps must never be edited once released,
 // only appended.
 func (d *DB) Migrate(ctx context.Context, component string, steps []string) error {
+	registerSchema(component, len(steps))
 	if _, err := d.W.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		component  TEXT    NOT NULL,
 		version    INTEGER NOT NULL,
@@ -127,6 +151,32 @@ func (d *DB) Migrate(ctx context.Context, component string, steps []string) erro
 		}
 	}
 	return nil
+}
+
+var (
+	schemaMu sync.Mutex
+	schemas  = map[string]int{}
+)
+
+func registerSchema(component string, version int) {
+	schemaMu.Lock()
+	defer schemaMu.Unlock()
+	if version > schemas[component] {
+		schemas[component] = version
+	}
+}
+
+// SchemaVersions returns the schema version this binary knows per component
+// (recorded by Migrate). Used to reject restoring a backup made by a newer
+// PiCache.
+func SchemaVersions() map[string]int {
+	schemaMu.Lock()
+	defer schemaMu.Unlock()
+	out := make(map[string]int, len(schemas))
+	for k, v := range schemas {
+		out[k] = v
+	}
+	return out
 }
 
 // NowMs returns the current time as unix milliseconds (the storage format for

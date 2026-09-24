@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-
 	"log/slog"
 	"path/filepath"
 	"time"
@@ -11,8 +10,9 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/api"
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
-	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/logs"
+	"github.com/hustenreizjuengling/picache/internal/settings"
+	"github.com/hustenreizjuengling/picache/internal/storage"
 )
 
 // kickStore asks the store loop to re-evaluate the active store.
@@ -39,11 +39,28 @@ func (a *App) storeLoop(ctx context.Context) {
 	}
 }
 
+// effectiveMinFree is min(cache.minFreeBytes, 10 % of the filesystem), but
+// at least 2 GiB when the store shares its filesystem with the data dir.
+func effectiveMinFree(c settings.Cache, st storage.Status) int64 {
+	minFree := c.MinFreeBytes
+	if st.TotalBytes > 0 {
+		if tenth := int64(st.TotalBytes / 10); tenth < minFree {
+			minFree = tenth
+		}
+	}
+	if st.SameFSAsData && minFree < 2<<30 {
+		minFree = 2 << 30
+	}
+	return minFree
+}
+
 func (a *App) reconcileStore(ctx context.Context) {
 	a.storeMu.Lock()
 	defer a.storeMu.Unlock()
-	target := a.set.Get().Cache.ActiveStoreID
+	cfg := a.set.Get().Cache
+	target := cfg.ActiveStoreID
 	cur := a.store.Load()
+	tst := a.storage.Status(target)
 
 	root, storeID, err := a.storage.StoreRoot(target)
 	if err != nil {
@@ -52,41 +69,62 @@ func (a *App) reconcileStore(ctx context.Context) {
 			a.store.Store(nil)
 			_ = cur.Close()
 		}
-		a.storeState.Store(&api.StoreState{TargetID: target, Online: false, PassThrough: true, Reason: reason(err)})
+		a.storeFull.Store(false)
+		a.storeState.Store(&api.StoreState{TargetID: target, PassThrough: true, Reason: reason(err), Hint: tst.Hint,
+			TotalBytes: tst.TotalBytes, FreeBytes: tst.FreeBytes, SDCard: tst.SDCard})
 		return
 	}
-	if cur != nil && cur.ID() == storeID && cur.Root() == root {
-		u := cur.Usage()
-		a.storeState.Store(&api.StoreState{TargetID: target, StoreID: storeID, Online: true, Usage: &u, SliceSize: cur.SliceSize()})
-		return
-	}
-	st, err := cachestore.Open(ctx, cachestore.Options{
-		Root:      root,
-		IndexPath: filepath.Join(a.paths.CacheIndexDir, storeID+".db"),
-		StoreID:   storeID,
-		SliceSize: a.set.Get().Cache.SliceSizeBytes,
-		Log:       a.log,
-	})
-	if err != nil {
-		a.log.Error("cannot open cache store", slog.String("target", target), slog.String("root", root), slog.Any("err", err))
+	if cur == nil || cur.ID() != storeID || cur.Root() != root {
+		st, err := cachestore.Open(ctx, cachestore.Options{
+			Root:      root,
+			IndexPath: filepath.Join(a.paths.CacheIndexDir, storeID+".db"),
+			StoreID:   storeID,
+			Log:       a.log,
+		})
+		if err != nil {
+			a.logStoreErr("cannot open cache store", target, root, err)
+			if cur != nil {
+				a.store.Store(nil)
+				_ = cur.Close()
+			}
+			a.storeState.Store(&api.StoreState{TargetID: target, StoreID: storeID, PassThrough: true, Reason: "cannot open store: " + reason(err)})
+			return
+		}
+		st.OnEvict(func(o cachestore.Object, why string) {
+			a.logs.LogEviction(logs.EvictionEvent{Time: time.Now().UTC(), StoreID: storeID, ObjectID: o.ID,
+				Service: o.Service, GroupKey: o.GroupKey, Bytes: o.CachedBytes, Reason: why})
+		})
+		a.store.Store(st)
 		if cur != nil {
-			a.store.Store(nil)
 			_ = cur.Close()
 		}
-		a.storeState.Store(&api.StoreState{TargetID: target, StoreID: storeID, PassThrough: true, Reason: "cannot open store: " + reason(err)})
+		cur = st
+		a.lastStoreErr = ""
+		a.log.Info("cache store online", slog.String("target", target), slog.String("root", root), slog.String("store", storeID))
+	}
+	minFree := effectiveMinFree(cfg, tst)
+	lowSpace := tst.FreeBytes > 0 && int64(tst.FreeBytes) < minFree
+	u := cur.Usage()
+	a.storeState.Store(&api.StoreState{TargetID: target, StoreID: storeID, Online: true, Usage: &u,
+		SliceSize: cur.SliceSize(), TotalBytes: tst.TotalBytes, FreeBytes: tst.FreeBytes, MinFreeBytes: minFree,
+		LowSpace: lowSpace, Full: a.storeFull.Load(), SDCard: tst.SDCard, Hint: tst.Hint})
+	if lowSpace {
+		go func() {
+			if _, err := a.EvictNow(context.WithoutCancel(ctx)); err != nil && !errors.Is(err, errNoStore) {
+				a.log.Warn("eviction failed", slog.Any("err", err))
+			}
+		}()
+	}
+}
+
+// logStoreErr logs repeated store errors only when they change or once an hour.
+func (a *App) logStoreErr(msg, target, root string, err error) {
+	s := err.Error()
+	if s == a.lastStoreErr && time.Since(a.lastStoreErrAt) < time.Hour {
 		return
 	}
-	st.OnEvict(func(o cachestore.Object, why string) {
-		a.logs.LogEviction(logs.EvictionEvent{Time: time.Now().UTC(), StoreID: storeID, ObjectID: o.ID,
-			Service: o.Service, GroupKey: o.GroupKey, Bytes: o.CachedBytes, Reason: why})
-	})
-	a.store.Store(st)
-	if cur != nil {
-		_ = cur.Close()
-	}
-	u := st.Usage()
-	a.storeState.Store(&api.StoreState{TargetID: target, StoreID: storeID, Online: true, Usage: &u, SliceSize: st.SliceSize()})
-	a.log.Info("cache store online", slog.String("target", target), slog.String("root", root), slog.String("store", storeID))
+	a.lastStoreErr, a.lastStoreErrAt = s, time.Now()
+	a.log.Error(msg, slog.String("target", target), slog.String("root", root), slog.Any("err", err))
 }
 
 func reason(err error) string {
@@ -105,7 +143,7 @@ func (a *App) evictLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if _, err := a.EvictNow(ctx); err != nil && !errors.Is(err, errNoStore) {
+			if _, err := a.EvictNow(ctx); err != nil && !errors.Is(err, errNoStore) && !errors.Is(err, cachestore.ErrClosed) {
 				a.log.Warn("eviction failed", slog.Any("err", err))
 			}
 		}
@@ -116,24 +154,20 @@ var errNoStore = apperr.Unavailable("no cache store is online")
 
 func (a *App) policy() cachestore.Policy {
 	c := a.set.Get().Cache
-	p := cachestore.Policy{
-		MaxAge:        time.Duration(c.MaxAgeDays) * 24 * time.Hour,
-		ServiceMaxAge: map[string]time.Duration{},
-		MaxBytes:      c.MaxSizeBytes,
-		MinFreeBytes:  c.MinFreeBytes,
-	}
-	for svc, d := range c.ServiceMaxAgeDays {
-		p.ServiceMaxAge[svc] = time.Duration(d) * 24 * time.Hour
-	}
 	target := c.ActiveStoreID
-	p.FreeBytes = func() (uint64, error) {
-		st := a.storage.Status(target)
-		if st.CheckedAt.IsZero() {
-			return 0, errors.New("free space unknown")
-		}
-		return st.FreeBytes, nil
+	st := a.storage.Status(target)
+	return cachestore.Policy{
+		MaxAge:       time.Duration(c.MaxAgeDays) * 24 * time.Hour,
+		MaxBytes:     c.MaxSizeBytes,
+		MinFreeBytes: effectiveMinFree(c, st),
+		FreeBytes: func() (uint64, error) {
+			s := a.storage.Status(target)
+			if s.CheckedAt.IsZero() || s.TotalBytes == 0 {
+				return 0, errors.New("free space unknown")
+			}
+			return s.FreeBytes, nil
+		},
 	}
-	return p
 }
 
 // StoreState implements api.Runtime.
@@ -147,7 +181,7 @@ func (a *App) StoreState() api.StoreState {
 // ActivateStore switches the cache to another storage target.
 func (a *App) ActivateStore(ctx context.Context, targetID string) error {
 	if _, _, err := a.storage.StoreRoot(targetID); err != nil {
-		return apperr.Wrap(apperr.KindUnavailable, err, "target %q is not usable: %s", targetID, reason(err))
+		return err
 	}
 	if _, err := a.set.Update(ctx, func(s *settings.All) error { s.Cache.ActiveStoreID = targetID; return nil }); err != nil {
 		return err
@@ -162,7 +196,16 @@ func (a *App) EvictNow(ctx context.Context) (cachestore.EvictResult, error) {
 	if st == nil {
 		return cachestore.EvictResult{}, errNoStore
 	}
-	return st.Evict(ctx, a.policy())
+	res, err := st.Evict(ctx, a.policy())
+	if err == nil {
+		if res.Full != a.storeFull.Load() {
+			a.storeFull.Store(res.Full)
+			if res.Full {
+				a.log.Warn("cache store is full and nothing more can be evicted (pinned content); new downloads are served uncached")
+			}
+		}
+	}
+	return res, err
 }
 
 // StartVerify starts a background verify/rebuild of the active store.
@@ -204,4 +247,3 @@ func (a *App) VerifyState() api.VerifyState {
 	defer a.verifyMu.Unlock()
 	return a.verify
 }
-

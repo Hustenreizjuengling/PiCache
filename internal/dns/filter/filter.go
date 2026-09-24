@@ -1,6 +1,26 @@
 // Package filter implements blocklists and custom rules: list subscriptions
 // (fetch, parse, compile), user allow/deny rules, group scoping and the
 // hot-path matcher (docs/ARCHITECTURE.md 7.2).
+//
+// Tables (picache.db, component "filter"): filter_lists, filter_rules,
+// filter_list_groups(list_id, group_id), filter_rule_groups(rule_id,
+// group_id); group_id references client_groups(id) ON DELETE CASCADE. At
+// first start the default list is created and linked to group 1.
+//
+// Compilation: list files are parsed line by line (bufio, never io.ReadAll)
+// only when their downloaded content changed; the per-list parse result is
+// kept, and the matcher snapshot is rebuilt from those results. Editing a
+// list's or rule's groups swaps only the small source→groups table.
+// Recompile calls are coalesced (one running + one pending). Compiled
+// patterns (regex + wildcard) are capped at 20 000 in total (excess counted
+// as unsupported). Explain rescans list files one at a time with a 10 s timeout.
+//
+// Downloads: at most 256 MiB (io.LimitReader), streamed to <lists>/<id>.tmp;
+// the fetch client does not follow redirects itself: this package follows up
+// to 5 manually, re-checking each hop; netutil.WithAllowPrivate is set only
+// when the configured URL host is a private IP literal, never after a
+// redirect to another host. http:// URLs are accepted only for private IP
+// literal hosts.
 package filter
 
 import (
@@ -63,6 +83,7 @@ type List struct {
 	LastError    string    `json:"lastError,omitempty"`
 	LastUpdated  time.Time `json:"lastUpdated,omitzero"` // content last changed
 	LastChecked  time.Time `json:"lastChecked,omitzero"`
+	LastSuccess  time.Time `json:"lastSuccess,omitzero"`
 	Entries      int       `json:"entries"`
 	Invalid      int       `json:"invalid"`
 	Unsupported  int       `json:"unsupported"`
@@ -96,7 +117,7 @@ type Rule struct {
 
 // RuleInput creates or updates a rule. For type subtree, "*.example.com",
 // "||example.com^" and "example.com" are all accepted and stored as
-// "example.com".
+// "example.com". Regex patterns are Go RE2, ≤ 1024 characters.
 type RuleInput struct {
 	Action   string  `json:"action"`
 	Type     string  `json:"type"`
@@ -130,14 +151,16 @@ type Match struct {
 
 // Stats describes the compiled matcher.
 type Stats struct {
-	Lists        int       `json:"lists"`
-	Entries      int       `json:"entries"`
-	Patterns     int       `json:"patterns"` // regex + wildcard patterns
-	Rules        int       `json:"rules"`
-	CompiledAt   time.Time `json:"compiledAt,omitzero"`
-	CompileMs    int64     `json:"compileMs"`
-	MemoryBytes  int64     `json:"memoryBytes"`
-	Updating     bool      `json:"updating"`
+	Lists       int       `json:"lists"`
+	Entries     int       `json:"entries"`
+	Patterns    int       `json:"patterns"` // regex + wildcard patterns
+	Rules       int       `json:"rules"`
+	CompiledAt  time.Time `json:"compiledAt,omitzero"`
+	CompileMs   int64     `json:"compileMs"`
+	MemoryBytes int64     `json:"memoryBytes"`
+	Updating    bool      `json:"updating"`
+	FailedLists int       `json:"failedLists"` // enabled lists in failed-* state
+	StaleLists  int       `json:"staleLists"`  // last success older than 3× update interval
 }
 
 // CatalogEntry is a curated list suggestion (embedded, no network needed).
@@ -158,19 +181,25 @@ type Engine struct {
 	log *slog.Logger
 }
 
-// New creates the engine. fetch is the HTTP client for list downloads (uses
-// the bypass resolver); listsDir stores downloaded copies. The clients
-// package must be migrated first (list/rule group links reference groups).
+// New creates the engine. fetch is the HTTP client for list downloads
+// (SafeDialer over the bypass resolver, redirects not followed); listsDir
+// stores downloaded copies. The clients package must be migrated first.
 func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client, listsDir string, log *slog.Logger) (*Engine, error) {
 	return &Engine{db: d, set: set, log: log}, nil
 }
 
-// Start loads cached list files, compiles and schedules updates until ctx ends.
-func (e *Engine) Start(ctx context.Context) {}
+// Start loads cached list files, compiles and schedules updates (±10 %
+// jitter). Blocks until ctx is done and its goroutines have exited.
+func (e *Engine) Start(ctx context.Context) { <-ctx.Done() }
 
 // Check evaluates qname (lower-case, no trailing dot) for a client with the
-// given enabled group IDs. Hot path: lock-free, allocation-free in the common case.
+// given enabled group IDs, with the precedence of ARCHITECTURE 7.2. Hot
+// path: lock-free, allocation-free in the common case.
 func (e *Engine) Check(qname string, groups []int64) Decision { return Decision{} }
+
+// CheckRules evaluates only user rules (used before LanCache overrides: a
+// user block rule for the client's groups wins over the override).
+func (e *Engine) CheckRules(qname string, groups []int64) Decision { return Decision{} }
 
 // Explain lists every source matching qname and marks which applies to groups
 // and which is decisive ("why is this blocked?").
@@ -181,13 +210,10 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 // Stats returns matcher statistics.
 func (e *Engine) Stats() Stats { return Stats{} }
 
-// Recompile rebuilds the matcher (e.g. after group changes). Asynchronous.
-func (e *Engine) Recompile() {}
-
 // Lists returns all lists.
 func (e *Engine) Lists(ctx context.Context) ([]List, error) { return nil, errNotImplemented }
 
-// CreateList adds a list and triggers its first download.
+// CreateList adds a list and triggers its first download (background).
 func (e *Engine) CreateList(ctx context.Context, in ListInput) (List, error) {
 	return List{}, errNotImplemented
 }
@@ -205,14 +231,16 @@ func (e *Engine) RefreshList(ctx context.Context, id int64) (List, error) {
 	return List{}, errNotImplemented
 }
 
-// RefreshAll re-downloads all enabled lists and recompiles (waits).
+// RefreshAll re-downloads all enabled lists and recompiles (background).
 func (e *Engine) RefreshAll(ctx context.Context) error { return errNotImplemented }
 
 // Catalog returns the embedded list catalogue.
 func (e *Engine) Catalog() []CatalogEntry { return nil }
 
 // Rules returns user rules.
-func (e *Engine) Rules(ctx context.Context, q RuleQuery) ([]Rule, error) { return nil, errNotImplemented }
+func (e *Engine) Rules(ctx context.Context, q RuleQuery) ([]Rule, error) {
+	return nil, errNotImplemented
+}
 
 // CreateRule adds a rule.
 func (e *Engine) CreateRule(ctx context.Context, in RuleInput) (Rule, error) {

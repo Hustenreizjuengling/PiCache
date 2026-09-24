@@ -5,18 +5,18 @@ package app
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"syscall"
 
 	"github.com/hustenreizjuengling/picache/internal/config"
 )
 
 // dropPrivileges switches from root to PICACHE_RUN_AS after all listeners
-// are bound. Ownership of the (small) data dir is fixed first; the cache dir
-// only at its top level (it may be large or on a NAS).
+// are bound and before any file is touched. PiCache never chowns: the data
+// and cache directories must already belong to the run-as user (the Docker
+// image creates /data and /cache owned by 65532; bind mounts must be chowned
+// on the host).
 func (a *App) dropPrivileges() error {
 	if a.cfg.RunAs == "" || os.Geteuid() != 0 {
 		return nil
@@ -25,10 +25,19 @@ func (a *App) dropPrivileges() error {
 	if err != nil {
 		return err
 	}
-	chownTree(a.cfg.DataDir, uid, gid, a.log)
-	if err := os.Lchown(a.cfg.CacheDir, uid, gid); err != nil {
-		a.log.Warn("cannot chown cache dir; make sure it is writable by the run-as user",
-			slog.String("dir", a.cfg.CacheDir), slog.Int("uid", uid), slog.Any("err", err))
+	for _, dir := range []string{a.cfg.DataDir, a.cfg.CacheDir} {
+		fi, err := os.Stat(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // created after the drop (parent must be writable)
+		}
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", dir, err)
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if ok && (int(st.Uid) != uid) {
+			return fmt.Errorf("%s is owned by %d:%d but PiCache runs as %d:%d; run `chown -R %d:%d <host directory>` "+
+				"for this bind mount (named Docker volumes get the right owner automatically)", dir, st.Uid, st.Gid, uid, gid, uid, gid)
+		}
 	}
 	if err := syscall.Setgroups([]int{}); err != nil {
 		return fmt.Errorf("drop privileges: setgroups: %w", err)
@@ -49,20 +58,7 @@ func (a *App) dropPrivileges() error {
 	return nil
 }
 
-func chownTree(root string, uid, gid int, log *slog.Logger) {
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
-		return os.Lchown(p, uid, gid)
-	})
-	if err != nil {
-		log.Warn("cannot chown data dir", slog.String("dir", root), slog.Any("err", err))
-	}
+func isAddrInUse(err error) bool { return errors.Is(err, syscall.EADDRINUSE) }
+func isPermission(err error) bool {
+	return errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)
 }
-
-func isAddrInUse(err error) bool  { return errors.Is(err, syscall.EADDRINUSE) }
-func isPermission(err error) bool { return errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) }

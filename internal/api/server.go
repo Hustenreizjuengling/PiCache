@@ -31,13 +31,20 @@ import (
 
 // StoreState describes the active cache store.
 type StoreState struct {
-	TargetID    string            `json:"targetId"`
-	StoreID     string            `json:"storeId"`
-	Online      bool              `json:"online"`
-	PassThrough bool              `json:"passThrough"` // proxy serves uncached
-	Reason      string            `json:"reason,omitempty"`
-	Usage       *cachestore.Usage `json:"usage,omitempty"`
-	SliceSize   int64             `json:"sliceSize"`
+	TargetID     string            `json:"targetId"`
+	StoreID      string            `json:"storeId"`
+	Online       bool              `json:"online"`
+	PassThrough  bool              `json:"passThrough"` // proxy serves uncached
+	Reason       string            `json:"reason,omitempty"`
+	Hint         string            `json:"hint,omitempty"`
+	Usage        *cachestore.Usage `json:"usage,omitempty"`
+	SliceSize    int64             `json:"sliceSize"`
+	TotalBytes   uint64            `json:"totalBytes"` // filesystem size of the store root
+	FreeBytes    uint64            `json:"freeBytes"`
+	MinFreeBytes int64             `json:"minFreeBytes"` // effective minimum free space
+	LowSpace     bool              `json:"lowSpace"`     // free < effective min free: eviction running
+	Full         bool              `json:"full"`         // eviction cannot free space: hits served, new content not stored
+	SDCard       bool              `json:"sdCard"`
 }
 
 // VerifyState describes a running or finished verify/rebuild.
@@ -50,10 +57,27 @@ type VerifyState struct {
 	Error      string                    `json:"error,omitempty"`
 }
 
-// Health is the component health summary (authenticated endpoint).
+// HealthCheck is one health check result.
+type HealthCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"` // ok | warn | fail
+	Message string `json:"message,omitempty"`
+	Hint    string `json:"hint,omitempty"`
+}
+
+// Health is the component health summary (authenticated endpoint). OK is
+// false if any check fails (warnings keep it true).
 type Health struct {
-	OK     bool              `json:"ok"`
-	Checks map[string]string `json:"checks"` // component → "ok" or problem description
+	OK        bool          `json:"ok"`
+	Checks    []HealthCheck `json:"checks"`
+	CheckedAt time.Time     `json:"checkedAt"`
+}
+
+// ListenerInfo describes bound and failed listeners by role
+// (dns-udp, dns-tcp, cache, sni, web, web-tls).
+type ListenerInfo struct {
+	Bound  map[string][]string `json:"bound"`
+	Failed map[string]string   `json:"failed,omitempty"` // role → error (non-DNS binds are not fatal)
 }
 
 // Runtime is implemented by internal/app: process-level state and actions.
@@ -61,16 +85,20 @@ type Runtime interface {
 	StartedAt() time.Time
 	InstanceID() string
 	Config() *config.Config
-	Listeners() map[string][]string // role → bound addresses
+	Listeners() ListenerInfo
+	MasterKeySource() string
 	StoreState() StoreState
 	ActiveStore() *cachestore.Store // nil when offline
 	ActivateStore(ctx context.Context, targetID string) error
 	EvictNow(ctx context.Context) (cachestore.EvictResult, error)
 	StartVerify(repair bool) error
 	VerifyState() VerifyState
-	Backup(ctx context.Context, w io.Writer) error          // consistent copy of picache.db
-	StageRestore(ctx context.Context, r io.Reader) error    // validated, applied on next start
-	Health(ctx context.Context) Health
+	// Backup writes a consistent copy of picache.db without sessions; sealed
+	// NAS passwords only if includeSecrets.
+	Backup(ctx context.Context, w io.Writer, includeSecrets bool) error
+	StageRestore(ctx context.Context, r io.Reader) error // validated, applied on next start
+	Restart()                                            // exit with code 75 after the response (systemd/Docker restart)
+	Health(ctx context.Context) Health                   // last evaluated health (refreshed every 60 s)
 }
 
 // Deps are everything the API talks to.

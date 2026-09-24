@@ -122,17 +122,12 @@ func (a *All) normalize() {
 	d.AllowedNetworks = clean(d.AllowedNetworks, true)
 	d.RateLimitExempt = clean(d.RateLimitExempt, true)
 	d.LocalDomain = strings.Trim(strings.ToLower(strings.TrimSpace(d.LocalDomain)), ".")
+	d.RouterResolver = strings.ToLower(strings.TrimSpace(d.RouterResolver))
 	l := &a.LanCache
 	l.CacheIPv4 = clean(l.CacheIPv4, true)
 	l.CacheIPv6 = clean(l.CacheIPv6, true)
-	l.PassthroughClients = clean(l.PassthroughClients, true)
 	l.DisabledServices = clean(l.DisabledServices, true)
-	c := &a.Cache
-	c.NoSliceServices = clean(c.NoSliceServices, true)
-	if c.ServiceMaxAgeDays == nil {
-		c.ServiceMaxAgeDays = map[string]int{}
-	}
-	a.Logs.IgnoreClients = clean(a.Logs.IgnoreClients, true)
+	l.NocacheClients = clean(l.NocacheClients, true)
 	a.Web.AllowedHosts = clean(a.Web.AllowedHosts, true)
 }
 
@@ -186,6 +181,19 @@ func (a *All) Validate() error {
 	if err := validPrefixes("dns.allowedNetworks", d.AllowedNetworks); err != nil {
 		return err
 	}
+	for i, s := range d.AllowedNetworks {
+		p, _ := ParsePrefix(s)
+		if (p.Addr().Is4() && p.Bits() < 8) || (p.Addr().Is6() && p.Bits() < 32) {
+			return apperr.Invalid("dns.allowedNetworks["+strconv.Itoa(i)+"]", "network is too broad; use dns.allowAllNetworks if you really want an open resolver")
+		}
+	}
+	switch d.RouterResolver {
+	case "", "auto":
+	default:
+		if ip, err := netip.ParseAddr(d.RouterResolver); err != nil || ip.Zone() != "" {
+			return apperr.Invalid("dns.routerResolver", "must be empty, auto or an IP address")
+		}
+	}
 	if err := validPrefixes("dns.rateLimitExempt", d.RateLimitExempt); err != nil {
 		return err
 	}
@@ -232,21 +240,21 @@ func (a *All) Validate() error {
 	l := a.LanCache
 	for i, s := range l.CacheIPv4 {
 		ip, err := netip.ParseAddr(s)
-		if err != nil || !ip.Is4() {
-			return apperr.Invalid("lancache.cacheIpv4["+strconv.Itoa(i)+"]", "must be an IPv4 address")
+		if err != nil || !ip.Is4() || !inPrefixes(ip, "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16") {
+			return apperr.Invalid("lancache.cacheIpv4["+strconv.Itoa(i)+"]", "must be a private IPv4 address (10/8, 172.16/12, 192.168/16): Steam, Riot and Origin ignore other cache addresses")
 		}
 	}
 	for i, s := range l.CacheIPv6 {
 		ip, err := netip.ParseAddr(s)
-		if err != nil || !ip.Is6() || ip.Is4In6() {
-			return apperr.Invalid("lancache.cacheIpv6["+strconv.Itoa(i)+"]", "must be an IPv6 address")
+		if err != nil || !ip.Is6() || ip.Is4In6() || ip.Zone() != "" || !inPrefixes(ip, "fc00::/7") {
+			return apperr.Invalid("lancache.cacheIpv6["+strconv.Itoa(i)+"]", "must be a unique local IPv6 address (fc00::/7): clients ignore other IPv6 cache addresses")
 		}
+	}
+	if err := validPrefixes("lancache.nocacheClients", l.NocacheClients); err != nil {
+		return err
 	}
 	if l.DNSTTL < 1 || l.DNSTTL > 86400 {
 		return apperr.Invalid("lancache.dnsTtl", "must be between 1 and 86400")
-	}
-	if err := validPrefixes("lancache.passthroughClients", l.PassthroughClients); err != nil {
-		return err
 	}
 	if u, err := url.Parse(l.DomainsSource); err != nil || u.Scheme != "https" || u.Host == "" {
 		return apperr.Invalid("lancache.domainsSource", "must be an https URL")
@@ -268,16 +276,17 @@ func (a *All) Validate() error {
 	if c.MaxAgeDays < 1 || c.MaxAgeDays > 3650 {
 		return apperr.Invalid("cache.maxAgeDays", "must be between 1 and 3650")
 	}
-	for svc, days := range c.ServiceMaxAgeDays {
-		if days < 1 || days > 3650 {
-			return apperr.Invalid("cache.serviceMaxAgeDays."+svc, "must be between 1 and 3650")
-		}
-	}
 	if c.ReadAheadSlices < 0 || c.ReadAheadSlices > 16 {
 		return apperr.Invalid("cache.readAheadSlices", "must be between 0 and 16")
 	}
 	if c.MaxConcurrentFills < 1 || c.MaxConcurrentFills > 1024 {
 		return apperr.Invalid("cache.maxConcurrentFills", "must be between 1 and 1024")
+	}
+	if int64(c.MaxConcurrentFills)*c.SliceSizeBytes > 1<<30 {
+		return apperr.Invalid("cache.maxConcurrentFills", "concurrent fills × slice size must not exceed 1 GiB of memory")
+	}
+	if c.MaxFillsPerClient < 1 || c.MaxFillsPerClient > c.MaxConcurrentFills {
+		return apperr.Invalid("cache.maxFillsPerClient", "must be between 1 and maxConcurrentFills")
 	}
 	if c.ActiveStoreID == "" {
 		return apperr.Invalid("cache.activeStoreId", "required")
@@ -296,8 +305,8 @@ func (a *All) Validate() error {
 	if g.StatsRetentionDays < 1 || g.StatsRetentionDays > 3650 {
 		return apperr.Invalid("logs.statsRetentionDays", "must be between 1 and 3650")
 	}
-	if err := validPrefixes("logs.ignoreClients", g.IgnoreClients); err != nil {
-		return err
+	if g.MaxDBSizeMiB < 64 || g.MaxDBSizeMiB > 1<<20 {
+		return apperr.Invalid("logs.maxDbSizeMiB", "must be between 64 and 1048576")
 	}
 
 	w := a.Web
@@ -329,6 +338,15 @@ func validPrefixes(field string, in []string) error {
 		}
 	}
 	return nil
+}
+
+func inPrefixes(ip netip.Addr, ps ...string) bool {
+	for _, p := range ps {
+		if netip.MustParsePrefix(p).Contains(ip.Unmap()) {
+			return true
+		}
+	}
+	return false
 }
 
 // ParsePrefix accepts "10.0.0.0/8", "192.168.1.5" (→ /32) or "fd00::1" (→ /128).

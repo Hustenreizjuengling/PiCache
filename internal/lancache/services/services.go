@@ -2,7 +2,24 @@
 // uklans/cache-domains source, enable/disable state, custom services and
 // hosts, the anchored host matchers used by DNS/proxy/SNI, the special
 // pass-through path rules, and content grouping/labels
-// (docs/ARCHITECTURE.md 8.1, 8.2 step 6, 8.4).
+// (docs/ARCHITECTURE.md 8.1, 8.2 steps 5–6, 8.4).
+//
+// Tables (picache.db, component "services"): services_custom,
+// services_extra_domains, services_labels.
+//
+// The source is untrusted network input:
+//   - domain_files entries must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.txt$;
+//     URLs are built with url.JoinPath(domainsSource, name); snapshots are
+//     written only through os.Root (temp + rename) into the snapshot dir.
+//   - cache_domains.json ≤ 1 MiB and ≤ 128 services; each .txt ≤ 4 MiB and
+//     ≤ 50 000 lines (io.LimitReader(max+1) → error).
+//   - service IDs must match ^[a-z0-9][a-z0-9_-]{0,31}$.
+//   - every host pattern (source, custom, extra) passes ValidatePattern;
+//     rejected ones are reported in SourceStatus.Skipped.
+//   - no redirects to other hosts; never private destinations.
+//
+// The registry subscribes to settings: it rebuilds the matcher snapshot when
+// lancache.disabledServices changes and refetches when domainsSource changes.
 package services
 
 import (
@@ -18,7 +35,7 @@ import (
 
 var errNotImplemented = errors.New("services: not implemented")
 
-// SteamUserAgentSuffix identifies Steam CDN requests regardless of Host.
+// SteamUserAgentSuffix identifies Steam CDN requests.
 const SteamUserAgentSuffix = "Valve/Steam HTTP Client 1.0"
 
 // SteamTrigger is the name Steam resolves to detect a LanCache.
@@ -53,7 +70,8 @@ type SourceStatus struct {
 	Error        string    `json:"error,omitempty"`
 	ServiceCount int       `json:"serviceCount"`
 	DomainCount  int       `json:"domainCount"`
-	Ready        bool      `json:"ready"` // a snapshot is loaded
+	Skipped      []string  `json:"skipped,omitempty"` // rejected patterns/files with reason
+	Ready        bool      `json:"ready"`             // a snapshot is loaded
 }
 
 // Group is the content group of a request (what was downloaded).
@@ -70,23 +88,28 @@ type Registry struct {
 	log *slog.Logger
 }
 
-// New creates the registry. fetch downloads cache-domains (bypass resolver);
-// dir holds the snapshot.
+// New creates the registry. fetch downloads cache-domains (SafeDialer over
+// the bypass resolver, no redirects followed); dir holds the snapshot.
 func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client, dir string, log *slog.Logger) (*Registry, error) {
 	return &Registry{db: d, set: set, log: log}, nil
 }
 
-// Start loads the snapshot, fetches if missing/stale and refreshes periodically.
-func (r *Registry) Start(ctx context.Context) {}
+// Start loads the snapshot, fetches if missing/stale and refreshes
+// periodically. Blocks until ctx is done and its goroutines have exited.
+func (r *Registry) Start(ctx context.Context) { <-ctx.Done() }
 
 // MatchDNS returns the enabled service whose host patterns match qname
 // (lower-case, no trailing dot). The Steam trigger matches when steam is enabled.
 func (r *Registry) MatchDNS(qname string) (serviceID string, ok bool) { return "", false }
 
-// Classify maps an HTTP request to a service. User-Agent ending in
-// SteamUserAgentSuffix → steam. known=false means the host belongs to no
-// service (the proxy must refuse it).
-func (r *Registry) Classify(host, userAgent string) (serviceID string, enabled, known bool) {
+// Classify maps an HTTP request to a service:
+//   - User-Agent ending in SteamUserAgentSuffix AND (path matches
+//     ^/depot/[0-9]+/ or path == "/server-status") AND method GET/HEAD
+//     (checked by the caller) → "steam" (Steam sends the real CDN host).
+//   - otherwise by host (exact or *.suffix, anchored, case-insensitive).
+//
+// known=false means the host belongs to no service (the proxy refuses it).
+func (r *Registry) Classify(host, userAgent, path string) (serviceID string, enabled, known bool) {
 	return "", false, false
 }
 
@@ -106,7 +129,7 @@ func (r *Registry) SetEnabled(ctx context.Context, id string, enabled bool) erro
 	return errNotImplemented
 }
 
-// SetExtraDomains replaces the user-added hosts of a service.
+// SetExtraDomains replaces the user-added hosts of a service (ValidatePattern each).
 func (r *Registry) SetExtraDomains(ctx context.Context, id string, domains []string) error {
 	return errNotImplemented
 }
@@ -130,10 +153,9 @@ func (r *Registry) Refresh(ctx context.Context) error { return errNotImplemented
 // Status returns the source status.
 func (r *Registry) Status() SourceStatus { return SourceStatus{} }
 
-// Label returns the display label for a group key: user override, cached
-// name (e.g. Steam app name if online lookup is enabled), else the rule
-// default. Never blocks on the network; unknown Steam depots trigger an
-// asynchronous lookup when settings.LanCache.SteamNameLookup is on.
+// Label returns the display label for a group key: user override, else the
+// built-in product label (Blizzard, Riot, …), else the rule default.
+// Never blocks on the network.
 func (r *Registry) Label(groupKey string) string { return groupKey }
 
 // Labels resolves several keys at once.
@@ -145,13 +167,22 @@ func (r *Registry) Labels(keys []string) map[string]string {
 	return out
 }
 
+// SearchLabels returns the group keys whose user label or built-in product
+// label contains q (case-insensitive), for Library search by name.
+func (r *Registry) SearchLabels(q string) []string { return nil }
+
 // SetLabel stores a user label override for a group key ("" removes it).
 func (r *Registry) SetLabel(ctx context.Context, groupKey, label string) error {
 	return errNotImplemented
 }
 
+// ValidatePattern checks a host pattern: exact host or "*.suffix", valid
+// A-labels, at least two labels, not "*", and the base (without "*.") must
+// not be a public suffix (x/net/publicsuffix) such as "com" or "co.uk".
+func ValidatePattern(p string) error { return nil }
+
 // GroupFor derives the content group of a request (pure function, rules in
-// ARCHITECTURE 8.4). path must not contain the query string.
+// ARCHITECTURE 8.4). path is the canonical path without query.
 func GroupFor(service, host, path string) Group {
 	return Group{Key: service + ":" + host, Label: service + " · " + host}
 }

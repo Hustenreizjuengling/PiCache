@@ -17,6 +17,8 @@ The visual language borrows from structured cabling. Ethernet pairs follow the T
 
 The one memorable element is the **pair strip**: a 6 px bar along the top of the app shell, split into four segments whose widths are the live share of DNS allowed, blocked, cache hit and WAN traffic over the last 15 minutes. It doubles as a legend on hover. Everything else is quiet.
 
+Pair strip formula: the DNS half and the cache half each take 50 % (100 % if the other half had no traffic in the window). DNS is split allowed : blocked by query count (`allowed = dnsQueries − dnsBlocked`), the cache half hit : WAN by bytes, all from `GET /stats/summary?range=15m`, polled every 10 s. "Full in ~N days" on the storage band: `growthPerDay = (cacheBytesStored − evictedBytes) / 7` from `/stats/summary?range=7d`; `days = (freeBytes − minFreeBytes) / growthPerDay` (hidden when growth ≤ 0).
+
 ## Tokens
 
 Neutrals are cool and slightly blue-grey, like a server rack in daylight, never warm cream and never pure black.
