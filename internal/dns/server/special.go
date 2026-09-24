@@ -68,6 +68,11 @@ func (s *Server) specialAddrs(qc *qctx, name string) (v4, v6 []netip.Addr, what 
 	case inZone(name, "localhost"):
 		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, []netip.Addr{netip.IPv6Loopback()}, "localhost", true
 	case serverName(qc.set, name):
+		if st := s.cacheIPs.Load(); st.bridge && !qc.client.IsLoopback() {
+			// Bridge addresses are unreachable for clients: answer with the
+			// configured cache addresses (NODATA until they are set).
+			return st.v4, st.v6, "this server's own name", true
+		}
 		h := s.host.Load()
 		return h.addrsFor(qc.client, false), h.addrsFor(qc.client, true), "this server's own name", true
 	case inZone(name, "resolver.arpa"):

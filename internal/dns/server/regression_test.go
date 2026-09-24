@@ -257,3 +257,50 @@ func TestLoadHostInfoAnswers(t *testing.T) {
 	t.Logf("primary %v / %v; for 127.0.0.1: %v %v; own %v", h.primary4, h.primary6,
 		h.addrsFor(netip.MustParseAddr("127.0.0.1"), false), h.addrsFor(netip.MustParseAddr("127.0.0.1"), true), h.own)
 }
+
+// In a container bridge network every client arrives from the bridge
+// gateway, which shares the container's subnet. Server names must then be
+// answered with the configured cache address (the host's LAN address), never
+// with the unreachable bridge address.
+func TestServerNameInBridge(t *testing.T) {
+	e := newEnv(t, nil)
+	bridgeIP := netip.MustParseAddr("172.18.0.2")
+	e.srv.env.container = "docker"
+	e.srv.env.primary = func() (netip.Addr, error) { return bridgeIP, nil }
+	e.srv.env.ifaces = func() ([]interfaceIPv4, bool) { return nil, false }
+	e.srv.env.host = func() *hostInfo {
+		return &hostInfo{
+			ifaces:   []hostIface{{name: "eth0", prefixes: []netip.Prefix{netip.PrefixFrom(bridgeIP, 16)}}},
+			own:      []netip.Addr{bridgeIP},
+			primary4: bridgeIP,
+		}
+	}
+	e.srv.host.Store(e.srv.env.host())
+	e.srv.updateCacheIPs(e.set.Get())
+
+	answer := func(client string) []string {
+		t.Helper()
+		w := udpFrom(client)
+		e.handle(w, "picache.lan", dns.TypeA)
+		if len(w.msgs) != 1 || w.msgs[0].Rcode != dns.RcodeSuccess {
+			t.Fatalf("client %s: %v", client, w.msgs)
+		}
+		var out []string
+		for _, rr := range w.msgs[0].Answer {
+			if a, ok := rr.(*dns.A); ok {
+				out = append(out, a.A.String())
+			}
+		}
+		return out
+	}
+	if got := answer("172.18.0.1"); len(got) != 0 {
+		t.Errorf("without a cache IP the bridge address must not be answered: %v", got)
+	}
+	e.update(func(a *settings.All) { a.LanCache.CacheIPv4 = []string{"192.168.1.248"} })
+	if got := answer("172.18.0.1"); !slices.Equal(got, []string{"192.168.1.248"}) {
+		t.Errorf("bridge client got %v, want the configured host address", got)
+	}
+	if got := answer("127.0.0.1"); !slices.Equal(got, []string{"172.18.0.2"}) {
+		t.Errorf("loopback client got %v, want the container's own address", got)
+	}
+}

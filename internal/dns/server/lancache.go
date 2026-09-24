@@ -16,6 +16,10 @@ import (
 type cacheIPState struct {
 	v4, v6 []netip.Addr
 	auto   bool
+	// bridge: PiCache runs in a container bridge network, so its interface
+	// addresses are unreachable for clients; server names are then answered
+	// with the configured cache addresses (the host's LAN address).
+	bridge bool
 	// warning explains why no IPv4 is known (then it is also the reason
 	// overrides are inactive) or warns about the chosen address.
 	warning string
@@ -38,7 +42,10 @@ func describeNonPrivate(ip netip.Addr) string {
 // none are configured, from the host: the primary IPv4 if it is RFC 1918,
 // else the first RFC 1918 interface address; never in Docker bridge mode.
 func computeCacheIPs(l *settings.LanCache, env hostEnv) *cacheIPState {
-	st := &cacheIPState{}
+	primary, perr := env.primary()
+	private, docker0 := env.ifaces()
+	container := env.container == "docker" || env.container == "podman"
+	st := &cacheIPState{bridge: container && perr == nil && netip.MustParsePrefix("172.16.0.0/12").Contains(primary) && !docker0}
 	for _, s := range l.CacheIPv6 {
 		if ip, err := netip.ParseAddr(s); err == nil && netutil.IsULA(ip) {
 			st.v6 = append(st.v6, ip)
@@ -56,10 +63,7 @@ func computeCacheIPs(l *settings.LanCache, env hostEnv) *cacheIPState {
 		return st
 	}
 	st.auto = true
-	primary, perr := env.primary()
-	private, docker0 := env.ifaces()
-	container := env.container == "docker" || env.container == "podman"
-	if container && perr == nil && netip.MustParsePrefix("172.16.0.0/12").Contains(primary) && !docker0 {
+	if st.bridge {
 		st.warning = "PiCache runs in a container bridge network, so its own address (" + primary.String() +
 			") is not reachable by clients; set the host's LAN IPv4 address as cache IP (LanCache settings)"
 		return st
