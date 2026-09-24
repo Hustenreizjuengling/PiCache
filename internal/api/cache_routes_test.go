@@ -18,6 +18,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/lancache/services"
 	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
 	"github.com/hustenreizjuengling/picache/internal/listing"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
@@ -350,4 +351,54 @@ func TestCacheAdminRoutes(t *testing.T) {
 		t.Fatalf("verify state %+v", vs)
 	}
 	e.expectError("POST", "/api/v1/cache/verify", `{"repair":"yes"}`, http.StatusBadRequest, "invalid")
+}
+
+// TestCacheGroupsUserLabel: a group's label reports whether it is the
+// user's override (userLabel) or the built-in one.
+func TestCacheGroupsUserLabel(t *testing.T) {
+	e := newCacheEnv(t)
+	e.openStore()
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "services.db"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	set, err := settings.Open(ctx, d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := services.New(ctx, d, set, nil, filepath.Join(dir, "cache-domains"), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetLabel(ctx, "steam:a", "My Game"); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.d.Services = reg
+
+	var groups listing.Page[GroupView]
+	e.expect("GET", "/api/v1/cache/groups?service=steam&sort=name", "", http.StatusOK, &groups)
+	if len(groups.Items) != 2 {
+		t.Fatalf("groups %+v", groups)
+	}
+	if g := groups.Items[0]; g.GroupKey != "steam:a" || g.Label != "My Game" || !g.UserLabel {
+		t.Fatalf("overridden group %+v", g)
+	}
+	if g := groups.Items[1]; g.GroupKey != "steam:b" || g.Label != reg.Label("steam:b") || g.UserLabel {
+		t.Fatalf("built-in label %+v", g)
+	}
+	w := e.do("GET", "/api/v1/cache/groups?service=steam&sort=name", "")
+	for _, member := range []string{`"label":"My Game","userLabel":true`, `"userLabel":false`} {
+		if !strings.Contains(w.Body.String(), member) {
+			t.Fatalf("groups JSON %s lacks %s", w.Body, member)
+		}
+	}
+	var detail GroupDetail
+	e.expect("GET", "/api/v1/cache/groups/detail?service=steam&key=steam:a", "", http.StatusOK, &detail)
+	if !detail.Group.UserLabel || detail.Group.Label != "My Game" {
+		t.Fatalf("detail %+v", detail.Group)
+	}
 }

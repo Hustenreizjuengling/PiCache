@@ -1,8 +1,9 @@
 <!--
   @component
   Two-factor authentication (TOTP): shows whether it is on, sets it up
-  (QR code drawn in the browser, manual key, confirmation code) and turns it
-  off (password required). The secret is forgotten when the dialog closes.
+  (password first, then QR code drawn in the browser, manual key,
+  confirmation code; the server then signs out the other sessions) and turns
+  it off (password required). The secret is forgotten when the dialog closes.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -33,20 +34,50 @@
   const setupGeneral = $derived(setupErr && !setupErr.field ? errorText(setupErr) : '')
   const groupedSecret = $derived(pending ? (pending.secret.match(/.{1,4}/g) ?? []).join(' ') : '')
 
-  async function begin() {
+  // ---- password before setup (a stolen session must not enrol its own authenticator)
+  let passwordOpen = $state(false)
+  let setupPassword = $state('')
+  let passwordSubmitted = $state(false)
+  let beginErr = $state.raw<ApiError | null>(null)
+  const setupPasswordError = $derived(
+    fieldError(beginErr, 'currentPassword') ??
+      (passwordSubmitted && !setupPassword ? t('system.account.totp.passwordRequired') : undefined),
+  )
+  const beginGeneral = $derived(beginErr && !beginErr.field ? errorText(beginErr) : '')
+
+  /** Asks for the password (again, e.g. after the pending setup expired). */
+  function openBegin() {
+    setupPassword = ''
+    passwordSubmitted = false
+    beginErr = null
+    setupOpen = false
+    passwordOpen = true
+  }
+
+  async function begin(e: SubmitEvent) {
+    e.preventDefault()
+    passwordSubmitted = true
+    beginErr = null
+    if (!setupPassword) return
     starting = true
-    setupErr = null
     try {
-      pending = await api.auth.totpBegin()
+      pending = await api.auth.totpBegin(setupPassword)
+      setupPassword = ''
       code = ''
       codeSubmitted = false
+      setupErr = null
+      passwordOpen = false
       setupOpen = true
     } catch (err) {
-      if (setupOpen) setupErr = toApiError(err)
-      else toast.error(err)
+      beginErr = toApiError(err)
     } finally {
       starting = false
     }
+  }
+
+  function passwordClosed() {
+    setupPassword = ''
+    passwordSubmitted = false
   }
 
   async function confirmSetup(e: SubmitEvent) {
@@ -134,7 +165,7 @@
             {t('system.account.totp.disable')}
           </Button>
         {:else}
-          <Button icon="shield-check" loading={starting} disabled={!session.isAdmin} onclick={begin}>
+          <Button icon="shield-check" disabled={!session.isAdmin} onclick={openBegin}>
             {t('system.account.totp.setup')}
           </Button>
         {/if}
@@ -143,13 +174,45 @@
   {/if}
 </Panel>
 
+<Dialog
+  bind:open={passwordOpen}
+  title={t('system.account.totp.passwordTitle')}
+  size="sm"
+  dismissible={!starting}
+  onclose={passwordClosed}
+>
+  <form id="totp-pw-{setupFormId}" class="stack" onsubmit={begin} novalidate>
+    <p class="small muted">{t('system.account.totp.passwordText')}</p>
+    {#if beginGeneral}<Notice tone="fail">{beginGeneral}</Notice>{/if}
+    <input
+      class="visually-hidden"
+      type="text"
+      name="username"
+      autocomplete="username"
+      value={session.user?.username ?? ''}
+      readonly
+      tabindex="-1"
+      aria-hidden="true"
+    />
+    <Field label={t('system.account.totp.password')} error={setupPasswordError}>
+      <Input type="password" bind:value={setupPassword} autocomplete="current-password" maxlength={1024} required />
+    </Field>
+  </form>
+  {#snippet actions()}
+    <Button disabled={starting} onclick={() => (passwordOpen = false)}>{t('common.action.cancel')}</Button>
+    <Button type="submit" form="totp-pw-{setupFormId}" variant="primary" loading={starting}>
+      {t('system.account.totp.continue')}
+    </Button>
+  {/snippet}
+</Dialog>
+
 <Dialog bind:open={setupOpen} title={t('system.account.totp.setupTitle')} dismissible={!confirming} onclose={setupClosed}>
   {#if pending}
     <form id="totp-{setupFormId}" class="stack" onsubmit={confirmSetup} novalidate>
       {#if setupStale}
         <Notice tone="warn" title={setupGeneral}>
           {#snippet actions()}
-            <Button size="sm" icon="refresh" loading={starting} onclick={begin}>{t('system.account.totp.restart')}</Button>
+            <Button size="sm" icon="refresh" onclick={openBegin}>{t('system.account.totp.restart')}</Button>
           {/snippet}
         </Notice>
       {:else if setupGeneral}

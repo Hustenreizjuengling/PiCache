@@ -14,8 +14,10 @@ export interface Column<T> {
   key: string
   label: string
   align?: 'left' | 'right' | 'center'
-  /** Machine values (domains, IPs, paths, hashes): monospace. */
+  /** Machine values (domains, IPs, paths, hashes): monospace, kept on one line. */
   mono?: boolean
+  /** Lets a long mono value (a path, a URL) break anywhere instead of widening the table. */
+  wrap?: boolean
   sortable?: boolean
   /** CSS width, e.g. '120px' or '30%'. */
   width?: string

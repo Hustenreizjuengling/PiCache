@@ -4,9 +4,9 @@
 // collapsing, read-ahead, no-range handling, redirects and SSRF-safe
 // upstream fetching.
 //
-// Request flow (handler.go): ACL → heartbeat → loop detection → host →
-// classification → special paths → method → canonical path → nocache →
-// cache path (serve.go) or pass-through (passthrough.go).
+// Request flow (handler.go): ACL → heartbeat → LanCache enabled → loop
+// detection → host → classification → special paths → method → canonical
+// path → nocache → cache path (serve.go) or pass-through (passthrough.go).
 //
 // The cache path plans the response itself (ranges.go) and serves it
 // position by position from three kinds of sources: cached slices
@@ -14,12 +14,15 @@
 // use sendfile), in-flight fills (fill.go: one upstream range request per
 // slice, shared by every concurrent reader through a sync.Cond-signalled
 // growing buffer) and direct upstream bodies (direct.go: range failures,
-// hosts without range support, fallbacks). A failing source is retried
-// once through the store and fills, then the rest of the range is fetched
-// directly; only a failure of that aborts the response. Fills hold a
-// global and a per-client slot for as long as their buffer lives, which
-// bounds fill memory to min(maxConcurrentFills, 1 GiB / slice size)
-// buffers.
+// hosts without range support, fallbacks). Requests for an object whose
+// upstream ignores Range collapse too: one request leads and captures the
+// slices of the whole body as fills the others stream (collapse.go). A
+// failing source is retried once through the store and fills, then the
+// rest of the range is fetched directly; only a failure of that aborts the
+// response. Fills hold a global and a per-client slot for as long as their
+// buffer lives, which bounds fill memory to min(maxConcurrentFills, 1 GiB
+// / slice size) buffers. The object being served is marked in use in the
+// store (never evicted).
 //
 // Table (picache.db, component "proxy"): proxy_noslice_hosts.
 package proxy
@@ -54,7 +57,11 @@ type SliceStore interface {
 	SetMeta(ctx context.Context, id string, m cachestore.Meta) (uint64, error)
 	WriteSlice(ctx context.Context, id string, gen uint64, idx int64, data []byte) error
 	Invalidate(ctx context.Context, id string, reason string) error
+	// Touch records an access; bytesServed are the bytes served from the
+	// cache (a hit when > 0).
 	Touch(id string, bytesServed int64)
+	// Use marks an object as being served (never evicted) until release.
+	Use(id string) (release func())
 }
 
 // Classifier is the part of *services.Registry the proxy uses.
@@ -78,8 +85,11 @@ type Deps struct {
 	DB       *db.DB // for persisted no-slice hosts
 	Settings *settings.Store
 	Services Classifier
-	Lookup   netutil.Resolver  // bypass resolver (IPv4)
-	Store    func() SliceStore // current store; nil → pass-through mode
+	Lookup   netutil.Resolver // bypass resolver (IPv4)
+	// Store returns the current store (nil → pass-through mode), the same
+	// value for as long as that store is active: a request whose store is
+	// no longer returned stops using it.
+	Store func() SliceStore
 	// StoreFull reports that the store cannot free space (no new fills).
 	StoreFull  func() bool
 	Clients    Clients
@@ -181,6 +191,7 @@ type Server struct {
 	wg       sync.WaitGroup
 
 	fills   fillTable
+	leaders objFetches // whole-object bodies being streamed (collapse.go)
 	slots   fillSlots
 	bufs    bufPool
 	noslice *noSliceTracker

@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -134,9 +135,20 @@ func (a *Service) SetupRequired(ctx context.Context) (bool, error) {
 	return !exists, nil
 }
 
+func errSetupDone() error { return apperr.Forbidden("setup has already been completed") }
+
 // Setup creates the first admin (requires the setup token) and logs in.
+//
+// Once setup is done the answer is a constant 403 that takes nothing from
+// the shared attempt budget (a client calling it in a loop must not starve
+// sign-ins), but every call counts as a failure of the client, so it is
+// locked out like a password guesser.
 func (a *Service) Setup(ctx context.Context, token, username, password string, meta ReqMeta) (*Session, error) {
 	ckey := clientThrottleKey(meta.IP)
+	if a.setupDone.Load() {
+		a.recordFailure(ckey)
+		return nil, errSetupDone()
+	}
 	if err := a.throttle.allow(a.now(), ckey); err != nil {
 		return nil, err
 	}
@@ -145,7 +157,8 @@ func (a *Service) Setup(ctx context.Context, token, username, password string, m
 		return nil, err
 	}
 	if !required {
-		return nil, apperr.Forbidden("setup has already been completed")
+		a.recordFailure(ckey)
+		return nil, errSetupDone()
 	}
 	a.setupMu.Lock()
 	expected := a.setupToken
@@ -176,6 +189,7 @@ func (a *Service) Setup(ctx context.Context, token, username, password string, m
 	if err != nil {
 		return nil, err
 	}
+	s.Device = a.issueDevice(id, username)
 	a.Audit(ctx, &Principal{UserID: id, Username: username, SessionID: s.ID, Scope: ScopeAdmin},
 		meta.IP, "auth.setup", username, nil)
 	return s, nil
@@ -191,7 +205,7 @@ func createFirstUser(ctx context.Context, d *db.DB, username, hash string, nowMs
 			return err
 		}
 		if exists {
-			return apperr.Forbidden("setup has already been completed")
+			return errSetupDone()
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO auth_users (username, password_hash, created_at) VALUES (?, ?, ?)`,
 			username, hash, nowMs)
@@ -233,47 +247,165 @@ func (a *Service) Provision(ctx context.Context, username, password string) erro
 	return nil
 }
 
-// ResetPassword sets a user's password (CLI `picache reset-password`),
-// creating the user if missing, disables TOTP and revokes all sessions.
-func ResetPassword(ctx context.Context, d *db.DB, username, password string) error {
+// ResetResult reports what ResetPassword changed.
+type ResetResult struct {
+	Username        string // the account whose password was set
+	Created         bool   // no account existed, so this one was created
+	TOTPDisabled    bool   // two-factor authentication was on and is now off
+	SessionsRevoked int64  // sessions ended (all sessions of all accounts)
+	TokensRevoked   int64  // API tokens deleted (all tokens of all accounts)
+}
+
+// Usernames returns the names of all accounts (oldest first).
+func Usernames(ctx context.Context, d *db.DB) ([]string, error) {
+	return accountNames(ctx, d.R)
+}
+
+// ResetPassword sets the password of an account (CLI `picache reset-password`),
+// disables its TOTP, signs out all sessions and revokes all API tokens: it is
+// the recovery path after a compromise, so it ends every credential that
+// someone else may hold.
+//
+// The account must exist. It is created only while there is no account at
+// all; otherwise a name that matches no account is refused with the
+// existing names, so a typo or the default name never adds a second admin
+// while the real, possibly compromised account stays as it was.
+func ResetPassword(ctx context.Context, d *db.DB, username, password string) (ResetResult, error) {
+	var res ResetResult
 	if err := validateUsername(username); err != nil {
-		return err
+		return res, err
 	}
 	if err := validatePassword("password", password); err != nil {
-		return err
+		return res, err
 	}
 	if err := d.Migrate(ctx, "auth", migrations); err != nil {
-		return err
+		return res, err
 	}
 	h := hashPassword(password)
 	now := db.NowMs()
-	return d.Tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE auth_users SET password_hash = ?, totp_secret = NULL,
-			totp_pending = NULL, totp_pending_at = 0 WHERE username = ?`, h, username)
+	err := d.Tx(ctx, func(tx *sql.Tx) error {
+		res = ResetResult{}
+		names, err := accountNames(ctx, tx)
 		if err != nil {
 			return err
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
+		var (
+			id      int64
+			hadTOTP bool
+		)
+		err = tx.QueryRowContext(ctx, `SELECT id, username, totp_secret IS NOT NULL FROM auth_users WHERE username = ?`, username).
+			Scan(&id, &res.Username, &hadTOTP)
+		switch {
+		case errors.Is(err, sql.ErrNoRows) && len(names) > 0:
+			return apperr.Invalid("username", "there is no account named %q; existing accounts: %s",
+				username, strings.Join(names, ", "))
+		case errors.Is(err, sql.ErrNoRows):
 			if _, err := tx.ExecContext(ctx, `INSERT INTO auth_users (username, password_hash, created_at) VALUES (?, ?, ?)`,
 				username, h, now); err != nil {
 				return err
 			}
+			res.Username, res.Created = username, true
+		case err != nil:
+			return err
+		default:
+			if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET password_hash = ?, totp_secret = NULL,
+				totp_pending = NULL, totp_pending_at = 0 WHERE id = ?`, h, id); err != nil {
+				return err
+			}
+			res.TOTPDisabled = hadTOTP
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM auth_sessions`); err != nil {
+		if res.SessionsRevoked, err = execCount(ctx, tx, `DELETE FROM auth_sessions`); err != nil {
+			return err
+		}
+		if res.TokensRevoked, err = execCount(ctx, tx, `DELETE FROM auth_tokens`); err != nil {
+			return err
+		}
+		if err := checkEmpty(ctx, tx, "auth_sessions", "auth_tokens"); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO auth_audit (time, username, ip, action, target, details)
-			VALUES (?, 'cli', '', 'auth.password_reset', ?, '')`, now, username)
+			VALUES (?, 'cli', '', 'auth.password_reset', ?, ?)`, now, res.Username, auditDetails(map[string]any{
+			"created": res.Created, "totpDisabled": res.TOTPDisabled,
+			"sessionsRevoked": res.SessionsRevoked, "tokensRevoked": res.TokensRevoked,
+		}))
 		return err
 	})
+	return res, err
 }
 
-// PurgeCredentials deletes all sessions and API tokens (after a restore).
-func PurgeCredentials(ctx context.Context, tx *sql.Tx) error {
-	for _, q := range []string{`DELETE FROM auth_sessions`, `DELETE FROM auth_tokens`} {
-		if _, err := tx.ExecContext(ctx, q); err != nil {
+type rowsQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// accountNames returns all usernames (oldest first).
+func accountNames(ctx context.Context, q rowsQuerier) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT username FROM auth_users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+func execCount(ctx context.Context, tx *sql.Tx, q string, args ...any) (int64, error) {
+	res, err := tx.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// checkEmpty verifies that the tables have no rows after they were emptied:
+// a trigger such as "BEFORE DELETE … RAISE(IGNORE)" would otherwise turn the
+// delete into a silent no-op.
+func checkEmpty(ctx context.Context, q queryRower, tables ...string) error {
+	for _, t := range tables {
+		var n int
+		if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+t).Scan(&n); err != nil {
 			return err
+		}
+		if n != 0 {
+			return fmt.Errorf("auth: %d rows of %s could not be deleted (the database schema keeps them)", n, t)
 		}
 	}
 	return nil
+}
+
+// deleteVerified deletes the rows of table that match where and verifies
+// that none of them is left (see checkEmpty). It returns the number of
+// deleted rows.
+func deleteVerified(ctx context.Context, x execQuerier, table, where string, args ...any) (int64, error) {
+	res, err := x.ExecContext(ctx, `DELETE FROM `+table+` WHERE `+where, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	var left int
+	if err := x.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE `+where, args...).Scan(&left); err != nil {
+		return n, err
+	}
+	if left != 0 {
+		return n, fmt.Errorf("auth: %d rows of %s could not be deleted (the database schema keeps them)", left, table)
+	}
+	return n, nil
+}
+
+// PurgeSessions deletes all sessions (after a restore: everyone signs in
+// again) and verifies that none is left.
+func PurgeSessions(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_sessions`); err != nil {
+		return err
+	}
+	return checkEmpty(ctx, tx, "auth_sessions")
 }

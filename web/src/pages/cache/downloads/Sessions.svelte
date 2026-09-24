@@ -13,7 +13,7 @@
   import { loadPref, savePref } from '$lib/storage'
   import { Button, Chip, EmptyState, KeyValue, Pager, Panel, SidePanel, Table, type Column } from '$lib/ui'
   import type { ServiceCatalog } from '../shared/catalog.svelte'
-  import { averageRate, formatHitRatio, offsetParam, pickRange, spanMs } from '../shared/util'
+  import { averageRate, formatHitRatio, offsetParam, pickRange, spanMs, timeWindow } from '../shared/util'
   import Filters from './Filters.svelte'
 
   interface Props {
@@ -28,6 +28,9 @@
   const LIMITS = [25, 50, 100, 250]
 
   const range = $derived(pickRange(router.param('range'), RANGES, '7d'))
+  const win = $derived(timeWindow(router.param('from'), router.param('to')))
+  /** An explicit window from the URL (e.g. the query log's "Cache traffic" link) replaces the range. */
+  const time = $derived(win ?? { range })
   const offset = $derived(offsetParam(router.param('offset')))
   let limit = $state(LIMITS.includes(Number(loadPref('cache.downloads.limit'))) ? Number(loadPref('cache.downloads.limit')) : 50)
 
@@ -35,7 +38,7 @@
     (signal) =>
       api.cache.downloads(
         {
-          range,
+          ...time,
           client: router.param('client') || undefined,
           service: router.param('service') || undefined,
           search: router.param('search') || undefined,
@@ -71,7 +74,11 @@
     router.setQuery({ session: null })
   }
 
+  /** The requests of a session: its client and service; a finished one also its time (the default range is 1 h). */
   function showRequests(d: Download) {
+    const from = Math.floor(new Date(d.firstSeen).getTime() / 1000)
+    const to = Math.floor(new Date(d.lastSeen).getTime() / 1000) + 1
+    const bounded = !d.active && Number.isFinite(from) && Number.isFinite(to) && from < to
     router.setQuery({
       tab: 'requests',
       client: d.clientIp,
@@ -81,6 +88,8 @@
       active: null,
       group: null,
       range: null,
+      from: bounded ? from : null,
+      to: bounded ? to : null,
       offset: null,
       session: null,
     })

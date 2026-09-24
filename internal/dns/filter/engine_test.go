@@ -221,6 +221,7 @@ func TestRulesCRUD(t *testing.T) {
 		{Action: "block", Type: "regex", Pattern: "(unclosed"},
 		{Action: "block", Type: "regex", Pattern: `(a)\1`},
 		{Action: "block", Type: "regex", Pattern: strings.Repeat("a", maxRegexLen+1)},
+		{Action: "block", Type: "regex", Pattern: strings.Repeat(`[^.]{999}`, 5)}, // short, but a huge program
 		{Action: "block", Type: "exact", Pattern: "ok.example", GroupIDs: []int64{42}},
 		{Action: "block", Type: "exact", Pattern: "ok.example", Comment: strings.Repeat("c", maxCommentLen+1)},
 	}

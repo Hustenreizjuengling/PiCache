@@ -386,11 +386,15 @@ func TestNoSliceTracker(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	obj := func(n int) string { return cachestore.ObjectID("svc", "/"+strconv.Itoa(n)) }
 	const host = "cdn.example.com"
+	useSlicing := func(host string, now time.Time) bool {
+		use, _ := tr.useSlicing(host, now)
+		return use
+	}
 
 	tr.failure(host, obj(1), now)
 	tr.failure(host, obj(1), now.Add(time.Minute)) // same object: counted once
 	tr.failure(host, obj(2), now.Add(2*time.Minute))
-	if l := tr.list(); len(l) != 1 || l[0].Failures != 2 || l[0].Marked || !tr.useSlicing(host, now) {
+	if l := tr.list(); len(l) != 1 || l[0].Failures != 2 || l[0].Marked || !useSlicing(host, now) {
 		t.Fatalf("after two objects: %+v", l)
 	}
 	// The window is 24 h: a failure after it starts over.
@@ -405,11 +409,23 @@ func TestNoSliceTracker(t *testing.T) {
 	if !l[0].Marked || l[0].Failures != 3 || !l[0].Since.Equal(now) {
 		t.Fatalf("not marked: %+v", l)
 	}
-	if tr.useSlicing(host, now.Add(time.Hour)) {
+	if useSlicing(host, now.Add(time.Hour)) {
 		t.Fatal("a marked host must be fetched without Range")
 	}
-	if !tr.useSlicing(host, now.Add(noSliceProbe)) || tr.useSlicing(host, now.Add(noSliceProbe+time.Minute)) {
+	if !useSlicing(host, now.Add(noSliceProbe)) || useSlicing(host, now.Add(noSliceProbe+time.Minute)) {
 		t.Fatal("one probe per interval")
+	}
+	// A probe that sent no range request (a cache hit) is given back.
+	at := now.Add(2 * noSliceProbe)
+	if use, probe := tr.useSlicing(host, at); !use || !probe {
+		t.Fatal("probe not due")
+	}
+	tr.returnProbe(host, at)
+	if use, probe := tr.useSlicing(host, at.Add(time.Minute)); !use || !probe {
+		t.Fatal("a returned probe must be available again")
+	}
+	if useSlicing(host, at.Add(2*time.Minute)) {
+		t.Fatal("a used probe must not be available again")
 	}
 	// A valid 206 clears the host.
 	tr.success(host)
@@ -493,10 +509,23 @@ func TestBufPool(t *testing.T) {
 	if c := p.get(1024); &c[0] != &b[0] || len(c) != 1024 {
 		t.Fatal("buffer not reused")
 	}
-	p.put(make([]byte, 2048)) // another size replaces only an empty list
-	p.put(make([]byte, 1024))
-	if len(p.free) != 1 || p.size != 2048 {
+	// The store changed to another slice size: its buffers are reused, the
+	// old ones are dropped (not pinned) and not taken back.
+	old := [][]byte{p.get(1024), p.get(1024)}
+	for _, o := range old {
+		p.put(o)
+	}
+	nb := p.get(2048)
+	if len(nb) != 2048 || p.size != 2048 || len(p.free) != 0 {
+		t.Fatalf("size switch: len %d, size %d, %d free", len(nb), p.size, len(p.free))
+	}
+	p.put(nb)
+	p.put(make([]byte, 1024)) // a buffer of the old size returned late
+	if len(p.free) != 1 || cap(p.free[0]) != 2048 {
 		t.Fatalf("free list %d of %d", len(p.free), p.size)
+	}
+	if allocs := testing.AllocsPerRun(20, func() { p.put(p.get(2048)) }); allocs != 0 {
+		t.Fatalf("new-size buffers are not reused: %v allocations", allocs)
 	}
 	for range maxFreeBufferBytes/2048 + 5 {
 		p.put(make([]byte, 2048))

@@ -21,6 +21,7 @@
 
   let copied = $state(false)
   let timer: ReturnType<typeof setTimeout> | undefined
+  let live: HTMLSpanElement
 
   async function write(value: string): Promise<boolean> {
     if (navigator.clipboard && window.isSecureContext) {
@@ -31,21 +32,38 @@
         /* fall through to the legacy path */
       }
     }
-    // Plain HTTP (not a secure context): hidden textarea + execCommand.
+    return legacyCopy(value)
+  }
+
+  /**
+   * Plain HTTP (not a secure context): hidden textarea + execCommand. While a
+   * modal dialog is open everything outside it is inert, so the textarea goes
+   * into the dialog holding the button (a textarea in <body> could not take
+   * the selection, and execCommand would still report success).
+   */
+  function legacyCopy(value: string): boolean {
+    const container = live?.closest('dialog') ?? document.body
+    const prev = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const ta = document.createElement('textarea')
     ta.value = value
     ta.setAttribute('readonly', '')
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
+    ta.setAttribute('aria-hidden', 'true')
+    ta.tabIndex = -1
+    Object.assign(ta.style, { position: 'fixed', top: '0', left: '0', width: '1px', height: '1px', opacity: '0' })
+    container.appendChild(ta)
     let ok = false
     try {
-      ok = document.execCommand('copy')
+      ta.focus({ preventScroll: true })
+      ta.select()
+      ta.setSelectionRange(0, ta.value.length) // (line breaks are normalised)
+      // Only a selection in the textarea is copied: anything else is a failure.
+      const selected = document.activeElement === ta && ta.selectionStart === 0 && ta.selectionEnd === ta.value.length
+      ok = selected && document.execCommand('copy')
     } catch {
       ok = false
     }
     ta.remove()
+    prev?.focus({ preventScroll: true })
     return ok
   }
 
@@ -69,4 +87,4 @@
 {:else}
   <IconButton {size} icon={copied ? 'check' : 'copy'} label={name} onclick={copy} />
 {/if}
-<span class="visually-hidden" aria-live="polite">{copied ? t('common.copy.done') : ''}</span>
+<span bind:this={live} class="visually-hidden" aria-live="polite">{copied ? t('common.copy.done') : ''}</span>

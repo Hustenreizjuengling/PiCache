@@ -24,7 +24,8 @@ export default {
   // account & security
   'account.signedInAs': 'Signed in as {name}',
   'account.password.title': 'Password',
-  'account.password.description': 'Changing the password signs out all other sessions.',
+  'account.password.description':
+    'Changing the password signs out all other sessions and, unless you keep them, revokes all API tokens.',
   'account.password.current': 'Current password',
   'account.password.new': 'New password',
   'account.password.help': 'At least {min} characters. A passphrase of four or more random words works well.',
@@ -34,7 +35,11 @@ export default {
   'account.password.tooShort': 'Use at least {min} characters.',
   'account.password.same': 'The new password must differ from the current one.',
   'account.password.mismatch': 'The passwords do not match.',
-  'account.password.changed': 'Password changed. Other sessions were signed out.',
+  'account.password.keepTokens': 'Keep API tokens',
+  'account.password.keepTokensHelp':
+    'Leave this off if someone else may have used your account: a token created in a stolen session would keep working.',
+  'account.password.changed': 'Password changed. Other sessions were signed out and API tokens revoked.',
+  'account.password.changedKeepTokens': 'Password changed. Other sessions were signed out; API tokens were kept.',
 
   'account.totp.title': 'Two-factor authentication',
   'account.totp.description':
@@ -58,7 +63,10 @@ export default {
   'account.totp.codeFormat': 'Enter the 6 digits shown in your app.',
   'account.totp.confirm': 'Turn on two-factor authentication',
   'account.totp.restart': 'Start again',
-  'account.totp.enabled': 'Two-factor authentication turned on',
+  'account.totp.passwordTitle': 'Confirm your password',
+  'account.totp.passwordText': 'Enter your password to set up two-factor authentication.',
+  'account.totp.continue': 'Continue',
+  'account.totp.enabled': 'Two-factor authentication turned on. Other sessions were signed out.',
   'account.totp.disable': 'Turn off two-factor authentication',
   'account.totp.disableTitle': 'Turn off two-factor authentication?',
   'account.totp.disableText': 'Signing in then needs only your password. Enter your password to confirm.',
@@ -117,7 +125,7 @@ export default {
   // API tokens
   'tokens.title': 'API tokens',
   'tokens.description':
-    'For scripts, monitoring and automated backups (Authorization: Bearer …). Tokens can never manage tokens, passwords, two-factor authentication or sessions.',
+    'For scripts, monitoring and automated backups (Authorization: Bearer …). Tokens can never manage tokens, passwords, two-factor authentication or sessions, nor restore backups.',
   'tokens.create': 'Create token',
   'tokens.createTitle': 'Create API token',
   'tokens.createdTitle': 'Token created',
@@ -139,6 +147,9 @@ export default {
   'tokens.expiry.custom': 'Custom…',
   'tokens.customDays': 'Days until it expires',
   'tokens.neverHint': 'A token that never expires stays valid until you delete it.',
+  'tokens.password': 'Your password',
+  'tokens.passwordHelp': 'A token keeps working after you sign out, so creating one needs your password.',
+  'tokens.passwordRequired': 'Enter your password.',
   'tokens.onceTitle': 'Copy the token now',
   'tokens.onceText': 'PiCache stores only a fingerprint of it and cannot show it again. Keep it like a password.',
   'tokens.copy': 'Copy token',
@@ -196,13 +207,13 @@ export default {
   // backup & restore
   'backup.download.title': 'Download a backup',
   'backup.download.description':
-    'A consistent copy of the configuration database (picache.db): settings, users, blocklists, rules, clients, local DNS, services and storage targets. Sign-in sessions are never included; the query log and statistics (logs.db) are not part of it.',
+    'A consistent copy of the configuration database (picache.db): settings, blocklists, rules, clients, local DNS, services, storage targets and the audit log. Accounts (users, password hashes, two-factor secrets), sessions and API tokens are never included; the query log and statistics (logs.db) are not part of it.',
   'backup.download.secrets': 'Include stored NAS passwords',
   'backup.download.secretsHelp':
     'They stay encrypted with the master key and only work on a PiCache with the same key.',
   'backup.download.keyTitle': 'The master key is not in the backup',
   'backup.download.keyText':
-    'Stored NAS passwords and two-factor secrets are encrypted with it. Keep a copy of the key in a safe place if they should keep working on another machine. Without it, enter the NAS passwords again and run picache reset-password, which turns off two-factor authentication.',
+    'Stored NAS passwords are encrypted with it. Keep a copy of the key in a safe place if they should keep working on another machine. Without it, enter the NAS passwords again after a restore.',
   'backup.download.button': 'Download backup',
   'backup.download.autoTitle': 'Automated backups',
   'backup.download.autoText': 'Scripts use an admin API token:',
@@ -215,7 +226,8 @@ export default {
   'backup.restore.button': 'Restore backup',
   'backup.restore.uploading': 'Uploading and checking…',
   'backup.restore.factReplace': 'PiCache checks the file and applies it at the next restart.',
-  'backup.restore.factSessions': 'All sessions and API tokens are then revoked: sign in with the account from the backup.',
+  'backup.restore.factSessions':
+    'Your account, password, two-factor authentication, API tokens and the audit log stay as they are; everyone has to sign in again.',
   'backup.restore.factKeep':
     'The current database is kept as picache.db.before-restore; if PiCache cannot start with the backup, it goes back to it.',
   'backup.restore.checkFailed': 'This file cannot be restored',
@@ -225,7 +237,11 @@ export default {
   'backup.restore.check.unreadable': 'The browser could not read the file. Choose it again.',
   'backup.restore.confirmTitle': 'Restore {name}?',
   'backup.restore.confirmText':
-    'The backup replaces the whole configuration at the next restart, and everyone is signed out. The current configuration stays available as picache.db.before-restore.',
+    'The backup replaces the whole configuration at the next restart, and everyone is signed out. Your account and API tokens stay. The current configuration stays available as picache.db.before-restore.',
+  'backup.restore.password': 'Your password',
+  'backup.restore.passwordHelp': 'Restoring replaces the whole configuration, so PiCache asks for your password again.',
+  'backup.restore.passwordRequired': 'Enter your password.',
+  'backup.restore.passwordWrong': 'The password is wrong.',
   'backup.restore.confirm': 'Upload and check',
   'backup.restore.rejected': 'The backup was not accepted',
   'backup.restore.staged': 'Backup checked',
@@ -233,7 +249,7 @@ export default {
   'backup.restore.stagedText': 'Restart PiCache to apply it. Until then the current configuration stays active.',
   'backup.restore.restartNow': 'Restart now',
   'backup.restore.restartText':
-    'PiCache restarts and applies the restored backup. Everyone is signed out; sign in with the account from the backup.',
+    'PiCache restarts and applies the restored backup. Everyone is signed out; sign in again with your account.',
   'backup.restore.restartHint': 'A restart also applies changed listener settings (PICACHE_*_LISTEN).',
 
   'logs.title': 'Logs and privacy',

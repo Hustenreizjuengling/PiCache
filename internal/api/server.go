@@ -42,6 +42,7 @@ type StoreState struct {
 	TotalBytes   uint64            `json:"totalBytes"` // filesystem size of the store root
 	FreeBytes    uint64            `json:"freeBytes"`
 	MinFreeBytes int64             `json:"minFreeBytes"` // effective minimum free space
+	MaxSizeBytes int64             `json:"maxSizeBytes"` // configured cache size limit (settings cache.maxSizeBytes; 0 = none)
 	LowSpace     bool              `json:"lowSpace"`     // free < effective min free: eviction running
 	Full         bool              `json:"full"`         // eviction cannot free space: hits served, new content not stored
 	SDCard       bool              `json:"sdCard"`
@@ -93,12 +94,16 @@ type Runtime interface {
 	EvictNow(ctx context.Context) (cachestore.EvictResult, error)
 	StartVerify(repair bool) error
 	VerifyState() VerifyState
-	// Backup writes a consistent copy of picache.db without sessions; sealed
-	// NAS passwords only if includeSecrets.
+	// Backup writes a consistent copy of picache.db without accounts
+	// (users, sessions, API tokens); sealed NAS passwords only if
+	// includeSecrets.
 	Backup(ctx context.Context, w io.Writer, includeSecrets bool) error
-	StageRestore(ctx context.Context, r io.Reader) error // validated, applied on next start
-	Restart()                                            // exit with code 75 after the response (systemd/Docker restart)
-	Health(ctx context.Context) Health                   // last evaluated health (refreshed every 60 s)
+	// StageRestore validates an upload and stages it for the next start; the
+	// restore keeps the live accounts, API tokens and audit log and ends all
+	// sessions.
+	StageRestore(ctx context.Context, r io.Reader) error
+	Restart()                          // exit with code 75 after the response (systemd/Docker restart)
+	Health(ctx context.Context) Health // last evaluated health (refreshed every 60 s)
 }
 
 // Deps are everything the API talks to.

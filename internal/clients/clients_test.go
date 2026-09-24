@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"log/slog"
@@ -443,5 +444,121 @@ func TestLRU(t *testing.T) {
 	c.clear()
 	if c.len() != 0 {
 		t.Error("clear")
+	}
+}
+
+// nlNeigh encodes one RTM_NEWNEIGH message (host byte order) as the kernel
+// sends it in a neighbour dump.
+func nlNeigh(typ uint16, state uint16, dst netip.Addr, lladdr []byte) []byte {
+	attr := func(t uint16, v []byte) []byte {
+		b := make([]byte, align4(4+len(v)))
+		binary.NativeEndian.PutUint16(b[0:2], uint16(4+len(v)))
+		binary.NativeEndian.PutUint16(b[2:4], t)
+		copy(b[4:], v)
+		return b
+	}
+	body := make([]byte, ndMsgLen)
+	if dst.Is4() {
+		body[0] = 2 // AF_INET
+	} else {
+		body[0] = 10 // AF_INET6
+	}
+	binary.NativeEndian.PutUint32(body[4:8], 2) // ifindex
+	binary.NativeEndian.PutUint16(body[8:10], state)
+	if dst.IsValid() {
+		body = append(body, attr(ndaDst, dst.AsSlice())...)
+	}
+	if lladdr != nil {
+		body = append(body, attr(ndaLLAddr, lladdr)...)
+	}
+	msg := make([]byte, nlmsgHdrLen, nlmsgHdrLen+len(body))
+	binary.NativeEndian.PutUint32(msg[0:4], uint32(nlmsgHdrLen+len(body)))
+	binary.NativeEndian.PutUint16(msg[4:6], typ)
+	return append(msg, body...)
+}
+
+func TestParseNeighDump(t *testing.T) {
+	mac1 := []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01}
+	mac2 := []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02}
+	var dump []byte
+	dump = append(dump, nlNeigh(rtmNewNeigh, 0x02, ip("192.168.1.30"), mac1)...)              // REACHABLE
+	dump = append(dump, nlNeigh(rtmNewNeigh, 0x04, ip("fd00::1234:5678"), mac2)...)           // STALE
+	dump = append(dump, nlNeigh(rtmNewNeigh, 0x04, ip("fe80::a8bb:ccff:fedd:ee02"), mac2)...) // link-local
+	dump = append(dump, nlNeigh(rtmNewNeigh, nudIncomplete, ip("fd00::99"), nil)...)
+	dump = append(dump, nlNeigh(rtmNewNeigh, nudFailed, ip("fd00::98"), mac1)...)
+	dump = append(dump, nlNeigh(rtmNewNeigh, 0x02, ip("fd00::97"), make([]byte, 6))...)                // zero MAC
+	dump = append(dump, nlNeigh(rtmNewNeigh, 0x02, ip("fd00::96"), []byte{1, 2, 3, 4, 5, 6, 7, 8})...) // not Ethernet
+	dump = append(dump, nlNeigh(rtmNewNeigh, nudNoARP, ip("ff02::1"), mac1)...)
+	dump = append(dump, nlNeigh(nlmsgDone, 0, netip.Addr{}, nil)...)
+	dump = append(dump, nlNeigh(rtmNewNeigh, 0x02, ip("fd00::95"), mac1)...) // after DONE: ignored
+	got := parseNeighDump(dump)
+	want := map[netip.Addr]string{
+		ip("192.168.1.30"):              "aa:bb:cc:dd:ee:01",
+		ip("fd00::1234:5678"):           "aa:bb:cc:dd:ee:02",
+		ip("fe80::a8bb:ccff:fedd:ee02"): "aa:bb:cc:dd:ee:02",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+	// Truncated or garbage input never panics.
+	for i := range dump {
+		parseNeighDump(dump[:i])
+	}
+	merged := map[netip.Addr]string{ip("192.168.1.31"): "aa:bb:cc:dd:ee:03"}
+	mergeNeighbours(merged, got)
+	if len(merged) != 4 {
+		t.Errorf("merged %v", merged)
+	}
+}
+
+// A device configured by MAC is identified when it queries over IPv6 too.
+func TestIdentifyByMACOverIPv6(t *testing.T) {
+	r := newTestRegistry(t, false)
+	kids := mustGroup(t, r, "Kids", true)
+	mustClient(t, r, "tablet", []int64{kids.ID}, "aa:bb:cc:dd:ee:02")
+	dump := append(nlNeigh(rtmNewNeigh, 0x02, ip("192.168.1.30"), []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02}),
+		nlNeigh(rtmNewNeigh, 0x04, ip("fd00::1234:5678"), []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02})...)
+	r.readARP = func() map[netip.Addr]string { return parseNeighDump(dump) }
+	r.refreshARP()
+	for _, a := range []string{"192.168.1.30", "fd00::1234:5678"} {
+		if id := r.Identify(ip(a)); id.Name != "tablet" || !slices.Equal(id.GroupIDs, []int64{kids.ID}) {
+			t.Errorf("Identify(%s) = %q %v, want the MAC client in Kids", a, id.Name, id.GroupIDs)
+		}
+	}
+}
+
+// SeenTransient keeps activity in memory only: nothing reaches logs.db.
+func TestSeenTransientNotPersisted(t *testing.T) {
+	r := newTestRegistry(t, true)
+	ctx := context.Background()
+	arp := map[netip.Addr]string{ip("192.168.1.5"): "aa:bb:cc:dd:ee:01"}
+	r.arp.Store(&arp)
+	r.SeenTransient(ip("192.168.1.5"))
+	r.SeenTransient(ip("192.168.1.5"))
+	r.flush(ctx)
+	var n int
+	if err := r.ldb.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM clients_seen`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("transient activity written to logs.db: %d rows (%v)", n, err)
+	}
+	known, err := r.Known(ctx, 0)
+	if err != nil || len(known) != 1 || known[0].Queries != 2 {
+		t.Fatalf("known %+v %v", known, err)
+	}
+	// Persisted activity, then anonymisation: the unwritten part is dropped.
+	r.Seen(ip("192.168.1.6"))
+	r.SeenTransient(ip("192.168.1.6"))
+	r.flush(ctx)
+	if err := r.ldb.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM clients_seen`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("activity recorded before anonymisation but not yet written must be dropped: %d rows (%v)", n, err)
+	}
+	r.Seen(ip("192.168.1.6"))
+	r.flush(ctx)
+	if err := r.ldb.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM clients_seen`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("Seen must persist again: %d rows (%v)", n, err)
 	}
 }

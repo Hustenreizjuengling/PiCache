@@ -26,6 +26,7 @@ type checkResult struct {
 	rootMissing bool     // the configured sub-directory does not exist yet
 	writable    bool     // the write/rename/read/delete test passed
 	uninit      bool     // offline only because no store has been initialised or adopted
+	notMounted  bool     // the mount point is required but nothing is mounted there
 }
 
 // usable reports whether the location works (initialised or not).
@@ -112,8 +113,11 @@ func (m *Manager) startLocked(id string, e *entry) *checkRun {
 	go func() {
 		defer m.wg.Done()
 		res := m.probeFn(t)
-		if t.Mode == ModeHostApply {
-			res.st.ApplyState = readApplyState(requestsDir(m.cfg), t.ID)
+		if t.ID != LocalTargetID {
+			res.st.ApplyState = readApplyState(requestsDir(m.cfg), t.ID, t.Mode == ModeHostApply)
+			if res.notMounted && res.st.ApplyState == applyApplied {
+				res.st.Hint = appliedNotMountedHint
+			}
 		}
 		m.finish(id, gen, run, res)
 	}()
@@ -242,7 +246,8 @@ func (m *Manager) shutdown() {
 // a to b: state changes, or free space moving by ≥ 1 GiB or ≥ 1 %.
 func significant(a, b Status) bool {
 	if a.Online != b.Online || a.Reason != b.Reason || a.StoreID != b.StoreID || a.StoreRoot != b.StoreRoot ||
-		a.Mounted != b.Mounted || a.ApplyState != b.ApplyState || a.TotalBytes != b.TotalBytes {
+		a.Mounted != b.Mounted || a.ApplyState != b.ApplyState || a.TotalBytes != b.TotalBytes ||
+		a.Initialised != b.Initialised || a.Writable != b.Writable {
 		return true
 	}
 	d := max(a.FreeBytes, b.FreeBytes) - min(a.FreeBytes, b.FreeBytes)

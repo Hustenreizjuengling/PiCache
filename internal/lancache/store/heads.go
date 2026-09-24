@@ -21,8 +21,8 @@ type entry struct {
 	noSlice  bool
 	present  []uint64 // bitmap of cached slices (read-only)
 
-	// busy is non-nil for a tombstone: the object is being removed or its
-	// slices are being discarded. It is closed when that has finished.
+	// busy is non-nil for a tombstone: the object is being removed. It is
+	// closed when that has finished.
 	busy chan struct{}
 	// prev is the entry a tombstone replaced (restored if the removal is
 	// skipped); prevDirty reports that prev had unflushed index writes.
@@ -169,16 +169,6 @@ func (h *heads) untomb(id string, t *entry, restore, pending bool) {
 			h.overlay[id] = t.prev
 		}
 		h.putLocked(id, t.prev)
-	}
-}
-
-// replace swaps tombstone t for the new entry e (a new generation).
-func (h *heads) replace(id string, t, e *entry) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.overlay[id] == t {
-		h.overlay[id] = e
-		h.putLocked(id, e)
 	}
 }
 

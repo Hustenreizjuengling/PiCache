@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,13 +40,13 @@ func Open(keyFile string) (*Box, error) {
 	}
 	candidates = append(candidates, "/run/secrets/picache_master_key")
 	for _, c := range candidates {
-		if key, err := readKey(c); err == nil {
+		if key, err := readKey(c, true); err == nil {
 			return &Box{key: key, Source: c}, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("secrets: %s: %w", c, err)
 		}
 	}
-	key, err := readKey(keyFile)
+	key, err := readKey(keyFile, true)
 	if errors.Is(err, os.ErrNotExist) {
 		key = make([]byte, chacha20poly1305.KeySize)
 		rand.Read(key)
@@ -70,7 +71,11 @@ func Open(keyFile string) (*Box, error) {
 	return &Box{key: key, Source: keyFile}, nil
 }
 
-// Load loads the master key like Open but never generates one (root CLI).
+// Load loads the master key like Open but never generates one. It is used
+// by the root helper, which must not trust the data directory the service
+// owns: the key file must be a regular file and is never reached through a
+// symbolic link (a link to /dev/zero, a FIFO or a root-only file is
+// refused), and at most maxKeyFileSize bytes are read.
 func Load(keyFile string) (*Box, error) {
 	candidates := []string{}
 	if dir := os.Getenv("CREDENTIALS_DIRECTORY"); dir != "" {
@@ -78,7 +83,7 @@ func Load(keyFile string) (*Box, error) {
 	}
 	candidates = append(candidates, "/run/secrets/picache_master_key", keyFile)
 	for _, c := range candidates {
-		key, err := readKey(c)
+		key, err := readKey(c, false)
 		if err == nil {
 			return &Box{key: key, Source: c}, nil
 		}
@@ -97,9 +102,15 @@ func New(key []byte) (*Box, error) {
 	return &Box{key: append([]byte(nil), key...), Source: "memory"}, nil
 }
 
-// readKey accepts 64 hex characters or 32 raw bytes.
-func readKey(path string) ([]byte, error) {
-	b, err := os.ReadFile(path)
+// maxKeyFileSize bounds a key file read: 64 hex characters plus a line
+// ending and some whitespace.
+const maxKeyFileSize = 1 << 10
+
+// readKey accepts 64 hex characters or 32 raw bytes. The file must be a
+// regular file of at most maxKeyFileSize bytes; with follow=false a symbolic
+// link as the last path element is refused.
+func readKey(path string, follow bool) ([]byte, error) {
+	b, err := readKeyFile(path, follow)
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +123,31 @@ func readKey(path string) ([]byte, error) {
 		return b, nil
 	}
 	return nil, errors.New("key must be 32 raw bytes or 64 hex characters")
+}
+
+// readKeyFile reads a small regular file without blocking on a FIFO (see
+// openKeyFile) and without reading more than maxKeyFileSize+1 bytes.
+func readKeyFile(path string, follow bool) ([]byte, error) {
+	f, err := openKeyFile(path, follow)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file (%s)", fi.Mode().Type())
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxKeyFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxKeyFileSize {
+		return nil, fmt.Errorf("key file is larger than %d bytes", maxKeyFileSize)
+	}
+	return b, nil
 }
 
 // Seal encrypts plaintext. aad binds the ciphertext to its purpose/record

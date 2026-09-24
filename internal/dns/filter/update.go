@@ -2,6 +2,7 @@ package filter
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -15,6 +16,10 @@ const (
 	checkInterval  = time.Minute // scheduler tick (due lists, group reconciliation)
 	maxFailedRetry = time.Hour   // failed lists are retried at least this often
 )
+
+// errEmptyList rejects a downloaded list without entries while the cached
+// copy has some.
+var errEmptyList = errors.New("the downloaded list has no entries; the last good copy is kept")
 
 // RefreshList re-downloads one list now and recompiles (waits for completion).
 func (e *Engine) RefreshList(ctx context.Context, id int64) (List, error) {
@@ -271,6 +276,13 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 			}
 		default:
 			parsedTmp, err := e.parseFile(ctx, f.tmp, cfg.Kind, cfg.PlainDomains)
+			if err == nil && parsedTmp.entries == 0 && hasCache && cfg.Entries > 0 {
+				// An empty (or comment-only) body where the cached copy has
+				// entries is a server or mirror glitch, or a file caught
+				// mid-save: keep the last good copy and retry (validators are
+				// not stored, so the next attempt downloads in full).
+				err = errEmptyList
+			}
 			if err != nil {
 				_ = os.Remove(f.tmp)
 				if ctx.Err() != nil {

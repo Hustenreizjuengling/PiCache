@@ -128,6 +128,8 @@ type Status struct {
 	Reason       string    `json:"reason,omitempty"` // why offline, user-facing
 	Hint         string    `json:"hint,omitempty"`   // how to fix
 	Mounted      bool      `json:"mounted"`
+	Initialised  bool      `json:"initialised"`      // a valid store marker with the expected store id exists
+	Writable     bool      `json:"writable"`         // the write/rename/read/delete test passed
 	FSType       string    `json:"fsType,omitempty"` // ext4, xfs, cifs, nfs, zfs, …
 	Device       string    `json:"device,omitempty"` // backing device (e.g. mmcblk0p2) if local
 	SDCard       bool      `json:"sdCard"`           // store root is on an SD/eMMC device (warn)
@@ -138,7 +140,10 @@ type Status struct {
 	StoreRoot    string    `json:"storeRoot"`
 	StoreID      string    `json:"storeId,omitempty"` // marker found at the root
 	CheckedAt    time.Time `json:"checkedAt,omitzero"`
-	ApplyState   string    `json:"applyState,omitempty"` // host-apply: queued | applied | failed: <msg>
+	// ApplyState is the root helper's state: queued | applied | failed: <msg>
+	// for host-apply targets; for other targets only a failed removal of an
+	// earlier host-apply mount ("failed: <msg>").
+	ApplyState string `json:"applyState,omitempty"`
 }
 
 // TargetWithStatus is returned by listings.

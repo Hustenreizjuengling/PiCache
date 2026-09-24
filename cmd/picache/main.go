@@ -3,10 +3,11 @@
 //	picache [serve] [flags]               run the server (default)
 //	picache version                       print version information
 //	picache healthcheck [url]             exit 0 if the local web UI and DNS answer
-//	picache reset-password [user]         set a new admin password (reads it from stdin)
+//	picache reset-password [user]         set a new password for an existing account (reads it from stdin)
 //	picache setup-token                   print the first-run setup token
 //	picache storage apply <id>            (root) write a systemd mount unit for a NAS target
 //	picache storage apply-pending         (root) process mount requests queued by the web UI
+//	picache storage remove <id>           (root) remove the mount unit and credentials of a NAS target
 package main
 
 import (
@@ -14,15 +15,19 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	neturl "net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -43,8 +48,12 @@ func main() {
 
 func run(args []string) int {
 	cmd := "serve"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd, args = args[0], args[1:]
+	if len(args) > 0 {
+		if c, ok := commandFlags[args[0]]; ok {
+			cmd, args = c, args[1:]
+		} else if !strings.HasPrefix(args[0], "-") {
+			cmd, args = args[0], args[1:]
+		}
 	}
 	if cmd != "version" && cmd != "help" {
 		if err := loadEnvFile(); err != nil {
@@ -55,7 +64,7 @@ func run(args []string) int {
 	switch cmd {
 	case "serve":
 		return serve(args)
-	case "version", "--version":
+	case "version":
 		v := version.Get()
 		fmt.Printf("picache %s (commit %s, built %s, %s, %s/%s)\n", v.Version, v.Commit, v.Date, v.GoVersion, v.OS, v.Arch)
 		return 0
@@ -67,7 +76,7 @@ func run(args []string) int {
 		return setupToken()
 	case "storage":
 		return storageCmd(args)
-	case "help", "-h", "--help":
+	case "help":
 		fmt.Println(strings.TrimSpace(usage))
 		return 0
 	default:
@@ -76,18 +85,29 @@ func run(args []string) int {
 	}
 }
 
+// commandFlags are flags that stand for a command; any other first argument
+// starting with "-" is a flag of serve.
+var commandFlags = map[string]string{
+	"--version": "version", "-version": "version",
+	"--help": "help", "-help": "help", "-h": "help",
+}
+
 const usage = `
 usage: picache [command] [flags]
 
 commands:
   serve                         run PiCache (default)
-  version                       print version information
+  version, --version            print version information
+  help, --help, -h              print this help
   healthcheck [url]             check the local web endpoint and DNS
-  reset-password [user]         set a new password for user (default admin); reads it from stdin
+  reset-password [user]         set a new password for user (default admin), read from stdin;
+                                disables TOTP, signs out all sessions and revokes all API tokens.
+                                Unknown names are refused (a user is created only if none exists)
   setup-token                   print the first-run setup token
   storage apply <id>            (root) mount a NAS storage target via a systemd mount unit
                                 [--password-stdin] reads the NAS password from stdin
   storage apply-pending         (root) process mount requests queued by the web UI
+  storage remove <id>           (root) unmount a NAS storage target and remove its mount unit and credentials
 
 Configuration is read from PICACHE_* environment variables and, for all
 commands, from /etc/picache/picache.env (or $PICACHE_ENV_FILE) if present.
@@ -145,6 +165,10 @@ func newLogger(cfg *config.Config) *slog.Logger {
 
 func serve(args []string) int {
 	cfg, err := config.Load(args, os.Getenv)
+	if errors.Is(err, flag.ErrHelp) { // picache serve -h
+		fmt.Println(strings.TrimSpace(usage))
+		return 0
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "picache: configuration error:", err)
 		return 2
@@ -182,15 +206,19 @@ func setMemoryLimit(log *slog.Logger) {
 }
 
 func healthcheck(args []string) int {
-	url := ""
+	var url string
+	var own bool
 	if len(args) > 0 {
 		url = args[0]
 	} else {
-		url = localURL()
+		url, own = localURL(), true
 	}
 	c := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
-		// Loopback only: the self-signed certificate cannot be verified.
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: strings.HasPrefix(url, "https://127.0.0.1")}, //nolint:gosec
+		// PiCache's own listener (derived from its configuration) usually
+		// has a self-signed certificate that cannot be verified; the check
+		// only tests liveness and sends nothing secret. An explicit URL is
+		// verified unless it points to the loopback interface.
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: own || isLoopbackURL(url)}, //nolint:gosec
 	}}
 	resp, err := c.Get(url)
 	if err != nil {
@@ -210,6 +238,20 @@ func healthcheck(args []string) int {
 		}
 	}
 	return 0
+}
+
+// isLoopbackURL reports whether url targets a loopback address or localhost.
+func isLoopbackURL(raw string) bool {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
 }
 
 func loopbackFor(addr string) (string, string, bool) {
@@ -296,6 +338,25 @@ func resetPassword(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	d, err := db.Open(path, 1)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer d.Close()
+	ctx := context.Background()
+	// Refuse an unknown name before asking for the password: resetting must
+	// never add a second admin while the real account stays unchanged.
+	names, err := auth.Usernames(ctx, d)
+	if err != nil && !strings.Contains(err.Error(), "no such table") {
+		fmt.Fprintln(os.Stderr, "reset password:", err)
+		return 1
+	}
+	if len(names) > 0 && !slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, user) }) {
+		fmt.Fprintf(os.Stderr, "reset password: there is no account named %q. Existing accounts: %s\n", user, strings.Join(names, ", "))
+		fmt.Fprintln(os.Stderr, "Run `picache reset-password <name>` with one of them.")
+		return 2
+	}
 	fmt.Fprintf(os.Stderr, "New password for %q (min. 10 characters): ", user)
 	pw, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && err != io.EOF {
@@ -303,18 +364,41 @@ func resetPassword(args []string) int {
 		return 1
 	}
 	pw = strings.TrimRight(pw, "\r\n")
-	d, err := db.Open(path, 1)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+	// This is the recovery path after a compromise: remove what could keep
+	// revoked credentials alive first (PiCache creates no triggers or views;
+	// the service also removes them at start).
+	dropped, err := db.DropTriggersAndViews(ctx, d.W)
+	for _, o := range dropped {
+		fmt.Fprintf(os.Stderr, "Removed the %s from the database (PiCache creates no triggers or views; it was planted).\n", o)
 	}
-	defer d.Close()
-	if err := auth.ResetPassword(context.Background(), d, user, pw); err != nil {
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "reset password:", err)
 		return 1
 	}
-	fmt.Fprintln(os.Stderr, "Password updated. Two-factor authentication was disabled and all sessions were signed out.")
+	res, err := auth.ResetPassword(ctx, d, user, pw)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "reset password:", err)
+		return 1
+	}
+	fmt.Fprint(os.Stderr, resetSummary(res))
 	return 0
+}
+
+// resetSummary describes exactly what reset-password changed.
+func resetSummary(r auth.ResetResult) string {
+	var b strings.Builder
+	if r.Created {
+		fmt.Fprintf(&b, "No account existed: created the account %q with the new password.\n", r.Username)
+	} else {
+		fmt.Fprintf(&b, "Password set for %q.\n", r.Username)
+	}
+	if r.TOTPDisabled {
+		b.WriteString("Two-factor authentication was disabled; set it up again after signing in.\n")
+	} else if !r.Created {
+		b.WriteString("Two-factor authentication was not enabled.\n")
+	}
+	fmt.Fprintf(&b, "%d session(s) signed out and %d API token(s) revoked.\n", r.SessionsRevoked, r.TokensRevoked)
+	return b.String()
 }
 
 func setupToken() int {
@@ -336,10 +420,30 @@ func setupToken() int {
 	return 0
 }
 
+const storageUsage = "usage: picache storage apply <target-id> [--password-stdin] | picache storage apply-pending | picache storage remove <target-id>"
+
 func storageCmd(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: picache storage apply <target-id> [--password-stdin] | picache storage apply-pending")
+		fmt.Fprintln(os.Stderr, storageUsage)
 		return 2
+	}
+	ctx := context.Background()
+	if args[0] == "remove" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, storageUsage)
+			return 2
+		}
+		// No database needed: this also cleans up after a deleted target.
+		cfg, err := config.Load(nil, os.Getenv)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configuration error:", err)
+			return 2
+		}
+		if err := storage.RemoveHost(ctx, cfg, args[1], newLogger(cfg)); err != nil {
+			fmt.Fprintln(os.Stderr, "storage remove:", err)
+			return 1
+		}
+		return 0
 	}
 	cfg, _, err := configDB()
 	if err != nil {
@@ -347,7 +451,6 @@ func storageCmd(args []string) int {
 		return 2
 	}
 	log := newLogger(cfg)
-	ctx := context.Background()
 	switch {
 	case args[0] == "apply-pending" && len(args) == 1:
 		if err := storage.ApplyPending(ctx, cfg, log); err != nil {
@@ -372,6 +475,6 @@ func storageCmd(args []string) int {
 		}
 		return 0
 	}
-	fmt.Fprintln(os.Stderr, "usage: picache storage apply <target-id> [--password-stdin] | picache storage apply-pending")
+	fmt.Fprintln(os.Stderr, storageUsage)
 	return 2
 }

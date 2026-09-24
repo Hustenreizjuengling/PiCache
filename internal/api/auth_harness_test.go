@@ -31,6 +31,7 @@ type coreRuntime struct {
 	restored   []byte
 	restoreErr error
 	restarted  bool
+	tlsAddr    string // bound web-tls listener ("" = none)
 }
 
 func (f *coreRuntime) StartedAt() time.Time    { return time.Now().Add(-time.Hour) }
@@ -38,7 +39,13 @@ func (f *coreRuntime) InstanceID() string      { return "0123456789abcdef" }
 func (f *coreRuntime) Config() *config.Config  { return nil }
 func (f *coreRuntime) MasterKeySource() string { return "memory" }
 func (f *coreRuntime) Listeners() ListenerInfo {
-	return ListenerInfo{Bound: map[string][]string{"web": {"127.0.0.1:8080"}}}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	bound := map[string][]string{"web": {"127.0.0.1:8080"}}
+	if f.tlsAddr != "" {
+		bound["web-tls"] = []string{f.tlsAddr}
+	}
+	return ListenerInfo{Bound: bound}
 }
 func (f *coreRuntime) StoreState() StoreState                      { return StoreState{TargetID: "local"} }
 func (f *coreRuntime) ActiveStore() *cachestore.Store              { return nil }
@@ -173,7 +180,7 @@ func (e *coreEnv) provisionAndLogin(t *testing.T) string {
 // createToken creates an API token with the given scope via the API.
 func (e *coreEnv) createToken(t *testing.T, session, scope string) string {
 	t.Helper()
-	w := e.do("POST", "/api/v1/tokens", `{"name":"test","scope":"`+scope+`"}`, session)
+	w := e.do("POST", "/api/v1/tokens", `{"name":"test","scope":"`+scope+`","currentPassword":"`+corePassword+`"}`, session)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create token: %d %s", w.Code, w.Body)
 	}
@@ -184,10 +191,11 @@ func (e *coreEnv) createToken(t *testing.T, session, scope string) string {
 	return out.Token
 }
 
+// coreSessionCookie returns the session cookie a response sets (either name).
 func coreSessionCookie(t *testing.T, w *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, c := range w.Result().Cookies() {
-		if c.Name == auth.SessionCookie {
+		if c.Name == auth.SessionCookie || c.Name == auth.SecureSessionCookie {
 			return c
 		}
 	}

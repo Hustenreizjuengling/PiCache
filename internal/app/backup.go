@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
+	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
@@ -24,9 +26,15 @@ var appMigrations = []string{
 	`CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
 }
 
-// Backup writes a consistent copy of picache.db (VACUUM INTO) to w. Sessions
-// are always removed; sealed NAS passwords only survive with includeSecrets
-// (they need the master key, which is never part of a backup).
+// restoreMu lets only one upload be staged at a time.
+var restoreMu sync.Mutex
+
+// Backup writes a consistent copy of picache.db (VACUUM INTO) to w. Accounts
+// (users with their password hashes and TOTP secrets, sessions, API tokens)
+// are always removed: a restore never replaces them, and a download (also
+// possible with an admin API token) must not give a password hash to crack
+// offline. Sealed NAS passwords only survive with includeSecrets (they need
+// the master key, which is never part of a backup).
 func (a *App) Backup(ctx context.Context, w io.Writer, includeSecrets bool) error {
 	tmp := filepath.Join(a.cfg.DataDir, "tmp", fmt.Sprintf("backup-%d.db", time.Now().UnixNano()))
 	defer os.Remove(tmp)
@@ -47,59 +55,121 @@ func (a *App) Backup(ctx context.Context, w io.Writer, includeSecrets bool) erro
 }
 
 func scrubBackup(ctx context.Context, path string, includeSecrets bool) error {
-	d, err := sql.Open("sqlite", path+"?_pragma=journal_mode(DELETE)")
+	d, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(DELETE)&_pragma=trusted_schema(0)")
 	if err != nil {
 		return err
 	}
 	defer d.Close()
-	stmts := []string{`DELETE FROM auth_sessions`}
-	if !includeSecrets {
-		stmts = append(stmts, `UPDATE storage_targets SET password_sealed = NULL`)
+	if err := auth.ScrubBackup(ctx, d); err != nil {
+		return err
 	}
-	for _, q := range stmts {
-		if _, err := d.ExecContext(ctx, q); err != nil && !strings.Contains(err.Error(), "no such table") {
+	if !includeSecrets {
+		_, err := d.ExecContext(ctx, `UPDATE storage_targets SET password_sealed = NULL`)
+		switch {
+		case err != nil && !strings.Contains(err.Error(), "no such table"):
 			return err
+		case err == nil:
+			var left int
+			if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM storage_targets WHERE password_sealed IS NOT NULL`).
+				Scan(&left); err != nil {
+				return err
+			}
+			if left != 0 {
+				return fmt.Errorf("%d sealed NAS passwords could not be removed", left)
+			}
 		}
 	}
+	// VACUUM rewrites the file, so deleted secrets are not left in free pages.
 	_, err = d.ExecContext(ctx, `VACUUM`)
 	return err
 }
 
-// StageRestore validates an uploaded picache.db and stages it; it replaces
-// the live database on the next start.
+// StageRestore validates an uploaded picache.db against the live database
+// and stages it; it replaces the configuration on the next start (see
+// applyStagedRestore). Only one upload is handled at a time, each in its own
+// temporary file.
 func (a *App) StageRestore(ctx context.Context, r io.Reader) error {
+	if !restoreMu.TryLock() {
+		return apperr.Conflict("another backup is being uploaded; try again when it is done")
+	}
+	defer restoreMu.Unlock()
+	if a.cdb == nil {
+		return apperr.Unavailable("the configuration database is not open")
+	}
+	live, err := schemaNames(ctx, a.cdb.R)
+	if err != nil {
+		return fmt.Errorf("restore: read the current schema: %w", err)
+	}
 	staged := a.paths.ConfigDB + ".restore"
-	tmp := staged + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(staged), filepath.Base(staged)+"-*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
+	defer func() {
+		for _, p := range []string{tmp, tmp + "-journal", tmp + "-wal", tmp + "-shm"} {
+			_ = os.Remove(p)
+		}
+	}()
 	n, err := io.Copy(f, io.LimitReader(r, maxRestoreBytes+1))
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		os.Remove(tmp)
 		return err
 	}
 	if n > maxRestoreBytes {
-		os.Remove(tmp)
 		return apperr.Invalid("file", "backup is larger than 512 MiB")
 	}
-	if err := validateBackup(ctx, tmp); err != nil {
-		os.Remove(tmp)
+	if err := validateBackup(ctx, tmp, live); err != nil {
 		return apperr.Wrap(apperr.KindInvalid, err, "not a usable PiCache backup: %v", err)
 	}
 	if err := os.Rename(tmp, staged); err != nil {
-		os.Remove(tmp)
 		return err
 	}
 	a.log.Warn("configuration restore staged; it will be applied on the next restart")
 	return nil
 }
 
-func validateBackup(ctx context.Context, path string) error {
-	d, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+// schemaObject is one table or index of sqlite_master.
+type schemaObject struct{ typ, name string }
+
+type rowsQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// schemaNames returns the tables and indexes of a database with their SQL
+// ("" for the automatic indexes of UNIQUE and PRIMARY KEY constraints).
+func schemaNames(ctx context.Context, q rowsQuerier) (map[schemaObject]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT type, name, COALESCE(sql, '') FROM sqlite_master WHERE type IN ('table', 'index')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[schemaObject]string{}
+	for rows.Next() {
+		var o schemaObject
+		var stmt string
+		if err := rows.Scan(&o.typ, &o.name, &stmt); err != nil {
+			return nil, err
+		}
+		out[o] = stmt
+	}
+	return out, rows.Err()
+}
+
+// validateBackup checks an uploaded database: integrity, a PiCache schema
+// that is not newer than this binary, and nothing but tables and indexes
+// that the live database (live: its schemaNames) has too, indexes with the
+// same definition. Triggers and views
+// are refused because they would run on every later write with the rights
+// of the service (e.g. "BEFORE DELETE ON auth_tokens ... RAISE(IGNORE)"
+// keeps revoked API tokens alive); PiCache creates none, nor virtual tables
+// or generated columns. The account tables must match the schema PiCache
+// creates exactly (auth.CheckBackupSchema). The file is opened read-only
+// with trusted_schema off.
+func validateBackup(ctx context.Context, path string, live map[schemaObject]string) error {
+	d, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)&_pragma=trusted_schema(0)")
 	if err != nil {
 		return err
 	}
@@ -111,6 +181,16 @@ func validateBackup(ctx context.Context, path string) error {
 	if res != "ok" {
 		return errors.New("integrity check failed")
 	}
+	if err := checkSchemaVersions(ctx, d); err != nil {
+		return err
+	}
+	if err := checkPlainSchema(ctx, d, live); err != nil {
+		return err
+	}
+	return auth.CheckBackupSchema(ctx, d)
+}
+
+func checkSchemaVersions(ctx context.Context, d *sql.DB) error {
 	rows, err := d.QueryContext(ctx, `SELECT component, MAX(version) FROM schema_migrations GROUP BY component`)
 	if err != nil {
 		return errors.New("missing PiCache schema")
@@ -131,16 +211,99 @@ func validateBackup(ctx context.Context, path string) error {
 			return fmt.Errorf("backup was made by a newer PiCache (component %s v%d > v%d); update PiCache first", comp, v, max)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	if !found {
 		return errors.New("missing PiCache settings")
 	}
-	return rows.Err()
+	return nil
 }
 
+// sqliteInternalTables are tables SQLite itself may create (AUTOINCREMENT,
+// ANALYZE); they are allowed even if the live database lacks them.
+var sqliteInternalTables = []string{"sqlite_sequence", "sqlite_stat1", "sqlite_stat4"}
+
+// checkPlainSchema refuses every schema object that PiCache never creates:
+// triggers, views, virtual tables, generated columns, tables or indexes
+// whose names the live database does not have, and indexes that differ
+// from the live index of the same name. Index definitions never change once
+// created (migrations are append-only and rename nothing), so a PiCache
+// backup of any version has the live definition. This includes the
+// automatic indexes of UNIQUE and PRIMARY KEY constraints
+// (sqlite_autoindex_*, no SQL): a named index renamed to look like one
+// (writable_schema) has SQL or a name the live database lacks and is
+// refused, so an upload cannot add e.g. a UNIQUE index to a known table.
+func checkPlainSchema(ctx context.Context, d *sql.DB, live map[schemaObject]string) error {
+	rows, err := d.QueryContext(ctx, `SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var typ, name, table, stmt string
+		if err := rows.Scan(&typ, &name, &table, &stmt); err != nil {
+			return err
+		}
+		liveSQL, known := live[schemaObject{typ, name}]
+		switch {
+		case typ != "table" && typ != "index":
+			return fmt.Errorf("the database contains a %s (%q); PiCache backups have none", typ, name)
+		case typ == "table" && strings.HasPrefix(strings.ToUpper(normalizeSQL(stmt)), "CREATE VIRTUAL TABLE"):
+			return fmt.Errorf("the database contains a virtual table (%q); PiCache backups have none", name)
+		case typ == "index" && known:
+			// Automatic indexes have no SQL on both sides; a named index
+			// renamed to an automatic index's name has SQL and differs.
+			if normalizeSQL(stmt) != normalizeSQL(liveSQL) {
+				return fmt.Errorf("the index %q differs from the one this PiCache has", name)
+			}
+		case known:
+		case typ == "table" && slices.Contains(sqliteInternalTables, name):
+		default:
+			return fmt.Errorf("the database contains the %s %q, which this PiCache does not have", typ, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	var table string
+	err = d.QueryRowContext(ctx, `SELECT m.name FROM sqlite_master m, pragma_table_xinfo(m.name) x
+		WHERE m.type = 'table' AND x.hidden != 0 LIMIT 1`).Scan(&table)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	return fmt.Errorf("table %q has generated columns; PiCache backups have none", table)
+}
+
+// normalizeSQL collapses the whitespace of a CREATE statement.
+func normalizeSQL(stmt string) string { return strings.Join(strings.Fields(stmt), " ") }
+
 // applyStagedRestore swaps in a staged backup before the database is opened.
+// The staged file is checked again (it may have been staged by an older
+// PiCache or changed on disk) and gets the accounts of the live database
+// (auth.CarryOverAccounts): a restore replaces the configuration, never the
+// users, their passwords and TOTP, the API tokens or the audit log, and it
+// ends all sessions. A staged file that fails is set aside as
+// picache.db.failed-restore-<timestamp> and the live database stays.
 func (a *App) applyStagedRestore() (bool, error) {
 	staged := a.paths.ConfigDB + ".restore"
 	if _, err := os.Stat(staged); err != nil {
+		return false, nil
+	}
+	if err := a.prepareRestore(context.Background(), staged); err != nil {
+		failed := fmt.Sprintf("%s.failed-restore-%s", a.paths.ConfigDB, time.Now().UTC().Format("20060102T150405"))
+		if rerr := os.Rename(staged, failed); rerr != nil {
+			_ = os.Remove(staged)
+			failed = ""
+		}
+		for _, sfx := range []string{"-journal", "-wal", "-shm"} {
+			_ = os.Remove(staged + sfx)
+		}
+		a.log.Error("the staged configuration restore was refused; the current configuration stays",
+			slog.String("file", failed), slog.Any("err", err))
 		return false, nil
 	}
 	backup := a.paths.ConfigDB + ".before-restore"
@@ -157,8 +320,53 @@ func (a *App) applyStagedRestore() (bool, error) {
 		return false, fmt.Errorf("restore: %w", err)
 	}
 	a.restoredAt = time.Now()
-	a.log.Warn("applied staged configuration restore", slog.String("previous", backup))
+	a.log.Warn("applied staged configuration restore (accounts, API tokens and audit log kept, sessions ended)",
+		slog.String("previous", backup))
 	return true, nil
+}
+
+// prepareRestore validates the staged file against the live database and
+// carries the live accounts over into it. Attaching the live database also
+// folds a leftover WAL into it, so picache.db.before-restore is complete.
+func (a *App) prepareRestore(ctx context.Context, staged string) error {
+	if _, err := os.Stat(a.paths.ConfigDB); err != nil {
+		return fmt.Errorf("no current database to check the backup against: %w", err)
+	}
+	live, err := liveSchemaNames(ctx, a.paths.ConfigDB)
+	if err != nil {
+		return err
+	}
+	if err := validateBackup(ctx, staged, live); err != nil {
+		return err
+	}
+	sdb, err := sql.Open("sqlite", "file:"+staged+"?_pragma=busy_timeout(5000)&_pragma=trusted_schema(0)"+
+		"&_pragma=foreign_keys(0)&_pragma=journal_mode(DELETE)")
+	if err != nil {
+		return err
+	}
+	defer sdb.Close()
+	sdb.SetMaxOpenConns(1) // ATTACH and the migration must share one connection
+	sdb.SetMaxIdleConns(1)
+	sdb.SetConnMaxLifetime(0)
+	if err := auth.CarryOverAccounts(ctx, &db.DB{W: sdb, R: sdb, Path: staged}, a.paths.ConfigDB); err != nil {
+		return err
+	}
+	return sdb.Close()
+}
+
+// liveSchemaNames reads the tables and indexes of the (not yet opened) live
+// database.
+func liveSchemaNames(ctx context.Context, path string) (map[schemaObject]string, error) {
+	d, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=query_only(1)&_pragma=trusted_schema(0)")
+	if err != nil {
+		return nil, err
+	}
+	defer d.Close()
+	names, err := schemaNames(ctx, d)
+	if err != nil {
+		return nil, fmt.Errorf("read the current schema: %w", err)
+	}
+	return names, nil
 }
 
 // rollbackRestore puts the pre-restore database back after a failed start.
@@ -174,6 +382,24 @@ func (a *App) rollbackRestore() error {
 	}
 	a.restoredAt = time.Time{}
 	return os.Rename(backup, a.paths.ConfigDB)
+}
+
+// removePlantedSchema drops every trigger and view from picache.db at start.
+// PiCache creates neither; one can only come from a restore made before
+// uploads were checked, or from an edit on disk, and it could keep revoked
+// sessions or API tokens alive or password hashes in backups. The start
+// fails if one cannot be removed.
+func (a *App) removePlantedSchema(ctx context.Context) error {
+	dropped, err := db.DropTriggersAndViews(ctx, a.cdb.W)
+	for _, o := range dropped {
+		a.log.Warn("removed a trigger or view from the configuration database; PiCache creates none, "+
+			"so it was planted (e.g. by a backup restored with an older version): check the audit log, "+
+			"and change the password or run `picache reset-password`", slog.String("object", o))
+	}
+	if err != nil {
+		return fmt.Errorf("remove planted triggers and views: %w", err)
+	}
+	return nil
 }
 
 // preUpgradeBackup keeps a copy of picache.db whenever the binary version

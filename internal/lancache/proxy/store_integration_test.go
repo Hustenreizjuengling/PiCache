@@ -18,6 +18,58 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
+// openRealStore opens a real store with 256 KiB slices for the test.
+func openRealStore(t *testing.T) *cachestore.Store {
+	t.Helper()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "store")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const storeID = "0123456789abcdef0123456789abcdef"
+	if _, err := cachestore.InitRoot(root, storeID, 256<<10); err != nil {
+		t.Fatal(err)
+	}
+	st, err := cachestore.Open(context.Background(), cachestore.Options{
+		Root: root, IndexPath: filepath.Join(dir, "index.db"), StoreID: storeID, Log: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() }) // after the proxy stopped (cleanups run in reverse)
+	return st
+}
+
+// TestRealStoreCollapsingWithoutRanges: concurrent downloads of an object
+// whose upstream ignores Range share one upstream download; the leader's
+// captured slices land in the real store.
+func TestRealStoreCollapsingWithoutRanges(t *testing.T) {
+	ctx := context.Background()
+	st := openRealStore(t)
+	h := newHarness(t, withSliceStore(st))
+	data := testData(3<<18 + 1000) // four slices, the last one short
+	gate := make(chan struct{})
+	h.origin.set("/big.pak", &originObj{data: data, noRange: true, gate: gate})
+	for i, body := range gatedClients(t, h, testHost, "/big.pak", 3, gate) {
+		if !bytes.Equal(body, data) {
+			t.Fatalf("client %d: %d of %d bytes", i, len(body), len(data))
+		}
+	}
+	if n := len(h.origin.ranges("/big.pak")); n != 1 {
+		t.Fatalf("%d upstream downloads", n)
+	}
+	id := cachestore.ObjectID(testService, "/big.pak")
+	eventually(t, func() bool {
+		hd, ok, err := st.Head(ctx, id)
+		return err == nil && ok && hd.Has(0) && hd.Has(1) && hd.Has(2) && hd.Has(3)
+	})
+	resp, body := h.get("GET", testHost, "/big.pak", hdr("Range", "bytes=300000-300099"))
+	if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(body, data[300000:300100]) ||
+		resp.Header.Get(cacheStatusHeader) != statusHit {
+		t.Fatalf("range from the store: %d %q", resp.StatusCode, resp.Header.Get(cacheStatusHeader))
+	}
+}
+
 // TestRealStore runs the cache path against a real cachestore.Store in a
 // temp directory: miss → stored slices → hit (WriteRange from slice files)
 // → multi-range from disk → forced refetch.

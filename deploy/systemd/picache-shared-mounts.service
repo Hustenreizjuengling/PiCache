@@ -1,0 +1,20 @@
+# PiCache host-apply in a container: make / a shared mount before PiCache
+# starts. systemd does this itself on bare metal and in VMs, but not inside
+# a container, and then NAS mounts that the root helper starts later never
+# reach picache.service's own mount namespace (PiCache would only see them
+# after a restart). Installed by `install.sh --with-host-apply` only in a
+# container whose / is not shared.
+[Unit]
+Description=Make / a shared mount for PiCache host-apply (container)
+Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md
+DefaultDependencies=no
+After=local-fs.target
+Before=picache.service picache-storage.path
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/mount --make-rshared /
+
+[Install]
+WantedBy=multi-user.target

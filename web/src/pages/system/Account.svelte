@@ -29,7 +29,14 @@
 
   <div class="cols-2">
     <PasswordPanel onchanged={() => sessionsReload++} />
-    <TotpPanel user={me.data ?? session.user} onchange={() => me.refresh()} />
+    <!-- Turning TOTP on signs out the other sessions: reload that list too. -->
+    <TotpPanel
+      user={me.data ?? session.user}
+      onchange={() => {
+        me.refresh()
+        sessionsReload++
+      }}
+    />
   </div>
 
   <SessionsPanel reload={sessionsReload} />

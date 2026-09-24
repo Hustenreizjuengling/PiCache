@@ -250,14 +250,16 @@ func TestLoginThrottle(t *testing.T) {
 		wantKind(t, err, apperr.KindUnauthorized)
 		e.clock.Advance(time.Second)
 	}
-	// Locked: even the right password is refused, from any client (per user).
+	// The failing client is locked out: even the right password is refused,
+	// for other usernames too.
 	_, err := e.a.Login(ctx, "admin", testPassword, "", meta)
 	wantKind(t, err, apperr.KindTooMany)
-	_, err = e.a.Login(ctx, "admin", testPassword, "", ReqMeta{IP: "192.168.1.99"})
-	wantKind(t, err, apperr.KindTooMany)
-	// The client is locked for other usernames too.
 	_, err = e.a.Login(ctx, "someone", testPassword, "", meta)
 	wantKind(t, err, apperr.KindTooMany)
+	// Another client only waits for the short username delay (already over).
+	if _, err := e.a.Login(ctx, "admin", testPassword, "", ReqMeta{IP: "192.168.1.99"}); err != nil {
+		t.Fatalf("another client must not be locked out: %v", err)
+	}
 
 	e.clock.Advance(lockoutDuration)
 	e.login(t)
@@ -269,6 +271,79 @@ func TestLoginThrottle(t *testing.T) {
 	if !strings.Contains(entries[0].Details, `"attempts":5`) || entries[0].Target != "192.168.1.10/32" {
 		t.Fatalf("aggregated entry = %+v", entries[0])
 	}
+}
+
+// SEC-05: failed sign-ins for a username from other LAN hosts slow sign-ins
+// for that username down, but never lock the owner out: the delay starts at
+// 1 s, is capped at 30 s and ends with a successful sign-in.
+func TestLoginUsernameDelayIsNoLockout(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	owner := ReqMeta{IP: "192.168.1.50"}
+	attempt := 0
+	// failOnce fails once from a fresh address, waiting out the delay like a
+	// patient attacker (each address has its own client key).
+	failOnce := func() {
+		t.Helper()
+		for {
+			ip := ReqMeta{IP: fmt.Sprintf("10.0.%d.%d", attempt/200, attempt%200+1)}
+			_, err := e.a.Login(ctx, "admin", "wrong password", "", ip)
+			if apperr.KindOf(err) == apperr.KindUnauthorized {
+				attempt++
+				return
+			}
+			wantKind(t, err, apperr.KindTooMany)
+			e.clock.Advance(time.Second)
+		}
+	}
+	for range maxFailures {
+		failOnce()
+	}
+	_, err := e.a.Login(ctx, "admin", testPassword, "", owner)
+	wantKind(t, err, apperr.KindTooMany)
+	e.clock.Advance(userDelayBase)
+	if _, err := e.a.Login(ctx, "admin", testPassword, "", owner); err != nil {
+		t.Fatalf("owner after 1 s: %v", err)
+	}
+
+	// The success reset the count: four failures do not delay anyone.
+	for range maxFailures - 1 {
+		failOnce()
+	}
+	if _, err := e.a.Login(ctx, "admin", testPassword, "", owner); err != nil {
+		t.Fatalf("the delay must be reset by a successful sign-in: %v", err)
+	}
+
+	// However long the attack runs, the owner waits at most 30 s.
+	for range 30 {
+		failOnce()
+	}
+	_, err = e.a.Login(ctx, "admin", testPassword, "", owner)
+	if ae, ok := apperr.As(err); !ok || ae.Kind != apperr.KindTooMany || !strings.Contains(ae.Message, "second") {
+		t.Fatalf("during the attack: %v", err)
+	}
+	e.clock.Advance(userDelayMax)
+	if _, err := e.a.Login(ctx, "admin", testPassword, "", owner); err != nil {
+		t.Fatalf("owner after at most 30 s: %v", err)
+	}
+}
+
+// SEC-06: /auth/setup after setup neither uses the global attempt budget nor
+// goes unpunished: the caller is locked out like a password guesser, and
+// sign-ins keep working.
+func TestSetupAfterCompletionDoesNotStarveLogins(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	caller := ReqMeta{IP: "192.168.1.99"}
+	for range 50 {
+		_, err := e.a.Setup(ctx, "AAAAAAAAAAAAAAAAAAAAAAAAAA", "x", testPassword, caller)
+		wantKind(t, err, apperr.KindForbidden)
+	}
+	e.login(t) // same instant: the global limit (10/s) was not consumed
+	_, err := e.a.Login(ctx, "admin", testPassword, "", caller)
+	wantKind(t, err, apperr.KindTooMany)
 }
 
 func TestSessionTimeouts(t *testing.T) {
@@ -358,9 +433,13 @@ func TestSessionsChangePasswordRevoke(t *testing.T) {
 		t.Fatal("revoked session still valid")
 	}
 
-	wantKind(t, e.a.ChangePassword(ctx, p1, "wrong password", "a new password"), apperr.KindInvalid)
-	wantKind(t, e.a.ChangePassword(ctx, p1, testPassword, "short"), apperr.KindInvalid)
-	if err := e.a.ChangePassword(ctx, p1, testPassword, "a new password"); err != nil {
+	tok, _, err := e.a.CreateToken(ctx, p1, testPassword, "ci", ScopeAdmin, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantKind(t, e.a.ChangePassword(ctx, p1, "wrong password", "a new password", false), apperr.KindInvalid)
+	wantKind(t, e.a.ChangePassword(ctx, p1, testPassword, "short", false), apperr.KindInvalid)
+	if err := e.a.ChangePassword(ctx, p1, testPassword, "a new password", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.a.Authenticate(cookieRequest(s1.Token)); err != nil {
@@ -369,8 +448,31 @@ func TestSessionsChangePasswordRevoke(t *testing.T) {
 	if _, err := e.a.Authenticate(cookieRequest(s2.Token)); err == nil {
 		t.Fatal("other sessions must be revoked by a password change")
 	}
+	// SEC-03: a token created with a stolen session ends with the password change.
+	if _, err := e.a.Authenticate(bearerRequest(tok)); err == nil {
+		t.Fatal("API tokens must be revoked by a password change")
+	}
 	if _, err := e.a.Login(ctx, "admin", "a new password", "", meta); err != nil {
 		t.Fatal(err)
+	}
+
+	// keepTokens keeps them (sessions still end).
+	tok, _, err = e.a.CreateToken(ctx, p1, "a new password", "ci", ScopeAdmin, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s4, err := e.a.Login(ctx, "admin", "a new password", "", meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.ChangePassword(ctx, p1, "a new password", testPassword, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.Authenticate(bearerRequest(tok)); err != nil {
+		t.Fatalf("keepTokens must keep the API tokens: %v", err)
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s4.Token)); err == nil {
+		t.Fatal("other sessions must be revoked with keepTokens too")
 	}
 }
 
@@ -408,11 +510,18 @@ func TestAPITokens(t *testing.T) {
 		{"x", ScopeRead, -time.Hour},
 		{"bad\nname", ScopeRead, 0},
 	} {
-		_, _, err := e.a.CreateToken(ctx, p, tc.name, tc.scope, tc.ttl)
+		_, _, err := e.a.CreateToken(ctx, p, testPassword, tc.name, tc.scope, tc.ttl)
 		wantKind(t, err, apperr.KindInvalid)
 	}
+	// SEC-03: a session alone is not enough to create a token.
+	for _, pw := range []string{"", "wrong password"} {
+		_, _, err := e.a.CreateToken(ctx, p, pw, "x", ScopeAdmin, 0)
+		if ae, ok := apperr.As(err); !ok || ae.Kind != apperr.KindInvalid || ae.Field != "currentPassword" {
+			t.Fatalf("password %q: err = %v", pw, err)
+		}
+	}
 
-	secret, info, err := e.a.CreateToken(ctx, p, "grafana", ScopeRead, 24*time.Hour)
+	secret, info, err := e.a.CreateToken(ctx, p, testPassword, "grafana", ScopeRead, 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +548,7 @@ func TestAPITokens(t *testing.T) {
 		t.Fatal("expired token must not be valid")
 	}
 
-	admin, info2, err := e.a.CreateToken(ctx, p, "ci", ScopeAdmin, 0)
+	admin, info2, err := e.a.CreateToken(ctx, p, testPassword, "ci", ScopeAdmin, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,8 +571,16 @@ func TestTOTP(t *testing.T) {
 	s := e.login(t)
 	p := &Principal{UserID: s.UserID, Username: "admin", SessionID: s.ID, Scope: ScopeAdmin}
 	code := func(secret []byte) string { return totpCode(secret, e.clock.Now().Unix()/totpPeriod) }
+	other := e.login(t)
 
-	b32secret, uri, err := e.a.TOTPBegin(ctx, p)
+	// SEC-03: enrolling an authenticator needs the password, not just a session.
+	for _, pw := range []string{"", "wrong password"} {
+		_, _, err := e.a.TOTPBegin(ctx, p, pw)
+		if ae, ok := apperr.As(err); !ok || ae.Kind != apperr.KindInvalid || ae.Field != "currentPassword" {
+			t.Fatalf("password %q: err = %v", pw, err)
+		}
+	}
+	b32secret, uri, err := e.a.TOTPBegin(ctx, p, testPassword)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +612,14 @@ func TestTOTP(t *testing.T) {
 	if me, _ := e.a.Me(ctx, p); !me.TOTPEnabled {
 		t.Fatal("TOTP must be enabled")
 	}
-	_, _, err = e.a.TOTPBegin(ctx, p)
+	// Sessions created without a code end; the enrolling one stays.
+	if _, err := e.a.Authenticate(cookieRequest(other.Token)); err == nil {
+		t.Fatal("enabling TOTP must sign out the other sessions")
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s.Token)); err != nil {
+		t.Fatalf("the current session must survive enabling TOTP: %v", err)
+	}
+	_, _, err = e.a.TOTPBegin(ctx, p, testPassword)
 	wantKind(t, err, apperr.KindConflict)
 
 	// The step used for confirmation cannot be replayed for a login.
@@ -515,7 +639,7 @@ func TestTOTP(t *testing.T) {
 	_, err = e.a.Login(ctx, "admin", testPassword, code(secret), meta)
 	wantKind(t, err, apperr.KindUnauthorized) // single use
 
-	// Wrong codes count towards the lockout (one replay above + 4 here).
+	// Wrong codes count towards the username delay (one reuse above + 4 here).
 	for range maxFailures - 1 {
 		_, _ = e.a.Login(ctx, "admin", testPassword, wrong, ReqMeta{IP: "10.0.0.1"})
 	}
@@ -530,49 +654,233 @@ func TestTOTP(t *testing.T) {
 	e.login(t)
 }
 
-func TestResetPasswordAndPurge(t *testing.T) {
+// SEC-04 + SEC-03: the CLI reset only resets an existing account (a
+// mistyped or default name never adds a second admin), disables its TOTP
+// and ends every session and API token, and reports what it changed.
+func TestResetPassword(t *testing.T) {
 	e := newEnv(t)
 	e.withAdmin(t)
 	ctx := context.Background()
 	s := e.login(t)
 	p := &Principal{UserID: s.UserID, Username: "admin", SessionID: s.ID, Scope: ScopeAdmin}
-	if _, _, err := e.a.TOTPBegin(ctx, p); err != nil {
+	if _, _, err := e.a.TOTPBegin(ctx, p, testPassword); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.d.W.Exec(`UPDATE auth_users SET totp_secret = totp_pending`); err != nil {
 		t.Fatal(err)
 	}
-	secret, _, err := e.a.CreateToken(ctx, p, "t", ScopeRead, 0)
+	secret, _, err := e.a.CreateToken(ctx, p, testPassword, "t", ScopeAdmin, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	wantKind(t, ResetPassword(ctx, e.d, "admin", "short"), apperr.KindInvalid)
-	if err := ResetPassword(ctx, e.d, "admin", "reset password 1"); err != nil {
+	_, err = ResetPassword(ctx, e.d, "root", "reset password 1")
+	if ae, ok := apperr.As(err); !ok || ae.Kind != apperr.KindInvalid || !strings.Contains(ae.Message, "admin") {
+		t.Fatalf("unknown name: err = %v (want the existing names)", err)
+	}
+	var users int
+	if err := e.d.R.QueryRow(`SELECT COUNT(*) FROM auth_users`).Scan(&users); err != nil || users != 1 {
+		t.Fatalf("users after a refused reset = %d, %v", users, err)
+	}
+	if _, err := e.a.Authenticate(bearerRequest(secret)); err != nil {
+		t.Fatal("a refused reset must change nothing")
+	}
+	_, err = ResetPassword(ctx, e.d, "admin", "short")
+	wantKind(t, err, apperr.KindInvalid)
+
+	res, err := ResetPassword(ctx, e.d, "ADMIN", "reset password 1")
+	if err != nil {
 		t.Fatal(err)
+	}
+	want := ResetResult{Username: "admin", TOTPDisabled: true, SessionsRevoked: 1, TokensRevoked: 1}
+	if res != want {
+		t.Fatalf("result = %+v, want %+v", res, want)
 	}
 	if _, err := e.a.Authenticate(cookieRequest(s.Token)); err == nil {
 		t.Fatal("reset must revoke sessions")
 	}
+	if _, err := e.a.Authenticate(bearerRequest(secret)); err == nil {
+		t.Fatal("reset must revoke API tokens")
+	}
 	if _, err := e.a.Login(ctx, "admin", "reset password 1", "", meta); err != nil {
 		t.Fatalf("login after reset (TOTP must be off): %v", err)
 	}
-	if err := ResetPassword(ctx, e.d, "second", "reset password 2"); err != nil {
-		t.Fatal(err)
+	entries, _, err := e.a.AuditLog(ctx, AuditQuery{Search: "password_reset"})
+	if err != nil || len(entries) != 1 || !strings.Contains(entries[0].Details, `"tokensRevoked":1`) {
+		t.Fatalf("audit = %+v, %v", entries, err)
 	}
-	if _, err := e.a.Login(ctx, "second", "reset password 2", "", meta); err != nil {
-		t.Fatalf("reset must create a missing user: %v", err)
-	}
+}
 
-	if err := e.d.Tx(ctx, func(tx *sql.Tx) error { return PurgeCredentials(ctx, tx) }); err != nil {
+// The reset creates an account only while there is none at all.
+func TestResetPasswordCreatesOnlyTheFirstAccount(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	res, err := ResetPassword(ctx, e.d, "owner", "reset password 1")
+	if err != nil || !res.Created || res.Username != "owner" {
+		t.Fatalf("reset without accounts = %+v, %v", res, err)
+	}
+	if _, err := e.a.Login(ctx, "owner", "reset password 1", "", meta); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.a.Authenticate(bearerRequest(secret)); err == nil {
-		t.Fatal("purge must delete API tokens")
+	_, err = ResetPassword(ctx, e.d, "admin", "reset password 2")
+	wantKind(t, err, apperr.KindInvalid)
+	if names, err := Usernames(ctx, e.d); err != nil || strings.Join(names, ",") != "owner" {
+		t.Fatalf("accounts = %v, %v", names, err)
+	}
+}
+
+// SEC-02: a trigger planted in the database (e.g. by a restored backup)
+// cannot make session and token revocation a silent no-op: the operation
+// fails and changes nothing.
+func TestPlantedTriggerCannotKeepCredentials(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	e.login(t)
+	if _, err := e.d.W.Exec(`CREATE TRIGGER keep BEFORE DELETE ON auth_sessions BEGIN SELECT RAISE(IGNORE); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.d.Tx(ctx, func(tx *sql.Tx) error { return PurgeSessions(ctx, tx) }); err == nil {
+		t.Fatal("PurgeSessions must fail when sessions survive the delete")
+	}
+	if _, err := ResetPassword(ctx, e.d, "admin", "reset password 1"); err == nil {
+		t.Fatal("ResetPassword must fail when sessions survive the delete")
+	}
+	e.login(t) // rolled back: the old password still works
+
+	if _, err := e.d.W.Exec(`DROP TRIGGER keep`); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.d.Tx(ctx, func(tx *sql.Tx) error { return PurgeSessions(ctx, tx) }); err != nil {
+		t.Fatal(err)
 	}
 	var n int
 	if err := e.d.R.QueryRow(`SELECT COUNT(*) FROM auth_sessions`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("sessions after purge = %d, %v", n, err)
+	}
+}
+
+// Revoking a token or session, and the revocations of a password change,
+// fail instead of doing nothing when a planted trigger keeps the rows (the
+// service removes such triggers at start; this is the second line).
+func TestPlantedTriggerCannotKeepRevokedCredentials(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	s1, s2 := e.login(t), e.login(t)
+	p := &Principal{UserID: s1.UserID, Username: "admin", SessionID: s1.ID, Scope: ScopeAdmin, IP: meta.IP}
+	tok, info, err := e.a.CreateToken(ctx, p, testPassword, "ci", ScopeAdmin, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plant := func(q string) {
+		t.Helper()
+		if _, err := e.d.W.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantKept := func(name string, err error) {
+		t.Helper()
+		if err == nil || apperr.KindOf(err) == apperr.KindNotFound || !strings.Contains(err.Error(), "could not be deleted") {
+			t.Errorf("%s with a planted trigger: %v", name, err)
+		}
+	}
+	plant(`CREATE TRIGGER keep_tokens BEFORE DELETE ON auth_tokens BEGIN SELECT RAISE(IGNORE); END`)
+	wantKept("password change (tokens)", e.a.ChangePassword(ctx, p, testPassword, "a new password", false))
+	wantKept("delete token", e.a.DeleteToken(ctx, info.ID))
+	plant(`CREATE TRIGGER keep_sessions BEFORE DELETE ON auth_sessions BEGIN SELECT RAISE(IGNORE); END`)
+	wantKept("password change (sessions)", e.a.ChangePassword(ctx, p, testPassword, "a new password", true))
+	wantKept("revoke session", e.a.RevokeSession(ctx, p, s2.ID))
+	wantKept("logout", e.a.Logout(ctx, s2.Token))
+	e.login(t) // the password changes were rolled back
+	if _, err := e.a.Authenticate(bearerRequest(tok)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.DropTriggersAndViews(ctx, e.d.W); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.ChangePassword(ctx, p, testPassword, "a new password", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.Authenticate(bearerRequest(tok)); err == nil {
+		t.Fatal("the token must be revoked once the trigger is gone")
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s2.Token)); err == nil {
+		t.Fatal("the other session must be revoked once the trigger is gone")
+	}
+}
+
+// SEC-01: re-confirming the password (restore) answers 401 with field
+// "password" and is throttled like a sign-in.
+func TestConfirmPassword(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	s := e.login(t)
+	p := &Principal{UserID: s.UserID, Username: "admin", SessionID: s.ID, Scope: ScopeAdmin, IP: "192.168.1.20"}
+	for _, pw := range []string{"", "wrong password"} {
+		err := e.a.ConfirmPassword(ctx, p, pw)
+		if ae, ok := apperr.As(err); !ok || ae.Kind != apperr.KindUnauthorized || ae.Field != "password" {
+			t.Fatalf("password %q: err = %v", pw, err)
+		}
+	}
+	if err := e.a.ConfirmPassword(ctx, p, testPassword); err != nil {
+		t.Fatal(err)
+	}
+	for range maxFailures {
+		_ = e.a.ConfirmPassword(ctx, p, "wrong password")
+	}
+	wantKind(t, e.a.ConfirmPassword(ctx, p, testPassword), apperr.KindTooMany)
+	if _, total, err := e.a.AuditLog(ctx, AuditQuery{Search: "password confirmation"}); err != nil || total != 1 {
+		t.Fatalf("wrong confirmations must be audited: total %d, %v", total, err)
+	}
+}
+
+// SEC-09: over TLS the session cookie is "__Host-picache_session"; the
+// Secure flag can be forced for plain HTTP behind a TLS proxy; both names
+// are accepted.
+func TestSessionCookies(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	s := e.login(t)
+	for _, tc := range []struct {
+		tls, secure bool
+		name        string
+		wantSecure  bool
+	}{
+		{true, false, SecureSessionCookie, true},
+		{true, true, SecureSessionCookie, true},
+		{false, true, SessionCookie, true},
+		{false, false, SessionCookie, false},
+	} {
+		c := e.a.Cookie(s, tc.tls, tc.secure)
+		if c.Name != tc.name || c.Secure != tc.wantSecure || c.Path != "/" || c.Domain != "" || !c.HttpOnly ||
+			c.SameSite != http.SameSiteStrictMode || c.Value != s.Token {
+			t.Fatalf("tls %v secure %v: cookie %+v", tc.tls, tc.secure, c)
+		}
+	}
+	for _, name := range []string{SessionCookie, SecureSessionCookie} {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+		r.RemoteAddr = "192.168.1.77:40000"
+		r.AddCookie(&http.Cookie{Name: name, Value: s.Token})
+		p, err := e.a.Authenticate(r)
+		if err != nil || p.SessionID != s.ID || p.IP != "192.168.1.77" {
+			t.Fatalf("%s: %+v, %v", name, p, err)
+		}
+	}
+	// A stale __Host- cookie does not hide a valid plain one.
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	r.AddCookie(&http.Cookie{Name: SecureSessionCookie, Value: strings.Repeat("x", sessionTokenLen)})
+	r.AddCookie(&http.Cookie{Name: SessionCookie, Value: s.Token})
+	if _, err := e.a.Authenticate(r); err != nil {
+		t.Fatalf("stale secure cookie: %v", err)
+	}
+	if got := e.a.ClearCookies(true, true); len(got) != 2 || got[0].MaxAge >= 0 || got[1].Name != SecureSessionCookie {
+		t.Fatalf("clear over TLS = %+v", got)
+	}
+	if got := e.a.ClearCookies(false, false); len(got) != 1 || got[0].Name != SessionCookie || got[0].Secure {
+		t.Fatalf("clear over HTTP = %+v", got)
 	}
 }
 

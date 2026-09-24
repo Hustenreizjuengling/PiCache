@@ -522,8 +522,18 @@ func TestIgnoreLogsAndSeen(t *testing.T) {
 	e.cl.mu.Lock()
 	seen := e.cl.seen[client]
 	e.cl.mu.Unlock()
-	if seen != 2 {
-		t.Errorf("Seen called %d times, want 2", seen)
+	if seen != 1 {
+		t.Errorf("Seen called %d times, want 1 (not for the ignoreLogs client)", seen)
+	}
+	// With anonymised client addresses activity is recorded in memory only.
+	e.update(func(a *settings.All) { a.Logs.AnonymizeClientIPs = true })
+	e.query("udp", "anon.example", dns.TypeA)
+	e.logs.waitEvent(t, "anon.example", 0)
+	e.cl.mu.Lock()
+	seen, transient := e.cl.seen[client], e.cl.transient[client]
+	e.cl.mu.Unlock()
+	if seen != 1 || transient != 1 {
+		t.Errorf("anonymised: Seen %d, SeenTransient %d; want 1, 1", seen, transient)
 	}
 }
 

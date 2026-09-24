@@ -60,7 +60,17 @@
 
   let liveRows = $state.raw<Row[]>([])
   let stream = $state<LiveStream<QueryEvent> | null>(null)
-  let seq = 0
+  let localSeq = 0
+
+  // Live events are not stored yet (id 0): they are keyed by their stream
+  // sequence number, or locally (older servers; a number seen again after a
+  // server restart).
+  function liveKey(e: QueryEvent, taken: Set<string>): string {
+    let k = e.seq !== undefined ? `s${e.seq}` : ''
+    if (!k || taken.has(k)) k = `l${++localSeq}`
+    taken.add(k)
+    return k
+  }
 
   $effect(() => {
     if (!live) return
@@ -70,9 +80,10 @@
       {
         onEvents: (batch) => {
           const cur = readFilters()
+          const taken = new Set(liveRows.map((r) => r.key))
           const add: Row[] = []
           for (let i = batch.length - 1; i >= 0; i--) {
-            if (matchesLocally(batch[i], cur)) add.push({ ...batch[i], key: `l${++seq}` })
+            if (matchesLocally(batch[i], cur)) add.push({ ...batch[i], key: liveKey(batch[i], taken) })
           }
           if (add.length > 0) liveRows = [...add, ...liveRows].slice(0, MAX_LIVE)
         },

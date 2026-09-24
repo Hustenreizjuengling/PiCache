@@ -70,6 +70,9 @@ const de: Messages<typeof en> = {
   'filters.clear': 'Filter zurücksetzen',
   'filters.group': 'Es wird ein Inhalt gezeigt:',
   'filters.groupClear': 'Alle Inhalte zeigen',
+  'filters.window': 'Zeitfenster:',
+  'filters.windowValue': '{from} – {to}',
+  'filters.windowClear': 'Ganzen Zeitraum zeigen',
 
   // LanCache aus (Downloads-Seite)
   'off.title': 'LanCache ist aus',

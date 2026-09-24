@@ -8,7 +8,8 @@
   import type { RangePreset } from '../api/types'
 
   interface Props {
-    value?: RangePreset
+    /** null: no preset is selected (the page shows an explicit time window instead). */
+    value?: RangePreset | null
     options?: RangePreset[]
     /** Accessible name (default "Time range"). */
     label?: string
@@ -18,6 +19,8 @@
   let { value = $bindable('24h'), options = ['15m', '1h', '24h', '7d', '30d'], label, onchange }: Props = $props()
 
   let group: HTMLDivElement
+  /** Index of the selected option (-1: none, e.g. an explicit window). */
+  const selected = $derived(value ? options.indexOf(value) : -1)
 
   function select(v: RangePreset) {
     if (v === value) return
@@ -26,10 +29,10 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    const i = options.indexOf(value)
+    const i = selected
     let n = -1
     if (e.key === 'ArrowRight' || e.key === 'ArrowDown') n = (i + 1) % options.length
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') n = (i - 1 + options.length) % options.length
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') n = i < 0 ? options.length - 1 : (i - 1 + options.length) % options.length
     if (n < 0) return
     e.preventDefault()
     select(options[n])
@@ -38,12 +41,12 @@
 </script>
 
 <div bind:this={group} class="seg" role="radiogroup" aria-label={label ?? t('common.range.label')} tabindex="-1" onkeydown={onKey}>
-  {#each options as o (o)}
+  {#each options as o, i (o)}
     <button
       type="button"
       role="radio"
       aria-checked={o === value}
-      tabindex={o === value ? 0 : -1}
+      tabindex={i === Math.max(0, selected) ? 0 : -1}
       title={t(`common.range.long.${o}`)}
       onclick={() => select(o)}>{t(`common.range.short.${o}`)}</button
     >

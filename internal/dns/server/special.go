@@ -43,17 +43,13 @@ func ownPTRName(set *settings.All) (string, bool) {
 // from blocking.
 func (s *Server) specialUse(qc *qctx) (result, bool) {
 	name := qc.qname
-	switch {
-	case inZone(name, "localhost"):
-		qc.note("special-use name localhost")
-		return s.addrAnswer(qc, []netip.Addr{netip.MustParseAddr("127.0.0.1")}, []netip.Addr{netip.IPv6Loopback()}), true
-	case serverName(qc.set, name):
-		qc.note("this server's own name")
-		h := s.host.Load()
-		return s.addrAnswer(qc, h.addrsFor(qc.client, false), h.addrsFor(qc.client, true)), true
-	case inZone(name, "resolver.arpa"):
-		qc.note("special-use name resolver.arpa: NODATA")
-		return s.negative(qc, dns.RcodeSuccess, StatusSpecial, "resolver.arpa"), true
+	if v4, v6, what, ok := s.specialAddrs(qc, name); ok {
+		if len(v4) == 0 && len(v6) == 0 {
+			qc.note("special-use name " + what + ": NODATA")
+			return s.negative(qc, dns.RcodeSuccess, StatusSpecial, what), true
+		}
+		qc.note("special-use name: " + what)
+		return s.addrAnswer(qc, v4, v6), true
 	}
 	if zone, ok := privateReverseZone(name); ok {
 		return s.reverseZone(qc, zone), true
@@ -62,6 +58,22 @@ func (s *Server) specialUse(qc *qctx) (result, bool) {
 		return s.localZoneAnswer(qc, zone, router), true
 	}
 	return result{}, false
+}
+
+// specialAddrs returns the local answer addresses of the special-use names
+// that are answered from this machine (localhost, this server's names,
+// resolver.arpa = no addresses) for qc's client. ok is false for other names.
+func (s *Server) specialAddrs(qc *qctx, name string) (v4, v6 []netip.Addr, what string, ok bool) {
+	switch {
+	case inZone(name, "localhost"):
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, []netip.Addr{netip.IPv6Loopback()}, "localhost", true
+	case serverName(qc.set, name):
+		h := s.host.Load()
+		return h.addrsFor(qc.client, false), h.addrsFor(qc.client, true), "this server's own name", true
+	case inZone(name, "resolver.arpa"):
+		return nil, nil, "resolver.arpa", true
+	}
+	return nil, nil, "", false
 }
 
 // addrAnswer answers A/AAAA with the given addresses (NODATA for other
@@ -76,17 +88,24 @@ func (s *Server) addrAnswer(qc *qctx, v4, v6 []netip.Addr) result {
 	case dns.TypeAAAA:
 		ips = v6
 	}
-	for _, ip := range ips {
-		if ip.Is4() {
-			m.Answer = append(m.Answer, &dns.A{Hdr: rrHeader(qc.q.Name, dns.TypeA, specialTTL), A: ip.AsSlice()})
-		} else {
-			m.Answer = append(m.Answer, &dns.AAAA{Hdr: rrHeader(qc.q.Name, dns.TypeAAAA, specialTTL), AAAA: ip.AsSlice()})
-		}
-	}
+	m.Answer = addrRRs(qc.q.Name, ips, specialTTL)
 	if len(m.Answer) == 0 {
 		m.Ns = []dns.RR{syntheticSOA(qc.q.Name, specialTTL)}
 	}
 	return result{msg: m, status: StatusSpecial}
+}
+
+// addrRRs returns A/AAAA records for ips owned by owner.
+func addrRRs(owner string, ips []netip.Addr, ttl uint32) []dns.RR {
+	var out []dns.RR
+	for _, ip := range ips {
+		if ip.Is4() {
+			out = append(out, &dns.A{Hdr: rrHeader(owner, dns.TypeA, ttl), A: ip.AsSlice()})
+		} else {
+			out = append(out, &dns.AAAA{Hdr: rrHeader(owner, dns.TypeAAAA, ttl), AAAA: ip.AsSlice()})
+		}
+	}
+	return out
 }
 
 // negative returns an authoritative NXDOMAIN or NODATA with the synthetic SOA.
@@ -133,27 +152,37 @@ func (s *Server) reverseZone(qc *qctx, zone string) result {
 	return s.negative(qc, dns.RcodeNameError, StatusSpecial, zone)
 }
 
-// localZone returns the special-use or local zone containing name and
-// whether the router resolver may answer it.
+// localZone returns the most specific special-use or local zone containing
+// name and whether the router resolver may answer it. The local domain,
+// home.arpa and the search domains may be below a special-use zone (e.g.
+// "home.internal", "corp.local") and then win, so their names still reach
+// the router resolver; a local domain equal to a special-use zone (e.g.
+// "local") wins too. Names below "onion" and "invalid" are never resolved,
+// whatever is configured.
 func (s *Server) localZone(set *settings.All, name string) (zone string, router, ok bool) {
+	consider := func(z string, r bool) {
+		if z == "" || !inZone(name, z) || (r && neverResolvedZone(z)) {
+			return
+		}
+		// All candidates contain name, so a longer zone is a more specific one.
+		if !ok || len(z) > len(zone) || (len(z) == len(zone) && r) {
+			zone, router, ok = z, r, true
+		}
+	}
 	for _, z := range specialZones {
-		if inZone(name, z) {
-			return z, false, true
-		}
+		consider(z, false)
 	}
-	if inZone(name, "home.arpa") {
-		return "home.arpa", true, true
-	}
-	if ld := set.DNS.LocalDomain; ld != "" && inZone(name, ld) {
-		return ld, true, true
-	}
+	consider("home.arpa", true)
+	consider(set.DNS.LocalDomain, true)
 	for _, d := range s.host.Load().search {
-		if inZone(name, d) {
-			return d, true, true
-		}
+		consider(d, true)
 	}
-	return "", false, false
+	return zone, router, ok
 }
+
+// neverResolvedZone reports zones whose names must never be sent to any
+// resolver (RFC 6761 invalid, RFC 7686 onion).
+func neverResolvedZone(z string) bool { return inZone(z, "invalid") || inZone(z, "onion") }
 
 // localZoneAnswer answers names in special-use and local zones: local
 // records and forwarders first, then (if allowed) the router resolver,

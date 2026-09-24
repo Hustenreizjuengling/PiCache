@@ -98,7 +98,7 @@ support these query parameters):
 |---|---|
 | `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d), `status` (comma list of query statuses; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name) |
 | `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here) |
-| `#/cache/downloads` | `client` (IP), `active=true` |
+| `#/cache/downloads` | `client` (IP), `active=true`, `from` + `to` (unix seconds: an explicit time window instead of the range; shown as a removable chip) |
 | `#/cache/library`, `#/cache/storage`, `#/cache/settings` | – |
 | `#/system/health`, `#/system/account` | – |
 
@@ -113,9 +113,9 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 
 | Group | Functions |
 |---|---|
-| `api.auth` | `status() setup(b) login({username,password,totp?}) logout() me() changePassword({currentPassword,newPassword}) sessions() revokeSession(id) totpBegin() totpConfirm(code) totpDisable(password)` |
-| `api.tokens` | `list() create({name,scope,expiresInDays?}) remove(id)` |
-| `api.system` | `info() health() overview() audit({search,limit,offset}) backupUrl(includeSecrets) restore(blob) restart()` |
+| `api.auth` | `status() setup(b) login({username,password,totp?}) logout() me() changePassword({currentPassword,newPassword,keepTokens?}) sessions() revokeSession(id) totpBegin(currentPassword) totpConfirm(code) totpDisable(password)` |
+| `api.tokens` | `list() create({name,scope,expiresInDays?,currentPassword}) remove(id)` |
+| `api.system` | `info() health() overview() audit({search,limit,offset}) backupUrl(includeSecrets) restore(blob, password) restart()` |
 | `api.settings` | `get() put(all) patch(section, partial) defaults()` |
 | `api.dns` | `blocking() setBlocking(enabled, pauseSeconds?) lookup(req) stats() cacheIps() router()`, `records.{list,create,update,remove}`, `forwarders.{list,create,update,remove}` |
 | `api.upstreams` | `get() test(upstream) flushCache()` |
@@ -188,7 +188,10 @@ server: open one per page, close it on destroy.
 
 **Settings sections** (`$lib/settings.svelte`): load a section plus its
 defaults, edit a draft, save only the changed members (important: the filter
-section also holds the blocking pause).
+section also holds the blocking pause). While a form has unsaved edits,
+leaving the page (links, Back, reload) asks first ("Discard unsaved
+changes?"); other editors can register the same guard with
+`$effect(() => guardLeave(() => dirty))` from `$lib/router.svelte`.
 
 ```ts
 const form = settingsForm('dns')
@@ -216,13 +219,13 @@ All components are keyboard accessible, themed and translated. Props marked
 | `QueryStatusChip` / `CacheStatusChip` / `HealthChip` | `status`, `size` (sm) | Translated labels, fixed colours (`lib/traffic.ts`). |
 | `Badge` | `tone`, `title`, children | Counts and tags ("Default", "3"). |
 | `Panel` | `title`, `description`, `level` 2\|3, `flush`, `id`, snippets `actions`, `footer`, children | Tables go into `flush` panels. |
-| `Table<T>` | `columns: Column<T>[]`, `rows`, `key(row)`, `loading`, `error`, `onretry`, `skeletonRows` (5), `bind:sort` / `onsort` (server-side), `onrowclick`, `selected`, `compact`, `maxHeight` (sticky header), `caption`, `emptyText` / snippet `empty`, `rowClass` | `Column`: `key`, `label`, `align`, `mono`, `sortable`, `width`, `value(row)` (sort + default text), `format(row)`, `cell` snippet, `title`, `truncate`. Without `onsort` sorting is client-side by `value`. |
+| `Table<T>` | `columns: Column<T>[]`, `rows`, `key(row)`, `loading`, `error`, `onretry`, `skeletonRows` (5), `bind:sort` / `onsort` (server-side), `onrowclick`, `selected`, `compact`, `maxHeight` (sticky header), `caption`, `emptyText` / snippet `empty`, `rowClass` | `Column`: `key`, `label`, `align`, `mono` (kept on one line), `wrap` (a long mono value may break), `sortable`, `width`, `value(row)` (sort + default text), `format(row)`, `cell` snippet, `title`, `truncate`. Without `onsort` sorting is client-side by `value`. Empty/error messages render below the table, within the visible width. |
 | `Pager` | offset: `total`, `bind:limit` (50), `bind:offset`, `onchange(offset)`; cursor: `mode="cursor"`, `hasPrev`, `hasNext`, `onprev`, `onnext`, `onfirst`, `count`; `limits` + `onlimit` | Place it directly below the table inside the flush Panel (it draws its own top border). |
 | `SidePanel` | `bind:open`, `title`, `subtitle`, `size` md\|lg, `dismissible`, `onclose`, snippet `actions`, children | Drawer from the right for row details. |
 | `Dialog` | `bind:open`, `title`, `subtitle`, `size` sm\|md\|lg, `dismissible` (true), `onclose`, snippet `actions`, children | Content mounts only while open (forms start fresh). |
 | `ConfirmDialog` | `bind:open`, `title`, `message`, `confirmLabel`, `cancelLabel`, `danger` (true), `onconfirm` (async; errors stay in the dialog), `oncancel`, children | Prefer `confirm()`. |
 | `confirm(opts)` | `{ title, message?, confirmLabel, cancelLabel?, danger?, action? }` → `Promise<boolean>` | With `action` the dialog runs it with a spinner and shows its error. |
-| `toast` | `toast.success(msg)`, `toast.info(msg)`, `toast.error(errOrMsg)` | |
+| `toast` | `toast.success(msg)`, `toast.info(msg)`, `toast.error(errOrMsg)` | While a Dialog/SidePanel is open, toasts show in it (above its footer when they would cover it), so they stay clickable. |
 | `Tabs` | `tabs: TabItem[]` ({id,label,count?,icon?}), `bind:active`, `label`, `onchange(id)`, snippet `children(active)` | Keep `tab` in the URL. |
 | `Menu` | `items: MenuItem[]` ({label, icon?, danger?, disabled?, checked?, href?, onselect?} or {separator:true}), `label`, `icon`, `iconOnly`, `variant` secondary\|ghost, `size`, `align` start\|end (end), `disabled`, snippet `trigger` | Row "more actions" menus: `iconOnly icon="more"`. |
 | `Tooltip` | `text`, `focusable` (true), children | Never for essential information. |
@@ -230,11 +233,11 @@ All components are keyboard accessible, themed and translated. Props marked
 | `Chart` | `label`, `timestamps` (unix s), `series: ChartSeries[]` ({label, values, pair?, colorVar?, dashed?, fill?}), `stacked`, `height` (220), `yFormat` (formatCompact), `valueFormat`, `loading`, `minMax` (1), `integer` (true) | uPlot; legend doubles as the tooltip; follows theme and width. |
 | `Meter` | `label`, `max`, `segments: MeterSegment[]` ({label, value, text?, pair?, tone?}), `rest` {label,text}, `marker` {value,label}, `legend` (true) | Used/free bars. |
 | `PairStrip` | `allowed`, `blocked`, `hit`, `wan`, `caption` | Used by the shell. |
-| `TimeRangePicker` | `bind:value` (24h), `options` (15m 1h 24h 7d 30d), `label`, `onchange(range)` | |
+| `TimeRangePicker` | `bind:value` (24h), `options` (15m 1h 24h 7d 30d), `label`, `onchange(range)` | `value={null}`: nothing selected (an explicit from/to window is shown instead). |
 | `KeyValue` | `items: KeyValueItem[]` ({label, value, mono?, href?}), children (extra `<dt>/<dd>`) | Details in side panels. |
 | `Notice` | `tone` info\|ok\|warn\|fail, `title`, `icon`, `ondismiss`, snippet `actions`, children | What happened + how to fix it. |
 | `EmptyState` | `title`, `text`, `icon`, `compact`, children (actions) | Says what to do next. |
-| `CopyButton` | `text`, `label`, `showLabel`, `size` (sm) | Works on plain-HTTP LAN addresses. |
+| `CopyButton` | `text`, `label`, `showLabel`, `size` (sm) | Works on plain-HTTP LAN addresses, also inside dialogs; reports a failure instead of a false "Copied". |
 | `Icon` | `name: IconName`, `size` (20), `label` | Decorative unless labelled. |
 | `Skeleton` / `Spinner` | `width`, `height` / `size`, `label` | |
 | `Trans` | `key`, `params`, one snippet per placeholder | Translations with links or chips inside. |

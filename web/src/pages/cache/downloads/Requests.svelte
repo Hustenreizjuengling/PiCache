@@ -35,7 +35,7 @@
     type SelectOption,
   } from '$lib/ui'
   import type { ServiceCatalog } from '../shared/catalog.svelte'
-  import { formatHitRatio, isIP, pickRange } from '../shared/util'
+  import { formatHitRatio, isIP, pickRange, timeWindow } from '../shared/util'
   import Filters from './Filters.svelte'
 
   let { catalog }: { catalog: ServiceCatalog } = $props()
@@ -46,6 +46,9 @@
   const MAX_LIVE = 500
 
   const range = $derived(pickRange(router.param('range'), RANGES, '1h'))
+  const win = $derived(timeWindow(router.param('from'), router.param('to')))
+  /** An explicit window from the URL (e.g. the query log's "Cache traffic" link) replaces the range. */
+  const time = $derived(win ?? { range })
   const client = $derived(router.param('client'))
   const service = $derived(router.param('service'))
   const search = $derived(router.param('search'))
@@ -55,7 +58,7 @@
   const statusOptions: SelectOption[] = $derived(STATUSES.map((s) => ({ value: s, label: t(`common.cacheStatus.${s}`) })))
 
   const pages = new CursorStack()
-  const filterKey = $derived(JSON.stringify([range, client, service, search, status]))
+  const filterKey = $derived(JSON.stringify([time, client, service, search, status]))
   $effect.pre(() => {
     void filterKey
     untrack(() => pages.reset())
@@ -66,7 +69,7 @@
       ? Promise.resolve(undefined)
       : api.cache.requests(
           {
-            range,
+            ...time,
             client: client || undefined,
             service: service || undefined,
             search: search || undefined,
@@ -83,16 +86,25 @@
   let liveRows = $state.raw<CacheEvent[]>([])
   let stream = $state.raw<LiveStream<CacheEvent> | null>(null)
 
-  // Streamed events have no database id yet (id 0): number them locally with
-  // negative ids so rows have unique keys and can be selected.
-  let liveSeq = 0
+  // Streamed events have no database id yet (id 0). Rows use the negated
+  // stream sequence number instead (unique keys, selectable), or a local
+  // number: older servers send none, and numbers restart with the server.
+  const LOCAL_IDS = 2 ** 52
+  let localSeq = 0
+  function liveId(e: CacheEvent, taken: Set<number>): number {
+    let id = e.seq !== undefined && e.seq > 0 && e.seq < LOCAL_IDS ? -e.seq : 0
+    if (id === 0 || taken.has(id)) id = -(LOCAL_IDS + ++localSeq)
+    taken.add(id)
+    return id
+  }
 
   $effect(() => {
     if (!following) return
     liveRows = []
     const s = streamCache({
       onEvents: (batch) => {
-        const numbered = batch.map((e) => ({ ...e, id: -++liveSeq }))
+        const taken = new Set(liveRows.map((r) => r.id))
+        const numbered = batch.map((e) => ({ ...e, id: liveId(e, taken) }))
         liveRows = [...numbered.reverse(), ...liveRows].slice(0, MAX_LIVE)
       },
     })
@@ -122,7 +134,8 @@
   const rows = $derived(following ? liveRows.filter(matches) : list.data?.items)
 
   function setFollowing(on: boolean) {
-    router.setQuery({ live: on, request: null })
+    // The live view shows new requests: a past window would only be misleading.
+    router.setQuery(on ? { live: true, request: null, from: null, to: null } : { live: null, request: null })
   }
 
   // ---- details

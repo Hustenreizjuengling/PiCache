@@ -190,6 +190,27 @@ func TestCheckRulesIgnoresLists(t *testing.T) {
 	}
 }
 
+// TestListMatcherPatternCostBudget: the estimated size of the compiled
+// patterns is capped across lists, like their number.
+func TestListMatcherPatternCostBudget(t *testing.T) {
+	pat := func(re string, cost int32) parsedPattern {
+		return parsedPattern{re: regexp.MustCompile(re), lit: "", cost: cost, tier: tierBlock}
+	}
+	half := int32(maxPatternCost/2 + 1)
+	a := &parsed{pats: []parsedPattern{pat(`^a\.`, half)}}
+	b := &parsed{pats: []parsedPattern{pat(`^b\.`, half), pat(`^c\.`, 100)}}
+	m := buildListMatcher([]int64{1, 2}, []*parsed{a, b})
+	if m.patterns != 2 || m.dropped != 1 {
+		t.Fatalf("patterns=%d dropped=%d, want 2/1", m.patterns, m.dropped)
+	}
+	s := &snapshot{lists: m, rules: buildRuleMatcher(nil), listNames: []string{"a", "b"}, listGroups: [][]int64{{1}, {1}}}
+	for q, want := range map[string]bool{"a.example": true, "b.example": false, "c.example": true} {
+		if got := s.check(q, []int64{1}, false).Blocked(); got != want {
+			t.Errorf("%s blocked = %v, want %v", q, got, want)
+		}
+	}
+}
+
 func TestCheckAllocationFree(t *testing.T) {
 	s := buildSnapshot(t,
 		[]testList{{body: "||ads.example.com^\n0.0.0.0 t.example.org\n||ad*.pattern.net^\n/^re[0-9]+\\./", groups: []int64{1}}},

@@ -107,7 +107,9 @@ func (fs *fillSlots) release(k netip.Prefix) {
 	}
 }
 
-// bufPool is the free list of slice-sized buffers.
+// bufPool is the free list of slice-sized buffers. The slice size of the
+// last get is the current one (the active store's): a get of another size
+// drops the list, and buffers of another size are not taken back.
 type bufPool struct {
 	mu   sync.Mutex
 	size int64
@@ -117,8 +119,12 @@ type bufPool struct {
 // get returns a buffer of length size.
 func (p *bufPool) get(size int64) []byte {
 	p.mu.Lock()
-	if p.size == size && len(p.free) > 0 {
+	if p.size != size { // the store (slice size) changed
+		p.size, p.free = size, nil
+	}
+	if len(p.free) > 0 {
 		b := p.free[len(p.free)-1]
+		p.free[len(p.free)-1] = nil
 		p.free = p.free[:len(p.free)-1]
 		p.mu.Unlock()
 		return b[:size]
@@ -127,17 +133,14 @@ func (p *bufPool) get(size int64) []byte {
 	return make([]byte, size)
 }
 
-// put returns a buffer obtained from get. Buffers of another size than the
-// current one replace the list only when it is empty (the store changed).
+// put returns a buffer obtained from get; one of an outdated size is
+// dropped.
 func (p *bufPool) put(b []byte) {
 	size := int64(cap(b))
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if size != p.size {
-		if len(p.free) > 0 {
-			return
-		}
-		p.size = size
+		return
 	}
 	if int64(len(p.free)+1)*size <= maxFreeBufferBytes {
 		p.free = append(p.free, b[:cap(b)])

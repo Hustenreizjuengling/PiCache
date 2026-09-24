@@ -108,14 +108,19 @@ func (a *Service) consumeTOTP(ctx context.Context, userID int64, sealed, code st
 	return n == 1, err
 }
 
-// TOTPBegin generates a new (unconfirmed) TOTP secret; returns it and the otpauth:// URI.
-func (a *Service) TOTPBegin(ctx context.Context, p *Principal) (secret, uri string, err error) {
+// TOTPBegin generates a new (unconfirmed) TOTP secret; returns it and the
+// otpauth:// URI. It requires the password: someone with a stolen session
+// must not be able to put their own authenticator on the account.
+func (a *Service) TOTPBegin(ctx context.Context, p *Principal, currentPassword string) (secret, uri string, err error) {
 	u, err := a.userByID(ctx, p.UserID)
 	if err != nil {
 		return "", "", err
 	}
 	if u.TOTPEnabled {
 		return "", "", apperr.Conflict("two-factor authentication is already enabled; disable it first")
+	}
+	if err := a.verifyUserPassword(ctx, p, "currentPassword", currentPassword); err != nil {
+		return "", "", err
 	}
 	raw := make([]byte, totpSecretLen)
 	rand.Read(raw)
@@ -143,7 +148,8 @@ func otpauthURI(username, secret string) string {
 	return u.String()
 }
 
-// TOTPConfirm enables TOTP after verifying a code for the pending secret.
+// TOTPConfirm enables TOTP after verifying a code for the pending secret and
+// signs out the user's other sessions (they were created without a code).
 func (a *Service) TOTPConfirm(ctx context.Context, p *Principal, code string) error {
 	c, ok := normalizeTOTP(code)
 	if !ok {
@@ -177,8 +183,11 @@ func (a *Service) TOTPConfirm(ctx context.Context, p *Principal, code string) er
 		if step < 0 || step <= lastSt {
 			return apperr.Invalid("code", "wrong code; check that the time on your device is correct")
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE auth_users SET totp_secret = totp_pending, totp_pending = NULL,
-			totp_pending_at = 0, totp_last_step = ? WHERE id = ?`, step, p.UserID)
+		if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET totp_secret = totp_pending, totp_pending = NULL,
+			totp_pending_at = 0, totp_last_step = ? WHERE id = ?`, step, p.UserID); err != nil {
+			return err
+		}
+		_, err = deleteVerified(ctx, tx, "auth_sessions", "user_id = ? AND id != ?", p.UserID, p.SessionID)
 		return err
 	})
 }

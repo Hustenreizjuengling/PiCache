@@ -35,7 +35,9 @@ const (
 
 var errClientGone = errors.New("client gone")
 
-// serveHTTP is the request pipeline of ARCHITECTURE 8.2 (steps 1–9).
+// serveHTTP is the request pipeline of ARCHITECTURE 8.2 (steps 1–9). While
+// LanCache is disabled, only the heartbeat is answered (like the SNI
+// pass-through, nothing is proxied or stored).
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Now().Add(s.tm.write))
@@ -50,6 +52,11 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == heartbeatPath && (r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions) {
 		s.heartbeat(w, r)
+		return
+	}
+	if !s.settings().LanCache.Enabled {
+		s.stats.refused.Add(1)
+		http.Error(w, "forbidden: LanCache is disabled", http.StatusForbidden)
 		return
 	}
 	s.stats.requests.Add(1) // heartbeats are not counted
@@ -67,6 +74,11 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheMethod := r.Method == http.MethodGet || r.Method == http.MethodHead
 	canonical := canonicalPath(r.URL.EscapedPath(), r.URL.Path)
+	keyPath := r.URL.Path
+	if canonical {
+		keyPath = cacheKeyPath(r.URL.EscapedPath())
+		canonical = len(keyPath) <= maxPathLen
+	}
 	ua := r.UserAgent()
 	classUA := ua
 	if !cacheMethod || !canonical {
@@ -87,6 +99,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rq := s.newRequest(w, r, rc, ip, host, service)
+	rq.keyPath = keyPath
 	defer rq.finish()
 	switch {
 	case !enabled, services.IsBypassPath(r.URL.Path), !cacheMethod, !canonical:
@@ -177,6 +190,7 @@ type request struct {
 	ident *clients.Identity
 
 	host, service, path string
+	keyPath             string // path of the cache key (cacheKeyPath)
 	group               services.Group
 	label               string
 	target              *url.URL    // upstream URL: the client's escaped path and query
@@ -235,7 +249,16 @@ func (rq *request) finish() {
 	rq.releaseSources()
 	s := rq.s
 	if sent := rq.acct.sent.Load(); rq.st != nil && rq.plan.status != 0 && rq.cacheStatus != statusPass && sent > 0 {
-		rq.st.Touch(rq.id, sent) // served on the cache path
+		// Served on the cache path: an access, and a hit with the bytes
+		// served from the cache (none for a MISS).
+		rq.st.Touch(rq.id, rq.acct.hit.Load())
+	}
+	if rq.release != nil {
+		rq.release() // after Touch: eviction skips the object either way
+		rq.release = nil
+	}
+	if rq.probe && !rq.probeUsed {
+		s.noslice.returnProbe(rq.host, rq.probeAt) // no range request went upstream
 	}
 	s.live.end(rq.tr, time.Now())
 	a := rq.acct

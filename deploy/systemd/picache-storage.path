@@ -3,10 +3,23 @@
 [Unit]
 Description=Watch for PiCache NAS mount requests
 Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md
+# Removing this file disables host-apply (also run: systemctl disable --now picache-storage.path).
+ConditionPathExists=/etc/picache/host-apply.enabled
 
 [Path]
-# The unprivileged service writes request files here; it never mounts itself.
-PathChanged=/var/lib/picache/storage-requests/
+# The unprivileged service writes one request file per storage target,
+# named by the 32-hex-character target id; it never mounts itself. Unlike
+# PathChanged=, a glob is checked again when the helper exits, so a request
+# queued while the helper runs starts it once more instead of being lost.
+# (32 "?": systemd refuses a glob component longer than 255 bytes. The
+# helper removes any other name of this shape, so none can restart it
+# forever.)
+PathExistsGlob=/var/lib/picache/storage-requests/????????????????????????????????
+# A request the helper was working on when it was killed: the next run
+# reports it as failed and removes it.
+PathExistsGlob=/var/lib/picache/storage-requests/.????????????????????????????????.claim
+# With a custom PICACHE_DATA_DIR, install.sh replaces both globs with a
+# drop-in (picache-storage.path.d/50-picache-paths.conf).
 MakeDirectory=no
 Unit=picache-storage.service
 

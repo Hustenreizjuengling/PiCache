@@ -67,6 +67,9 @@ export default {
   'filters.clear': 'Clear filters',
   'filters.group': 'Showing one content:',
   'filters.groupClear': 'Show all content',
+  'filters.window': 'Time window:',
+  'filters.windowValue': '{from} – {to}',
+  'filters.windowClear': 'Show the whole time range',
 
   // LanCache off (downloads page)
   'off.title': 'LanCache is off',

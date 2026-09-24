@@ -162,7 +162,7 @@ func TestForwarderCRUD(t *testing.T) {
 		t.Errorf("*.fritz.box must not match the apex, got %+v", got)
 	}
 	// Forwarder targets are exempt from the rate limit.
-	if ok, _ := e.srv.limiter.Load().rl.Allow(netip.MustParseAddr("192.168.178.1")); !ok {
+	if ok, _ := e.srv.limiter.Allow(netip.MustParseAddr("192.168.178.1")); !ok {
 		t.Error("forwarder target must be exempt")
 	}
 	if err := e.srv.DeleteForwarder(ctx, f.ID); err != nil {
@@ -250,6 +250,8 @@ func TestComputeCacheIPs(t *testing.T) {
 		{"configured", settings.LanCache{CacheIPv4: []string{"10.1.1.1"}}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, []string{"10.1.1.1"}, false, false},
 		{"primary private", settings.LanCache{}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, []string{"192.168.1.2"}, true, false},
 		{"primary public falls back", settings.LanCache{}, hostEnv{primary: ok("203.0.113.5"), ifaces: lan(false, "10.0.0.5")}, []string{"10.0.0.5"}, true, true},
+		{"primary CGNAT falls back", settings.LanCache{}, hostEnv{primary: ok("100.64.1.2"), ifaces: lan(false, "10.0.0.5")}, []string{"10.0.0.5"}, true, true},
+		{"configured invalid", settings.LanCache{CacheIPv4: []string{"8.8.8.8"}}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, nil, false, true},
 		{"no private address", settings.LanCache{}, hostEnv{primary: ok("203.0.113.5"), ifaces: lan(false)}, nil, true, true},
 		{"docker bridge", settings.LanCache{}, hostEnv{container: "docker", primary: ok("172.17.0.2"), ifaces: lan(false, "172.17.0.2")}, nil, true, true},
 		{"docker host network", settings.LanCache{}, hostEnv{container: "docker", primary: ok("172.20.0.2"), ifaces: lan(true, "172.20.0.2")}, []string{"172.20.0.2"}, true, false},
@@ -263,8 +265,8 @@ func TestComputeCacheIPs(t *testing.T) {
 			if got := addrStrings(st.v4); !slices.Equal(got, append([]string{}, tc.v4...)) {
 				t.Errorf("v4 %v, want %v", got, tc.v4)
 			}
-			if st.auto != tc.auto || (st.reason != "") != tc.hasReason {
-				t.Errorf("auto %v reason %q", st.auto, st.reason)
+			if st.auto != tc.auto || (st.warning != "") != tc.hasReason {
+				t.Errorf("auto %v warning %q", st.auto, st.warning)
 			}
 		})
 	}
@@ -303,12 +305,20 @@ func TestRateLimit(t *testing.T) {
 			}
 		}
 	}
-	// Settings apply live: raising the limit replaces the limiter.
+	// Settings apply live: raising the limit reconfigures the limiter in
+	// place; buckets and drop statistics are kept.
+	rl := e.srv.limiter
 	e.update(func(a *settings.All) { a.DNS.RateLimitQPS, a.DNS.RateLimitBurst = 1000, 1000 })
 	w3 := udpFrom("192.168.1.50")
 	e.handle(w3, "d.example", dns.TypeA)
 	if len(w3.msgs) != 1 {
 		t.Error("new limit must apply immediately")
+	}
+	if e.srv.limiter != rl {
+		t.Error("the limiter must be reconfigured, not replaced")
+	}
+	if st := e.srv.Stats(); len(st.TopRateLimited) != 1 || st.TopRateLimited[0].Client != "192.168.1.50/32" || st.TopRateLimited[0].Dropped != 2 {
+		t.Errorf("drop statistics must survive a settings change: %+v", st.TopRateLimited)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -72,11 +73,7 @@ func TestSystemRestoreAndRestart(t *testing.T) {
 	w := e.do("POST", "/api/v1/system/restore", `{"not":"a backup"}`, session)
 	coreWantError(t, w, http.StatusBadRequest, "invalid", "body")
 
-	r := httptest.NewRequest("POST", "/api/v1/system/restore", strings.NewReader("backup-bytes"))
-	r.Host = coreHost
-	r.Header.Set("Content-Type", "application/octet-stream")
-	r.AddCookie(&http.Cookie{Name: "picache_session", Value: session})
-	w = e.serve(r)
+	w = e.serve(restoreRequest("backup-bytes", session, corePassword))
 	if w.Code != http.StatusAccepted || string(e.rt.restored) != "backup-bytes" {
 		t.Fatalf("restore: %d %s (restored %q)", w.Code, w.Body, e.rt.restored)
 	}
@@ -96,6 +93,64 @@ func TestSystemRestoreAndRestart(t *testing.T) {
 	actions := e.auditActions(t)
 	if !slices.Contains(actions, "system.restore") || !slices.Contains(actions, "system.restart") {
 		t.Fatalf("audit %v", actions)
+	}
+}
+
+// restoreRequest builds POST /system/restore with a session cookie or an API
+// token (cred) and, unless password is "-", the X-PiCache-Password header
+// (percent-encoded like the web UI does).
+func restoreRequest(body, cred, password string) *http.Request {
+	r := httptest.NewRequest("POST", "/api/v1/system/restore", strings.NewReader(body))
+	r.Host = coreHost
+	r.Header.Set("Content-Type", "application/octet-stream")
+	if strings.HasPrefix(cred, "pc_") {
+		r.Header.Set("Authorization", "Bearer "+cred)
+	} else {
+		r.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: cred})
+	}
+	if password != "-" {
+		r.Header.Set("X-PiCache-Password", url.PathEscape(password))
+	}
+	return r
+}
+
+// SEC-01: a restore replaces the whole configuration, so it needs an
+// interactive session (never an API token) and the current password again.
+func TestSystemRestoreRequiresSessionAndPassword(t *testing.T) {
+	e := newCoreEnv(t)
+	session := e.provisionAndLogin(t)
+	adminTok := e.createToken(t, session, "admin")
+
+	coreWantError(t, e.serve(restoreRequest("x", adminTok, corePassword)), http.StatusForbidden, "forbidden", "")
+	coreWantError(t, e.serve(restoreRequest("x", session, "-")), http.StatusUnauthorized, "unauthorized", "password")
+	coreWantError(t, e.serve(restoreRequest("x", session, "wrong password")), http.StatusUnauthorized, "unauthorized", "password")
+	r := restoreRequest("x", session, "-")
+	r.Header.Set("X-PiCache-Password", "%zz") // malformed encoding
+	coreWantError(t, e.serve(r), http.StatusUnauthorized, "unauthorized", "password")
+	if e.rt.restored != nil {
+		t.Fatalf("nothing may be staged without the password (got %q)", e.rt.restored)
+	}
+	// The session survives a wrong confirmation (the UI must not sign out).
+	if w := e.do("GET", "/api/v1/auth/me", "", session); w.Code != http.StatusOK {
+		t.Fatalf("session after a wrong confirmation: %d", w.Code)
+	}
+	// Backups and restarts stay available to admin tokens (automation).
+	e.rt.backup = []byte("SQLite format 3\x00")
+	if w := e.do("GET", "/api/v1/system/backup", "", adminTok); w.Code != http.StatusOK {
+		t.Fatalf("backup with an admin token: %d", w.Code)
+	}
+
+	// Non-ASCII passwords are sent percent-encoded.
+	const unicodePassword = "pässwörter sind lang"
+	w := e.do("POST", "/api/v1/auth/password", `{"currentPassword":"`+corePassword+`","newPassword":"`+unicodePassword+`"}`, session)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("change password: %d %s", w.Code, w.Body)
+	}
+	if w := e.serve(restoreRequest("backup-bytes", session, unicodePassword)); w.Code != http.StatusAccepted {
+		t.Fatalf("restore with a percent-encoded password: %d %s", w.Code, w.Body)
+	}
+	if string(e.rt.restored) != "backup-bytes" {
+		t.Fatalf("restored %q", e.rt.restored)
 	}
 }
 

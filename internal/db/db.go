@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,8 +31,18 @@ type DB struct {
 	Path string
 }
 
+// JournalSizeLimit bounds the size a WAL file keeps after a checkpoint: a
+// large transaction (a batch, a vacuum step) grows it temporarily, and
+// without a limit it would stay at its high-water mark until the process
+// exits.
+const JournalSizeLimit = 16 << 20
+
 // Open opens (creating if needed) the database at path with WAL, foreign keys
 // and a 5 s busy timeout. readers is the reader pool size (>= 1).
+//
+// The schema is not trusted (trusted_schema off): views, triggers, CHECK
+// constraints, defaults and indexes cannot call functions with side effects,
+// even if a database file was replaced (restore) or edited on disk.
 func Open(path string, readers int) (*DB, error) {
 	if strings.ContainsAny(path, "?#") {
 		return nil, errors.New("db: path must not contain '?' or '#'")
@@ -46,7 +57,8 @@ func Open(path string, readers int) (*DB, error) {
 		readers = 1
 	}
 	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)" +
-		"&_pragma=foreign_keys(1)&_pragma=temp_store(MEMORY)"
+		"&_pragma=foreign_keys(1)&_pragma=temp_store(MEMORY)&_pragma=trusted_schema(0)" +
+		"&_pragma=journal_size_limit(" + strconv.Itoa(JournalSizeLimit) + ")"
 	w, err := sql.Open("sqlite", dsn+"&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("db: open writer: %w", err)
@@ -73,12 +85,22 @@ func Open(path string, readers int) (*DB, error) {
 }
 
 // OpenReadOnly opens an existing database read-only (no file creation, no
-// WAL/SHM creation by this process). W is nil. Used by root CLI commands.
+// WAL/SHM creation by this process). W is nil. Used by root CLI commands,
+// which must not trust the file: it has to be a regular file (not a
+// symbolic link, device or FIFO), and the schema cannot run functions with
+// side effects (trusted_schema off).
 func OpenReadOnly(path string) (*DB, error) {
-	if _, err := os.Stat(path); err != nil {
+	if strings.ContainsAny(path, "?#") {
+		return nil, errors.New("db: path must not contain '?' or '#'")
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
 		return nil, fmt.Errorf("db: %w", err)
 	}
-	r, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)")
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("db: %s is not a regular file (%s)", path, fi.Mode().Type())
+	}
+	r, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)&_pragma=trusted_schema(0)")
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +173,74 @@ func (d *DB) Migrate(ctx context.Context, component string, steps []string) erro
 		}
 	}
 	return nil
+}
+
+// SchemaExecer is a *sql.DB, *sql.Conn or *sql.Tx.
+type SchemaExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// DropTriggersAndViews removes every trigger and view from a database and
+// returns what it removed (e.g. `trigger "keep"`). PiCache creates neither,
+// so any that exist were planted (an old restore without schema checks, or
+// an edit on disk); a trigger such as "BEFORE DELETE ON auth_tokens …
+// RAISE(IGNORE)" would silently keep revoked credentials.
+func DropTriggersAndViews(ctx context.Context, x SchemaExecer) ([]string, error) {
+	rows, err := x.QueryContext(ctx, `SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view')
+		ORDER BY type = 'view', name`) // triggers first (a view's INSTEAD OF triggers go with it)
+	if err != nil {
+		return nil, err
+	}
+	type object struct{ typ, name string }
+	var objs []object
+	for rows.Next() {
+		var o object
+		if err := rows.Scan(&o.typ, &o.name); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		objs = append(objs, o)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var dropped []string
+	for _, o := range objs {
+		q := `"` + strings.ReplaceAll(o.name, `"`, `""`) + `"`
+		if _, err := x.ExecContext(ctx, `DROP `+strings.ToUpper(o.typ)+` IF EXISTS `+q); err != nil {
+			return dropped, fmt.Errorf("db: drop %s %s: %w", o.typ, q, err)
+		}
+		dropped = append(dropped, o.typ+" "+q)
+	}
+	var left int
+	if err := queryRow(ctx, x, `SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger', 'view')`, &left); err != nil {
+		return dropped, err
+	}
+	if left != 0 {
+		return dropped, fmt.Errorf("db: %d triggers or views could not be removed", left)
+	}
+	return dropped, nil
+}
+
+// queryRow scans the single value of a one-row query.
+func queryRow(ctx context.Context, x SchemaExecer, q string, dst any) error {
+	rows, err := x.QueryContext(ctx, q)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return sql.ErrNoRows
+	}
+	if err := rows.Scan(dst); err != nil {
+		return err
+	}
+	return rows.Close()
 }
 
 var (

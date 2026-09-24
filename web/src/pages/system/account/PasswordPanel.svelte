@@ -1,14 +1,16 @@
 <!--
   @component
-  Change the password. The server signs out all other sessions afterwards,
-  so `onchanged` lets the page reload the sessions list.
+  Change the password. The server signs out all other sessions afterwards
+  and revokes the API tokens unless "Keep API tokens" is ticked (off by
+  default: after a compromise a token may be what the intruder kept), so
+  `onchanged` lets the page reload the sessions list.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
   import { api, toApiError, type ApiError } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { session } from '$lib/session.svelte'
-  import { Button, Field, Input, Notice, Panel, toast } from '$lib/ui'
+  import { Button, Checkbox, Field, Input, Notice, Panel, toast } from '$lib/ui'
   import { charCount, MIN_PASSWORD } from '../forms'
   import PasswordStrength from './PasswordStrength.svelte'
 
@@ -17,6 +19,7 @@
   let current = $state('')
   let next = $state('')
   let repeat = $state('')
+  let keepTokens = $state(false)
   let submitted = $state(false)
   let busy = $state(false)
   let apiErr = $state.raw<ApiError | null>(null)
@@ -43,12 +46,14 @@
     if (errors.current || errors.next || errors.repeat) return
     busy = true
     try {
-      await api.auth.changePassword({ currentPassword: current, newPassword: next })
+      const kept = keepTokens
+      await api.auth.changePassword({ currentPassword: current, newPassword: next, keepTokens: kept })
       current = ''
       next = ''
       repeat = ''
+      keepTokens = false
       submitted = false
-      toast.success(t('system.account.password.changed'))
+      toast.success(t(kept ? 'system.account.password.changedKeepTokens' : 'system.account.password.changed'))
       onchanged?.()
     } catch (err) {
       apiErr = toApiError(err)
@@ -86,6 +91,11 @@
     <Field label={t('system.account.password.repeat')} error={errors.repeat}>
       <Input type="password" bind:value={repeat} autocomplete="new-password" maxlength={1024} required />
     </Field>
+    <Checkbox
+      bind:checked={keepTokens}
+      label={t('system.account.password.keepTokens')}
+      description={t('system.account.password.keepTokensHelp')}
+    />
     <div class="row">
       <Button type="submit" variant="primary" loading={busy} disabled={!session.isAdmin}>
         {t('system.account.password.submit')}

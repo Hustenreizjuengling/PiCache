@@ -13,10 +13,18 @@
 // list's name or groups swaps only the small source→groups table; the (small)
 // user-rule matcher is rebuilt synchronously on every rule change. List
 // recompile calls are coalesced (one running + one pending). Compiled
-// patterns (regex + wildcard) are capped at 20 000 in total (excess within a
-// list is counted as unsupported, excess across lists is reported as
-// Stats.PatternsDropped). Explain rescans list files one at a time with a
+// patterns (regex + wildcard) are capped at 20 000 and at an estimated
+// program size of 1 Mi instructions in total; a single pattern may expand to
+// at most ~4 096 instructions (regexCost; measured on the parse tree, before
+// anything is compiled), so a hostile list cannot turn short "{999}"
+// repetitions into gigabytes of compiled programs. Excess within a list is
+// counted as unsupported, excess across lists is reported as
+// Stats.PatternsDropped. Explain rescans list files one at a time with a
 // 10 s timeout.
+//
+// A changed download that has no entries (empty, blank or comment-only)
+// while the cached copy has some is rejected as failed-cached: the last good
+// copy stays in effect and the download is retried.
 //
 // Downloads: at most 256 MiB (io.LimitReader), streamed to <lists>/<id>.tmp;
 // the fetch client does not follow redirects itself: this package follows up
@@ -170,7 +178,7 @@ type Stats struct {
 	Lists           int       `json:"lists"`
 	Entries         int       `json:"entries"`
 	Patterns        int       `json:"patterns"`        // regex + wildcard patterns
-	PatternsDropped int       `json:"patternsDropped"` // patterns beyond the total cap of 20 000
+	PatternsDropped int       `json:"patternsDropped"` // patterns beyond the total caps (20 000 patterns, 1 Mi estimated instructions)
 	Rules           int       `json:"rules"`
 	CompiledAt      time.Time `json:"compiledAt,omitzero"`
 	CompileMs       int64     `json:"compileMs"`

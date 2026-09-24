@@ -78,10 +78,14 @@ installation. It never downloads anything. It:
 6. with `--with-host-apply`: installs `picache-storage.path` and
    `picache-storage.service`, creates `/etc/picache/credentials` (`0700 root`)
    and `/etc/picache/host-apply.enabled`, and tells you whether `cifs-utils`
-   or `nfs-common` are missing (install them with `apt install`). Later runs
-   keep the helper up to date as long as that marker file exists. In an
-   unprivileged container the helper is skipped, because it cannot mount
-   anything there;
+   or `nfs-common` are missing (install them with `apt install`). With a
+   custom `PICACHE_DATA_DIR` or `PICACHE_MOUNT_ROOT` in `picache.env` it writes
+   drop-ins (`50-picache-paths.conf`) that point the helper units at those
+   paths. In a container whose `/` is not a shared mount (privileged LXC) it
+   also installs `picache-shared-mounts.service`
+   ([Host-apply](#host-apply-root-helper)). Later runs keep the helper up to
+   date as long as that marker file exists. In an unprivileged container the
+   helper is skipped, because it cannot mount anything there;
 7. checks ports 53, 80, 443, 8080 and 8443 for other programs. If port 53 is
    taken it prints the fix and does **not** start PiCache
    ([Port 53 conflicts](#port-53-conflicts)); it never reconfigures
@@ -99,9 +103,10 @@ installation. It never downloads anything. It:
 `ProtectSystem=strict` and a system-call filter. The service can write only to
 `/var/lib/picache`, `/var/cache/picache` and `/srv/picache`. If you change
 `PICACHE_DATA_DIR`, `PICACHE_CACHE_DIR` or `PICACHE_MOUNT_ROOT`, add the new
-paths with a drop-in (`systemctl edit picache`, `ReadWritePaths=`). Put all
-local changes into drop-ins; the installer overwrites the unit file on
-upgrades.
+paths with a drop-in (`systemctl edit picache`, `ReadWritePaths=`). With
+host-apply, also run the installer again: the helper units watch and write
+fixed paths, and the installer gives them matching drop-ins. Put all local
+changes into drop-ins; the installer overwrites the unit files on upgrades.
 
 `Restart=always` also restarts PiCache after **Restart** in the web UI (the
 process exits with code 75).
@@ -194,8 +199,10 @@ propagation does not work.
 
 ## First-run setup
 
-1. Open the web UI: `http://<ip>:8080/` or `https://<ip>:8443/` (self-signed
-   certificate; see `PICACHE_WEB_TLS_CERT` for your own).
+1. Open the web UI: `https://<ip>:8443/` (self-signed certificate; see
+   `PICACHE_WEB_TLS_CERT` for your own) or `http://<ip>:8080/`. Over plain
+   HTTP the setup token and the password cross the network unencrypted; the
+   setup and sign-in pages then show a link to the HTTPS port.
 2. Enter the one-time **setup token** and create the admin account (password
    at least 10 characters). The token is written to `<data>/setup-token`
    (mode 0600) and logged at WARN on every start until setup is done:
@@ -297,7 +304,7 @@ Everything persistent lives in exactly two places plus optional NAS mounts.
 | `/var/cache/picache` (`PICACHE_CACHE_DIR`) | `/cache` | The built-in **local** cache store (slice files). Large. | No |
 | `/srv/picache/<id>` (`PICACHE_MOUNT_ROOT`) | `/srv/picache` (bind, `rslave`) | NAS cache stores. The only place outside the cache dir where stores may live (the only NAS path writable inside the sandbox). | No |
 | `/etc/picache/picache.env` | environment | Bootstrap settings only. Read by systemd **and by every CLI command**. | Yes |
-| `/etc/picache/credentials/<id>.cred` | – | NAS credentials written by the root helper (0600, root). | – |
+| `/etc/picache/credentials/<id>.cred` | – | NAS credentials written by the root helper (0600, root), and `<id>.applied`, a fingerprint of the settings that are mounted. Deleted when the target is deleted or leaves host-apply mode. | – |
 
 Rules:
 
@@ -316,26 +323,35 @@ Rules:
 **What to back up:** `picache.db`, which holds the whole configuration.
 `logs.db` (history and statistics) is optional. The cache, the cache index,
 lists and cache-domains snapshots are rebuilt automatically. Keep
-`keys/master.key` separately and safely if stored NAS passwords and TOTP
-secrets should keep working on another machine. Without it, re-enter the NAS
-passwords and sign in with `picache reset-password` (which disables TOTP).
+`keys/master.key` separately and safely if stored NAS passwords (and, for
+file copies, TOTP secrets) should keep working on another machine. Without
+it, re-enter the NAS passwords and, after a file restore, sign in with
+`picache reset-password <user>` (which disables TOTP).
 
 ### In the web UI
 
 **System → Backup & restore**:
 
-- **Download** gives a consistent copy (`picache-backup-<date>.db`). Sessions
-  are always removed. Sealed NAS passwords are included only if you opt in,
-  and they are useless without the master key.
-- **Restore** accepts a backup of up to 512 MiB, checks its integrity and
-  schema version (backups from a newer PiCache are refused) and stages it.
-  The next restart applies it. All sessions and API tokens are then revoked.
-  The previous database is kept as `picache.db.before-restore`. If PiCache
-  cannot start with the restored database, it puts the previous one back
-  automatically (the failed file is kept as
-  `picache.db.failed-restore-<timestamp>`).
+- **Download** gives a consistent copy (`picache-backup-<date>.db`) of the
+  configuration and the audit log. Accounts are never included: users with
+  their password hashes and TOTP secrets, sessions and API tokens are
+  removed. Sealed NAS passwords are included only if you opt in, and they are
+  useless without the master key.
+- **Restore** needs a browser session and your current password (API tokens
+  cannot restore). It accepts a backup of up to 512 MiB, checks its
+  integrity and schema version (backups from a newer PiCache are refused),
+  refuses databases with triggers, views, virtual tables, generated columns,
+  tables or indexes this PiCache does not have, indexes defined differently,
+  or altered account tables, and stages it. The next restart checks it again and applies it: the
+  configuration comes from the backup, while the accounts, passwords, TOTP,
+  API tokens and audit log of the running instance stay. Everyone has to
+  sign in again. The previous database is kept as
+  `picache.db.before-restore`. If PiCache cannot start with the restored
+  database, it puts the previous one back automatically (the failed file is
+  kept as `picache.db.failed-restore-<timestamp>`).
 
-Automated backups use an **admin** API token:
+Automated backups use an **admin** API token (restores are done in the web
+UI):
 
 ```sh
 curl -fsS -H "Authorization: Bearer $PICACHE_TOKEN" \
@@ -364,12 +380,16 @@ docker compose start picache
 To restore from files, stop PiCache, delete `picache.db-wal` and
 `picache.db-shm`, copy the backup to `picache.db`, and make it owned by the
 service user (`chown picache:picache` on bare metal, `65532:65532` in
-Docker). Then start PiCache. Sessions survive a file restore; use the UI
-restore if they should be revoked.
+Docker). Then start PiCache. A file restore replaces everything, including
+the accounts, API tokens and sessions of the copy; use the UI restore to keep
+the current accounts. PiCache creates no triggers or views; if the file has
+any, they are removed at start and a warning is logged.
 
 **Moving to a new machine:** install PiCache there, stop it, copy
 `picache.db` (and `keys/master.key`) into the data directory with the right
-owner, and start it. The cache can be copied too, or it simply fills again.
+owner, and start it (this keeps the accounts). Alternatively complete setup
+on the new machine and restore a downloaded backup in the UI: the account
+created there stays. The cache can be copied too, or it simply fills again.
 A NAS store is adopted by initialising the target with *adopt* in
 **Cache → Storage**.
 
@@ -403,10 +423,13 @@ version has migrated.
 ## Uninstall
 
 - **Bare metal / LXC:** `sudo sh deploy/install.sh --uninstall` stops and
-  disables the units and removes the binary, the unit files and
-  `/etc/picache/host-apply.enabled`. Configuration and data are kept. The
-  script lists what remains, including NAS mount units written by the
-  helper (`/etc/systemd/system/srv-picache-*.mount`). To remove everything:
+  disables the units and removes the binary, the unit files, the installer's
+  drop-ins and `/etc/picache/host-apply.enabled`. Configuration and data are
+  kept. The script lists what remains, including NAS mount units written by
+  the helper (`/etc/systemd/system/srv-picache-*.mount`) with the commands
+  that remove them and their credentials. Before uninstalling you can
+  instead run `sudo picache storage remove <id>` for each host-apply target.
+  To remove everything:
 
   ```sh
   # disable and remove NAS mount units first (the script prints the commands)
@@ -474,7 +497,7 @@ PiCache itself never mounts anything and never holds `CAP_SYS_ADMIN`.
 | Option | Where it works | How |
 |---|---|---|
 | **External mount** (mode *external*) | everywhere | Something else mounts the share below `/srv/picache` (host fstab or systemd `.mount`, Proxmox mount point, Docker bind with `rslave`). The UI generates the fstab line, the `.mount` unit, the credentials file template, the compose bind and the Proxmox commands for each target. The snippets never contain the password. |
-| **Host-apply** (mode *host-apply*) | bare metal, VMs, privileged LXC with systemd | Install with `--with-host-apply`. The UI queues a request. `picache-storage.path` starts the root helper (`picache storage apply-pending`), which re-validates the target, writes `/etc/picache/credentials/<id>.cred` and a `.mount` unit for `/srv/picache/<id>`, and starts it. You can also run `sudo picache storage apply <id>` yourself. |
+| **Host-apply** (mode *host-apply*) | bare metal, VMs, privileged LXC with systemd | Install with `--with-host-apply`. The UI queues a request. `picache-storage.path` starts the root helper (`picache storage apply-pending`), which re-validates the target, writes `/etc/picache/credentials/<id>.cred` and a `.mount` unit for `/srv/picache/<id>`, and starts it. It also removes both when the target is deleted or switched to another mode. You can also run `sudo picache storage apply <id>` and `sudo picache storage remove <id>` yourself. See [Host-apply](#host-apply-root-helper). |
 | **Proxmox LXC** | unprivileged containers | The host mounts the share and passes it in with `pct set <ctid> -mpN`; see [deploy/lxc/README.md](../deploy/lxc/README.md). |
 | **Docker** | Docker hosts | The host mounts the share below `/srv/picache` (fstab, `nofail`); the compose file binds `/srv/picache` with `propagation: rslave`. |
 
@@ -494,6 +517,72 @@ Recommendations:
   container, and with it DNS, fails to start when the NAS is down, and
   `docker volume inspect` shows the SMB password.
 
+### Host-apply (root helper)
+
+With `--with-host-apply` the web UI can mount a share without a shell. The
+unprivileged service only writes a request file
+(`<data>/storage-requests/<id>`). `picache-storage.path` starts
+`picache-storage.service` (`picache storage apply-pending`, root, sandboxed),
+which reads the target from the database, validates it again and makes the
+host match it:
+
+- **Apply** on a host-apply target writes `/etc/picache/credentials/<id>.cred`
+  (SMB with a user) and `/etc/systemd/system/srv-picache-<id>.mount`, runs
+  `systemctl daemon-reload` and `enable`, and starts the unit. When the
+  settings changed since the share was mounted (server, share or export,
+  version, encryption, user, password), the unit is **restarted**, so the new
+  settings take effect. A share that is in use cannot be unmounted: to change
+  the active cache store's mount, activate another target first.
+- **Deleting** a host-apply target, or switching it to *external*, disables,
+  stops and deletes the mount unit, deletes the credentials file and removes
+  the empty mountpoint. Files on the NAS are not touched. Without the helper
+  (`sudo picache storage apply` only) run `sudo picache storage remove <id>`.
+- Requests that arrive while the helper runs are handled in the same run.
+  Each run writes `<id>.result`, which the UI shows. A failed mount shows the
+  mount program's own message (for example
+  `mount error(13): Permission denied`); the full log is in
+  `journalctl -u srv-picache-<id>.mount` and `journalctl -u picache-storage`.
+- If a request is not picked up within 3 minutes, the UI says so. Check
+  `systemctl status picache-storage.path`; if it failed, run
+  `sudo systemctl reset-failed picache-storage.path` and
+  `sudo systemctl start picache-storage.path` (or run the installer again).
+- To disable host-apply, delete `/etc/picache/host-apply.enabled` and run
+  `sudo systemctl disable --now picache-storage.path`.
+
+**Master key as a systemd credential.** The helper decrypts stored NAS
+passwords with the master key. If `picache.service` gets the key as a
+credential (`LoadCredentialEncrypted=picache-master-key:…` in a drop-in),
+give the helper the same line, or SMB targets with a user fail with
+"no master key for the root helper":
+
+```sh
+sudo systemctl edit picache-storage
+# [Service]
+# LoadCredentialEncrypted=picache-master-key:/etc/credstore.encrypted/picache-master-key
+```
+
+Alternatively apply such a target by hand:
+`sudo picache storage apply <id> --password-stdin`.
+
+**Custom paths.** The helper units watch `/var/lib/picache/storage-requests/`
+and may only write below `/srv/picache`. After changing `PICACHE_DATA_DIR`
+or `PICACHE_MOUNT_ROOT` in `picache.env`, run the installer again. It writes
+`/etc/systemd/system/picache-storage.path.d/50-picache-paths.conf` and
+`picache-storage.service.d/50-picache-paths.conf` with the new paths (and
+removes them when the defaults are back). Otherwise requests stay unanswered
+("not picked up") and new mountpoints cannot be created.
+
+**Containers (privileged LXC).** systemd makes `/` a shared mount on bare
+metal and in VMs, but not inside a container. PiCache runs in its own mount
+namespace (`ProtectSystem=`), and without shared propagation a share the
+helper mounts later never becomes visible there: the UI reports "The root
+helper reported this share as mounted, but PiCache does not see a mount
+here". The installer therefore installs `picache-shared-mounts.service`
+(`mount --make-rshared /` before PiCache starts) in a container whose `/` is
+not shared. Check with `findmnt -no PROPAGATION /` (`shared`), and restart
+PiCache once after enabling it. Your container's AppArmor profile must allow
+CIFS/NFS mounts and propagation changes.
+
 ---
 
 ## Environment variables
@@ -510,9 +599,9 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 
 | Variable | Default (Linux · Docker image) | Description |
 |---|---|---|
-| `PICACHE_DATA_DIR` | `/var/lib/picache` · `/data` | Databases, keys, lists, TLS certificate. Must be a local disk. |
+| `PICACHE_DATA_DIR` | `/var/lib/picache` · `/data` | Databases, keys, lists, TLS certificate. Must be a local disk. With host-apply, run the installer again after changing it ([Custom paths](#host-apply-root-helper)). |
 | `PICACHE_CACHE_DIR` | `/var/cache/picache` · `/cache` | The built-in local cache store (target `local`). |
-| `PICACHE_MOUNT_ROOT` | `/srv/picache` | The only directory below which other storage targets may live. |
+| `PICACHE_MOUNT_ROOT` | `/srv/picache` | The only directory below which other storage targets may live. With host-apply, run the installer again after changing it. |
 | `PICACHE_DNS_LISTEN` | `:53` | DNS over UDP and TCP. Required; a bind failure stops PiCache. |
 | `PICACHE_CACHE_LISTEN` | `:80` | LanCache HTTP cache. If it is off or cannot bind, LanCache DNS overrides stay inactive. |
 | `PICACHE_SNI_LISTEN` | `:443` | LanCache HTTPS (SNI) pass-through. |
@@ -521,13 +610,14 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_WEB_TLS_CERT` | – | PEM certificate for the HTTPS listener. Without it, PiCache creates and renews a self-signed certificate in `<data>/tls/`. |
 | `PICACHE_WEB_TLS_KEY` | – | PEM private key; set together with the certificate. Both files must be readable by the service user. |
 | `PICACHE_WEB_HOSTS` | – | Comma-separated extra host names allowed for the web UI (DNS-rebinding protection), e.g. a reverse-proxy name. Can also be set in the web settings. |
+| `PICACHE_WEB_SECURE_COOKIES` | `false` | Set to `true` when a TLS-terminating reverse proxy forwards to the plain-HTTP listener: the session and device cookies then get the `Secure` flag although the request reaches PiCache over HTTP. Requests on PiCache's own HTTPS listener always get `Secure` cookies named `__Host-picache_session` and `__Host-picache_device`. With this set, signing in directly over plain HTTP no longer works (browsers drop `Secure` cookies there). |
 | `PICACHE_RUN_AS` | – · `65532:65532` | Numeric non-root `uid:gid`. When PiCache starts as root it binds the listeners and then switches to this user before touching files. Linux only. Not needed with the systemd unit. |
 | `PICACHE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `PICACHE_LOG_FORMAT` | `text` | `text` or `json` (logs go to stderr / the journal). |
 | `PICACHE_ADMIN_USER` | `admin` | User name for password provisioning. |
 | `PICACHE_ADMIN_PASSWORD_FILE` | – | File with the password (at least 10 characters; a trailing newline is ignored) for the first admin. Used only while no user exists. |
 | `PICACHE_ADMIN_PASSWORD` | – | Same as a plain variable (discouraged, logged as a warning: visible to other processes and in `docker inspect`). The `_FILE` variant wins. |
-| `PICACHE_MASTER_KEY_FILE` | `<data>/keys/master.key` | Master key for stored secrets: 32 raw bytes or 64 hex characters. Created with mode 0600 if missing. A systemd credential `picache-master-key` (`$CREDENTIALS_DIRECTORY`) or the Docker secret `/run/secrets/picache_master_key` takes precedence. The Docker secret is read after the privilege drop, so it must be readable by 65532. |
+| `PICACHE_MASTER_KEY_FILE` | `<data>/keys/master.key` | Master key for stored secrets: 32 raw bytes or 64 hex characters. Created with mode 0600 if missing. A systemd credential `picache-master-key` (`$CREDENTIALS_DIRECTORY`) or the Docker secret `/run/secrets/picache_master_key` takes precedence. A systemd credential must also be given to `picache-storage.service` when host-apply mounts SMB shares with a stored password ([Host-apply](#host-apply-root-helper)). The Docker secret is read after the privilege drop, so it must be readable by 65532. |
 | `PICACHE_DEV` | `false` | Development mode (relaxed platform checks, verbose errors). Never in production. |
 | `PICACHE_ENV_FILE` | `/etc/picache/picache.env` | Env file to read instead of the default. Unlike the default file, it must exist. |
 | `GOMEMLIMIT` | 60 % of the memory limit | Go's soft memory limit. By default PiCache sets 60 % of the cgroup memory limit, or of the RAM. |
@@ -545,10 +635,11 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `picache [serve] [flags]` | Run PiCache (the default command). |
 | `picache version` | Print version, commit, build date, Go version and platform. |
 | `picache healthcheck [url]` | Exit 0 if the local web endpoint answers `/healthz` with `ok` and the DNS listener resolves `localhost`. It uses the first address of `PICACHE_WEB_LISTEN` (or of `PICACHE_WEB_TLS_LISTEN` if HTTP is off) and of `PICACHE_DNS_LISTEN`, with wildcard addresses replaced by `127.0.0.1`. With a URL, only that URL is checked. Used by the Docker `HEALTHCHECK`. |
-| `picache reset-password [user]` | Set a new password for `user` (default `admin`), read from stdin (at least 10 characters). The input is not hidden; you can redirect it from a file. Disables TOTP and signs out all sessions. Run it as root or as the service user. As root it switches to the owner of the data directory first. |
+| `picache reset-password [user]` | Set a new password for the existing account `user` (default `admin`), read from stdin (at least 10 characters). The input is not hidden; you can redirect it from a file. Disables TOTP for the account, signs out all sessions and revokes all API tokens, then prints exactly what changed. A name that matches no account is refused and the existing names are listed; an account is created only when none exists yet. Run it as root or as the service user. As root it switches to the owner of the data directory first. |
 | `picache setup-token` | Print the first-run setup token (until setup is done). Needs read access to the data directory: `sudo` on bare metal, `-u 65532:65532` in Docker. |
-| `picache storage apply <id> [--password-stdin]` | Root only. Validate the storage target, write `/etc/picache/credentials/<id>.cred` and a systemd `.mount` unit for `/srv/picache/<id>`, then `systemctl daemon-reload` and `enable --now`. The NAS password is decrypted from the database with the master key, or read from stdin with `--password-stdin`. |
-| `picache storage apply-pending` | Root only. Process the mount requests the web UI queued in `<data>/storage-requests/`. Run by `picache-storage.service`. |
+| `picache storage apply <id> [--password-stdin]` | Root only. Validate the storage target, write `/etc/picache/credentials/<id>.cred` and a systemd `.mount` unit for `/srv/picache/<id>`, then `systemctl daemon-reload`, `enable` and `start`, or `restart` when the mounted settings are outdated. The NAS password is decrypted from the database with the master key, or read from stdin with `--password-stdin`. |
+| `picache storage remove <id>` | Root only. Disable, stop and delete the `.mount` unit of `/srv/picache/<id>`, delete its credentials file and remove the empty mountpoint. Works without the database, for example after the target was deleted. |
+| `picache storage apply-pending` | Root only. Process the requests the web UI queued in `<data>/storage-requests/`: mount host-apply targets, remove the mounts of deleted targets and of targets switched to another mode. Run by `picache-storage.service`. |
 | `picache help` | Print the usage. |
 
 Exit codes: `0` success, `1` error or unhealthy, `2` usage or configuration
@@ -571,8 +662,11 @@ process).
 - **`… is owned by … but PiCache runs as …` (Docker):** a bind-mounted
   directory has the wrong owner; `chown -R 65532:65532` it on the host.
 - **`status=226/NAMESPACE` (LXC):** enable the container's nesting feature.
+- **NAS mount (host-apply) fails or stays queued:** the UI shows the mount
+  program's message; see [Host-apply](#host-apply-root-helper) for the
+  helper's logs, the path unit, custom paths and containers.
 - **No LanCache answers:** LanCache must be enabled, the cache-domains list
   loaded, the :80 listener bound and a private cache IPv4 address known, and
   the client must not be in a group that bypasses LanCache. The health page
   names the missing piece.
-- **Forgotten password:** `sudo picache reset-password admin`.
+- **Forgotten password:** `sudo picache reset-password <user>` with the user name chosen at setup (`admin` by default; an unknown name is refused and the existing names are shown). It also signs out every session and revokes all API tokens, so it is the recovery step after a suspected compromise too.

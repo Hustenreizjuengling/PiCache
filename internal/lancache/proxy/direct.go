@@ -16,22 +16,42 @@ var copyBufs = sync.Pool{New: func() any { b := make([]byte, 32<<10); return &b 
 // directSource is an upstream body positioned at an absolute object
 // offset. It serves sequentially (skipping forward when needed) and, with
 // capture, stores every complete slice passing through when a fill slot is
-// free (hosts without range support, range failures).
+// free (hosts without range support, range failures). A capturing source
+// may lead (collapse.go): its captured slices are fills other requests
+// stream, and it announces its progress.
 type directSource struct {
-	body    io.ReadCloser
-	off     int64 // absolute offset of the next body byte
-	end     int64 // last offset the body provides
-	capture bool
-	failed  bool
+	body      io.ReadCloser
+	off       int64 // absolute offset of the next body byte
+	end       int64 // last offset the body provides
+	capture   bool
+	failed    bool
+	lead      *objFetch // nil unless this source leads
+	announced int64     // slices < announced were passed (capture decided)
 }
 
 func newDirect(body io.ReadCloser, start, end int64, capture bool) *directSource {
-	return &directSource{body: body, off: start, end: end, capture: capture}
+	d := &directSource{body: body, off: start, end: end, capture: capture}
+	if lb, ok := body.(*leadBody); ok {
+		d.lead = lb.lead
+	}
+	return d
+}
+
+// newDirect wraps an upstream body; a capturing source announces itself as
+// the object's leader unless it already carries an announcement or the
+// object has a leader.
+func (rq *request) newDirect(body io.ReadCloser, start, end int64, capture bool) *directSource {
+	d := newDirect(body, start, end, capture)
+	if d.lead == nil && capture && !rq.bypass && rq.st != nil && !rq.s.storeFull() {
+		d.lead = rq.s.leaders.lead(rq.objKey(), start, end, rq.obj.total, rq.S, rq.obj.header)
+	}
+	return d
 }
 
 func (d *directSource) covers(pos int64) bool { return !d.failed && pos >= d.off && pos <= d.end }
 
 func (d *directSource) close() {
+	d.lead.end()
 	if !d.failed && d.off > d.end {
 		_, _ = io.CopyN(io.Discard, d.body, 512) // see EOF: keep the connection
 	}
@@ -50,23 +70,21 @@ func (d *directSource) serve(rq *request, pos, end int64) (int64, error) {
 		i := d.off / S
 		sStart := i * S
 		sEnd := sStart + sliceLen(i, S, T) - 1
-		if d.capture && d.off == sStart && sEnd <= d.end {
-			if buf, ok := rq.captureBuffer(i); ok {
-				data := buf[:sEnd-sStart+1]
-				if err := d.readFull(rq, data); err != nil {
-					rq.releaseCapture(buf)
+		if i >= d.announced {
+			d.announced = i + 1
+			var f *fill
+			var gen uint64
+			if d.capture && d.off == sStart && sEnd <= d.end {
+				f, gen = rq.captureFill(i, sEnd-sStart+1)
+			}
+			if d.lead != nil {
+				d.lead.passed(i, f != nil || rq.sliceAvailable(i))
+			}
+			if f != nil {
+				n, err := d.captureInto(rq, f, gen, cur, end)
+				written += n
+				if err != nil {
 					return written, err
-				}
-				var werr error
-				if cur <= sEnd {
-					k := min(end, sEnd) - cur + 1
-					if werr = rq.writeBody(data[cur-sStart : cur-sStart+k]); werr == nil {
-						written += k
-					}
-				}
-				rq.storeCaptured(i, data)
-				if werr != nil {
-					return written, werr
 				}
 				continue
 			}
@@ -87,14 +105,58 @@ func (d *directSource) serve(rq *request, pos, end int64) (int64, error) {
 	}
 }
 
-// readFull reads exactly len(p) body bytes.
-func (d *directSource) readFull(rq *request, p []byte) error {
-	n, err := io.ReadFull(d.body, p)
-	d.off += int64(n)
-	rq.countWAN(int64(n))
-	if err != nil {
-		d.failed = true
-		return errUpstreamAnswer
+// captureInto reads the slice of capture fill f (the next body bytes),
+// starts storing it and writes the client's part of it (from cur, at most
+// up to end). The slice is stored even when the client is gone.
+func (d *directSource) captureInto(rq *request, f *fill, gen uint64, cur, end int64) (int64, error) {
+	if err := d.readInto(rq, f); err != nil {
+		f.finish(f.info, err, nil)
+		f.acct.release()
+		return 0, err
+	}
+	sStart := f.key.idx * rq.S
+	sEnd := sStart + int64(len(f.buf)) - 1
+	f.mu.Lock()
+	f.inWrite++ // the buffer stays while the client's part is written
+	f.mu.Unlock()
+	rq.s.storeCapture(f, gen)
+	var written int64
+	var err error
+	if cur <= sEnd {
+		k := min(end, sEnd) - cur + 1
+		if err = rq.writeBody(f.buf[cur-sStart : cur-sStart+k]); err == nil {
+			written = k
+		}
+	}
+	f.mu.Lock()
+	f.inWrite--
+	f.maybeFreeLocked()
+	f.mu.Unlock()
+	return written, err
+}
+
+// readInto fills the buffer of capture fill f from the body, waking the
+// fill's readers after every chunk.
+func (d *directSource) readInto(rq *request, f *fill) error {
+	want := int64(len(f.buf))
+	var n int64
+	for n < want {
+		k, err := d.body.Read(f.buf[n:min(n+readChunk, want)])
+		if k > 0 {
+			n += int64(k)
+			d.off += int64(k)
+			rq.countWAN(int64(k))
+			d.lead.bump()
+			f.timer.Reset(rq.s.tm.stall)
+			f.mu.Lock()
+			f.n, f.stalled = n, false
+			f.cond.Broadcast()
+			f.mu.Unlock()
+		}
+		if err != nil && n < want {
+			d.failed = true
+			return errUpstreamAnswer
+		}
 	}
 	return nil
 }
@@ -104,6 +166,7 @@ func (d *directSource) skip(rq *request, n int64) error {
 	m, err := io.CopyN(io.Discard, d.body, n)
 	d.off += m
 	rq.countWAN(m)
+	d.lead.bump()
 	if err != nil {
 		d.failed = true
 		return errUpstreamAnswer
@@ -122,6 +185,7 @@ func (d *directSource) copyTo(rq *request, n int64) (int64, error) {
 		if k > 0 {
 			d.off += int64(k)
 			rq.countWAN(int64(k))
+			d.lead.bump()
 			if werr := rq.writeBody(buf[:k]); werr != nil {
 				return done, werr
 			}
@@ -140,51 +204,24 @@ func (rq *request) countWAN(n int64) {
 	rq.s.stats.bytesWAN.Add(n)
 }
 
-// captureBuffer takes a fill slot and a buffer to store slice i, unless it
-// is cached already, nothing may be stored or no slot is free.
-func (rq *request) captureBuffer(i int64) ([]byte, bool) {
-	s := rq.s
-	if rq.st == nil || s.storeFull() || (rq.obj.genKnown && rq.obj.has(i)) {
-		return nil, false
-	}
-	if !s.slots.tryAcquire(rq.ckey, s.fillLimits(rq.S)) {
-		return nil, false
-	}
-	return s.bufs.get(rq.S), true
-}
-
-func (rq *request) releaseCapture(buf []byte) {
-	rq.s.bufs.put(buf)
-	rq.s.slots.release(rq.ckey)
-}
-
-// storeCaptured writes a captured slice in the background and then
-// releases its buffer and slot.
-func (rq *request) storeCaptured(i int64, data []byte) {
-	s := rq.s
-	gen, ok := rq.captureGen()
-	st := rq.st
-	if !ok || st == nil {
-		rq.releaseCapture(data)
-		return
-	}
-	id, a, ckey := rq.id, rq.acct, rq.ckey
-	a.retain()
+// storeCapture writes the slice of capture fill f (generation gen) in the
+// background and then completes the fill (readers switch to the store).
+func (s *Server) storeCapture(f *fill, gen uint64) {
 	started := s.goTracked(func() {
-		defer a.release()
+		defer f.acct.release()
 		ctx, cancel := context.WithTimeout(s.ctx, s.tm.storeWrite)
-		defer cancel()
-		if err := st.WriteSlice(ctx, id, gen, i, data); err != nil {
+		err := f.st.WriteSlice(ctx, f.key.id, gen, f.key.idx, f.buf)
+		cancel()
+		if err != nil {
 			s.storeError("write slice", err)
 		} else {
-			a.stored.Add(int64(len(data)))
+			f.acct.stored.Add(int64(len(f.buf)))
 		}
-		s.bufs.put(data)
-		s.slots.release(ckey)
+		f.complete(err == nil, gen)
 	})
 	if !started {
-		a.release()
-		rq.releaseCapture(data)
+		f.finish(f.info, errStopping, nil)
+		f.acct.release()
 	}
 }
 

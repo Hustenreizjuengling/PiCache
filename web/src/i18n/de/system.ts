@@ -27,7 +27,8 @@ const de: Messages<typeof en> = {
   // Konto & Sicherheit
   'account.signedInAs': 'Angemeldet als {name}',
   'account.password.title': 'Passwort',
-  'account.password.description': 'Wenn du das Passwort änderst, werden alle anderen Sitzungen abgemeldet.',
+  'account.password.description':
+    'Wenn du das Passwort änderst, werden alle anderen Sitzungen abgemeldet und, falls du sie nicht behältst, alle API-Tokens widerrufen.',
   'account.password.current': 'Aktuelles Passwort',
   'account.password.new': 'Neues Passwort',
   'account.password.help': 'Mindestens {min} Zeichen. Eine Passphrase aus vier oder mehr zufälligen Wörtern eignet sich gut.',
@@ -37,7 +38,11 @@ const de: Messages<typeof en> = {
   'account.password.tooShort': 'Verwende mindestens {min} Zeichen.',
   'account.password.same': 'Das neue Passwort muss sich vom aktuellen unterscheiden.',
   'account.password.mismatch': 'Die Passwörter stimmen nicht überein.',
-  'account.password.changed': 'Passwort geändert. Andere Sitzungen wurden abgemeldet.',
+  'account.password.keepTokens': 'API-Tokens behalten',
+  'account.password.keepTokensHelp':
+    'Lass das aus, wenn jemand anderes dein Konto benutzt haben könnte: Ein Token, das in einer gestohlenen Sitzung erstellt wurde, würde sonst weiter funktionieren.',
+  'account.password.changed': 'Passwort geändert. Andere Sitzungen wurden abgemeldet und API-Tokens widerrufen.',
+  'account.password.changedKeepTokens': 'Passwort geändert. Andere Sitzungen wurden abgemeldet, die API-Tokens bleiben gültig.',
 
   'account.totp.title': 'Zwei-Faktor-Authentifizierung',
   'account.totp.description':
@@ -61,7 +66,10 @@ const de: Messages<typeof en> = {
   'account.totp.codeFormat': 'Gib die 6 Ziffern aus deiner App ein.',
   'account.totp.confirm': 'Zwei-Faktor-Authentifizierung einschalten',
   'account.totp.restart': 'Neu beginnen',
-  'account.totp.enabled': 'Zwei-Faktor-Authentifizierung eingeschaltet',
+  'account.totp.passwordTitle': 'Passwort bestätigen',
+  'account.totp.passwordText': 'Gib dein Passwort ein, um die Zwei-Faktor-Authentifizierung einzurichten.',
+  'account.totp.continue': 'Weiter',
+  'account.totp.enabled': 'Zwei-Faktor-Authentifizierung eingeschaltet. Andere Sitzungen wurden abgemeldet.',
   'account.totp.disable': 'Zwei-Faktor-Authentifizierung ausschalten',
   'account.totp.disableTitle': 'Zwei-Faktor-Authentifizierung ausschalten?',
   'account.totp.disableText': 'Zum Anmelden brauchst du dann nur noch dein Passwort. Gib dein Passwort zur Bestätigung ein.',
@@ -123,7 +131,7 @@ const de: Messages<typeof en> = {
   // API-Tokens
   'tokens.title': 'API-Tokens',
   'tokens.description':
-    'Für Skripte, Monitoring und automatische Sicherungen (Authorization: Bearer …). Tokens können nie Tokens, Passwörter, Zwei-Faktor-Authentifizierung oder Sitzungen verwalten.',
+    'Für Skripte, Monitoring und automatische Sicherungen (Authorization: Bearer …). Tokens können nie Tokens, Passwörter, Zwei-Faktor-Authentifizierung oder Sitzungen verwalten und keine Sicherungen wiederherstellen.',
   'tokens.create': 'Token erstellen',
   'tokens.createTitle': 'API-Token erstellen',
   'tokens.createdTitle': 'Token erstellt',
@@ -145,6 +153,9 @@ const de: Messages<typeof en> = {
   'tokens.expiry.custom': 'Eigene Dauer …',
   'tokens.customDays': 'Tage bis zum Ablauf',
   'tokens.neverHint': 'Ein Token ohne Ablaufdatum bleibt gültig, bis du es löschst.',
+  'tokens.password': 'Dein Passwort',
+  'tokens.passwordHelp': 'Ein Token funktioniert auch nach dem Abmelden weiter, deshalb braucht das Erstellen dein Passwort.',
+  'tokens.passwordRequired': 'Gib dein Passwort ein.',
   'tokens.onceTitle': 'Kopiere das Token jetzt',
   'tokens.onceText':
     'PiCache speichert nur einen Fingerabdruck davon und kann es nicht noch einmal anzeigen. Bewahre es wie ein Passwort auf.',
@@ -204,13 +215,13 @@ const de: Messages<typeof en> = {
   // Sicherung & Wiederherstellung
   'backup.download.title': 'Sicherung herunterladen',
   'backup.download.description':
-    'Eine konsistente Kopie der Konfigurationsdatenbank (picache.db): Einstellungen, Benutzer, Blocklisten, Regeln, Clients, lokales DNS, Dienste und Speicherziele. Anmeldesitzungen sind nie enthalten, Query-Log und Statistiken (logs.db) ebenfalls nicht.',
+    'Eine konsistente Kopie der Konfigurationsdatenbank (picache.db): Einstellungen, Blocklisten, Regeln, Clients, lokales DNS, Dienste, Speicherziele und das Audit-Log. Konten (Benutzer, Passwort-Hashes, Zwei-Faktor-Geheimnisse), Sitzungen und API-Tokens sind nie enthalten, Query-Log und Statistiken (logs.db) ebenfalls nicht.',
   'backup.download.secrets': 'Gespeicherte NAS-Passwörter einschließen',
   'backup.download.secretsHelp':
     'Sie bleiben mit dem Hauptschlüssel verschlüsselt und funktionieren nur bei einem PiCache mit demselben Schlüssel.',
   'backup.download.keyTitle': 'Der Hauptschlüssel ist nicht in der Sicherung',
   'backup.download.keyText':
-    'Gespeicherte NAS-Passwörter und Zwei-Faktor-Geheimnisse sind damit verschlüsselt. Bewahre eine Kopie des Schlüssels sicher auf, wenn sie auf einem anderen Rechner weiter funktionieren sollen. Ohne ihn gibst du die NAS-Passwörter neu ein und führst picache reset-password aus, das die Zwei-Faktor-Authentifizierung ausschaltet.',
+    'Gespeicherte NAS-Passwörter sind damit verschlüsselt. Bewahre eine Kopie des Schlüssels sicher auf, wenn sie auf einem anderen Rechner weiter funktionieren sollen. Ohne ihn gibst du die NAS-Passwörter nach einer Wiederherstellung neu ein.',
   'backup.download.button': 'Sicherung herunterladen',
   'backup.download.autoTitle': 'Automatische Sicherungen',
   'backup.download.autoText': 'Skripte verwenden ein Admin-API-Token:',
@@ -225,7 +236,7 @@ const de: Messages<typeof en> = {
   'backup.restore.uploading': 'Wird hochgeladen und geprüft …',
   'backup.restore.factReplace': 'PiCache prüft die Datei und übernimmt sie beim nächsten Neustart.',
   'backup.restore.factSessions':
-    'Danach sind alle Sitzungen und API-Tokens ungültig: Melde dich mit dem Konto aus der Sicherung an.',
+    'Dein Konto, Passwort, die Zwei-Faktor-Authentifizierung, API-Tokens und das Audit-Log bleiben, wie sie sind; alle müssen sich neu anmelden.',
   'backup.restore.factKeep':
     'Die aktuelle Datenbank bleibt als picache.db.before-restore erhalten; startet PiCache mit der Sicherung nicht, kehrt es zu ihr zurück.',
   'backup.restore.checkFailed': 'Diese Datei kann nicht wiederhergestellt werden',
@@ -235,7 +246,12 @@ const de: Messages<typeof en> = {
   'backup.restore.check.unreadable': 'Der Browser konnte die Datei nicht lesen. Wähle sie noch einmal aus.',
   'backup.restore.confirmTitle': '{name} wiederherstellen?',
   'backup.restore.confirmText':
-    'Die Sicherung ersetzt beim nächsten Neustart die gesamte Konfiguration, und alle werden abgemeldet. Die aktuelle Konfiguration bleibt als picache.db.before-restore erhalten.',
+    'Die Sicherung ersetzt beim nächsten Neustart die gesamte Konfiguration, und alle werden abgemeldet. Dein Konto und die API-Tokens bleiben. Die aktuelle Konfiguration bleibt als picache.db.before-restore erhalten.',
+  'backup.restore.password': 'Dein Passwort',
+  'backup.restore.passwordHelp':
+    'Eine Wiederherstellung ersetzt die gesamte Konfiguration, deshalb fragt PiCache noch einmal nach deinem Passwort.',
+  'backup.restore.passwordRequired': 'Gib dein Passwort ein.',
+  'backup.restore.passwordWrong': 'Das Passwort ist falsch.',
   'backup.restore.confirm': 'Hochladen und prüfen',
   'backup.restore.rejected': 'Die Sicherung wurde nicht angenommen',
   'backup.restore.staged': 'Sicherung geprüft',
@@ -244,7 +260,7 @@ const de: Messages<typeof en> = {
     'Starte PiCache neu, um sie zu übernehmen. Bis dahin bleibt die aktuelle Konfiguration aktiv.',
   'backup.restore.restartNow': 'Jetzt neu starten',
   'backup.restore.restartText':
-    'PiCache startet neu und übernimmt die wiederhergestellte Sicherung. Alle werden abgemeldet; melde dich mit dem Konto aus der Sicherung an.',
+    'PiCache startet neu und übernimmt die wiederhergestellte Sicherung. Alle werden abgemeldet; melde dich danach wieder mit deinem Konto an.',
   'backup.restore.restartHint': 'Ein Neustart übernimmt auch geänderte Listener-Einstellungen (PICACHE_*_LISTEN).',
 
   'logs.title': 'Logs und Datenschutz',

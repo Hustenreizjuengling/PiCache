@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"io/fs"
+	"math/bits"
 	"slices"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -141,10 +142,10 @@ func (s *Store) releaseTombs(marked []removal, removed map[string]bool, flushed 
 
 // removeFile deletes a slice file that is no longer referenced by the index.
 // If that fails (Windows: the file is still open) it is retried by the next
-// Evict.
+// Evict; if ctx ends first, the background remover deletes it.
 func (s *Store) removeFile(ctx context.Context, id string, idx int64) {
 	if s.acquireIO(ctx) != nil {
-		s.addRetry(retryRemoval{id: id, idx: idx})
+		s.queueRemoval(id, idx)
 		return
 	}
 	err := s.root.Remove(sliceName(id, idx))
@@ -165,9 +166,195 @@ func (s *Store) addRetry(r retryRemoval) {
 // pendingRemoval reports whether a slice file is waiting to be removed.
 func (s *Store) pendingRemoval(id string, idx int64) bool {
 	s.retryMu.Lock()
-	defer s.retryMu.Unlock()
 	_, ok := s.retry[retryRemoval{id: id, idx: idx}]
-	return ok
+	s.retryMu.Unlock()
+	if ok {
+		return true
+	}
+	s.remMu.Lock()
+	defer s.remMu.Unlock()
+	q := s.rem[id]
+	return q != nil && q.has(idx)
+}
+
+// removalQueue is the set of queued slice files of one object.
+type removalQueue struct {
+	bm []uint64 // bit i: slice file i
+	n  int      // bits set
+}
+
+func (q *removalQueue) has(idx int64) bool {
+	return idx >= 0 && idx/64 < int64(len(q.bm)) && q.bm[idx/64]&(1<<(uint(idx)%64)) != 0
+}
+
+func (q *removalQueue) set(idx int64) {
+	if w := int(idx/64) + 1; len(q.bm) < w {
+		q.bm = append(q.bm, make([]uint64, w-len(q.bm))...)
+	}
+	if !q.has(idx) {
+		q.bm[idx/64] |= 1 << (uint(idx) % 64)
+		q.n++
+	}
+}
+
+// queueRemoval hands a slice file the index no longer references to the
+// background remover. The queue is not bounded by a count (one bit per
+// slice), so no file of a removed generation is forgotten while the store
+// is open.
+func (s *Store) queueRemoval(id string, idx int64) {
+	if idx < 0 {
+		return
+	}
+	s.remMu.Lock()
+	q := s.rem[id]
+	if q == nil {
+		q = &removalQueue{}
+		s.rem[id] = q
+	}
+	q.set(idx)
+	s.remMu.Unlock()
+	s.kickRemover()
+}
+
+// queueRemovals queues every slice file of the bitmap present.
+func (s *Store) queueRemovals(id string, present []uint64) {
+	queued := false
+	s.remMu.Lock()
+	for i, w := range present {
+		for w != 0 {
+			b := bits.TrailingZeros64(w)
+			w &^= 1 << uint(b)
+			q := s.rem[id]
+			if q == nil {
+				q = &removalQueue{bm: make([]uint64, len(present))}
+				s.rem[id] = q
+			}
+			q.set(int64(i*64 + b))
+			queued = true
+		}
+	}
+	s.remMu.Unlock()
+	if queued {
+		s.kickRemover()
+	}
+}
+
+func (s *Store) kickRemover() {
+	select {
+	case s.remKick <- struct{}{}:
+	default:
+	}
+}
+
+// queuedRemovals returns the number of queued slice files.
+func (s *Store) queuedRemovals() int {
+	s.remMu.Lock()
+	defer s.remMu.Unlock()
+	n := 0
+	for _, q := range s.rem {
+		n += q.n
+	}
+	return n
+}
+
+// remover deletes queued slice files in the background until Close.
+func (s *Store) remover() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-s.remKick:
+		}
+		if !s.enter() {
+			return
+		}
+		s.drainRemovals(s.ctx)
+		s.leave()
+	}
+}
+
+// drainRemovals deletes queued slice files until the queue is empty or ctx
+// ends (the rest stays queued).
+func (s *Store) drainRemovals(ctx context.Context) {
+	for ctx.Err() == nil {
+		var id string
+		var bm []uint64
+		s.remMu.Lock()
+		for k, q := range s.rem {
+			id, bm = k, slices.Clone(q.bm)
+			break
+		}
+		s.remMu.Unlock()
+		if bm == nil {
+			return
+		}
+		for i, w := range bm {
+			for w != 0 {
+				b := bits.TrailingZeros64(w)
+				w &^= 1 << uint(b)
+				if !s.removeQueued(ctx, id, int64(i*64+b)) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// removeQueued deletes one queued slice file unless its object references
+// that slice (it was written again) and takes it off the queue. A failed
+// deletion goes to the retry list. false: ctx ended, the file stays queued.
+func (s *Store) removeQueued(ctx context.Context, id string, idx int64) bool {
+	for {
+		if s.acquireIO(ctx) != nil {
+			return false
+		}
+		mu := s.lockFor(id)
+		mu.Lock()
+		e, err := s.lookupLocked(ctx, id)
+		if err == nil && e != nil && e.busy != nil { // being removed or replaced: wait
+			busy := e.busy
+			mu.Unlock()
+			s.releaseIO()
+			select {
+			case <-busy:
+				continue
+			case <-ctx.Done():
+				return false
+			}
+		}
+		if err != nil && ctx.Err() != nil {
+			mu.Unlock()
+			s.releaseIO()
+			return false
+		}
+		switch {
+		case err != nil:
+			s.addRetry(retryRemoval{id: id, idx: idx})
+		case e != nil && e.has(idx):
+			// written again: the file is live
+		default:
+			if err := s.root.Remove(sliceName(id, idx)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				s.addRetry(retryRemoval{id: id, idx: idx})
+			}
+		}
+		s.unqueueRemoval(id, idx)
+		mu.Unlock()
+		s.releaseIO()
+		return true
+	}
+}
+
+func (s *Store) unqueueRemoval(id string, idx int64) {
+	s.remMu.Lock()
+	defer s.remMu.Unlock()
+	q := s.rem[id]
+	if q == nil || !q.has(idx) {
+		return
+	}
+	q.bm[idx/64] &^= 1 << (uint(idx) % 64)
+	if q.n--; q.n == 0 {
+		delete(s.rem, id)
+	}
 }
 
 // retryRemovals retries failed removals. A file is only removed while its

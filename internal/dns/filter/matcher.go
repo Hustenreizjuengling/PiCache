@@ -185,23 +185,25 @@ type listMatcher struct {
 	ids      []int64
 	entries  int // domain entries (exact + subtree)
 	patterns int
-	dropped  int // patterns beyond the total cap
+	dropped  int // patterns beyond the total caps
 	memory   int64
 }
 
 // buildListMatcher merges the parse results of the enabled lists; ids[i] is
-// the list of results[i]. Patterns are capped at maxPatterns in total.
+// the list of results[i]. Patterns are capped at maxPatterns and
+// maxPatternCost in total.
 func buildListMatcher(ids []int64, results []*parsed) *listMatcher {
 	m := &listMatcher{ids: ids}
 	var pats [numTiers][]pattern
-	budget := maxPatterns
+	budget, costBudget := maxPatterns, int64(maxPatternCost)
 	for src, r := range results {
 		for _, p := range r.pats {
-			if budget == 0 {
+			if budget == 0 || int64(p.cost) > costBudget {
 				m.dropped++
 				continue
 			}
 			budget--
+			costBudget -= int64(p.cost)
 			pats[p.tier] = append(pats[p.tier], pattern{re: p.re, lit: p.lit, src: uint32(src)})
 		}
 	}

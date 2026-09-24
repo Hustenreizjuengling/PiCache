@@ -15,8 +15,8 @@ type ACL struct {
 	prefixes []netip.Prefix
 }
 
-// NewACL builds an ACL from the private defaults, the directly connected
-// subnets and extra user prefixes.
+// NewACL builds an ACL from the private defaults, the private directly
+// connected subnets (LocalSubnets) and extra user prefixes.
 func NewACL(extra []netip.Prefix, allowAll bool) *ACL {
 	ps := append([]netip.Prefix{}, PrivateLANPrefixes...)
 	ps = append(ps, LocalSubnets()...)

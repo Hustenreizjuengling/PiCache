@@ -11,9 +11,9 @@ const maxPathLen = 4096
 // canonicalPath reports whether a request path is canonical (ARCHITECTURE
 // 8.2 step 8). escaped is r.URL.EscapedPath(), decoded is r.URL.Path.
 //
-// Only canonical paths are cached: their decoded form (part of the cache
-// key) identifies exactly the resource that is fetched upstream, which is
-// the client's escaped form byte for byte. A path is not canonical if it
+// Only canonical paths are cached: their key path (cacheKeyPath, part of
+// the cache key) identifies exactly the resource that is fetched upstream,
+// which is the escaped form byte for byte. A path is not canonical if it
 // does not start with "/", contains "//", a "." or ".." segment, a raw
 // "\", an encoded "/", "\" or NUL, a percent-encoded unreserved character
 // (RFC 3986 2.3), or – after decoding – any other control character. Paths
@@ -50,6 +50,49 @@ func canonicalPath(escaped, decoded string) bool {
 		}
 	}
 	return true
+}
+
+// cacheKeyPath returns the path of the cache key of a canonical escaped
+// path: percent-encodings are decoded except those of characters that may
+// also appear unencoded in a path with another meaning (RFC 3986 2.2: the
+// sub-delims, ":", "@", "[", "]") and of "%" itself, which stay encoded
+// with upper-case hex digits (RFC 3986 6.2.2). "/a%2Bb" and "/a+b" are
+// different resources and get different keys; any two escaped forms with
+// the same key path are equivalent URIs. Without such encodings the key
+// path is the decoded path.
+func cacheKeyPath(escaped string) string {
+	if !strings.Contains(escaped, "%") {
+		return escaped
+	}
+	var b strings.Builder
+	b.Grow(len(escaped))
+	for i := 0; i < len(escaped); i++ {
+		c := escaped[i]
+		if c == '%' && i+2 < len(escaped) {
+			if d, ok := unhex(escaped[i+1], escaped[i+2]); ok {
+				if keepEncoded(d) {
+					const hexDigits = "0123456789ABCDEF"
+					b.WriteByte('%')
+					b.WriteByte(hexDigits[d>>4])
+					b.WriteByte(hexDigits[d&15])
+				} else {
+					b.WriteByte(d)
+				}
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// keepEncoded reports whether a percent-encoded c stays encoded in a key
+// path: the characters that may appear unencoded in an escaped path
+// besides the unreserved ones and "/" (net/url leaves "[" and "]" alone),
+// and "%".
+func keepEncoded(c byte) bool {
+	return strings.IndexByte("!$&'()*+,;=:@[]%", c) >= 0
 }
 
 // isUnreserved reports whether c is an RFC 3986 unreserved character.

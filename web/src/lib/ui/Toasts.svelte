@@ -1,47 +1,112 @@
 <!--
   @component
-  Toast host; rendered once in App.svelte. Use the `toast` store to show messages.
-  The host is a manual popover (top layer), raised above an open modal dialog
-  or side panel whenever a toast arrives, so confirmations stay visible there.
+  Toast host. The page-level host is rendered once in App.svelte; every open
+  Dialog/SidePanel renders its own (`dialog`), because a modal dialog makes
+  everything outside it inert (a toast there could not be closed or held).
+  Only the innermost open host shows the toasts (toast.svelte.ts). Hosts are
+  manual popovers (top layer). A dialog's host keeps to the bottom-right
+  corner unless that would cover the dialog; then it sits just above the
+  dialog's footer, so the action buttons stay visible and usable.
 -->
 <script lang="ts">
   import { t } from '../../i18n/index.svelte'
   import Icon from './Icon.svelte'
   import IconButton from './IconButton.svelte'
-  import { dismiss, hold, release, toasts } from './toast.svelte'
+  import { activeHost, dismiss, hold, registerHost, release, toasts } from './toast.svelte'
+
+  interface Props {
+    /** Rendered inside a modal Dialog (used by Dialog only). */
+    dialog?: boolean
+  }
+
+  let { dialog = false }: Props = $props()
 
   const icon = { success: 'success', error: 'error', info: 'info' } as const
+  const GAP = 16 // var(--sp-4)
 
   let host: HTMLDivElement
-  let shown = 0
+  let id = $state(-1) // not showing anything until mounted
 
   $effect(() => {
-    host.showPopover()
+    if (!dialog) {
+      id = 0
+      return
+    }
+    const reg = registerHost()
+    id = reg.id
+    return reg.unregister
+  })
+
+  const active = $derived(activeHost() === id)
+  const items = $derived(active ? toasts() : [])
+
+  // Shown for the host's lifetime. A dialog's host is shown after its dialog
+  // opened, so it is above the dialog in the top layer.
+  $effect(() => {
+    const show = () => {
+      if (host.isConnected && !host.matches(':popover-open')) host.showPopover()
+    }
+    const dlg = dialog ? host.closest('dialog') : null
+    if (dlg && !dlg.open) queueMicrotask(show)
+    else show()
     return () => {
       if (host.matches(':popover-open')) host.hidePopover()
     }
   })
 
-  // A modal opened after the host covers it: raise the host for new toasts.
+  // Toasts held by pointer or focus can leave this host without mouseleave or
+  // focusout (another host took over, or the dialog closed): restart them.
+  const held = new Set<number>()
+  function holdItem(n: number) {
+    held.add(n)
+    hold(n)
+  }
+  function releaseItem(n: number) {
+    if (held.delete(n)) release(n)
+  }
   $effect(() => {
-    const n = toasts().length
-    if (n > shown && document.querySelector('dialog:modal') && host.matches(':popover-open')) {
-      host.hidePopover()
-      host.showPopover()
+    void active
+    return () => {
+      for (const n of held) release(n)
+      held.clear()
     }
-    shown = n
+  })
+
+  function place() {
+    const dlg = host.closest('dialog')
+    host.style.right = host.style.bottom = host.style.width = ''
+    if (!dlg || items.length === 0) return
+    const d = dlg.getBoundingClientRect()
+    const h = host.getBoundingClientRect()
+    const vw = document.documentElement.clientWidth
+    const vh = window.innerHeight
+    const covers = vw - GAP - h.width < d.right && vw - GAP > d.left && vh - GAP - h.height < d.bottom && vh - GAP > d.top
+    if (!covers) return
+    const footer = dlg.querySelector(':scope > .frame > footer')
+    const edge = footer ? footer.getBoundingClientRect().top : d.bottom
+    host.style.bottom = `${Math.max(GAP, vh - edge + GAP / 2)}px`
+    host.style.right = `${Math.max(GAP, vw - d.right + GAP)}px`
+    host.style.width = `${Math.max(0, Math.min(400, d.width - 2 * GAP))}px`
+  }
+
+  $effect(() => {
+    if (!dialog) return
+    void items.length
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
   })
 </script>
 
 <div bind:this={host} class="host" popover="manual" aria-live="polite" aria-relevant="additions">
-  {#each toasts() as item (item.id)}
+  {#each items as item (item.id)}
     <div
       class={['toast', item.kind]}
       role={item.kind === 'error' ? 'alert' : 'status'}
-      onmouseenter={() => hold(item.id)}
-      onmouseleave={() => release(item.id)}
-      onfocusin={() => hold(item.id)}
-      onfocusout={() => release(item.id)}
+      onmouseenter={() => holdItem(item.id)}
+      onmouseleave={() => releaseItem(item.id)}
+      onfocusin={() => holdItem(item.id)}
+      onfocusout={() => releaseItem(item.id)}
     >
       <span class="ic"><Icon name={icon[item.kind]} /></span>
       <p>{item.message}</p>

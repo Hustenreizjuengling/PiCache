@@ -25,7 +25,7 @@
     type Tone,
   } from '$lib/ui'
   import type { ServiceCatalog } from '../shared/catalog.svelte'
-  import { pickRange } from '../shared/util'
+  import { pickRange, timeWindow } from '../shared/util'
   import Filters from './Filters.svelte'
 
   let { catalog }: { catalog: ServiceCatalog } = $props()
@@ -43,6 +43,9 @@
   const PAGE = 100
 
   const range = $derived(pickRange(router.param('range'), RANGES, '7d'))
+  const win = $derived(timeWindow(router.param('from'), router.param('to')))
+  /** An explicit window from the URL (e.g. the query log's "Cache traffic" link) replaces the range. */
+  const time = $derived(win ?? { range })
   const service = $derived(router.param('service'))
   const search = $derived(router.param('search'))
   const status = $derived(router.param('status'))
@@ -50,7 +53,7 @@
   const reasonOptions: SelectOption[] = $derived(REASONS.map((r) => ({ value: r, label: t(`cache.reason.${r}`) })))
 
   const pages = new CursorStack()
-  const filterKey = $derived(JSON.stringify([range, service, search, status]))
+  const filterKey = $derived(JSON.stringify([time, service, search, status]))
   $effect.pre(() => {
     void filterKey
     untrack(() => pages.reset())
@@ -59,7 +62,7 @@
   const list = resource((signal) =>
     api.cache.evictions(
       {
-        range,
+        ...time,
         service: service || undefined,
         search: search || undefined,
         status: status || undefined,

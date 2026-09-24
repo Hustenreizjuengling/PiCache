@@ -126,10 +126,13 @@ func TestThrottle(t *testing.T) {
 	}{
 		{"four failures", time.Second, 4, 0, []string{c1, u}, false},
 		{"five failures lock client", time.Second, 5, 0, []string{c1}, true},
-		{"five failures lock user from another client", time.Second, 5, 0, []string{c2, u}, true},
+		{"client lockout lasts", time.Second, 5, lockoutDuration - time.Second, []string{c1}, true},
+		{"five failures delay user from another client", time.Second, 5, 0, []string{c2, u}, true},
+		{"user delay is short, never a lockout", time.Second, 5, userDelayBase, []string{c2, u}, false},
 		{"other client and user unaffected", time.Second, 5, 0, []string{c2, userThrottleKey("bob")}, false},
 		{"lockout expires", time.Second, 5, lockoutDuration, []string{c1, u}, false},
-		{"failures outside the window do not add up", 4 * time.Minute, 5, 0, []string{c1, u}, false},
+		{"client failures outside the window do not add up", 4 * time.Minute, 5, 0, []string{c1}, false},
+		{"user failures a window apart do not add up", failureWindow, 5, 0, []string{c2, u}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			th := newThrottle()
@@ -147,6 +150,26 @@ func TestThrottle(t *testing.T) {
 		})
 	}
 
+	t.Run("user delay doubles and is capped at 30 s", func(t *testing.T) {
+		for n, want := range map[int]time.Duration{
+			1: 0, 4: 0, 5: time.Second, 6: 2 * time.Second, 7: 4 * time.Second, 8: 8 * time.Second,
+			9: 16 * time.Second, 10: 30 * time.Second, 11: 30 * time.Second, 1000: 30 * time.Second,
+		} {
+			if got := userDelay(n); got != want {
+				t.Errorf("userDelay(%d) = %v, want %v", n, got, want)
+			}
+		}
+		th := newThrottle()
+		for range 100 {
+			th.fail(t0, u)
+		}
+		if err := th.allow(t0.Add(userDelayMax-time.Second), u); apperr.KindOf(err) != apperr.KindTooMany {
+			t.Fatalf("within the delay: %v", err)
+		}
+		if err := th.allow(t0.Add(userDelayMax), u); err != nil {
+			t.Fatalf("after 30 s: %v", err)
+		}
+	})
 	t.Run("success resets", func(t *testing.T) {
 		th := newThrottle()
 		for range 4 {

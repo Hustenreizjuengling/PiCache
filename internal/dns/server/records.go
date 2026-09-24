@@ -353,7 +353,7 @@ func (s *Server) reloadConfig(ctx context.Context) error {
 	}
 	s.zone.Store(newZone(recs))
 	s.fwd.Store(newFwdTable(fwds))
-	s.rebuildLimiter()
+	s.reconfigureLimiter()
 	return nil
 }
 
@@ -418,8 +418,26 @@ func (s *Server) localAnswer(qc *qctx) (result, bool) {
 }
 
 // resolveCNAMETarget appends the answer for a local CNAME target that has no
-// local records (conditional forwarder, router resolver or upstream).
+// local records: special-use names answered by PiCache itself (localhost,
+// this server's names, resolver.arpa), else a conditional forwarder, the
+// router resolver or the upstreams.
 func (s *Server) resolveCNAMETarget(qc *qctx, res *result, target string, hops int) {
+	if v4, v6, what, ok := s.specialAddrs(qc, target); ok {
+		qc.note("the CNAME target is answered locally (" + what + ")")
+		var ips []netip.Addr
+		switch qc.qtype {
+		case dns.TypeA:
+			ips = v4
+		case dns.TypeAAAA:
+			ips = v6
+		}
+		rrs := addrRRs(fqdn(target), ips, specialTTL)
+		res.msg.Answer = append(res.msg.Answer, rrs...)
+		if len(rrs) == 0 {
+			res.msg.Ns = []dns.RR{syntheticSOA(qc.q.Name, specialTTL)}
+		}
+		return
+	}
 	q := dns.Question{Name: fqdn(target), Qtype: qc.qtype, Qclass: dns.ClassINET}
 	resp, info, err := s.routeName(qc, target, q)
 	switch {

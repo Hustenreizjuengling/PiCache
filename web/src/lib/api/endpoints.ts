@@ -18,18 +18,23 @@ const auth = {
     http.post<T.User>('/auth/login', body, { ...o, allowUnauthorized: true }),
   logout: (o?: ReqOpts) => http.post<void>('/auth/logout', undefined, { ...o, allowUnauthorized: true }),
   me: (o?: ReqOpts) => http.get<T.User>('/auth/me', o),
-  changePassword: (body: { currentPassword: string; newPassword: string }, o?: ReqOpts) =>
+  /** Signs out the other sessions and, unless keepTokens, revokes the API tokens. */
+  changePassword: (body: { currentPassword: string; newPassword: string; keepTokens?: boolean }, o?: ReqOpts) =>
     http.post<void>('/auth/password', body, o),
   sessions: (o?: ReqOpts) => http.get<T.SessionInfo[]>('/auth/sessions', o),
   revokeSession: (id: string, o?: ReqOpts) => http.del(`/auth/sessions/${seg(id)}`, o),
-  totpBegin: (o?: ReqOpts) => http.post<T.TotpBegin>('/auth/totp/begin', undefined, o),
+  /** 400 with field "currentPassword" for a missing or wrong password. */
+  totpBegin: (currentPassword: string, o?: ReqOpts) =>
+    http.post<T.TotpBegin>('/auth/totp/begin', { currentPassword }, o),
+  /** Signs out the other sessions. */
   totpConfirm: (code: string, o?: ReqOpts) => http.post<void>('/auth/totp/confirm', { code }, o),
   totpDisable: (password: string, o?: ReqOpts) => http.post<void>('/auth/totp/disable', { password }, o),
 }
 
 const tokens = {
   list: (o?: ReqOpts) => http.get<T.TokenInfo[]>('/tokens', o),
-  create: (body: { name: string; scope: T.Scope; expiresInDays?: number }, o?: ReqOpts) =>
+  /** 400 with field "currentPassword" for a missing or wrong password. */
+  create: (body: { name: string; scope: T.Scope; expiresInDays?: number; currentPassword: string }, o?: ReqOpts) =>
     http.post<T.CreatedToken>('/tokens', body, o),
   remove: (id: number, o?: ReqOpts) => http.del(`/tokens/${seg(id)}`, o),
 }
@@ -44,8 +49,18 @@ const system = {
     http.get<T.Page<T.AuditEntry>>('/system/audit', { ...o, query: q }),
   /** URL for a plain <a href download> (the browser sends the session cookie). */
   backupUrl: (includeSecrets = false) => apiUrl('/system/backup', { includeSecrets: includeSecrets || undefined }),
-  restore: (file: Blob, o?: ReqOpts) =>
-    http.post<T.RestoreResult>('/system/restore', undefined, { ...o, raw: file, timeoutMs: 600_000 }),
+  /**
+   * Needs the current password (header X-PiCache-Password, percent-encoded
+   * because header values cannot carry arbitrary Unicode); 401 with field
+   * "password" when it is missing or wrong.
+   */
+  restore: (file: Blob, password: string, o?: ReqOpts) =>
+    http.post<T.RestoreResult>('/system/restore', undefined, {
+      ...o,
+      raw: file,
+      timeoutMs: 600_000,
+      headers: { 'X-PiCache-Password': encodeURIComponent(password) },
+    }),
   /** 202; the process exits and systemd/Docker restarts it (poll /auth/status until it answers again). */
   restart: (o?: ReqOpts) => http.post<T.RestartResult>('/system/restart', undefined, o),
 }
@@ -208,6 +223,10 @@ const cache = {
 
 // ---------------------------------------------------------------- storage
 
+// The server gives init and activate up to 2 minutes (storageLongOp; init runs
+// three bounded steps of up to 30 s each): wait a little longer than that.
+const STORAGE_LONG_OP_MS = 150_000
+
 const storage = {
   capabilities: (o?: ReqOpts) => http.get<T.StorageCapabilities>('/storage/capabilities', o),
   targets: (o?: ReqOpts) => http.get<T.StorageTargetWithStatus[]>('/storage/targets', o),
@@ -217,14 +236,14 @@ const storage = {
     http.put<T.StorageTarget>(`/storage/targets/${seg(id)}`, t, o),
   remove: (id: string, o?: ReqOpts) => http.del(`/storage/targets/${seg(id)}`, o),
   test: (id: string, o?: ReqOpts) =>
-    http.post<T.StorageTestResult>(`/storage/targets/${seg(id)}/test`, undefined, { ...o, timeoutMs: 150_000 }),
+    http.post<T.StorageTestResult>(`/storage/targets/${seg(id)}/test`, undefined, { ...o, timeoutMs: STORAGE_LONG_OP_MS }),
   /** Queues a host-apply mount (503 if the root helper is not installed). */
   apply: (id: string, o?: ReqOpts) => http.post<T.StorageStatus>(`/storage/targets/${seg(id)}/apply`, undefined, o),
   init: (id: string, adopt: boolean, o?: ReqOpts) =>
-    http.post<T.StorageInitResult>(`/storage/targets/${seg(id)}/init`, { adopt }, { ...o, timeoutMs: 60_000 }),
+    http.post<T.StorageInitResult>(`/storage/targets/${seg(id)}/init`, { adopt }, { ...o, timeoutMs: STORAGE_LONG_OP_MS }),
   /** 409 "not initialised" → call init first. */
   activate: (id: string, o?: ReqOpts) =>
-    http.post<T.StoreState>(`/storage/targets/${seg(id)}/activate`, undefined, { ...o, timeoutMs: 60_000 }),
+    http.post<T.StoreState>(`/storage/targets/${seg(id)}/activate`, undefined, { ...o, timeoutMs: STORAGE_LONG_OP_MS }),
   snippets: (id: string, o?: ReqOpts) => http.get<T.StorageSnippets>(`/storage/targets/${seg(id)}/snippets`, o),
 }
 

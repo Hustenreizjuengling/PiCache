@@ -108,6 +108,8 @@ export interface StoreState {
   totalBytes: number
   freeBytes: number
   minFreeBytes: number
+  /** Configured size limit (settings cache.maxSizeBytes; 0 = none). Absent from older servers. */
+  maxSizeBytes?: number
   lowSpace: boolean
   full: boolean
   sdCard: boolean
@@ -173,6 +175,8 @@ export interface AuthStatus {
   tokenAuth: boolean
   language: string
   setupHints?: string[]
+  /** Port of the bound HTTPS listener (0 if none). Absent from older servers. */
+  httpsPort?: number
 }
 
 /** auth.SessionInfo */
@@ -383,6 +387,8 @@ export interface CacheIPStatus {
   auto: boolean
   ready: boolean
   reason?: string
+  /** Address-detection warning (public or Docker-bridge address, …), also while LanCache is off. Absent from older servers. */
+  warning?: string
 }
 
 /** dnsserver.RouterStatus */
@@ -772,9 +778,11 @@ export interface GroupUsage {
   pinned: boolean
 }
 
-/** GroupView = cachestore.GroupUsage + {label, clients} */
+/** GroupView = cachestore.GroupUsage + {label, userLabel, clients} */
 export interface GroupView extends GroupUsage {
   label: string
+  /** The label was set by a user (not the automatic name). Absent from older servers. */
+  userLabel?: boolean
   clients: number
 }
 
@@ -959,6 +967,10 @@ export interface StorageStatus {
   storeId?: string
   checkedAt?: Timestamp
   applyState?: string
+  /** A store is set up for the target (false: initialise or adopt). Absent from older servers. */
+  initialised?: boolean
+  /** The location was found and passed the write test. Absent from older servers. */
+  writable?: boolean
 }
 
 /** storage.TargetWithStatus (Target members are embedded) */
@@ -1014,7 +1026,10 @@ export interface StorageInitResult {
 
 /** logs.QueryEvent */
 export interface QueryEvent {
+  /** Database id (0 for events from the live stream, which are not stored yet). */
   id: number
+  /** Sequence number of live-stream events (unique per server run). Absent from older servers. */
+  seq?: number
   time: Timestamp
   clientIp: string
   clientName?: string
@@ -1037,7 +1052,10 @@ export type CacheStatus = 'HIT' | 'MISS' | 'PARTIAL' | 'BYPASS' | 'PASS' | 'ERRO
 
 /** logs.CacheEvent */
 export interface CacheEvent {
+  /** Database id (0 for events from the live stream, which are not stored yet). */
   id: number
+  /** Sequence number of live-stream events (unique per server run). Absent from older servers. */
+  seq?: number
   time: Timestamp
   clientIp: string
   clientName?: string

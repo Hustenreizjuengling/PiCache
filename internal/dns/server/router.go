@@ -71,7 +71,7 @@ func (s *Server) detectRouter(ctx context.Context) {
 	if old.mode != st.mode || old.addr != st.addr || old.answers != st.answers {
 		s.log.Info("router resolver", slog.String("mode", st.mode), slog.String("address", addrOrNone(st.addr)),
 			slog.Bool("answers", st.answers))
-		s.rebuildLimiter()
+		s.reconfigureLimiter()
 	}
 }
 

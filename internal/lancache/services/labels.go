@@ -47,6 +47,13 @@ func (r *Registry) Label(groupKey string) string {
 	return defaultLabel(groupKey, r.snap.Load().name)
 }
 
+// UserLabel returns the user's label override for a group key; ok=false
+// if the label is not overridden (Label then returns the built-in one).
+func (r *Registry) UserLabel(groupKey string) (label string, ok bool) {
+	label, ok = (*r.labels.Load())[groupKey]
+	return label, ok
+}
+
 // Labels resolves several keys at once.
 func (r *Registry) Labels(keys []string) map[string]string {
 	out := make(map[string]string, len(keys))

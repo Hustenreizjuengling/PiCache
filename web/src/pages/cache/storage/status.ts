@@ -1,7 +1,7 @@
 // What a storage target can do next, derived from its mount-guard status
 // (internal/storage: probe and checkMarker).
 
-import type { StorageCapabilities, StorageTargetWithStatus } from '$lib/api'
+import type { StorageCapabilities, StorageStatus, StorageTargetWithStatus } from '$lib/api'
 import type { Tone } from '$lib/ui'
 
 export type TargetState =
@@ -14,6 +14,20 @@ export type TargetState =
   | 'existing' // a store marker was found that this target does not use yet: adopt
   | 'offline'
 
+/** The location was found and passed the write test (older servers: only then is latencyMs set). */
+function writable(st: StorageStatus): boolean {
+  return st.writable ?? st.latencyMs > 0
+}
+
+/**
+ * No store is set up for the target yet (status.initialised; older servers do
+ * not report it). A target records its store id once it was initialised or
+ * adopted, so one with a store id is never "not set up".
+ */
+function uninitialised(t: StorageTargetWithStatus): boolean {
+  return !t.storeId && t.status.initialised !== true
+}
+
 export function targetState(t: StorageTargetWithStatus): TargetState {
   const st = t.status
   if (st.online) return t.active ? 'active' : 'ready'
@@ -21,8 +35,8 @@ export function targetState(t: StorageTargetWithStatus): TargetState {
   if (st.applyState?.startsWith('failed')) return 'mountFailed'
   if (!st.checkedAt) return 'checking'
   if (st.storeId && st.storeId !== t.storeId) return 'existing'
-  // latencyMs is only set after the write test passed, i.e. the location works.
-  if (!st.storeId && st.latencyMs > 0) return 'notSetUp'
+  // A target whose store marker is missing is offline (wrong share mounted?), not "not set up".
+  if (!st.storeId && uninitialised(t) && writable(st)) return 'notSetUp'
   return 'offline'
 }
 
@@ -45,7 +59,7 @@ export function targetActions(t: StorageTargetWithStatus, caps: StorageCapabilit
      * No store marker at a location that was found (file system known or the
      * write test passed): create a new, empty store there.
      */
-    init: !st.online && !st.storeId && (st.latencyMs > 0 || !!st.fsType),
+    init: !st.online && !st.storeId && (writable(st) || !!st.fsType),
     /** A marker of another (or no recorded) store was found: use it. */
     adopt: !!st.storeId && st.storeId !== t.storeId,
     activate: !t.active && !!t.storeId && st.online,

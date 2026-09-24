@@ -19,9 +19,12 @@
   const source = resource((signal) => api.lancache.source({ signal }))
   const info = resource((signal) => api.system.info({ signal }))
 
-  // While LanCache is off the server reports only "LanCache is disabled";
-  // other reasons (e.g. an auto-detected public address) are real warnings.
+  // While LanCache is off, reason only says "LanCache is disabled"; the
+  // address warning (public or Docker-bridge address, …) comes in warning.
+  // Older servers have no warning field: then other reasons are warnings.
   const DISABLED_REASON = 'LanCache is disabled'
+  const reason = $derived(ips.data?.reason && ips.data.reason !== DISABLED_REASON ? ips.data.reason : undefined)
+  const addressWarning = $derived(ips.data?.warning ?? reason)
 
   const target = $derived(targets.data?.find((x) => x.active))
   const cacheBound = $derived(info.data?.listeners.bound?.cache ?? [])
@@ -48,10 +51,10 @@
         </p>
         <p class="muted small">{ips.data.auto ? t('cache.enable.addressAuto') : t('cache.enable.addressManual')}</p>
       {:else}
-        <Notice tone="fail" title={t('cache.enable.noAddress')}>{ips.data?.reason ?? ''}</Notice>
+        <Notice tone="fail" title={t('cache.enable.noAddress')}>{addressWarning ?? ''}</Notice>
       {/if}
-      {#if ips.data?.reason && ips.data.reason !== DISABLED_REASON && ips.data.ipv4.length > 0}
-        <Notice tone="warn">{ips.data.reason}</Notice>
+      {#if addressWarning && ips.data && ips.data.ipv4.length > 0}
+        <Notice tone="warn">{addressWarning}</Notice>
       {/if}
       {#if caps.data?.dockerMode === 'bridge' && ips.data?.auto}
         <Notice tone="warn">{t('cache.caps.bridgeWarning')}</Notice>

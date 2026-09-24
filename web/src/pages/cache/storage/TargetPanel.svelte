@@ -9,6 +9,7 @@
   import { t } from '$i18n/index.svelte'
   import {
     api,
+    toApiError,
     type StorageCapabilities,
     type StorageTargetWithStatus,
     type StorageTestResult,
@@ -66,7 +67,12 @@
 
   let busy = $state('')
 
-  async function run(what: string, fn: () => Promise<unknown>, done: string) {
+  /**
+   * Runs an action. When the answer is lost (timeout, connection dropped) the
+   * server may still have finished: reload the targets and let `happened`
+   * decide from the new state instead of reporting a failure.
+   */
+  async function run(what: string, fn: () => Promise<unknown>, done: string, happened?: () => boolean) {
     busy = what
     try {
       await fn()
@@ -74,7 +80,18 @@
       await onchanged()
       void appStatus.overview.refresh()
     } catch (err) {
-      toast.error(err)
+      if (toApiError(err).code !== 'network' || !happened) {
+        toast.error(err)
+        return
+      }
+      try {
+        await onchanged()
+      } catch {
+        /* still unreachable: report the original error */
+      }
+      void appStatus.overview.refresh()
+      if (happened()) toast.success(done)
+      else toast.error(err)
     } finally {
       busy = ''
     }
@@ -87,7 +104,9 @@
       confirmLabel: t('cache.target.init'),
       danger: false,
     })
-    if (ok) await run('init', () => api.storage.init(target.id, false), t('cache.target.initDone', { name: target.name }))
+    if (!ok) return
+    const before = target.storeId
+    await run('init', () => api.storage.init(target.id, false), t('cache.target.initDone', { name: target.name }), () => !!target.storeId && target.storeId !== before)
   }
 
   async function adopt() {
@@ -97,7 +116,9 @@
       confirmLabel: t('cache.target.adopt'),
       danger: false,
     })
-    if (ok) await run('adopt', () => api.storage.init(target.id, true), t('cache.target.adoptDone', { name: target.name }))
+    if (!ok) return
+    const found = st.storeId
+    await run('adopt', () => api.storage.init(target.id, true), t('cache.target.adoptDone', { name: target.name }), () => !!found && target.storeId === found)
   }
 
   async function activate() {
@@ -107,7 +128,7 @@
       confirmLabel: t('cache.target.activate'),
       danger: false,
     })
-    if (ok) await run('activate', () => api.storage.activate(target.id), t('cache.target.activated', { name: target.name }))
+    if (ok) await run('activate', () => api.storage.activate(target.id), t('cache.target.activated', { name: target.name }), () => target.active)
   }
 
   async function apply() {

@@ -9,7 +9,8 @@ const de: Messages<typeof en> = {
   'login.password': 'Passwort',
   'login.submit': 'Anmelden',
   'login.wrong': 'Benutzername oder Passwort ist falsch.',
-  'login.throttled': 'Zu viele Fehlversuche. Warte 15 Minuten und versuche es dann erneut.',
+  'login.throttled':
+    'Zu viele Versuche. Warte einen Moment und versuche es erneut. Nach mehreren Fehlversuchen von diesem Gerät ist die Anmeldung hier 15 Minuten gesperrt. Passiert das immer wieder, melde dich mit einem Browser an, mit dem du PiCache schon benutzt hast.',
   'login.expired': 'Deine Sitzung ist abgelaufen. Melde dich erneut an, um dort weiterzumachen, wo du warst.',
   'login.totpTitle': 'Code eingeben',
   'login.totpHelp': 'Öffne deine Authenticator-App und gib den 6-stelligen Code für PiCache ein.',
@@ -40,6 +41,11 @@ const de: Messages<typeof en> = {
   'setup.strength.strong': 'Stark',
   'setup.forbidden': 'Das Einrichtungs-Token ist falsch oder PiCache ist bereits eingerichtet. Prüfe das Token oder melde dich an.',
   'setup.submit': 'Konto anlegen',
+
+  'https.title': 'Diese Verbindung ist nicht verschlüsselt',
+  'https.text':
+    'Hier eingegebene Passwörter und das Einrichtungs-Token gehen unverschlüsselt über das Netzwerk. Verwende stattdessen die HTTPS-Adresse:',
+  'https.cert': 'Beim selbstsignierten Zertifikat fragt dein Browser einmal, ob du es akzeptierst.',
 }
 
 export default de

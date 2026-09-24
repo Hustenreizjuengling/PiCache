@@ -2,11 +2,13 @@
 
 Base path `/api/v1`. JSON only (`Content-Type: application/json` for request bodies; unknown members are rejected). Timestamps in entities are RFC 3339 (UTC); time series use unix seconds. Types in `code` refer to Go types (`package.Type`) whose JSON field names are authoritative.
 
-**Auth.** Browser: session cookie `picache_session` (set by login/setup). Automation: `Authorization: Bearer <token>` (API tokens, scope `read` or `admin`). Permissions:
+**Auth.** Browser: session cookie set by login/setup (`HttpOnly`, `SameSite=Strict`, `Path=/`): `__Host-picache_session` (always `Secure`) when the request arrived over TLS, `picache_session` over plain HTTP (`Secure` only with `PICACHE_WEB_SECURE_COOKIES=true`, for a TLS-terminating reverse proxy). Both names are accepted. Login and setup also set a device cookie, named the same way (`__Host-picache_device` over TLS, `picache_device` otherwise; `HttpOnly`, `SameSite=Strict`, 180 days, sealed with the master key, renewed at every sign-in, kept on logout). It is not a credential: a later sign-in with the same username from that browser is throttled by the device (5 failures → 15 min) instead of the username delay. Automation: `Authorization: Bearer <token>` (API tokens, scope `read` or `admin`). Permissions:
 - **P** public
 - **R** any authenticated principal (read or admin)
 - **A** admin (browser session or admin token)
-- **S** interactive admin browser session only (never API tokens): account security
+- **S** interactive admin browser session only (never API tokens): account security and restore
+
+**Password confirmation.** Creating an API token, starting TOTP enrolment, changing the password, disabling TOTP and restoring a backup ask for the current password again. Wrong passwords are throttled per client and per session (each: 5 failures → 15 min lockout) and by the global attempt limit (429 while blocked), but not by the username delay of sign-ins, and are audited as `auth.login_failed`.
 
 All state-changing requests are protected by Go's `CrossOriginProtection` and audited.
 
@@ -24,19 +26,19 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 
 | Method & path | P | Request | Response |
 |---|---|---|---|
-| GET `/auth/status` | P | – | `{setupRequired:bool, authenticated:bool, user?:auth.User, scope?:string, tokenAuth:bool, language:string, setupHints?:[string]}` (setupHints: where to find the token: log, `picache setup-token`, `docker exec -u 65532:65532 … /picache setup-token`) |
-| POST `/auth/setup` | P | `{setupToken, username, password}` | 200 `auth.User` + cookie. 403 if setup already done or token wrong. Password ≥ 10 chars. |
-| POST `/auth/login` | P | `{username, password, totp?}` | 200 `auth.User` + cookie; 401 `unauthorized` (wrong credentials); 401 with `field:"totp"` when a TOTP code is required or wrong; 429 throttled |
-| POST `/auth/logout` | R | – | 204, clears cookie |
+| GET `/auth/status` | P | – | `{setupRequired:bool, authenticated:bool, user?:auth.User, scope?:string, tokenAuth:bool, language:string, setupHints?:[string], httpsPort:int}` (setupHints: where to find the token: log, `picache setup-token`, `docker exec -u 65532:65532 … /picache setup-token`; httpsPort: port of the bound HTTPS listener, 0 if none; the sign-in and setup pages link to it when opened over HTTP) |
+| POST `/auth/setup` | P | `{setupToken, username, password}` | 200 `auth.User` + session and device cookies. 403 if the token is wrong, or at once if setup is already done (such a call uses no share of the global attempt limit but counts as a failed attempt of the client). Password ≥ 10 chars. |
+| POST `/auth/login` | P | `{username, password, totp?}` | 200 `auth.User` + session and device cookies; 401 `unauthorized` (wrong credentials); 401 with `field:"totp"` when a TOTP code is required or wrong; 429 throttled (client locked out for 15 min after 5 failures; username delayed by up to 30 s per attempt from the 5th failure, unless the browser sends a device cookie issued for this username, which is locked for 15 min after 5 failures instead; global limit 10 attempts/s) |
+| POST `/auth/logout` | R | – | 204, clears the session cookie (the device cookie stays) |
 | GET `/auth/me` | R | – | `auth.User` |
-| POST `/auth/password` | S | `{currentPassword, newPassword}` | 204 (other sessions revoked) |
+| POST `/auth/password` | S | `{currentPassword, newPassword, keepTokens?:bool}` | 204. Other sessions are revoked, and all API tokens of the user unless `keepTokens:true`. 400 with `field:"currentPassword"` for a wrong password |
 | GET `/auth/sessions` | S | – | `[]auth.SessionInfo` |
 | DELETE `/auth/sessions/{id}` | S | – | 204 |
-| POST `/auth/totp/begin` | S | – | `{secret, uri}` (render the URI as a QR code client-side) |
-| POST `/auth/totp/confirm` | S | `{code}` | 204 |
+| POST `/auth/totp/begin` | S | `{currentPassword}` | `{secret, uri}` (render the URI as a QR code client-side); 400 with `field:"currentPassword"` for a missing or wrong password; 409 if TOTP is already on |
+| POST `/auth/totp/confirm` | S | `{code}` | 204; the user's other sessions are revoked (they were created without a code) |
 | POST `/auth/totp/disable` | S | `{password}` | 204 |
 | GET `/tokens` | S | – | `[]auth.TokenInfo` |
-| POST `/tokens` | S | `{name, scope:"read"|"admin", expiresInDays?:int}` | 201 `{token:string, info:auth.TokenInfo}` (token shown once; audit with `info` only) |
+| POST `/tokens` | S | `{name, scope:"read"|"admin", expiresInDays?:int, currentPassword}` | 201 `{token:string, info:auth.TokenInfo}` (token shown once; audit with `info` only); 400 with `field:"currentPassword"` for a missing or wrong password |
 | DELETE `/tokens/{id}` | S | – | 204 |
 
 ## System — `routes_system.go`
@@ -47,8 +49,8 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 | GET `/system/health` | R | – | `api.Health` |
 | GET `/system/overview` | R | – | Top-bar/overview status in one call: `{blocking:dnsserver.BlockingStatus, dns:dnsserver.Stats, cacheIps:dnsserver.CacheIPStatus, router:dnsserver.RouterStatus, lancacheEnabled:bool, servicesReady:bool, store:api.StoreState, proxy:proxy.Stats, sni:sni.Stats, filter:filter.Stats, upstreams:[]upstream.UpstreamStat, clockGuard:bool, health:{ok:bool, warnings:int, failures:int}}` |
 | GET `/system/audit` | A | `?search&limit&offset` | `listing.Page[auth.AuditEntry]` |
-| GET `/system/backup` | A | `?includeSecrets=true` (sealed NAS passwords; useless without the master key) | `application/octet-stream` download `picache-backup-<date>.db` (sessions removed) |
-| POST `/system/restore` | A | raw body (`application/octet-stream`, ≤ 512 MiB) | 202 `{staged:true, message:"Restart PiCache to apply"}`; 400 for invalid or newer-version backups |
+| GET `/system/backup` | A | `?includeSecrets=true` (sealed NAS passwords; useless without the master key) | `application/octet-stream` download `picache-backup-<date>.db`. Never contains accounts: users (password hashes, TOTP secrets), sessions and API tokens are removed; the audit log stays |
+| POST `/system/restore` | S | raw body (`application/octet-stream`, ≤ 512 MiB); header `X-PiCache-Password`: the current password, percent-encoded as UTF-8 (JavaScript `encodeURIComponent`; ASCII passwords without `%` can be sent as they are) | 202 `{staged:true, message:"Restart PiCache to apply"}`; 401 with `field:"password"` for a missing or wrong password (nothing is staged; the session stays valid); 429 throttled; 400 for invalid or newer-version backups and for uploads with triggers, views, virtual tables, generated columns, tables or indexes the running PiCache does not have, indexes defined differently, or changed account tables. On the next start the restore keeps the running instance's accounts, API tokens and audit log and ends all sessions |
 | POST `/system/restart` | A | – | 202; the process exits with code 75 and is restarted by systemd/Docker |
 | GET `/metrics` (no `/api/v1` prefix) | A token | – | Prometheus text (404 unless `web.metricsEnabled`) |
 
@@ -71,7 +73,7 @@ Changes to `cache.activeStoreId` via these endpoints are rejected (use `POST /st
 | POST `/dns/blocking` | A | `{enabled:bool, pauseSeconds?:int}` (enabled=false + pauseSeconds>0 = timed pause) | `dnsserver.BlockingStatus` |
 | POST `/dns/lookup` | R | `dnsserver.LookupRequest` | `dnsserver.LookupResult` |
 | GET `/dns/stats` | R | – | `dnsserver.Stats` |
-| GET `/dns/cache-ips` | R | – | `dnsserver.CacheIPStatus` |
+| GET `/dns/cache-ips` | R | – | `dnsserver.CacheIPStatus` (`warning` carries the address-detection warning and the would-be addresses are filled even while LanCache is disabled) |
 | GET `/dns/router` | R | – | `dnsserver.RouterStatus` |
 | GET `/dns/records` | R | – | `[]dnsserver.Record` |
 | POST `/dns/records` | A | `dnsserver.RecordInput` | 201 `dnsserver.Record` |
@@ -141,7 +143,7 @@ All return 503 `unavailable` when no store is online (except `/cache/state`).
 |---|---|---|---|
 | GET `/cache/state` | R | – | `api.StoreState` |
 | GET `/cache/services` | R | – | `[]cachestore.ServiceUsage` |
-| GET `/cache/groups` | R | `?service&search&sort&desc&limit&offset` | `listing.Page[GroupView]`, `GroupView = cachestore.GroupUsage + {label:string, clients:int}`; search also matches labels (`services.SearchLabels` → `GroupQuery.SearchKeys`); client counts via `logs.GroupClientCounts` |
+| GET `/cache/groups` | R | `?service&search&sort&desc&limit&offset` | `listing.Page[GroupView]`, `GroupView = cachestore.GroupUsage + {label:string, userLabel:bool, clients:int}` (`userLabel`: the label was set by a user); `hits`/`bytesServed` count only bytes served from the cache; search also matches labels (`services.SearchLabels` → `GroupQuery.SearchKeys`); client counts via `logs.GroupClientCounts` |
 | GET `/cache/groups/detail` | R | `?service&key` | `{group:GroupView, clients:[]logs.GroupClient, objects:listing.Page[cachestore.Object]}` (exact `GroupQuery.GroupKey`) |
 | GET `/cache/objects` | R | `?service&group&search&sort&desc&limit&offset` | `listing.Page[cachestore.Object]` |
 | DELETE `/cache/objects/{id}` | A | – | 204 (400 for malformed ids) |
@@ -186,7 +188,7 @@ All return 503 `unavailable` when no store is online (except `/cache/state`).
 | Method & path | P | Request | Response |
 |---|---|---|---|
 | GET `/logs/queries` | R | `?from&to&range&client&domain&status(multi)&qtype&upstream&cursor&limit` (default range 1h) | `logs.QueryPage` |
-| GET `/stats/summary` | R | `?range` (default 24h) | `logs.Summary` |
+| GET `/stats/summary` | R | `?range` (default 24h) | `logs.Summary` (`topFrom`: the hour-aligned start that top lists and `activeClients` actually cover) |
 | GET `/stats/dns` | R | `?range&step` (step in seconds; default so there are ≤ 300 points, never finer than the rollup: 60 s for ranges ≤ 48 h, 3600 s beyond; > 1500 points → 400) | `logs.Series` |
 | GET `/stats/cache` | R | `?range&step&service` | `logs.Series` |
 | GET `/stats/top` | R | `?kind=domains|blocked|clients|cache-clients|content|upstreams&range&limit` | `[]logs.TopItem` |
@@ -196,8 +198,8 @@ All return 503 `unavailable` when no store is online (except `/cache/state`).
 | GET `/cache/requests` | R | `?from&to&range&client&service&search&status&cursor&limit` | `listing.Page[logs.CacheEvent]` |
 | GET `/cache/sni-events` | R | same | `listing.Page[logs.SNIEvent]` |
 | GET `/cache/evictions` | R | same (`status` = reason) | `listing.Page[logs.EvictionEvent]` |
-| GET `/stream/queries` | R | `?client&status` (server-side filter) | SSE `event: query`, data `logs.QueryEvent` |
-| GET `/stream/cache` | R | – | SSE `event: request`, data `logs.CacheEvent` |
+| GET `/stream/queries` | R | `?client&status` (server-side filter) | SSE `event: query`, data `logs.QueryEvent` (`id` is 0 in the live feed; `seq` is a positive per-process sequence for keying rows) |
+| GET `/stream/cache` | R | – | SSE `event: request`, data `logs.CacheEvent` (`seq` as above) |
 
 ---
 

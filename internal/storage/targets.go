@@ -104,6 +104,9 @@ func (m *Manager) Update(ctx context.Context, id string, in TargetInput) (Target
 	m.mu.Unlock()
 	m.log.Info("storage target updated", slog.String("target", id), slog.Bool("relocated", relocated),
 		slog.Bool("passwordChanged", setPassword && t.Kind == KindSMB))
+	if cur.Mode == ModeHostApply && t.Mode != ModeHostApply {
+		m.queueRemoval(id) // the root helper no longer manages this mount
+	}
 	if relocated {
 		m.notify(id, st)
 		m.kickGuard()
@@ -121,7 +124,8 @@ func (m *Manager) Delete(ctx context.Context, id, activeID string) error {
 	}
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	if _, ok := m.get(id); !ok {
+	t, ok := m.get(id)
+	if !ok {
 		return apperr.NotFound("storage target", id)
 	}
 	if _, err := m.db.W.ExecContext(ctx, `DELETE FROM storage_targets WHERE id = ?`, id); err != nil {
@@ -130,8 +134,14 @@ func (m *Manager) Delete(ctx context.Context, id, activeID string) error {
 	m.mu.Lock()
 	delete(m.targets, id)
 	m.mu.Unlock()
-	removeRequestFiles(requestsDir(m.cfg), id)
 	m.log.Info("storage target deleted", slog.String("target", id))
+	// The mount unit and the credentials of a host-apply target (or of one
+	// whose removal is still outstanding) are removed by the root helper.
+	if dir := requestsDir(m.cfg); t.Mode == ModeHostApply || removalOutstanding(dir, id) {
+		m.queueRemoval(id)
+	} else {
+		removeRequestFiles(dir, id)
+	}
 	return nil
 }
 

@@ -12,7 +12,7 @@
   import { router } from '$lib/router.svelte'
   import { CursorStack, EmptyState, IconButton, KeyValue, Pager, Panel, SidePanel, Table, type Column } from '$lib/ui'
   import type { ServiceCatalog } from '../shared/catalog.svelte'
-  import { pickRange } from '../shared/util'
+  import { pickRange, timeWindow } from '../shared/util'
   import Filters from './Filters.svelte'
 
   let { catalog }: { catalog: ServiceCatalog } = $props()
@@ -21,12 +21,15 @@
   const PAGE = 100
 
   const range = $derived(pickRange(router.param('range'), RANGES, '24h'))
+  const win = $derived(timeWindow(router.param('from'), router.param('to')))
+  /** An explicit window from the URL (e.g. the query log's "Cache traffic" link) replaces the range. */
+  const time = $derived(win ?? { range })
   const client = $derived(router.param('client'))
   const service = $derived(router.param('service'))
   const search = $derived(router.param('search'))
 
   const pages = new CursorStack()
-  const filterKey = $derived(JSON.stringify([range, client, service, search]))
+  const filterKey = $derived(JSON.stringify([time, client, service, search]))
   $effect.pre(() => {
     void filterKey
     untrack(() => pages.reset())
@@ -35,7 +38,7 @@
   const list = resource((signal) =>
     api.cache.sniEvents(
       {
-        range,
+        ...time,
         client: client || undefined,
         service: service || undefined,
         search: search || undefined,

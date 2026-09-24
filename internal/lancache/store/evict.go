@@ -17,7 +17,8 @@ import (
 // are removed until the deficit MinFreeBytes·105/100 − free is covered. The
 // free-space sample predates this run, so bytes freed by (1) and (2) count
 // towards that deficit. Pinned objects and objects of pinned groups are
-// never evicted; objects used since the last statistics flush are skipped.
+// never evicted; objects in use (Use) and objects used since the last
+// statistics flush are skipped.
 // Full is set when (2) or (3) could not be satisfied.
 func (s *Store) Evict(ctx context.Context, p Policy) (EvictResult, error) {
 	res := EvictResult{Reasons: map[string]int64{}}
@@ -122,7 +123,7 @@ func (s *Store) candidates(ctx context.Context, extra string, afterLA int64, aft
 // evictInactive removes unpinned objects not accessed since cutoff.
 func (s *Store) evictInactive(ctx context.Context, cutoff int64, res *EvictResult) error {
 	keep := func(o *Object) bool {
-		return o.Pinned || o.LastAccess.UnixMilli() >= cutoff || s.touched(o.ID)
+		return o.Pinned || o.LastAccess.UnixMilli() >= cutoff || s.touched(o.ID) || s.used(o.ID)
 	}
 	la, id := int64(math.MinInt64), ""
 	for {
@@ -147,7 +148,7 @@ func (s *Store) evictInactive(ctx context.Context, cutoff int64, res *EvictResul
 // deficit bytes were freed or nothing evictable is left; returns the bytes
 // freed.
 func (s *Store) evictLRU(ctx context.Context, deficit int64, reason string, res *EvictResult) (int64, error) {
-	keep := func(o *Object) bool { return o.Pinned || s.touched(o.ID) }
+	keep := func(o *Object) bool { return o.Pinned || s.touched(o.ID) || s.used(o.ID) }
 	var freed int64
 	la, id := int64(math.MinInt64), ""
 	for freed < deficit {

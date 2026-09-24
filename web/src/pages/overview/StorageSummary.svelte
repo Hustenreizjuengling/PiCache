@@ -1,8 +1,9 @@
 <!--
   @component
-  Cache storage used/free with the "full in ~N days" estimate:
-  growthPerDay = (cacheBytesStored − evictedBytes) / 7 over the last 7 days,
-  days = (freeBytes − minFreeBytes) / growthPerDay (hidden when growth ≤ 0).
+  Cache storage used/free with the "full in ~N days" estimate (see
+  storage.ts): the growth of the last 7 days (or of the days since the
+  statistics started) against the free space, or against the size limit when
+  one is set and reached first.
 -->
 <script lang="ts">
   import { t, tn } from '../../i18n/index.svelte'
@@ -10,22 +11,24 @@
   import { formatBytes } from '../../lib/format'
   import { Button, Chip, Meter, Notice } from '../../lib/ui'
   import { links } from './links'
+  import { atSizeLimit, coveredDays, fullEstimate } from './storage'
 
   let { store }: { store: StoreState } = $props()
 
   const week = resource((signal) => api.stats.summary('7d', { signal }), { interval: 300_000 })
+  // Hourly cache traffic: when the statistics started (they may be younger than a week).
+  const traffic = resource((signal) => api.stats.cache('7d', 3600, undefined, { signal }), { interval: 300_000 })
 
   const cached = $derived(store.usage?.cachedBytes ?? 0)
   const used = $derived(Math.max(0, store.totalBytes - store.freeBytes))
   const other = $derived(Math.max(0, used - cached))
 
-  const daysLeft = $derived.by(() => {
+  const atLimit = $derived(atSizeLimit(store))
+  const estimate = $derived.by(() => {
     const w = week.data
     if (!w) return null
-    const growthPerDay = (w.cacheBytesStored - w.evictedBytes) / 7
-    if (growthPerDay <= 0) return null
-    const room = store.freeBytes - store.minFreeBytes
-    return Math.max(0, Math.floor(room / growthPerDay))
+    if (!traffic.data && !traffic.error) return null // wait for the covered days
+    return fullEstimate(store, w, traffic.data ? coveredDays(traffic.data) : 7)
   })
 </script>
 
@@ -71,8 +74,10 @@
           <Chip tone="warn" label={t('overview.storage.full')} />
         {:else if store.lowSpace}
           <Chip tone="warn" label={t('overview.storage.low')} />
-        {:else if daysLeft !== null}
-          <span>{tn('overview.storage.fullIn', daysLeft)}</span>
+        {:else if atLimit}
+          <Chip tone="info" label={t('overview.storage.atLimit', { size: formatBytes(store.maxSizeBytes) })} />
+        {:else if estimate}
+          <span>{tn(estimate.byLimit ? 'overview.storage.limitIn' : 'overview.storage.fullIn', estimate.days)}</span>
         {/if}
         {#if store.sdCard}<Chip tone="warn" label={t('overview.storage.sdCard')} />{/if}
         <a href={links.storage()}>{t('overview.storage.manage')}</a>

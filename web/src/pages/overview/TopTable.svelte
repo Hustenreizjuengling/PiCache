@@ -9,6 +9,10 @@
 
   interface Props {
     title: string
+    /** Shown after the title, e.g. the real start of the counted window ("since 09:00"). */
+    note?: string
+    /** Explanation of the note (tooltip). */
+    noteTitle?: string
     items?: TopItem[]
     loading?: boolean
     error?: string
@@ -23,8 +27,21 @@
     link: (item: TopItem) => string
   }
 
-  let { title, items, loading = false, error, onretry, keyLabel, countLabel, emptyText, mono = false, pair, link }: Props =
-    $props()
+  let {
+    title,
+    note,
+    noteTitle,
+    items,
+    loading = false,
+    error,
+    onretry,
+    keyLabel,
+    countLabel,
+    emptyText,
+    mono = false,
+    pair,
+    link,
+  }: Props = $props()
 
   const max = $derived(Math.max(1, ...(items ?? []).map((i) => i.count)))
 
@@ -49,7 +66,7 @@
 {/snippet}
 
 <div class="top">
-  <h3>{title}</h3>
+  <h3>{title}{#if note}<span class="note" title={noteTitle}>· {note}</span>{/if}</h3>
   <Table
     compact
     rows={items}
@@ -75,6 +92,11 @@
     padding: 0 var(--sp-4);
     font-size: var(--fs-sm);
     color: var(--text-2);
+  }
+  .note {
+    margin-left: 0.35em;
+    font-weight: 400;
+    color: var(--text-3);
   }
   .key {
     display: block;

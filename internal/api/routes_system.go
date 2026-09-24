@@ -2,10 +2,12 @@ package api
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"mime"
 	"net/http"
+	"net/url"
 	"runtime"
 	"runtime/metrics"
 	"time"
@@ -33,7 +35,9 @@ func (s *Server) registerSystemRoutes() {
 	s.route("GET /api/v1/system/overview", permRead, s.systemOverview)
 	s.route("GET /api/v1/system/audit", permAdmin, s.systemAudit)
 	s.route("GET /api/v1/system/backup", permAdmin, s.systemBackup)
-	s.route("POST /api/v1/system/restore", permAdmin, s.systemRestore)
+	// A restore replaces the whole configuration at once: interactive
+	// sessions only, and the password is asked again (restorePasswordHeader).
+	s.route("POST /api/v1/system/restore", permSession, s.systemRestore)
 	s.route("POST /api/v1/system/restart", permAdmin, s.systemRestart)
 }
 
@@ -216,12 +220,29 @@ func (s *Server) systemBackup(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// restorePasswordHeader carries the current password for POST
+// /system/restore, percent-encoded as UTF-8 (JavaScript encodeURIComponent;
+// header values cannot carry arbitrary Unicode). ASCII passwords without
+// "%" can be sent as they are.
+const restorePasswordHeader = "X-PiCache-Password"
+
 func (s *Server) systemRestore(w http.ResponseWriter, r *http.Request) error {
 	extendDeadlines(w, backupDeadline)
 	if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/octet-stream" {
 		return apperr.Invalid("body", "Content-Type must be application/octet-stream")
 	}
 	body := http.MaxBytesReader(w, r.Body, maxRestoreBodyBytes)
+	pw, err := url.PathUnescape(r.Header.Get(restorePasswordHeader))
+	if err != nil {
+		pw = "\x00" // malformed encoding: never a valid password, counted as a wrong one
+	}
+	if err := s.d.Auth.ConfirmPassword(r.Context(), principal(r), pw); err != nil {
+		// Read the rest of the upload first: a browser that is still
+		// sending the file may otherwise see a reset connection instead of
+		// this answer.
+		_, _ = io.Copy(io.Discard, body)
+		return err
+	}
 	if err := s.d.Runtime.StageRestore(r.Context(), body); err != nil {
 		if _, tooBig := errors.AsType[*http.MaxBytesError](err); tooBig {
 			return apperr.Invalid("body", "the backup is larger than 512 MiB")

@@ -109,9 +109,17 @@ func (d *SafeDialer) Filter(ctx context.Context, addrs []netip.Addr) ([]netip.Ad
 	}
 	mine := own()
 	var out []netip.Addr
+	forbidden := func(ip netip.Addr) bool {
+		return !ip.IsValid() || ip.IsUnspecified() || ip.IsLoopback() || inAny(ip, alwaysForbidden) || slices.Contains(mine, ip)
+	}
 	for _, ip := range addrs {
 		ip = Canon(ip)
-		if !ip.IsValid() || ip.IsUnspecified() || ip.IsLoopback() || inAny(ip, alwaysForbidden) || slices.Contains(mine, ip) {
+		if forbidden(ip) {
+			continue
+		}
+		// NAT64/6to4/IPv4-compatible addresses reach their embedded IPv4
+		// address, which must pass the same checks.
+		if v4, ok := EmbeddedIPv4(ip); ok && forbidden(v4) {
 			continue
 		}
 		if !allowPrivate && !IsPublicUnicast(ip) {

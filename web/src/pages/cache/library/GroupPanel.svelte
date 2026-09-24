@@ -280,9 +280,12 @@
             <Button type="submit" variant="primary" size="sm" loading={labelSaving} disabled={!session.isAdmin || !label.trim() || label.trim() === g.label}>
               {t('cache.library.saveLabel')}
             </Button>
-            <Button size="sm" variant="ghost" disabled={!session.isAdmin || labelSaving} onclick={() => saveLabel('')}>
-              {t('cache.library.resetLabel')}
-            </Button>
+            <!-- Only a name set by a user can be reset (older servers do not say: always offered). -->
+            {#if g.userLabel ?? true}
+              <Button size="sm" variant="ghost" disabled={!session.isAdmin || labelSaving} onclick={() => saveLabel('')}>
+                {t('cache.library.resetLabel')}
+              </Button>
+            {/if}
           </div>
         </form>
       </section>

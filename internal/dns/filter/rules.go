@@ -244,7 +244,10 @@ func normalizeRule(in RuleInput) (RuleInput, error) {
 		case len(p) > maxRegexLen:
 			return in, apperr.Invalid("pattern", "must be at most %d characters", maxRegexLen)
 		}
-		if _, err := regexp.Compile("(?i)" + p); err != nil {
+		switch _, _, err := compileRegex("(?i)"+p, maxRegexCost); {
+		case errors.Is(err, errTooComplex):
+			return in, apperr.Invalid("pattern", "is too complex: its repetitions expand to more than about %d instructions", maxRegexCost)
+		case err != nil:
 			return in, apperr.Invalid("pattern", "invalid regular expression: %s", strings.TrimPrefix(err.Error(), "error parsing regexp: "))
 		}
 		in.Pattern = p

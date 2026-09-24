@@ -14,11 +14,12 @@ import (
 )
 
 // GroupView is a content group as shown in the Library: the store
-// aggregate plus its display label and the number of clients that
-// downloaded it.
+// aggregate plus its display label (UserLabel: set by the user, not
+// built-in) and the number of clients that downloaded it.
 type GroupView struct {
 	cachestore.GroupUsage `json:",inline"`
 	Label                 string `json:"label"`
+	UserLabel             bool   `json:"userLabel"`
 	Clients               int    `json:"clients"`
 }
 
@@ -126,20 +127,19 @@ func (s *Server) cacheGroups(w http.ResponseWriter, r *http.Request) error {
 // logs database; if that is unavailable they are reported as 0.
 func (s *Server) groupViews(ctx context.Context, groups []cachestore.GroupUsage) []GroupView {
 	out := make([]GroupView, len(groups))
-	keys := make([]string, len(groups))
 	refs := make([]logs.GroupRef, len(groups))
 	for i, g := range groups {
 		out[i] = GroupView{GroupUsage: g, Label: g.GroupKey}
-		keys[i] = g.GroupKey
 		refs[i] = logs.GroupRef{Service: g.Service, GroupKey: g.GroupKey}
 	}
 	if len(groups) == 0 {
 		return out
 	}
 	if s.d.Services != nil {
-		labels := s.d.Services.Labels(keys)
 		for i := range out {
-			if l := labels[out[i].GroupKey]; l != "" {
+			if l, ok := s.d.Services.UserLabel(out[i].GroupKey); ok {
+				out[i].Label, out[i].UserLabel = l, true
+			} else if l := s.d.Services.Label(out[i].GroupKey); l != "" {
 				out[i].Label = l
 			}
 		}

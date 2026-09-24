@@ -1,8 +1,10 @@
 <!--
   @component
   The core component: 36 px rows (32 compact), header, right-aligned numbers,
-  mono cells for machine values, sorting, loading skeleton, empty state and
-  row click (opens a SidePanel). Scrolls horizontally inside its panel.
+  mono cells for machine values (never split across lines; opt in with
+  wrap), sorting, loading skeleton, empty state and row click (opens a
+  SidePanel). Scrolls horizontally inside its panel; the empty and error
+  messages stay within the visible width.
 
   <Table {columns} rows={records.data} key={(r) => r.id} loading={records.loading}
          onrowclick={(r) => (selected = r)} emptyText="No local records yet." />
@@ -130,85 +132,90 @@
   }
 
   const showSkeleton = $derived(loading && (!rows || rows.length === 0) && !error)
+  const showEmpty = $derived(!error && !showSkeleton && view.length === 0 && !loading)
 </script>
 
-<div class={['scroll', compact && 'compact']} style:max-height={maxHeight}>
-  <table aria-busy={loading || undefined}>
-    {#if caption}<caption class="visually-hidden">{caption}</caption>{/if}
-    <thead>
-      <tr>
-        {#each columns as col (col.key)}
-          <th
-            scope="col"
-            class={[col.align ?? 'left']}
-            style:width={col.width}
-            title={col.title}
-            aria-sort={sort?.key === col.key ? (sort.desc ? 'descending' : 'ascending') : col.sortable ? 'none' : undefined}
-          >
-            {#if col.sortable}
-              <button type="button" class="sort" onclick={() => toggleSort(col)}>
-                <span>{col.label}</span>
-                <Icon
-                  name={sort?.key === col.key ? (sort.desc ? 'arrow-down' : 'arrow-up') : 'sort'}
-                  size={14}
-                />
-              </button>
-            {:else}
-              {col.label}
-            {/if}
-          </th>
-        {/each}
-      </tr>
-    </thead>
-    <tbody>
-      {#if error}
-        <tr class="msg">
-          <td colspan={columns.length}>
-            <div class="error">
-              <Icon name="error" size={18} />
-              <span>{error}</span>
-              {#if onretry}<Button size="sm" icon="refresh" onclick={onretry}>{t('common.action.retry')}</Button>{/if}
-            </div>
-          </td>
+<div class="tbl">
+  <div class={['scroll', compact && 'compact']} style:max-height={maxHeight}>
+    <table aria-busy={loading || undefined}>
+      {#if caption}<caption class="visually-hidden">{caption}</caption>{/if}
+      <thead>
+        <tr>
+          {#each columns as col (col.key)}
+            <th
+              scope="col"
+              class={[col.align ?? 'left']}
+              style:width={col.width}
+              title={col.title}
+              aria-sort={sort?.key === col.key ? (sort.desc ? 'descending' : 'ascending') : col.sortable ? 'none' : undefined}
+            >
+              {#if col.sortable}
+                <button type="button" class="sort" onclick={() => toggleSort(col)}>
+                  <span>{col.label}</span>
+                  <Icon
+                    name={sort?.key === col.key ? (sort.desc ? 'arrow-down' : 'arrow-up') : 'sort'}
+                    size={14}
+                  />
+                </button>
+              {:else}
+                {col.label}
+              {/if}
+            </th>
+          {/each}
         </tr>
-      {:else if showSkeleton}
-        {#each Array.from({ length: skeletonRows }, (_, i) => i) as i (i)}
-          <tr class="skeleton-row" aria-hidden="true">
-            {#each columns as col (col.key)}
-              <td class={[col.align ?? 'left']}><Skeleton width={col.align === 'right' ? '48px' : `${50 + ((i * 17) % 40)}%`} /></td>
-            {/each}
-          </tr>
-        {/each}
-      {:else if view.length === 0 && !loading}
-        <tr class="msg">
-          <td colspan={columns.length}>
-            {#if empty}
-              {@render empty()}
-            {:else}
-              <EmptyState compact title={emptyText ?? t('common.table.empty')} />
-            {/if}
-          </td>
-        </tr>
+      </thead>
+      <tbody>
+        {#if showSkeleton}
+          {#each Array.from({ length: skeletonRows }, (_, i) => i) as i (i)}
+            <tr class="skeleton-row" aria-hidden="true">
+              {#each columns as col (col.key)}
+                <td class={[col.align ?? 'left']}><Skeleton width={col.align === 'right' ? '48px' : `${50 + ((i * 17) % 40)}%`} /></td>
+              {/each}
+            </tr>
+          {/each}
+        {:else if !error && !showEmpty}
+          {#each view as row (key(row))}
+            <!-- Rows open details on click/Enter; links and buttons inside keep their own meaning. -->
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+            <tr
+              class={[onrowclick && 'clickable', selected !== undefined && key(row) === selected && 'selected', rowClass?.(row)]}
+              tabindex={onrowclick ? 0 : undefined}
+              onclick={onrowclick ? (e) => onRowClick(e, row) : undefined}
+              onkeydown={onrowclick ? (e) => onRowKey(e, row) : undefined}
+            >
+              {#each columns as col (col.key)}
+                <td class={[col.align ?? 'left', col.mono && 'mono', col.mono && col.wrap && 'wrap', col.truncate && 'trunc']} title={col.truncate ? text(row, col) : undefined}>
+                  {#if col.cell}{@render col.cell(row)}{:else}{text(row, col)}{/if}
+                </td>
+              {/each}
+            </tr>
+          {/each}
+        {/if}
+      </tbody>
+    </table>
+  </div>
+  <!--
+    Error and empty messages sit below the table, not in a full-width row: the
+    table can be wider than its scroll box (it scrolls sideways on phones), and
+    a row as wide as the table would push the text out of view.
+  -->
+  {#if error}
+    <div class="msg">
+      <div class="error">
+        <Icon name="error" size={18} />
+        <span>{error}</span>
+        {#if onretry}<Button size="sm" icon="refresh" onclick={onretry}>{t('common.action.retry')}</Button>{/if}
+      </div>
+    </div>
+  {:else if showEmpty}
+    <div class="msg">
+      {#if empty}
+        {@render empty()}
       {:else}
-        {#each view as row (key(row))}
-          <!-- Rows open details on click/Enter; links and buttons inside keep their own meaning. -->
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-          <tr
-            class={[onrowclick && 'clickable', selected !== undefined && key(row) === selected && 'selected', rowClass?.(row)]}
-            tabindex={onrowclick ? 0 : undefined}
-            onclick={onrowclick ? (e) => onRowClick(e, row) : undefined}
-            onkeydown={onrowclick ? (e) => onRowKey(e, row) : undefined}
-          >
-            {#each columns as col (col.key)}
-              <td class={[col.align ?? 'left', col.mono && 'mono', col.truncate && 'trunc']} title={col.truncate ? text(row, col) : undefined}>
-                {#if col.cell}{@render col.cell(row)}{:else}{text(row, col)}{/if}
-              </td>
-            {/each}
-          </tr>
-        {/each}
+        <EmptyState compact title={emptyText ?? t('common.table.empty')} />
       {/if}
-    </tbody>
-  </table>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -262,9 +269,15 @@
   .center {
     text-align: center;
   }
+  /* Machine values stay on one line: a split IP or MAC is easily misread
+     (the table scrolls sideways instead). wrap: true allows long ones to break. */
   td.mono {
     font-family: var(--font-mono);
     font-size: var(--fs-sm);
+    white-space: nowrap;
+  }
+  td.mono.wrap {
+    white-space: normal;
     overflow-wrap: anywhere;
   }
   td.trunc {
@@ -306,9 +319,9 @@
   tr.selected td {
     background: color-mix(in srgb, var(--focus) 10%, var(--surface));
   }
-  tr.msg td {
-    height: auto;
-    padding: 0;
+  .tbl {
+    width: 100%;
+    min-width: 0;
   }
   .error {
     display: flex;

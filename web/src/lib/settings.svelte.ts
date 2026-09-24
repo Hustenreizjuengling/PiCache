@@ -14,6 +14,7 @@
 
 import { api, toApiError, type ApiError, type Settings, type SettingsSection } from './api'
 import { errorText, fieldError } from './errors'
+import { guardLeave } from './router.svelte'
 import { appStatus } from './status.svelte'
 
 function clone<T>(v: T): T {
@@ -130,7 +131,9 @@ export class SettingsForm<S extends SettingsSection> {
 
 /**
  * Creates a SettingsForm bound to the calling component: it loads when the
- * component mounts (aborted on destroy). Call during component initialisation.
+ * component mounts (aborted on destroy), and leaving the page (in-app
+ * navigation, reload, closing the tab) asks first while it has unsaved
+ * edits. Call during component initialisation.
  */
 export function settingsForm<S extends SettingsSection>(section: S): SettingsForm<S> {
   const form = new SettingsForm(section)
@@ -139,5 +142,6 @@ export function settingsForm<S extends SettingsSection>(section: S): SettingsFor
     void form.load(ctrl.signal)
     return () => ctrl.abort()
   })
+  $effect(() => guardLeave(() => form.dirty))
   return form
 }

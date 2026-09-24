@@ -12,8 +12,30 @@
 //   - Passwords: argon2id m=19456 KiB, t=2, p=1, PHC string, rehash on login
 //     when parameters change; ≥ 10 characters; max 2 concurrent hash
 //     computations (semaphore).
-//   - Throttling: per netutil.ClientKey and per username; 5 failures → 15 min
-//     lockout; TOTP failures count too; global cap of 10 attempts/s.
+//   - Throttling (throttle.go): per netutil.ClientKey 5 failures → 15 min
+//     lockout; per username a progressive delay after 5 failures (1 s,
+//     doubling, at most 30 s; reset on success); TOTP failures count too;
+//     global cap of 10 attempts/s. A browser that signed in before presents
+//     a sealed device cookie (device.go) and is throttled by its device key
+//     (5 failures → 15 min) instead of the username delay, so failures that
+//     other hosts cause for the username cannot keep it out. Password
+//     confirmations of signed-in users (password change, API tokens, TOTP,
+//     restore) are throttled per client and per session (5 failures →
+//     15 min each) and the global cap, not by the username delay.
+//   - Account changes: creating an API token and starting TOTP enrolment
+//     require the current password; a password change revokes the other
+//     sessions and, unless kept explicitly, the API tokens; the CLI reset
+//     revokes all sessions and tokens; enabling TOTP revokes the other
+//     sessions.
+//   - Backup and restore (backup.go): backups never contain accounts,
+//     sessions or API tokens (the copy's triggers and views are dropped
+//     first, and the tables are verified to be empty); a restore keeps the
+//     accounts, API tokens and audit log of the running instance and ends
+//     all sessions. Every revocation verifies that the rows are gone.
+//   - Cookies (cookies.go): "__Host-picache_session" for requests over TLS,
+//     "picache_session" over plain HTTP (Secure when PICACHE_WEB_SECURE_COOKIES
+//     is set); Authenticate accepts both. The device cookie is named alike
+//     ("__Host-picache_device" / "picache_device").
 //   - TOTP (RFC 6238, SHA-1, 6 digits, 30 s, ±1 step): the secret is sealed
 //     with the secrets.Box (AAD "picache/auth/totp/<userID>"); each step can
 //     be used only once (auth_users.totp_last_step).
@@ -39,9 +61,6 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
-
-// SessionCookie is the name of the session cookie.
-const SessionCookie = "picache_session"
 
 // Scope of a principal.
 type Scope string
@@ -79,12 +98,14 @@ type Principal struct {
 	SessionID string // session id (hash prefix) for "current" marking; "" for tokens
 	TokenID   int64  // API token id, 0 for browser sessions
 	Scope     Scope
+	IP        string // client address of the request (throttles password confirmations)
 }
 
 // ReqMeta carries request metadata for throttling and audit.
 type ReqMeta struct {
 	IP        string
 	UserAgent string
+	Devices   []string // device cookie values of the request (DeviceCookieValues)
 }
 
 // Session is a newly created session (Token is the cookie value; only ever
@@ -94,6 +115,7 @@ type Session struct {
 	Token     string
 	UserID    int64
 	ExpiresAt time.Time
+	Device    string // new device cookie value for the browser (device.go); "" if none
 }
 
 // SessionInfo describes an active session.

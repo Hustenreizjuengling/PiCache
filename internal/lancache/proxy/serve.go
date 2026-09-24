@@ -36,9 +36,15 @@ type cache struct {
 	S       int64 // slice size
 	id      string
 	rh      *rangeHeader
-	// useSlices is false for hosts marked no-slice: missing data is then
-	// fetched without Range.
+	release func() // ends the store's in-use mark of the object (nil: none)
+	// useSlices is false for hosts marked no-slice and for objects whose
+	// upstream ignored Range: missing data is then fetched without Range.
 	useSlices bool
+	// probe: this request took the daily range probe of a no-slice host
+	// (at probeAt); probeUsed: it sent a range request upstream.
+	probe     bool
+	probeUsed bool
+	probeAt   time.Time
 
 	obj  object
 	plan plan
@@ -80,15 +86,20 @@ func (o *object) has(i int64) bool {
 // store and fills (ARCHITECTURE 8.2 steps 10–15).
 func (rq *request) serveCache(st SliceStore) {
 	S := st.SliceSize()
-	id := cachestore.ObjectID(rq.service, rq.path)
+	id := cachestore.ObjectID(rq.service, rq.keyPath)
 	if S <= 0 || !cachestore.ValidObjectID(id) {
 		rq.passThrough()
 		return
 	}
+	now := time.Now()
+	useSlices, probe := rq.s.noslice.useSlicing(rq.host, now)
 	rq.cache = cache{
 		st: st, storeID: st.ID(), S: S, id: id,
 		rh:        parseRange(rq.r.Header),
-		useSlices: rq.s.noslice.useSlicing(rq.host, time.Now()),
+		release:   st.Use(id), // no eviction while it is served
+		useSlices: useSlices,
+		probe:     probe,
+		probeAt:   now,
 	}
 	for attempt := 0; ; attempt++ {
 		rq.failIdx, rq.failCount, rq.diskSkip, rq.lastRefresh, rq.capGenState = -1, 0, -1, -1, 0
@@ -148,12 +159,21 @@ func headHeader(h *cachestore.ObjectHead) http.Header {
 	return out
 }
 
+// storeFailed handles a store error. A closed store, or any error of a
+// store that is no longer the active one (Close cancels its operations,
+// which then fail with other errors), ends the store's use for the rest of
+// the request (ErrClosed is treated as a miss).
 func (rq *request) storeFailed(op string, err error) {
-	if errors.Is(err, cachestore.ErrClosed) {
+	if errors.Is(err, cachestore.ErrClosed) || !rq.storeActive() {
 		rq.st = nil
 		return
 	}
 	rq.s.storeError(op, err)
+}
+
+// storeActive reports whether the request's store is still the active one.
+func (rq *request) storeActive() bool {
+	return rq.st != nil && rq.s.store() == rq.st
 }
 
 // firstFetch learns size and headers of an unknown object from the first
@@ -168,8 +188,8 @@ func (rq *request) firstFetch() (bool, error) {
 			continue
 		case err != nil:
 			return false, err
-		case resp == nil && info.kind == kindSlice:
-			return false, nil // streaming from a fill (rq.pending)
+		case resp == nil && (info.kind == kindSlice || info.kind == kindRangeFail):
+			return false, nil // streaming from a fill (rq.pending) or following a leader
 		case info.kind == kind416 && attempt < 2:
 			// The object is shorter than the slice asked for: learn its
 			// size from slice 0.
@@ -192,16 +212,24 @@ func retryable(err error) bool {
 // or created; resp == nil for a valid slice), from the response a created
 // fill hands over when it is no slice, or from a direct request when no
 // fill slot is free or the fill stalls. capture reports whether complete
-// slices of a returned body may be stored.
+// slices of a returned body may be stored. Requests for an object whose
+// upstream ignores Range follow its leader (collapse.go; resp == nil,
+// kindRangeFail); for hosts marked no-slice the first fetch is a shared
+// whole-object fill.
 func (rq *request) firstAnswer(idx int64) (*http.Response, respInfo, bool, error) {
-	if !rq.useSlices {
-		resp, err := rq.upstreamGet(-1, 0)
-		if err != nil {
-			return nil, respInfo{}, false, err
-		}
-		return resp, classifyResponse(resp, 0, rq.S, false), true, nil
+	if info, ok := rq.followLeader(); ok {
+		return nil, info, false, nil
 	}
-	if f, created, ok := rq.acquireFill(idx); ok {
+	var f *fill
+	var created, ok bool
+	if rq.useSlices {
+		f, created, ok = rq.acquireFill(idx)
+	} else {
+		idx = 0
+		f, ok = rq.acquireWholeFill()
+		created = ok && f.acct == rq.acct
+	}
+	if ok {
 		info, err := f.waitHeaders(rq.ctx)
 		var resp *http.Response
 		if created {
@@ -219,6 +247,13 @@ func (rq *request) firstAnswer(idx int64) (*http.Response, respInfo, bool, error
 		case err == nil && resp != nil:
 			f.detach()
 			return resp, info, true, nil
+		case err == nil && info.kind == kindRangeFail && info.total > 0 && !rq.bypass:
+			// Joined a fill whose upstream ignored Range: the fill's
+			// creator streams the object (it was announced as its leader
+			// before this reader woke up); follow it.
+			f.detach()
+			rq.follow(info.total, info.header)
+			return nil, info, false, nil
 		case err == nil:
 			// Joined another request's fill whose answer is no slice.
 			f.detach()
@@ -234,6 +269,13 @@ func (rq *request) firstAnswer(idx int64) (*http.Response, respInfo, bool, error
 	}
 	if rq.ctx.Err() != nil {
 		return nil, respInfo{}, false, errClientGone
+	}
+	if !rq.useSlices {
+		resp, err := rq.upstreamGet(-1, 0)
+		if err != nil {
+			return nil, respInfo{}, false, err
+		}
+		return resp, classifyResponse(resp, 0, rq.S, false), true, nil
 	}
 	start := idx * rq.S
 	resp, err := rq.upstreamGet(start, start+rq.S-1)
@@ -251,7 +293,7 @@ func (rq *request) useFirstAnswer(resp *http.Response, info respInfo, capture bo
 	switch info.kind {
 	case kindSlice, kindRangeFail:
 		rq.obj.total, rq.obj.header = info.total, info.header
-		rq.ds = newDirect(resp.Body, info.start, info.start+info.length-1, capture)
+		rq.ds = rq.newDirect(resp.Body, info.start, info.start+info.length-1, capture)
 		return false
 	case kindNoLength:
 		rq.streamWithoutLength(resp, info)
@@ -272,6 +314,7 @@ func (rq *request) upstreamGet(from, to int64) (*http.Response, error) {
 	h := rq.fillHeader.Clone()
 	if from >= 0 {
 		h.Set("Range", "bytes="+strconv.FormatInt(from, 10)+"-"+strconv.FormatInt(to, 10))
+		rq.probeUsed = true
 	}
 	resp, err := rq.s.roundTrip(rq.ctx, &upReq{method: http.MethodGet, target: rq.target, host: rq.host, header: h, length: -1})
 	if err != nil {
@@ -281,20 +324,37 @@ func (rq *request) upstreamGet(from, to int64) (*http.Response, error) {
 	return resp, nil
 }
 
-// predictStatus is the X-Upstream-Cache-Status of the planned response.
+// predictStatus is the X-Upstream-Cache-Status of the planned response. It
+// is decided before the body is sent and counts a slice as a hit when its
+// bytes will be accounted as served from the cache: cached slices, slices
+// in flight in another request's fill (fromFill counts those bytes as
+// hits) and slices a leader this request follows is about to capture.
 func (rq *request) predictStatus() string {
 	if rq.bypass {
 		return statusBypass
 	}
-	if !rq.obj.known {
-		return statusMiss
+	fills := rq.s.fills.ofObject(rq.storeID, rq.id) // bounded by the fill slots
+	var next, last int64 = 1, 0                     // slices [next, last] a leader will capture
+	if lead := rq.leader(); lead != nil && (rq.ds == nil || rq.ds.lead != lead) {
+		n, capturing, done := lead.state()
+		if capturing && !done {
+			next, last = n, lead.last
+		}
 	}
 	var have, all int64
 	for _, r := range rq.plan.ranges {
 		for i := r.start / rq.S; i <= r.end/rq.S; i++ {
 			all++
-			if rq.obj.has(i) {
+			switch {
+			case rq.obj.genKnown && rq.obj.has(i), i >= next && i <= last:
 				have++
+			default:
+				if f := fills[i]; f != nil && f.acct != rq.acct && f.usable(i, rq.obj.total) {
+					have++
+				}
+			}
+			if have > 0 && have < all {
+				return statusPartial
 			}
 		}
 	}
@@ -417,8 +477,11 @@ func (rq *request) serveAt(pos, end int64) (int64, error) {
 		rq.consumed(i, pos, n, end, err)
 		return n, err
 	}
+	if rq.useSlices && rq.leader() != nil {
+		rq.useSlices = false // the upstream ignored Range for this object: follow its leader
+	}
 	if !rq.useSlices {
-		return rq.openDirect(pos, end, 0, false, true)
+		return rq.serveWithoutRanges(i, pos, e, end)
 	}
 	if f := rq.s.fills.join(rq.key(i)); f != nil {
 		return rq.fromFill(f, i, pos, e, end)
@@ -448,8 +511,8 @@ func (rq *request) tryDisk(i, pos, e int64, refresh bool) (int64, bool, error) {
 		rq.lastRefresh = i
 		rq.refreshHead()
 	}
-	if !rq.obj.genKnown || !rq.obj.has(i) {
-		return 0, false, nil
+	if rq.st == nil || !rq.obj.genKnown || !rq.obj.has(i) {
+		return 0, false, nil // the store closed during the refresh, or not cached
 	}
 	n, err := rq.fromDisk(rq.obj.gen, i, pos, e, !own)
 	switch {
@@ -485,6 +548,9 @@ func (rq *request) refreshHead() {
 // errMissing (it was evicted or recorded again with the same size: the
 // slice is fetched again or read with the new generation).
 func (rq *request) afterStale() error {
+	if rq.st == nil {
+		return errMissing
+	}
 	h, ok, err := rq.st.Head(rq.ctx, rq.id)
 	switch {
 	case err != nil:
@@ -504,15 +570,23 @@ func (rq *request) afterStale() error {
 // SliceReader.WriteRange on the unwrapped ResponseWriter (sendfile).
 // hit=false for bytes this request fetched itself (already counted as WAN).
 func (rq *request) fromDisk(gen uint64, i, pos, e int64, hit bool) (int64, error) {
-	sr, err := rq.st.ReadSlice(rq.ctx, rq.id, gen, i)
+	if rq.st == nil {
+		return 0, errMissing
+	}
+	// Opening a slice waits for the store's I/O semaphore: a store that
+	// does not answer within the store-write budget counts as a miss.
+	ctx, cancel := context.WithTimeout(rq.ctx, rq.s.tm.storeWrite)
+	sr, err := rq.st.ReadSlice(ctx, rq.id, gen, i)
+	cancel()
 	if err != nil {
 		switch {
 		case errors.Is(err, cachestore.ErrStale):
 			return 0, rq.afterStale()
-		case errors.Is(err, cachestore.ErrClosed):
-			rq.st = nil
-		case !errors.Is(err, cachestore.ErrSliceMissing):
-			rq.s.storeError("read slice", err)
+		case errors.Is(err, cachestore.ErrSliceMissing):
+		case rq.ctx.Err() != nil:
+			return 0, errClientGone
+		default:
+			rq.storeFailed("read slice", err)
 		}
 		return 0, errMissing
 	}
@@ -604,7 +678,7 @@ func (rq *request) useHandoff(resp *http.Response, info respInfo, i int64) error
 	switch {
 	case info.kind == kindRangeFail && info.total == rq.obj.total:
 		rq.closeDirect()
-		rq.ds = newDirect(resp.Body, info.start, info.start+info.length-1, true)
+		rq.ds = rq.newDirect(resp.Body, info.start, info.start+info.length-1, true)
 		rq.noteFail(i, 1) // bounds the attempts if the body does not cover the position
 		return nil
 	case info.kind == kindRangeFail:
@@ -662,6 +736,9 @@ func (rq *request) readAhead(i, last int64) {
 	}
 	if !rq.bypass {
 		rq.refreshHead()
+		if rq.st == nil {
+			return // the store closed: nothing can be stored
+		}
 	}
 	lim := s.fillLimits(rq.S)
 	for j := i + 1; j <= last; j++ {
@@ -678,6 +755,7 @@ func (rq *request) readAhead(i, last int64) {
 		}
 		if s.startFill(f) {
 			rq.markOwn(j)
+			rq.probeUsed = true
 		}
 	}
 }
@@ -737,6 +815,7 @@ func (rq *request) acquireFill(idx int64) (f *fill, created, ok bool) {
 			return nil, false, false
 		}
 		rq.markOwn(idx)
+		rq.probeUsed = true
 		return f, true, true
 	}
 	return nil, false, false
@@ -792,13 +871,13 @@ func (rq *request) direct(pos, to int64, useRange, capture bool) (*directSource,
 			rq.recordNewSize(t, storedHeaders(resp.Header))
 			return fail(errChanged)
 		}
-		return newDirect(resp.Body, a, b, capture && t == T), nil
+		return rq.newDirect(resp.Body, a, b, capture && t == T), nil
 	case code == http.StatusOK:
 		if cl := resp.ContentLength; cl >= 0 && cl != T {
 			rq.recordNewSize(cl, storedHeaders(resp.Header))
 			return fail(errChanged)
 		}
-		return newDirect(resp.Body, 0, T-1, capture && resp.ContentLength == T), nil
+		return rq.newDirect(resp.Body, 0, T-1, capture && resp.ContentLength == T), nil
 	case code == http.StatusRequestedRangeNotSatisfiable:
 		if rq.obj.genKnown {
 			rq.s.invalidate(rq.st, rq.id, rq.obj.gen)
@@ -828,7 +907,7 @@ func (rq *request) recordNewSize(total int64, h http.Header) {
 }
 
 func (rq *request) meta() cachestore.Meta {
-	return cachestore.Meta{Service: rq.service, Host: rq.host, Path: rq.path, GroupKey: rq.group.Key}
+	return cachestore.Meta{Service: rq.service, Host: rq.host, Path: rq.keyPath, GroupKey: rq.group.Key}
 }
 
 // releaseSources detaches from fills and closes direct bodies.

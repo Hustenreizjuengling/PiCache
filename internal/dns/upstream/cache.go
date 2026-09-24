@@ -105,7 +105,7 @@ func (c *respCache) store(k cacheKey, m *dns.Msg, now time.Time, p cachePolicy) 
 	if p.capacity <= 0 {
 		return
 	}
-	ttl, servfail, ok := prepareForCache(m, p)
+	ttl, servfail, ok := prepareForCache(m, k.qtype, p)
 	if !ok {
 		return
 	}
@@ -131,46 +131,63 @@ func (c *respCache) store(k cacheKey, m *dns.Msg, now time.Time, p cachePolicy) 
 	c.evictLocked(p.capacity)
 }
 
-// prepareForCache classifies m and returns its cache lifetime:
-//   - NOERROR with answers: TTLs clamped to [minTTL, maxTTL]; lifetime = the
-//     smallest answer TTL;
-//   - NXDOMAIN or NODATA with an SOA (RFC 2308): min(SOA TTL, SOA MINIMUM),
-//     clamped and at most 1 h; the SOA carries that TTL;
+// prepareForCache classifies m, the reply to a query of type qtype, and
+// returns its cache lifetime. All TTLs are clamped to [minTTL, maxTTL].
+//   - NOERROR with an answer of qtype: the smallest answer TTL;
+//   - negative answers with an SOA (RFC 2308): NXDOMAIN and NODATA, also at
+//     the end of a CNAME/DNAME chain in the answer section (RFC 2308 5): the
+//     negative TTL min(SOA TTL, SOA MINIMUM), clamped and at most 1 h (and
+//     at most the smallest answer TTL of the chain); the SOA carries it;
 //   - SERVFAIL: 5 s;
-//   - anything else (truncated, other rcodes, no SOA, TTL 0): not cached.
-func prepareForCache(m *dns.Msg, p cachePolicy) (ttl uint32, servfail, ok bool) {
+//   - anything else (truncated, other rcodes, negative without SOA, TTL 0):
+//     not cached.
+func prepareForCache(m *dns.Msg, qtype uint16, p cachePolicy) (ttl uint32, servfail, ok bool) {
 	if m.Truncated {
 		return 0, false, false
 	}
-	switch {
-	case m.Rcode == dns.RcodeServerFailure:
+	switch m.Rcode {
+	case dns.RcodeServerFailure:
 		return servfailTTL, true, true
-	case m.Rcode == dns.RcodeSuccess && len(m.Answer) > 0:
-		clampTTLs(m, p)
-		ttl = ^uint32(0)
-		for _, rr := range m.Answer {
-			ttl = min(ttl, rr.Header().Ttl)
-		}
-		return ttl, false, ttl > 0
-	case m.Rcode == dns.RcodeSuccess || m.Rcode == dns.RcodeNameError:
-		var soa *dns.SOA
-		for _, rr := range m.Ns {
-			if s, isSOA := rr.(*dns.SOA); isSOA {
-				soa = s
-				break
-			}
-		}
-		if soa == nil {
-			return 0, false, false
-		}
-		ttl = min(clamp(min(soa.Hdr.Ttl, soa.Minttl), p), maxNegativeTTL)
-		for _, rr := range m.Ns {
-			rr.Header().Ttl = min(rr.Header().Ttl, ttl)
-		}
-		soa.Hdr.Ttl = ttl
+	case dns.RcodeSuccess, dns.RcodeNameError:
+	default:
+		return 0, false, false
+	}
+	clampTTLs(m, p)
+	ttl = ^uint32(0)
+	for _, rr := range m.Answer {
+		ttl = min(ttl, rr.Header().Ttl)
+	}
+	if m.Rcode == dns.RcodeSuccess && answersType(m.Answer, qtype) {
 		return ttl, false, ttl > 0
 	}
-	return 0, false, false
+	var soa *dns.SOA
+	for _, rr := range m.Ns {
+		if s, isSOA := rr.(*dns.SOA); isSOA {
+			soa = s
+			break
+		}
+	}
+	if soa == nil {
+		return 0, false, false
+	}
+	neg := min(clamp(min(soa.Hdr.Ttl, soa.Minttl), p), maxNegativeTTL)
+	for _, rr := range m.Ns {
+		rr.Header().Ttl = min(rr.Header().Ttl, neg)
+	}
+	soa.Hdr.Ttl = neg
+	ttl = min(ttl, neg)
+	return ttl, false, ttl > 0
+}
+
+// answersType reports whether answer holds data of type qtype, i.e. is a
+// positive answer rather than only a CNAME/DNAME chain ending in NODATA.
+func answersType(answer []dns.RR, qtype uint16) bool {
+	for _, rr := range answer {
+		if t := rr.Header().Rrtype; t == qtype || qtype == dns.TypeANY && t != dns.TypeRRSIG {
+			return true
+		}
+	}
+	return false
 }
 
 func clampTTLs(m *dns.Msg, p cachePolicy) {

@@ -18,7 +18,11 @@
 // Locking: per-object stripe locks serialise changes of one object (the
 // rename of a slice file happens under it); removals install a tombstone
 // first, so no new slice of a removed object can appear while its files are
-// deleted. Lock order: I/O semaphore → stripe lock → leaf mutexes.
+// deleted. Files that could not be deleted within the caller's deadline and
+// the files of a discarded generation go to a background remover, which
+// deletes a file under the object lock only while the object does not
+// reference that slice. Evict never removes an object in use (Use). Lock
+// order: I/O semaphore → stripe lock → leaf mutexes.
 //
 // Tables (index DB, component "cachestore"): store_objects, store_slices,
 // store_groups, store_pinned_groups, store_meta.
@@ -136,14 +140,16 @@ type Object struct {
 }
 
 // SliceReader reads one cached slice. Offsets and Size refer to slice data
-// only (the file header is excluded). Each call acquires the IO semaphore for
-// its own duration only.
+// only (the file header is excluded). File reads hold the IO semaphore for
+// their own duration only, never while waiting for w.
 type SliceReader interface {
 	io.ReaderAt
 	Size() int64
-	// WriteRange copies n bytes starting at off to w. It uses the underlying
-	// *os.File so that net/http can use sendfile(2) when w is the unwrapped
-	// http.ResponseWriter (or implements io.ReaderFrom).
+	// WriteRange copies n bytes starting at off to w. While a stream slot
+	// is free it uses the underlying *os.File so that net/http can use
+	// sendfile(2) when w is the unwrapped http.ResponseWriter (or
+	// implements io.ReaderFrom); otherwise it copies through a small
+	// buffer (see sliceReader.WriteRange).
 	WriteRange(w io.Writer, off, n int64) (int64, error)
 	Close() error
 }
@@ -259,11 +265,12 @@ type Store struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	sem   chan struct{} // filesystem I/O semaphore
-	locks [numStripes]sync.Mutex
-	heads *heads
-	gen   atomic.Uint64 // last allocated generation (store-wide, never reused while open)
-	usage usageCounters
+	sem     chan struct{} // filesystem I/O semaphore
+	streams chan struct{} // zero-copy stream slots of SliceReader.WriteRange
+	locks   [numStripes]sync.Mutex
+	heads   *heads
+	gen     atomic.Uint64 // last allocated generation (store-wide, never reused while open)
+	usage   usageCounters
 
 	pendMu      sync.Mutex
 	pending     []indexOp
@@ -280,6 +287,13 @@ type Store struct {
 
 	retryMu sync.Mutex
 	retry   map[retryRemoval]struct{} // failed removals (≤ maxRetries)
+
+	remMu   sync.Mutex
+	rem     map[string]*removalQueue // slice files queued for the background remover
+	remKick chan struct{}
+
+	useMu sync.Mutex
+	inUse map[string]int // objects being served (Use), skipped by Evict
 
 	evictSem  chan struct{}
 	verifySem chan struct{}
@@ -373,6 +387,7 @@ func Open(ctx context.Context, opt Options) (*Store, error) {
 		groupKey:    opt.GroupKey,
 		idle:        make(chan struct{}, 1),
 		sem:         make(chan struct{}, opt.IOConcurrency),
+		streams:     make(chan struct{}, opt.IOConcurrency),
 		heads:       newHeads(opt.LRUEntries, int64(opt.LRUEntries)*lruBytesPerSlot),
 		kick:        make(chan struct{}, 1),
 		stopFlush:   make(chan struct{}),
@@ -380,6 +395,9 @@ func Open(ctx context.Context, opt Options) (*Store, error) {
 		stats:       map[string]*statDelta{},
 		dirs:        map[string]struct{}{},
 		retry:       map[retryRemoval]struct{}{},
+		rem:         map[string]*removalQueue{},
+		remKick:     make(chan struct{}, 1),
+		inUse:       map[string]int{},
 		evictSem:    make(chan struct{}, 1),
 		verifySem:   make(chan struct{}, 1),
 	}
@@ -400,6 +418,7 @@ func Open(ctx context.Context, opt Options) (*Store, error) {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
 	go s.flusher()
+	go s.remover()
 	s.enter() // the background task counts as in-flight; Close cancels it
 	go s.background(rebuild)
 	return s, nil
@@ -469,6 +488,10 @@ func (s *Store) Close() error {
 		}
 		close(s.stopFlush)
 		<-s.flusherDone
+		if n := s.queuedRemovals(); n > 0 {
+			s.log.Warn("closing cache store with slice file removals pending; Verify with repair removes the files",
+				slog.Int("slices", n))
+		}
 		s.closeErr = errors.Join(s.db.Close(), s.root.Close())
 	})
 	return s.closeErr
@@ -563,7 +586,9 @@ func (s *Store) HasSlice(ctx context.Context, id string, gen uint64, idx int64) 
 	return err == nil && e != nil && e.busy == nil && e.gen == gen && e.has(idx)
 }
 
-// Touch records an access (in memory, flushed periodically).
+// Touch records an access (in memory, flushed periodically): the last
+// access time always, and a hit with bytesServed bytes served from the
+// cache when bytesServed > 0.
 func (s *Store) Touch(id string, bytesServed int64) {
 	if s.closed() || !ValidObjectID(id) {
 		return
@@ -580,8 +605,10 @@ func (s *Store) Touch(id string, bytesServed int64) {
 		d = &statDelta{}
 		s.stats[id] = d
 	}
-	d.hits++
-	d.bytes += max(bytesServed, 0)
+	if bytesServed > 0 {
+		d.hits++
+		d.bytes += bytesServed
+	}
 	d.last = max(d.last, now)
 	n := len(s.stats)
 	s.statsMu.Unlock()
@@ -597,6 +624,34 @@ func (s *Store) touched(id string) bool {
 	defer s.statsMu.Unlock()
 	_, ok := s.stats[id]
 	return ok
+}
+
+// Use marks object id as being served until release is called: Evict
+// never removes an object in use (manual removals and invalidation do).
+// release is idempotent and safe after Close.
+func (s *Store) Use(id string) (release func()) {
+	s.useMu.Lock()
+	s.inUse[id]++
+	s.useMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.useMu.Lock()
+			if n := s.inUse[id] - 1; n > 0 {
+				s.inUse[id] = n
+			} else {
+				delete(s.inUse, id)
+			}
+			s.useMu.Unlock()
+		})
+	}
+}
+
+// used reports whether id is in use (Use).
+func (s *Store) used(id string) bool {
+	s.useMu.Lock()
+	defer s.useMu.Unlock()
+	return s.inUse[id] > 0
 }
 
 // OnEvict registers a callback for every removed object (eviction, purge,
@@ -637,8 +692,12 @@ func (s *Store) Usage() Usage {
 	}
 }
 
-// acquireIO takes a slot of the filesystem I/O semaphore.
+// acquireIO takes a slot of the filesystem I/O semaphore. An ended ctx
+// fails even if a slot is free.
 func (s *Store) acquireIO(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case s.sem <- struct{}{}:
 		return nil

@@ -3,9 +3,12 @@ package filter
 import (
 	"context"
 	"errors"
+	"fmt"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidDomain(t *testing.T) {
@@ -102,6 +105,8 @@ func TestParseLine(t *testing.T) {
 		{line: "/ads/banner.gif", status: lineUnsupported},
 		{line: "||example.com/path^", status: lineUnsupported},
 		{line: "/" + strings.Repeat("a", maxRegexLen+1) + "/", status: lineUnsupported},
+		{line: "/" + strings.Repeat(`[^.]{999}`, 91) + "x/", status: lineUnsupported}, // 823 chars, ~91 000 instructions
+		{line: `/^(?:[a-z0-9-]{1,63}\.){1,10}ads\.example$/`, status: lineOK, want: []entry{pat(`^(?:[a-z0-9-]{1,63}\.){1,10}ads\.example$`)}},
 		// cosmetic and comments
 		{line: "example.com##.banner", status: lineSkip},
 		{line: "example.com#@#.banner", status: lineSkip},
@@ -274,5 +279,90 @@ func TestParseListCancelled(t *testing.T) {
 	cancel()
 	if _, err := parseList(ctx, strings.NewReader("||a.example.com^\n"), "block", "exact"); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// TestRegexCost: the estimate walks the unexpanded parse tree and bounds the
+// size of the program regexp/syntax compiles.
+func TestRegexCost(t *testing.T) {
+	for _, src := range []string{
+		`(?i)^ad[0-9]+\.tracker\.com$`,
+		`^(?:[^.]+\.)*ad.*\.example\.com$`,
+		`(?i)^[a-z0-9]{1,63}\.example\.com$`,
+		`(?i)^(?:[a-z0-9-]{1,63}\.){1,10}x\.com$`,
+		`(?i)(a|bb|ccc){2,30}x+y*z?`,
+		`(?i)[^.]{999}[^.]{999}x`,
+		`(?i)(?:ab){3,}`,
+	} {
+		re, err := syntax.Parse(src, syntax.Perl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cost := regexCost(re)
+		prog, err := syntax.Compile(re.Simplify())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The program adds a fail, a match and the capture of the whole match.
+		if n := int64(len(prog.Inst)); cost+3 < n || cost > 3*n+8 {
+			t.Errorf("regexCost(%q) = %d, program has %d instructions", src, cost, n)
+		}
+	}
+	// Large character classes count (one-pass programs copy them per instruction).
+	re, _ := syntax.Parse(`(?i)^(?:\pL\pN){200}`, syntax.Perl)
+	if cost := regexCost(re); cost <= maxRegexCost {
+		t.Errorf("regexCost of 400 Unicode classes = %d, want > %d", cost, maxRegexCost)
+	}
+}
+
+// TestParseListHostilePatterns: patterns that are short in source but
+// compile to huge programs are counted as unsupported and never compiled.
+func TestParseListHostilePatterns(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("||ok.example^\n")
+	const hostile = 20
+	for i := range hostile {
+		// 823 characters, valid RE2, ~91 000 instructions (~3.6 MB compiled)
+		fmt.Fprintf(&b, "/%sx%d/\n", strings.Repeat(`[^.]{999}`, 91), i)
+	}
+	// Adblock-style wildcards are converted to RE2 and bounded the same way.
+	fmt.Fprintf(&b, "||%s^\n", strings.Repeat("a*", 1500))
+	b.WriteString("||ad*.example.com^\n")
+	start := time.Now()
+	p, err := parseList(context.Background(), strings.NewReader(b.String()), "block", "exact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.unsupported != hostile+1 || len(p.pats) != 1 || p.entries != 2 {
+		t.Errorf("unsupported=%d pats=%d entries=%d, want %d/1/2", p.unsupported, len(p.pats), p.entries, hostile+1)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("parsing took %v", d)
+	}
+}
+
+// TestParseListPatternCostBudget: the compiled patterns of one list are
+// bounded in total (maxPatternCost), not only in number.
+func TestParseListPatternCostBudget(t *testing.T) {
+	// \pL is one instruction with a large rune table: expensive by the
+	// estimate, cheap to compile here.
+	var b strings.Builder
+	const n = 400
+	for i := range n {
+		fmt.Fprintf(&b, `/\pL{20}x%03d\.example/`+"\n", i)
+	}
+	p, err := parseList(context.Background(), strings.NewReader(b.String()), "block", "exact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, pp := range p.pats {
+		total += int64(pp.cost)
+	}
+	if len(p.pats) == 0 || len(p.pats) == n || total > maxPatternCost || p.unsupported != n-len(p.pats) {
+		t.Errorf("pats=%d unsupported=%d total cost=%d, want a budget of %d to cut the list", len(p.pats), p.unsupported, total, maxPatternCost)
+	}
+	if last := p.pats[len(p.pats)-1]; total+int64(last.cost) <= maxPatternCost {
+		t.Errorf("stopped early: total cost %d, one more pattern costs %d", total, last.cost)
 	}
 }

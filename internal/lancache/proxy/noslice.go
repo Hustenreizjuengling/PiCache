@@ -45,6 +45,7 @@ type noSliceEntry struct {
 	marked      bool
 	since       time.Time // marked: when; else windowStart
 	lastProbe   time.Time
+	prevProbe   time.Time // lastProbe before the current probe was taken
 }
 
 // noSliceTracker keeps the no-slice state in memory (hot path) and persists
@@ -102,19 +103,31 @@ func newNoSliceTracker(ctx context.Context, d *db.DB, log *slog.Logger) (*noSlic
 }
 
 // useSlicing reports whether requests to host use ranges: always unless it
-// is marked, then once per probe interval.
-func (t *noSliceTracker) useSlicing(host string, now time.Time) bool {
+// is marked, then once per probe interval. probe reports that the request
+// took the interval's probe (taken at now); it gives it back with
+// returnProbe if it never sent a range request upstream (e.g. a cache hit),
+// so the probe is not used up without testing the host.
+func (t *noSliceTracker) useSlicing(host string, now time.Time) (use, probe bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e := t.hosts[host]
 	if e == nil || !e.marked {
-		return true
+		return true, false
 	}
 	if now.Sub(e.lastProbe) >= noSliceProbe {
-		e.lastProbe = now
-		return true
+		e.prevProbe, e.lastProbe = e.lastProbe, now
+		return true, true
 	}
-	return false
+	return false, false
+}
+
+// returnProbe gives back the probe of host taken at "at" (useSlicing).
+func (t *noSliceTracker) returnProbe(host string, at time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if e := t.hosts[host]; e != nil && e.marked && e.lastProbe.Equal(at) {
+		e.lastProbe = e.prevProbe
+	}
 }
 
 // failure counts a range failure of host for object id.

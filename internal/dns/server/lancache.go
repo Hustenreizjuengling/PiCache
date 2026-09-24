@@ -10,11 +10,28 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// cacheIPState is the effective LanCache answer address set.
+// cacheIPState is the effective LanCache answer address set. It is computed
+// whether or not LanCache is enabled, so the UI can show the would-be
+// addresses and warnings before it is turned on.
 type cacheIPState struct {
 	v4, v6 []netip.Addr
 	auto   bool
-	reason string // why no IPv4 is known, or a warning about the chosen one
+	// warning explains why no IPv4 is known (then it is also the reason
+	// overrides are inactive) or warns about the chosen address.
+	warning string
+}
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// describeNonPrivate names the kind of a non-RFC 1918 primary address.
+func describeNonPrivate(ip netip.Addr) string {
+	switch {
+	case cgnat.Contains(ip):
+		return fmt.Sprintf("the primary address %s is a carrier-grade NAT (100.64.0.0/10) address, which game clients do not accept as a cache", ip)
+	case netutil.IsPublicUnicast(ip):
+		return fmt.Sprintf("the primary address %s is a public address, which game clients do not accept as a cache", ip)
+	}
+	return fmt.Sprintf("the primary address %s is not a private (RFC 1918) address", ip)
 }
 
 // computeCacheIPs derives the answer addresses from the settings or, when
@@ -34,7 +51,7 @@ func computeCacheIPs(l *settings.LanCache, env hostEnv) *cacheIPState {
 			}
 		}
 		if len(st.v4) == 0 {
-			st.reason = "none of the configured cache IPv4 addresses is a private (RFC 1918) address"
+			st.warning = "none of the configured cache IPv4 addresses is a private (RFC 1918) address"
 		}
 		return st
 	}
@@ -43,8 +60,8 @@ func computeCacheIPs(l *settings.LanCache, env hostEnv) *cacheIPState {
 	private, docker0 := env.ifaces()
 	container := env.container == "docker" || env.container == "podman"
 	if container && perr == nil && netip.MustParsePrefix("172.16.0.0/12").Contains(primary) && !docker0 {
-		st.reason = "PiCache runs in a container bridge network, so its own address is not reachable by clients; " +
-			"set the host's LAN IPv4 address as cache IP (LanCache settings)"
+		st.warning = "PiCache runs in a container bridge network, so its own address (" + primary.String() +
+			") is not reachable by clients; set the host's LAN IPv4 address as cache IP (LanCache settings)"
 		return st
 	}
 	if perr == nil && netutil.IsRFC1918(primary) {
@@ -54,12 +71,15 @@ func computeCacheIPs(l *settings.LanCache, env hostEnv) *cacheIPState {
 	if len(private) > 0 {
 		st.v4 = []netip.Addr{private[0].ip}
 		if perr == nil {
-			st.reason = fmt.Sprintf("the primary address %s is not private; answering with %s (%s); set the cache IP explicitly if clients cannot reach it",
-				primary, private[0].ip, private[0].iface)
+			st.warning = fmt.Sprintf("%s; answering with %s (%s); set the cache IP explicitly if clients cannot reach it",
+				describeNonPrivate(primary), private[0].ip, private[0].iface)
 		}
 		return st
 	}
-	st.reason = "no private (RFC 1918) IPv4 address found on this machine; set the cache IP in the LanCache settings"
+	st.warning = "no private (RFC 1918) IPv4 address found on this machine; set the cache IP in the LanCache settings"
+	if perr == nil {
+		st.warning = describeNonPrivate(primary) + " and " + st.warning
+	}
 	return st
 }
 
@@ -82,26 +102,31 @@ func (s *Server) lanCacheReady(set *settings.All) (bool, string) {
 		}
 	}
 	if st := s.cacheIPs.Load(); len(st.v4) == 0 {
-		return false, st.reason
+		return false, st.warning
 	}
 	return true, ""
 }
 
-// CacheIPs returns the effective LanCache answer addresses (auto-detection
-// is recomputed every 5 minutes).
+// CacheIPs returns the LanCache answer addresses (auto-detection is
+// recomputed every 5 minutes). While LanCache is disabled it reports the
+// addresses and warnings that would apply once it is enabled.
 func (s *Server) CacheIPs() CacheIPStatus {
 	st := s.cacheIPs.Load()
-	out := CacheIPStatus{IPv4: addrStrings(st.v4), IPv6: addrStrings(st.v6), Auto: st.auto}
+	out := CacheIPStatus{IPv4: addrStrings(st.v4), IPv6: addrStrings(st.v6), Auto: st.auto, Warning: st.warning}
 	out.Ready, out.Reason = s.lanCacheReady(s.d.Settings.Get())
 	if out.Ready {
-		out.Reason = st.reason // warning about an auto-detected address, if any
+		out.Reason = st.warning // compatibility: warnings were reported as the reason while ready
 	}
 	return out
 }
 
 // lanCacheOverride answers LanCache service names with the cache IPs
 // (step 9): A → cache IPv4s (rotated), AAAA → configured ULAs or NODATA,
-// every other type → NODATA.
+// every other type → NODATA. Before an override is answered, the user block
+// rules are checked (step 8), so a group can still block a LanCache name.
+// Only override candidates are checked here: every other name gets its
+// verdict from Filter.Check (step 11) with the full precedence of
+// ARCHITECTURE 7.2, where list allow entries beat user regex denies.
 func (s *Server) lanCacheOverride(qc *qctx) (result, bool) {
 	l := &qc.set.LanCache
 	if !l.Enabled || s.d.Services == nil {
@@ -118,6 +143,12 @@ func (s *Server) lanCacheOverride(qc *qctx) (result, bool) {
 	if ready, why := s.lanCacheReady(qc.set); !ready {
 		qc.note("LanCache service " + svc + " matched, but overrides are inactive: " + why)
 		return result{}, false
+	}
+	if qc.blocking && s.d.Filter != nil { // 8
+		if d := s.d.Filter.CheckRules(qc.qname, qc.id.GroupIDs); d.Blocked() {
+			qc.note("LanCache service " + svc + " matched, but a user rule blocks it")
+			return s.blocked(qc, d, statusFor(d)), true
+		}
 	}
 	st := s.cacheIPs.Load()
 	m := newReply(qc.req)

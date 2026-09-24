@@ -175,6 +175,8 @@ func TestSignificant(t *testing.T) {
 		"offline":     {func(s *Status) { s.Online = false }, true},
 		"reason":      {func(s *Status) { s.Reason = "x" }, true},
 		"apply state": {func(s *Status) { s.ApplyState = applyQueued }, true},
+		"initialised": {func(s *Status) { s.Initialised = true }, true},
+		"writable":    {func(s *Status) { s.Writable = true }, true},
 		"total":       {func(s *Status) { s.TotalBytes /= 2 }, true},
 	} {
 		b := base

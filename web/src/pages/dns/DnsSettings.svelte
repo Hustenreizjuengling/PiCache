@@ -83,13 +83,7 @@
     dns.revert()
     filter.revert()
   }
-
-  function beforeUnload(e: BeforeUnloadEvent) {
-    if (dirty) e.preventDefault()
-  }
 </script>
-
-<svelte:window onbeforeunload={beforeUnload} />
 
 <div class="page" bind:this={root}>
   {#if loadError && !ready}

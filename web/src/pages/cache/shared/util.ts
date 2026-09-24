@@ -35,6 +35,19 @@ export function pickRange(value: string, allowed: readonly RangePreset[], fallba
   return (allowed as readonly string[]).includes(value) ? (value as RangePreset) : fallback
 }
 
+/** An explicit time window from the URL (?from=&to=, unix seconds), e.g. from the query log. */
+export interface TimeWindow {
+  from: number
+  to: number
+}
+
+/** Parses ?from=&to= (unix seconds); null unless both are set and from < to. */
+export function timeWindow(from: string, to: string): TimeWindow | null {
+  if (!/^\d{1,12}$/.test(from) || !/^\d{1,12}$/.test(to)) return null
+  const w = { from: Number(from), to: Number(to) }
+  return w.from < w.to ? w : null
+}
+
 /** One of `allowed` or `fallback`. */
 export function pick<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
   return (allowed as readonly string[]).includes(value) ? (value as T) : fallback

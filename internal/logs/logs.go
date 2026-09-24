@@ -17,8 +17,12 @@
 //     Summary read only rollups. Minute rollups are kept 48 h, hourly ones
 //     settings.Logs.StatsRetentionDays.
 //   - Retention: raw tables by the configured hours/days, and logs.db is kept
-//     below settings.Logs.MaxDBSizeMiB by pruning the oldest raw events; raw
-//     inserts pause while the data dir has < 1 GiB free.
+//     below settings.Logs.MaxDBSizeMiB by pruning the oldest entries of the
+//     raw events, download sessions and hourly top lists, each shortened by
+//     the same share of its retention (never the last hour; the small count
+//     rollups are kept); raw inserts pause while the data dir has < 1 GiB
+//     free. Freed pages are returned to the filesystem in small
+//     incremental-vacuum steps so the WAL stays small.
 //   - Queries run with a 10 s timeout behind a semaphore of 2; substring
 //     searches need ≥ 3 characters; series requests with more than 1500
 //     points are rejected (apperr.Invalid).
@@ -41,7 +45,10 @@
 //   - Summary, series and service statistics read the minute rollups for
 //     ranges that start within the last 48 h and the hourly ones otherwise;
 //     top lists and client statistics read the hourly top tables. The start
-//     of a range is aligned down to that resolution (series: to the step).
+//     of a range is aligned down to that resolution (series: to the step;
+//     Summary.TopFrom reports the start of the top lists).
+//   - Live events carry a per-process sequence number (Seq) because their
+//     database IDs are assigned only when the batch is written.
 //   - Anonymisation masks IPv4 to /16 and IPv6 to /48 and also drops client
 //     names (a name identifies a client as well as its address).
 //   - While the query log is disabled no query rows are stored and the live
@@ -85,7 +92,8 @@ const (
 
 // QueryEvent is one DNS query.
 type QueryEvent struct {
-	ID         int64     `json:"id"` // set when read back
+	ID         int64     `json:"id"`           // set when read back
+	Seq        uint64    `json:"seq,omitzero"` // live feed only: positive, unique per process (IDs are assigned later)
 	Time       time.Time `json:"time"`
 	ClientIP   string    `json:"clientIp"`
 	ClientName string    `json:"clientName,omitempty"`
@@ -107,7 +115,8 @@ type QueryEvent struct {
 // CacheEvent is one client request to the HTTP cache.
 type CacheEvent struct {
 	ID          int64     `json:"id"`
-	Time        time.Time `json:"time"` // request start
+	Seq         uint64    `json:"seq,omitzero"` // live feed only: positive, unique per process (IDs are assigned later)
+	Time        time.Time `json:"time"`         // request start
 	ClientIP    string    `json:"clientIp"`
 	ClientName  string    `json:"clientName,omitempty"`
 	Service     string    `json:"service"`
@@ -188,11 +197,16 @@ type Summary struct {
 	ByteHitRatio     float64   `json:"byteHitRatio"` // hit / (hit + wan), 0..1
 	SNIBytes         int64     `json:"sniBytes"`
 	// ActiveClients counts the distinct clients with DNS queries or cache
-	// requests in the range; ActiveDownloads counts download sessions whose
-	// last request was within the last 30 s (independent of the range).
+	// requests in [TopFrom, To); ActiveDownloads counts download sessions
+	// whose last request was within the last 30 s (independent of the range).
 	ActiveClients    int64  `json:"activeClients"`
 	ActiveDownloads  int64  `json:"activeDownloads"`
 	DroppedLogEvents uint64 `json:"droppedLogEvents"`
+	// TopFrom is where the hourly top tables start for this range: From
+	// aligned down to the full hour. Top lists, client statistics and
+	// ActiveClients cover [TopFrom, To), up to an hour more than the range
+	// (a 15-minute range at 10:05 covers 09:00–10:05).
+	TopFrom time.Time `json:"topFrom"`
 }
 
 // Series is a time series set aligned on Timestamps (unix seconds, bucket

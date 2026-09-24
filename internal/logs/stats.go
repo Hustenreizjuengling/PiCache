@@ -183,7 +183,7 @@ func (s *Store) Summary(ctx context.Context, from, to time.Time) (Summary, error
 	now := time.Now()
 	suffix, base := rollupFor(from, now)
 	lo, hi := floorTo(from.UnixMilli(), base.Milliseconds()), to.UnixMilli()
-	sum := Summary{From: from, To: to, DroppedLogEvents: s.dropped.Load()}
+	sum := Summary{From: from, To: to, TopFrom: TopFrom(from), DroppedLogEvents: s.dropped.Load()}
 
 	// Snapshots of the in-memory hour first (see rollover).
 	hour, dnsClients := s.top.dnsSnapshot(dnsTopClient)
@@ -251,6 +251,13 @@ func nonNil[T any](s []T) []T {
 	return s
 }
 
+// TopFrom returns the effective start of the top lists, client statistics
+// and Summary.ActiveClients for a range starting at from: they are read
+// from hourly top tables, so the range starts at the full hour.
+func TopFrom(from time.Time) time.Time {
+	return time.UnixMilli(hourStart(from.UnixMilli())).UTC()
+}
+
 // topWindow returns the stored hourly buckets [lo, hi) to read for [from,
 // to) and whether the in-memory hour (not yet or only partially stored)
 // belongs to the range. Stored rows of the in-memory hour are excluded:
@@ -264,7 +271,7 @@ func topWindow(from, to time.Time, memHour int64) (lo, hi int64, mem bool) {
 	return lo, hi, mem
 }
 
-// Top returns a top list.
+// Top returns a top list for [TopFrom(from), to).
 func (s *Store) Top(ctx context.Context, kind TopKind, from, to time.Time, limit int) ([]TopItem, error) {
 	from, to, err := statsRange(from, to)
 	if err != nil {

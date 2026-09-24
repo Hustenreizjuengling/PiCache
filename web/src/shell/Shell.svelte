@@ -6,9 +6,9 @@
 <script lang="ts">
   import type { Component } from 'svelte'
   import { t } from '../i18n/index.svelte'
-  import { router } from '../lib/router.svelte'
+  import { router, setLeavePrompt } from '../lib/router.svelte'
   import { appStatus, startAppStatus } from '../lib/status.svelte'
-  import { Button, EmptyState, IconButton, Notice, PairStrip, Skeleton } from '../lib/ui'
+  import { Button, EmptyState, IconButton, Notice, PairStrip, Skeleton, confirm } from '../lib/ui'
   import { resolve } from '../routes'
   import Brand from './Brand.svelte'
   import Sidebar from './Sidebar.svelte'
@@ -16,11 +16,25 @@
 
   $effect(() => startAppStatus())
 
+  // Leaving a page with unsaved settings asks first (lib/router.svelte.ts).
+  setLeavePrompt(() =>
+    confirm({
+      title: t('common.unsaved.title'),
+      message: t('common.unsaved.text'),
+      confirmLabel: t('common.unsaved.discard'),
+      cancelLabel: t('common.unsaved.stay'),
+    }),
+  )
+
   let navOpen = $state(false)
   let main: HTMLElement
   let firstRender = true
 
-  const match = $derived(resolve(router.path))
+  // A primitive: effects that read it rerun only when the path changes, not
+  // for every query change (search boxes, row selection, panels), which must
+  // keep focus and scroll position.
+  const path = $derived(router.path)
+  const match = $derived(resolve(path))
 
   // Pages load on demand (one chunk each); the latest navigation wins.
   let loaded = $state<{ path: string; component: Component<any> } | null>(null)
@@ -51,7 +65,7 @@
   })
 
   $effect(() => {
-    void router.path
+    void path
     navOpen = false
     if (firstRender) {
       firstRender = false

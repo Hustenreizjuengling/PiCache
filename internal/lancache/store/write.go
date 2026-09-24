@@ -79,22 +79,20 @@ func (s *Store) SetMeta(ctx context.Context, id string, m Meta) (gen uint64, err
 			mu.Unlock()
 			return next.gen, nil
 		}
-		// The total changed: new generation. The old slice files are removed
-		// before the new generation becomes visible, so no old file can
-		// later pass for a slice of the new one.
-		t := s.heads.tomb(id, cur)
-		mu.Unlock()
-		for _, idx := range cur.indexes() {
-			s.removeFile(ctx, id, idx)
-		}
-		mu.Lock()
+		// The total changed: new generation with no slices. The old slice
+		// files are deleted by the background remover (not within the
+		// caller's deadline, and not forgotten when that ends). No old file
+		// can pass for a slice of the new generation meanwhile: a slice is
+		// only read when the new generation wrote it (renamed over the old
+		// file), the remover never deletes such a slice, and a file's
+		// header must carry the new total.
 		next.gen = s.gen.Add(1)
 		next.present = newBitmap(m.Total, s.sliceSize)
 		op.gen = next.gen
-		s.heads.replace(id, t, next)
+		s.heads.set(id, next)
 		s.enqueue(op)
+		s.queueRemovals(id, cur.present)
 		mu.Unlock()
-		close(t.busy)
 		return next.gen, nil
 	}
 }

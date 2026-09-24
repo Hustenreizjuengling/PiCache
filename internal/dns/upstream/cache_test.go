@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"net"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -134,6 +135,87 @@ func TestNegativeCaching(t *testing.T) {
 				time.Sleep(time.Second)
 				if _, info, _ = r.Resolve(ctx, query("missing.example.", dns.TypeA, 3, false)); info.Cached {
 					t.Fatal("negative answer served after its TTL")
+				}
+			})
+		})
+	}
+}
+
+// TestCNAMEChainNegativeCaching: a NODATA or NXDOMAIN at the end of a CNAME
+// chain is a negative answer (RFC 2308 5) and expires with the SOA's
+// negative TTL, not with the (longer) CNAME TTL.
+func TestCNAMEChainNegativeCaching(t *testing.T) {
+	cname := func(ttl uint32) dns.RR {
+		return &dns.CNAME{Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl},
+			Target: "edge.example.net."}
+	}
+	aaaa := &dns.AAAA{Hdr: dns.RR_Header{Name: "edge.example.net.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 900},
+		AAAA: net.ParseIP("2001:db8::1")}
+	tests := []struct {
+		name     string
+		qtype    uint16
+		rcode    int
+		answer   []dns.RR
+		soa      *dns.SOA
+		lifetime uint32 // 0: not cached
+		soaTTL   uint32 // SOA TTL of the fresh reply
+	}{
+		{name: "nodata after cname", qtype: dns.TypeAAAA, rcode: dns.RcodeSuccess, answer: []dns.RR{cname(3600)},
+			soa: soa("example.net.", 60, 60), lifetime: 60, soaTTL: 60},
+		{name: "nodata after cname capped at one hour", qtype: dns.TypeAAAA, rcode: dns.RcodeSuccess, answer: []dns.RR{cname(86400)},
+			soa: soa("example.net.", 86400, 86400), lifetime: 3600, soaTTL: 3600},
+		{name: "nxdomain after cname", qtype: dns.TypeAAAA, rcode: dns.RcodeNameError, answer: []dns.RR{cname(3600)},
+			soa: soa("example.net.", 600, 120), lifetime: 120, soaTTL: 120},
+		{name: "cname shorter than negative ttl", qtype: dns.TypeAAAA, rcode: dns.RcodeSuccess, answer: []dns.RR{cname(30)},
+			soa: soa("example.net.", 600, 600), lifetime: 30, soaTTL: 600},
+		{name: "nodata after cname without soa is not cached", qtype: dns.TypeAAAA, rcode: dns.RcodeSuccess,
+			answer: []dns.RR{cname(3600)}},
+		{name: "positive answer after cname", qtype: dns.TypeAAAA, rcode: dns.RcodeSuccess, answer: []dns.RR{cname(3600), aaaa},
+			lifetime: 900},
+		{name: "cname query", qtype: dns.TypeCNAME, rcode: dns.RcodeSuccess, answer: []dns.RR{cname(3600)}, lifetime: 3600},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newStore(t, oneUpstream(func(d *settings.DNS) { d.ServeStale = false }))
+			synctest.Test(t, func(t *testing.T) {
+				f := &fakeTransport{fn: func(_ context.Context, q *dns.Msg) (*dns.Msg, error) {
+					m := new(dns.Msg)
+					m.SetRcode(q, tc.rcode)
+					for _, rr := range tc.answer {
+						m.Answer = append(m.Answer, dns.Copy(rr))
+					}
+					if tc.soa != nil {
+						m.Ns = []dns.RR{dns.Copy(tc.soa)}
+					}
+					return m, nil
+				}}
+				r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f})
+				defer r.Close()
+				ctx := context.Background()
+				m, _, err := r.Resolve(ctx, query("www.example.com.", tc.qtype, 1, false))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.soa != nil && m.Ns[0].Header().Ttl != tc.soaTTL {
+					t.Errorf("fresh SOA ttl = %d, want %d", m.Ns[0].Header().Ttl, tc.soaTTL)
+				}
+				if tc.lifetime == 0 {
+					if _, info, _ := r.Resolve(ctx, query("www.example.com.", tc.qtype, 2, false)); info.Cached || f.calls() != 2 {
+						t.Fatalf("reply must not be cached (cached %v, calls %d)", info.Cached, f.calls())
+					}
+					return
+				}
+				time.Sleep(time.Duration(tc.lifetime-1) * time.Second)
+				m, info, _ := r.Resolve(ctx, query("www.example.com.", tc.qtype, 2, false))
+				if !info.Cached || f.calls() != 1 {
+					t.Fatalf("before expiry: info %+v, calls %d", info, f.calls())
+				}
+				if tc.soa != nil && m.Ns[0].Header().Ttl != tc.soaTTL-(tc.lifetime-1) {
+					t.Errorf("cached SOA ttl = %d, want %d", m.Ns[0].Header().Ttl, tc.soaTTL-(tc.lifetime-1))
+				}
+				time.Sleep(time.Second)
+				if _, info, _ = r.Resolve(ctx, query("www.example.com.", tc.qtype, 3, false)); info.Cached || f.calls() != 2 {
+					t.Fatalf("reply served from the cache after %d s (calls %d)", tc.lifetime, f.calls())
 				}
 			})
 		})

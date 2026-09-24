@@ -15,8 +15,14 @@ CONF_DIR=/etc/picache
 ENV_FILE=$CONF_DIR/picache.env
 CRED_DIR=$CONF_DIR/credentials
 HOST_APPLY_MARKER=$CONF_DIR/host-apply.enabled
-DATA_DIR=/var/lib/picache
-MOUNT_ROOT=/srv/picache
+DEFAULT_DATA_DIR=/var/lib/picache
+DEFAULT_MOUNT_ROOT=/srv/picache
+# PICACHE_DATA_DIR / PICACHE_MOUNT_ROOT from the env file (read_paths).
+DATA_DIR=$DEFAULT_DATA_DIR
+MOUNT_ROOT=$DEFAULT_MOUNT_ROOT
+# Drop-in install.sh writes for the helper units when those paths differ.
+PATHS_DROPIN=50-picache-paths.conf
+SHARED_MOUNTS_UNIT=picache-shared-mounts.service
 UNIT_SRC=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/systemd
 
 say() { printf '%s\n' "$*"; }
@@ -169,6 +175,81 @@ env_value() {
 	sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1=//p" "$ENV_FILE" | tail -n 1
 }
 
+# env_path KEY DEFAULT prints a path setting from the env file (quotes and a
+# trailing slash removed) or DEFAULT. The paths go into unit files, so only
+# plain absolute paths are accepted.
+env_path() {
+	v=$(env_value "$1")
+	case $v in
+	\"*\") v=${v#\"}; v=${v%\"} ;;
+	\'*\') v=${v#\'}; v=${v%\'} ;;
+	esac
+	[ "$v" = / ] || v=${v%/}
+	[ -n "$v" ] || v=$2
+	case $v in
+	/*) ;;
+	*) die "$1 in $ENV_FILE must be an absolute path (found '$v')" ;;
+	esac
+	case $v in
+	*[!A-Za-z0-9._/-]*) die "$1=$v: install.sh supports only letters, digits and . _ / - in paths" ;;
+	esac
+	printf '%s' "$v"
+}
+
+read_paths() {
+	DATA_DIR=$(env_path PICACHE_DATA_DIR "$DEFAULT_DATA_DIR")
+	MOUNT_ROOT=$(env_path PICACHE_MOUNT_ROOT "$DEFAULT_MOUNT_ROOT")
+}
+
+# write_helper_dropins points the helper units at a custom data directory or
+# mount root (the shipped units use the defaults), or removes the drop-ins.
+write_helper_dropins() {
+	path_dir=/etc/systemd/system/picache-storage.path.d
+	svc_dir=/etc/systemd/system/picache-storage.service.d
+	if [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] && [ "$MOUNT_ROOT" = "$DEFAULT_MOUNT_ROOT" ]; then
+		rm -f "$path_dir/$PATHS_DROPIN" "$svc_dir/$PATHS_DROPIN"
+		rmdir "$path_dir" "$svc_dir" 2>/dev/null || true
+		return
+	fi
+	id_glob='????????????????????????????????'
+	install -d -m 0755 "$path_dir" "$svc_dir"
+	cat >"$path_dir/$PATHS_DROPIN" <<EOF
+# Written by install.sh for PICACHE_DATA_DIR=$DATA_DIR and rewritten on every
+# run. The empty assignment drops the default paths.
+[Path]
+PathExistsGlob=
+PathExistsGlob=$DATA_DIR/storage-requests/$id_glob
+PathExistsGlob=$DATA_DIR/storage-requests/.$id_glob.claim
+EOF
+	cat >"$svc_dir/$PATHS_DROPIN" <<EOF
+# Written by install.sh for PICACHE_DATA_DIR=$DATA_DIR and
+# PICACHE_MOUNT_ROOT=$MOUNT_ROOT; rewritten on every run.
+[Service]
+ReadWritePaths=-$MOUNT_ROOT -$DATA_DIR/storage-requests
+EOF
+	say "host-apply: wrote drop-ins for PICACHE_DATA_DIR=$DATA_DIR, PICACHE_MOUNT_ROOT=$MOUNT_ROOT"
+}
+
+# setup_shared_mounts: inside a container systemd does not make / a shared
+# mount, so NAS mounts the helper starts later never reach picache.service's
+# own mount namespace. A small unit makes / shared before PiCache starts.
+setup_shared_mounts() {
+	command -v systemd-detect-virt >/dev/null 2>&1 || return 0
+	systemd-detect-virt --container --quiet || return 0
+	if [ -e "$UNIT_DIR/$SHARED_MOUNTS_UNIT" ]; then
+		install_unit "$SHARED_MOUNTS_UNIT" # keep it up to date
+		shared_mounts=1
+		return 0
+	fi
+	case $(findmnt -no PROPAGATION / 2>/dev/null) in
+	shared*) return 0 ;;
+	esac
+	install_unit "$SHARED_MOUNTS_UNIT"
+	shared_mounts=1
+	say "host-apply: / is not a shared mount in this container; installed $SHARED_MOUNTS_UNIT
+    (mount --make-rshared / before PiCache starts, so that it sees NAS mounts made later)"
+}
+
 setup_host_apply() {
 	if is_unprivileged_container; then
 		warn "this is an unprivileged container: the kernel refuses SMB/NFS mounts here,
@@ -180,6 +261,8 @@ the Proxmox host and bind-mount it below $MOUNT_ROOT (deploy/lxc/README.md)."
 	install_unit picache-storage.path
 	install -d -m 0700 -o root -g root "$CRED_DIR"
 	install -m 0644 -o root -g root /dev/null "$HOST_APPLY_MARKER"
+	write_helper_dropins
+	setup_shared_mounts
 	host_apply_active=1
 	missing=""
 	command -v mount.cifs >/dev/null 2>&1 || missing="$missing cifs-utils"
@@ -306,11 +389,16 @@ print_summary() {
 }
 
 do_uninstall() {
-	for unit in picache-storage.path picache-storage.service picache.service; do
+	read_paths
+	for unit in picache-storage.path picache-storage.service picache.service "$SHARED_MOUNTS_UNIT"; do
 		systemctl disable --now "$unit" >/dev/null 2>&1 || true
 	done
-	for unit in picache.service picache-storage.service picache-storage.path; do
+	for unit in picache.service picache-storage.service picache-storage.path "$SHARED_MOUNTS_UNIT"; do
 		rm -f "$UNIT_DIR/$unit"
+	done
+	for d in picache-storage.path.d picache-storage.service.d; do
+		rm -f "/etc/systemd/system/$d/$PATHS_DROPIN"
+		rmdir "/etc/systemd/system/$d" 2>/dev/null || true
 	done
 	rm -f "$HOST_APPLY_MARKER" "$BIN"
 	systemctl daemon-reload
@@ -320,10 +408,15 @@ do_uninstall() {
 	say "  local cache     /var/cache/picache"
 	say "  mount root      $MOUNT_ROOT  (unmount NAS shares before deleting anything)"
 	say "  system user     picache  (userdel picache)"
-	for f in /etc/systemd/system/srv-picache-*.mount; do
+	# Mount units written by the host-apply helper (unit name = escaped mount point).
+	prefix=$(systemd-escape --path "$MOUNT_ROOT" 2>/dev/null) || prefix=srv-picache
+	for f in /etc/systemd/system/"$prefix"-*.mount; do
 		[ -e "$f" ] || continue
+		unit=$(basename "$f")
+		id=${unit#"$prefix"-}
+		id=${id%.mount}
 		say "  NAS mount unit  $f"
-		say "      systemctl disable --now $(basename "$f") && rm $f"
+		say "      systemctl disable --now $unit && rm -f $f $CRED_DIR/$id.cred $CRED_DIR/$id.applied && rmdir $MOUNT_ROOT/$id"
 	done
 }
 
@@ -381,10 +474,11 @@ ensure_user
 install_binary
 
 install -d -m 0750 -o root -g picache "$CONF_DIR"
+write_env_file
+read_paths
 # Root-owned (group picache may enter): the service must not be able to swap
 # a mount point for a symbolic link that the root helper would then use.
 install -d -m 0750 -o root -g picache "$MOUNT_ROOT"
-write_env_file
 
 install -d -m 0755 "$UNIT_DIR"
 install_unit picache.service
@@ -394,14 +488,22 @@ remove it unless you maintain it on purpose (use drop-ins for local changes)."
 fi
 
 host_apply_active=0
+shared_mounts=0
 if [ "$with_host_apply" -eq 1 ] || [ -e "$HOST_APPLY_MARKER" ]; then
 	setup_host_apply
 fi
 
 systemctl daemon-reload
 systemctl enable picache.service >/dev/null
+if [ "$shared_mounts" -eq 1 ]; then
+	systemctl enable --now "$SHARED_MOUNTS_UNIT" >/dev/null
+fi
 if [ "$host_apply_active" -eq 1 ]; then
+	# A unit stopped by a start or trigger limit earlier needs a reset, and a
+	# running path unit a restart to use changed unit files and drop-ins.
+	systemctl reset-failed picache-storage.path picache-storage.service >/dev/null 2>&1 || true
 	systemctl enable --now picache-storage.path >/dev/null
+	systemctl restart picache-storage.path
 fi
 
 host_ip=$(primary_ip)

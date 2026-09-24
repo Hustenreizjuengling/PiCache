@@ -14,7 +14,9 @@
 // client_identifiers, client_memberships.
 // Seen/known addresses are runtime data and live in logs.db (component
 // "clients-seen", table clients_seen), pruned after 30 days. Entries are
-// keyed by IP address; the MAC column is filled from the IPv4 ARP table.
+// keyed by IP address; the MAC column is filled from the neighbour table
+// (IPv4 ARP and IPv6 NDP). SeenTransient keeps activity in memory only
+// (used while client addresses are anonymised).
 //
 // Bounds: the identity cache and the seen map hold at most 65 536 entries
 // (LRU); PTR lookups for names run in one worker with a de-duplicated queue
@@ -128,7 +130,7 @@ type Registry struct {
 
 	writeMu sync.Mutex // serialises configuration writes with their snapshot reload
 	snap    atomic.Pointer[snapshot]
-	arp     atomic.Pointer[map[netip.Addr]string] // IPv4 → MAC
+	arp     atomic.Pointer[map[netip.Addr]string] // neighbour IPv4/IPv6 → MAC
 	readARP func() map[netip.Addr]string          // neighbour table source (replaced in tests)
 
 	cacheMu  sync.Mutex

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,6 +154,70 @@ func TestDownloadConditionalGet(t *testing.T) {
 	}
 	if l.Status != statusFailedCached || !strings.Contains(l.LastError, "HTML") || !e.Check("c.example", []int64{1}).Blocked() {
 		t.Errorf("html: %+v", l)
+	}
+}
+
+// TestEmptyDownloadKeepsLastGoodCopy: a changed download without entries
+// (empty, blank or comment-only body) does not replace a cached copy that
+// has entries; the list reports failed-cached and keeps blocking.
+func TestEmptyDownloadKeepsLastGoodCopy(t *testing.T) {
+	srv := newListServer(t)
+	srv.set(func(s *listServer) { s.body, s.etag = "||a.example^\n||b.example^\n", `"good"` })
+	e := newTestEngine(t)
+	ctx := context.Background()
+	l, err := e.CreateList(ctx, ListInput{URL: srv.URL + "/list", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l, err = e.RefreshList(ctx, l.ID); err != nil || l.Status != statusOK || l.Entries != 2 {
+		t.Fatalf("first download: %+v %v", l, err)
+	}
+	good, err := os.ReadFile(e.cachePath(l.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, body := range []string{"", "\n\n  \r\n", "# maintenance\n", "! Title: gone\nnot a domain\n"} {
+		srv.set(func(s *listServer) { s.body, s.etag = body, `"empty"` })
+		// Twice: the validators of the rejected version must not be stored,
+		// or the second attempt would be answered 304 and count as unchanged.
+		for range 2 {
+			if l, err = e.RefreshList(ctx, l.ID); err != nil {
+				t.Fatal(err)
+			}
+			if l.Status != statusFailedCached || !strings.Contains(l.LastError, "no entries") || l.Entries != 2 {
+				t.Errorf("body %d: status %q error %q entries %d, want failed-cached with 2 entries", i, l.Status, l.LastError, l.Entries)
+			}
+			if !e.Check("x.a.example", []int64{1}).Blocked() || !e.Check("b.example", []int64{1}).Blocked() {
+				t.Errorf("body %d: the last good copy is no longer applied", i)
+			}
+			if cached, _ := os.ReadFile(e.cachePath(l.ID)); string(cached) != string(good) {
+				t.Errorf("body %d: cached copy replaced by %q", i, cached)
+			}
+		}
+	}
+
+	// A list with entries again is accepted.
+	srv.set(func(s *listServer) { s.body, s.etag = "||c.example^\n", `"new"` })
+	if l, err = e.RefreshList(ctx, l.ID); err != nil || l.Status != statusOK || l.Entries != 1 {
+		t.Fatalf("recovery: %+v %v", l, err)
+	}
+	if e.Check("a.example", []int64{1}).Blocked() || !e.Check("c.example", []int64{1}).Blocked() {
+		t.Error("matcher not rebuilt after recovery")
+	}
+
+	// Without a copy that has entries, an empty list is accepted as is.
+	srv2 := newListServer(t)
+	srv2.set(func(s *listServer) { s.body = "# nothing yet\n" })
+	l2, err := e.CreateList(ctx, ListInput{URL: srv2.URL + "/list", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l2, err = e.RefreshList(ctx, l2.ID); err != nil || l2.Status != statusOK || l2.Entries != 0 {
+		t.Fatalf("empty first download: %+v %v", l2, err)
+	}
+	srv2.set(func(s *listServer) { s.body = "" })
+	if l2, err = e.RefreshList(ctx, l2.ID); err != nil || l2.Status != statusOK || l2.Entries != 0 {
+		t.Fatalf("empty after empty: %+v %v", l2, err)
 	}
 }
 

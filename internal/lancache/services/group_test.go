@@ -147,6 +147,12 @@ func TestLabels(t *testing.T) {
 	if got := r.Label("steam:depot:228990"); got != "Steamworks Redistributables" {
 		t.Fatalf("user label = %q", got)
 	}
+	if l, ok := r.UserLabel("steam:depot:228990"); !ok || l != "Steamworks Redistributables" {
+		t.Fatalf("UserLabel = %q, %v", l, ok)
+	}
+	if l, ok := r.UserLabel("riot:lol"); ok || l != "" {
+		t.Fatalf("built-in label reported as a user label: %q", l)
+	}
 	sv, err := r.CreateCustom(ctx, ServiceInput{Name: "LAN Party Mirror", Domains: []string{"m.example.org"}})
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +194,9 @@ func TestLabels(t *testing.T) {
 	}
 	if got := r2.Label("steam:depot:228990"); got != "Steam depot 228990" {
 		t.Fatalf("label after removal = %q", got)
+	}
+	if _, ok := r2.UserLabel("steam:depot:228990"); ok {
+		t.Fatal("removed label still reported as a user label")
 	}
 
 	for _, bad := range []struct{ key, label string }{

@@ -127,7 +127,9 @@ func (w *writer) addQuery(e QueryEvent) {
 	if !cfg.QueryLogEnabled {
 		return
 	}
+	e.Seq = w.s.live.next()
 	publish(&w.s.live, &w.s.live.queries, e)
+	e.Seq = 0 // not stored
 	if !w.s.paused.Load() {
 		w.queries = append(w.queries, e)
 	}
@@ -140,7 +142,9 @@ func (w *writer) addCache(e CacheEvent) {
 	if err := w.sessions.add(&e); err != nil {
 		w.errs.log(w.s.log, "cannot look up download session", err)
 	}
+	e.Seq = w.s.live.next()
 	publish(&w.s.live, &w.s.live.cache, e)
+	e.Seq = 0 // not stored
 	if !w.s.paused.Load() {
 		w.cache = append(w.cache, e)
 	}

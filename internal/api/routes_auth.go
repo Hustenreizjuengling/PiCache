@@ -2,6 +2,7 @@ package api
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -36,7 +37,7 @@ func (s *Server) registerAuthRoutes() {
 }
 
 func authReqMeta(r *http.Request) auth.ReqMeta {
-	return auth.ReqMeta{IP: clientIP(r), UserAgent: r.UserAgent()}
+	return auth.ReqMeta{IP: clientIP(r), UserAgent: r.UserAgent(), Devices: auth.DeviceCookieValues(r)}
 }
 
 type authStatusResponse struct {
@@ -47,6 +48,7 @@ type authStatusResponse struct {
 	TokenAuth     bool       `json:"tokenAuth"`
 	Language      string     `json:"language"`
 	SetupHints    []string   `json:"setupHints,omitempty"`
+	HTTPSPort     int        `json:"httpsPort"` // port of the bound HTTPS listener, 0 if none
 }
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) error {
@@ -55,7 +57,7 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	out := authStatusResponse{SetupRequired: required, Language: s.d.Settings.Get().Web.Language}
+	out := authStatusResponse{SetupRequired: required, Language: s.d.Settings.Get().Web.Language, HTTPSPort: s.httpsPort()}
 	if required {
 		out.SetupHints = setupHints
 	}
@@ -73,13 +75,50 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) error {
 	return ok(w, out)
 }
 
-// startSession sets the session cookie and responds with the user.
+// httpsPort returns the port of the bound HTTPS listener (0 if none), so the
+// sign-in and setup pages can point to it when they are opened over HTTP.
+func (s *Server) httpsPort() int {
+	if s.d.Runtime == nil {
+		return 0
+	}
+	for _, addr := range s.d.Runtime.Listeners().Bound["web-tls"] {
+		if _, p, err := net.SplitHostPort(addr); err == nil {
+			if n, err := strconv.Atoi(p); err == nil && n > 0 && n <= 65535 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// cookieSecurity reports whether the request arrived over TLS (the session
+// cookie is then named __Host-picache_session) and whether the cookie gets
+// the Secure flag (TLS, or PICACHE_WEB_SECURE_COOKIES behind a TLS proxy).
+func (s *Server) cookieSecurity(r *http.Request) (tls, secure bool) {
+	tls = r.TLS != nil
+	return tls, tls || (s.d.Config != nil && s.d.Config.WebSecureCookies)
+}
+
+// clearSessionCookies deletes the session cookie(s) in the browser.
+func (s *Server) clearSessionCookies(w http.ResponseWriter, r *http.Request) {
+	for _, c := range s.d.Auth.ClearCookies(s.cookieSecurity(r)) {
+		http.SetCookie(w, c)
+	}
+}
+
+// startSession sets the session cookie and the device cookie (the browser
+// is then throttled by its device, not by the username delay, at its next
+// sign-in) and responds with the user.
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, sess *auth.Session) error {
 	u, err := s.d.Auth.Me(r.Context(), &auth.Principal{UserID: sess.UserID})
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, s.d.Auth.Cookie(sess, r.TLS != nil))
+	tls, secure := s.cookieSecurity(r)
+	http.SetCookie(w, s.d.Auth.Cookie(sess, tls, secure))
+	if c := s.d.Auth.DeviceCookieFor(sess, tls, secure); c != nil {
+		http.SetCookie(w, c)
+	}
 	return ok(w, u)
 }
 
@@ -124,7 +163,7 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) error {
 		}
 		s.audit(r, "auth.logout", p.Username, nil)
 	}
-	http.SetCookie(w, s.d.Auth.ClearCookie(r.TLS != nil))
+	s.clearSessionCookies(w, r)
 	return noContent(w)
 }
 
@@ -140,15 +179,16 @@ func (s *Server) authPassword(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		CurrentPassword string `json:"currentPassword"`
 		NewPassword     string `json:"newPassword"`
+		KeepTokens      bool   `json:"keepTokens,omitempty"` // default: the API tokens are revoked too
 	}
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
 	p := principal(r)
-	if err := s.d.Auth.ChangePassword(r.Context(), p, in.CurrentPassword, in.NewPassword); err != nil {
+	if err := s.d.Auth.ChangePassword(r.Context(), p, in.CurrentPassword, in.NewPassword, in.KeepTokens); err != nil {
 		return err
 	}
-	s.audit(r, "auth.password.change", p.Username, nil)
+	s.audit(r, "auth.password.change", p.Username, map[string]bool{"keepTokens": in.KeepTokens})
 	return noContent(w)
 }
 
@@ -167,14 +207,20 @@ func (s *Server) authRevokeSession(w http.ResponseWriter, r *http.Request) error
 	}
 	s.audit(r, "auth.session.revoke", id, nil)
 	if id == p.SessionID {
-		http.SetCookie(w, s.d.Auth.ClearCookie(r.TLS != nil))
+		s.clearSessionCookies(w, r)
 	}
 	return noContent(w)
 }
 
 func (s *Server) authTOTPBegin(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		CurrentPassword string `json:"currentPassword"`
+	}
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
 	p := principal(r)
-	secret, uri, err := s.d.Auth.TOTPBegin(r.Context(), p)
+	secret, uri, err := s.d.Auth.TOTPBegin(r.Context(), p, in.CurrentPassword)
 	if err != nil {
 		return err
 	}
@@ -222,9 +268,10 @@ func (s *Server) tokensList(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) tokensCreate(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Name          string     `json:"name"`
-		Scope         auth.Scope `json:"scope"`
-		ExpiresInDays int        `json:"expiresInDays,omitempty"`
+		Name            string     `json:"name"`
+		Scope           auth.Scope `json:"scope"`
+		ExpiresInDays   int        `json:"expiresInDays,omitempty"`
+		CurrentPassword string     `json:"currentPassword"`
 	}
 	if err := decode(w, r, &in); err != nil {
 		return err
@@ -232,7 +279,7 @@ func (s *Server) tokensCreate(w http.ResponseWriter, r *http.Request) error {
 	if in.ExpiresInDays < 0 || in.ExpiresInDays > 3650 {
 		return apperr.Invalid("expiresInDays", "must be between 0 (never) and 3650")
 	}
-	secret, info, err := s.d.Auth.CreateToken(r.Context(), principal(r), in.Name, in.Scope,
+	secret, info, err := s.d.Auth.CreateToken(r.Context(), principal(r), in.CurrentPassword, in.Name, in.Scope,
 		time.Duration(in.ExpiresInDays)*24*time.Hour)
 	if err != nil {
 		return err

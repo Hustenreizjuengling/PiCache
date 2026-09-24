@@ -18,13 +18,16 @@ const (
 	maxListBytes     = 256 << 20 // largest accepted list file
 	maxPatterns      = 20000     // compiled patterns (regex + wildcard), per list and in total
 	maxRegexLen      = 1024      // characters of one regular expression
+	maxRegexCost     = 4096      // estimated compiled size of one pattern (see regexCost)
+	maxPatternCost   = 1 << 20   // estimated compiled size of all patterns, per list and in total
 	maxLineLen       = 64 << 10  // longer lines are counted as invalid
 	ctxCheckInterval = 1 << 14   // lines between context checks while parsing
 )
 
 var (
-	errHTML   = errors.New("not a filter list: the server returned an HTML page")
-	errBinary = errors.New("not a filter list: the content is binary (control characters)")
+	errHTML       = errors.New("not a filter list: the server returned an HTML page")
+	errBinary     = errors.New("not a filter list: the content is binary (control characters)")
+	errTooComplex = errors.New("the pattern is too complex (its repetitions expand to a very large program)")
 )
 
 // Precedence tiers of list entries (ARCHITECTURE 7.2 steps 6–9 and 11).
@@ -69,12 +72,65 @@ func (e *entry) tier(allowList bool) int {
 	return tierBlock
 }
 
-// compile compiles a pattern entry.
+// compile compiles a pattern entry (errTooComplex if it exceeds maxRegexCost).
 func (e *entry) compile() (*regexp.Regexp, error) {
-	if e.regex {
-		return regexp.Compile("(?i)" + e.re)
+	re, _, err := compileRegex(e.source(), maxRegexCost)
+	return re, err
+}
+
+// compileRegex compiles src (RE2, Perl flags) and returns its estimated
+// cost (see regexCost). It refuses with errTooComplex, before compiling,
+// a pattern that costs more than min(maxCost, maxRegexCost).
+func compileRegex(src string, maxCost int64) (*regexp.Regexp, int64, error) {
+	re, err := syntax.Parse(src, syntax.Perl)
+	if err != nil {
+		return nil, 0, err
 	}
-	return regexp.Compile(e.re)
+	cost := regexCost(re)
+	if cost > min(maxCost, maxRegexCost) {
+		return nil, cost, errTooComplex
+	}
+	rx, err := regexp.Compile(src)
+	return rx, cost, err
+}
+
+// regexCost estimates the size of the compiled program of the parsed (not
+// simplified) re in instructions, plus one per four character-class ranges
+// (a one-pass program copies the ranges into every instruction). It mirrors
+// regexp/syntax's own size estimate and walks the parse tree only, so a
+// pattern such as "[^.]{999}[^.]{999}…" is measured, and refused, without
+// expanding its repetitions: the length limit alone would admit programs of
+// ~100 000 instructions (megabytes each) in 1024 characters.
+func regexCost(re *syntax.Regexp) int64 {
+	var n int64
+	switch re.Op {
+	case syntax.OpLiteral:
+		n = int64(len(re.Rune))
+	case syntax.OpCharClass:
+		n = 1 + int64(len(re.Rune)/8)
+	case syntax.OpCapture, syntax.OpStar:
+		n = 2 + regexCost(re.Sub[0])
+	case syntax.OpPlus, syntax.OpQuest:
+		n = 1 + regexCost(re.Sub[0])
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			n += regexCost(sub)
+		}
+		if re.Op == syntax.OpAlternate {
+			n += int64(len(re.Sub)) - 1
+		}
+	case syntax.OpRepeat:
+		sub := regexCost(re.Sub[0])
+		switch {
+		case re.Max == -1 && re.Min == 0: // x*
+			n = 2 + sub
+		case re.Max == -1: // x{n,} = xxx+
+			n = 1 + int64(re.Min)*sub
+		default: // x{2,5} = xx(x(x(x)?)?)?
+			n = int64(re.Max)*sub + int64(re.Max-re.Min)
+		}
+	}
+	return max(1, n)
 }
 
 // lineStatus classifies a parsed line.
@@ -184,6 +240,9 @@ func (p *lineParser) parseRegex(s string) ([]entry, lineStatus) {
 	re, err := syntax.Parse("(?i)"+e.re, syntax.Perl)
 	if err != nil {
 		return nil, lineInvalid
+	}
+	if regexCost(re) > maxRegexCost {
+		return nil, lineUnsupported // before Simplify, which expands repetitions
 	}
 	e.lit = requiredLiteral(re.Simplify())
 	p.buf = append(p.buf, e)
@@ -385,6 +444,7 @@ func hasNonASCII(s string) bool {
 type parsedPattern struct {
 	re   *regexp.Regexp
 	lit  string
+	cost int32 // estimated compiled size (regexCost)
 	tier uint8
 }
 
@@ -396,7 +456,7 @@ type parsed struct {
 	pats        []parsedPattern       // in file order, unique per tier
 	entries     int                   // unique entries (domains + patterns)
 	invalid     int                   // malformed lines
-	unsupported int                   // unsupported rules (modifiers, URL rules, pattern cap)
+	unsupported int                   // unsupported rules (modifiers, URL rules, pattern caps)
 }
 
 // memory returns the approximate heap size of p in bytes.
@@ -491,6 +551,7 @@ func parseList(ctx context.Context, r io.Reader, kind, plain string) (*parsed, e
 	allowList := kind == "allow"
 	var bad map[badKey]struct{}
 	seenPats := map[string]struct{}{} // tier + source
+	var cost int64                    // of the compiled patterns (≤ maxPatternCost)
 	err := scanLines(ctx, r, func(line []byte, long bool) {
 		if long {
 			res.invalid++
@@ -529,13 +590,18 @@ func parseList(ctx context.Context, r io.Reader, kind, plain string) (*parsed, e
 				res.unsupported++
 				continue
 			}
-			re, err := e.compile()
-			if err != nil {
+			re, c, err := compileRegex(e.source(), maxPatternCost-cost)
+			switch {
+			case errors.Is(err, errTooComplex):
+				res.unsupported++ // too large alone, or beyond the list's budget
+				continue
+			case err != nil:
 				res.invalid++
 				continue
 			}
+			cost += c
 			seenPats[key] = struct{}{}
-			res.pats = append(res.pats, parsedPattern{re: re, lit: e.lit, tier: uint8(tier)})
+			res.pats = append(res.pats, parsedPattern{re: re, lit: e.lit, cost: int32(c), tier: uint8(tier)})
 		}
 	})
 	if err != nil {

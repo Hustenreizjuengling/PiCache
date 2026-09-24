@@ -2,17 +2,20 @@
   @component
   Filter toolbar of the download tabs. Every filter lives in the URL
   (range, service, client, search, status, active, group); changing one goes
-  back to the first page.
+  back to the first page. An explicit window (?from=&to=, unix seconds, e.g.
+  from the query log) replaces the range until it is cleared or a range is
+  picked.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { t } from '$i18n/index.svelte'
   import type { RangePreset } from '$lib/api'
+  import { formatDateTime, formatTime } from '$lib/format'
   import { router, type QueryPatch } from '$lib/router.svelte'
   import { Button, Checkbox, Field, IconButton, Select, TimeRangePicker, type SelectOption } from '$lib/ui'
   import type { ServiceCatalog } from '../shared/catalog.svelte'
   import FilterInput from '../shared/FilterInput.svelte'
-  import { pickRange, validClientFilter, validSearch } from '../shared/util'
+  import { pickRange, timeWindow, validClientFilter, validSearch } from '../shared/util'
 
   interface Props {
     catalog: ServiceCatalog
@@ -48,9 +51,17 @@
   }: Props = $props()
 
   const range = $derived(pickRange(router.param('range'), ranges, rangeDefault))
+  const win = $derived(timeWindow(router.param('from'), router.param('to')))
+  const winText = $derived.by(() => {
+    if (!win) return ''
+    const from = win.from * 1000
+    const to = win.to * 1000
+    const sameDay = new Date(from).toDateString() === new Date(to).toDateString()
+    return t('cache.filters.windowValue', { from: formatDateTime(from), to: sameDay ? formatTime(to) : formatDateTime(to) })
+  })
   const groupKey = $derived(group ? router.param('group') : '')
   const filtered = $derived(
-    ['client', 'service', 'search', 'status', 'active', 'group'].some((k) => router.param(k) !== ''),
+    ['client', 'service', 'search', 'status', 'active', 'group', 'from', 'to'].some((k) => router.param(k) !== ''),
   )
 
   function set(patch: QueryPatch) {
@@ -58,16 +69,16 @@
   }
 
   function clear() {
-    set({ client: null, service: null, search: null, status: null, active: null, group: null })
+    set({ client: null, service: null, search: null, status: null, active: null, group: null, from: null, to: null })
   }
 </script>
 
 <div class="filters">
   <div class="top">
     <TimeRangePicker
-      value={range}
+      value={win ? null : range}
       options={ranges}
-      onchange={(v) => set({ range: v === rangeDefault ? null : v })}
+      onchange={(v) => set({ range: v === rangeDefault ? null : v, from: null, to: null })}
     />
     <span class="spacer"></span>
     {#if actions}<div class="actions">{@render actions()}</div>{/if}
@@ -130,6 +141,13 @@
       <Button size="sm" variant="ghost" icon="close" onclick={clear}>{t('cache.filters.clear')}</Button>
     {/if}
   </div>
+  {#if win}
+    <p class="group">
+      <span>{t('cache.filters.window')}</span>
+      <span class="value">{winText}</span>
+      <IconButton size="sm" icon="close" label={t('cache.filters.windowClear')} onclick={() => set({ from: null, to: null })} />
+    </p>
+  {/if}
   {#if groupKey}
     <p class="group">
       <span>{t('cache.filters.group')}</span>
@@ -175,7 +193,8 @@
     font-size: var(--fs-sm);
     color: var(--text-2);
   }
-  .group .mono {
+  .group .mono,
+  .group .value {
     color: var(--text);
   }
 </style>

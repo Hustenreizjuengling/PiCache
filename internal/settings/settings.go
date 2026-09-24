@@ -109,7 +109,7 @@ type Logs struct {
 	SessionRetentionDays   int  `json:"sessionRetentionDays"`
 	StatsRetentionDays     int  `json:"statsRetentionDays"`
 	AnonymizeClientIPs     bool `json:"anonymizeClientIps"`
-	MaxDBSizeMiB           int  `json:"maxDbSizeMiB"` // logs.db cap; the oldest raw events are pruned first
+	MaxDBSizeMiB           int  `json:"maxDbSizeMiB"` // logs.db cap; raw events, sessions and hourly top lists are trimmed proportionally
 }
 
 // Web configures the UI/API.

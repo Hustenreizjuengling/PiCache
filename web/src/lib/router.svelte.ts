@@ -11,8 +11,8 @@ interface Location {
   query: URLSearchParams
 }
 
-function parse(): Location {
-  const raw = location.hash.replace(/^#/, '')
+function parse(hash: string = location.hash): Location {
+  const raw = hash.replace(/^#/, '')
   const q = raw.indexOf('?')
   let path = q >= 0 ? raw.slice(0, q) : raw
   if (!path.startsWith('/')) path = '/' + path
@@ -21,9 +21,112 @@ function parse(): Location {
 }
 
 let loc = $state<Location>(parse())
-window.addEventListener('hashchange', () => {
-  loc = parse()
+
+// ---- leaving a page with unsaved edits
+//
+// Pages with unsaved edits register a check (guardLeave). A change of the
+// path then asks first (setLeavePrompt; Shell shows a confirm dialog), for
+// links, router.navigate() and Back/Forward alike; query changes stay on the
+// page and are never asked about. A hash navigation has already happened
+// when hashchange fires, so it is undone with history.go() (entries are
+// numbered in history.state to know the direction) and redone if confirmed.
+
+type LeaveCheck = () => boolean
+
+const leaveChecks = new Set<LeaveCheck>()
+let leavePrompt: () => Promise<boolean> = () => Promise.resolve(window.confirm('Discard unsaved changes?'))
+let prompting = false
+/** The next hashchange is our own undo (ignored) or a confirmed navigation (allowed). */
+let expect: 'undo' | 'leave' | null = null
+
+const IDX = 'picacheIdx'
+
+function entryIndex(): number | undefined {
+  const s: unknown = history.state
+  const v = s && typeof s === 'object' ? (s as Record<string, unknown>)[IDX] : undefined
+  return typeof v === 'number' ? v : undefined
+}
+
+let lastIndex = entryIndex() ?? 0
+
+/** Numbers the current history entry (if new) and returns its number. */
+function stampEntry(): number {
+  let i = entryIndex()
+  if (i === undefined) {
+    i = ++lastIndex
+    const s: unknown = history.state
+    history.replaceState({ ...(s && typeof s === 'object' ? s : {}), [IDX]: i }, '')
+  } else {
+    lastIndex = Math.max(lastIndex, i)
+  }
+  return i
+}
+
+let current = stampEntry()
+
+function unsaved(): boolean {
+  for (const check of leaveChecks) if (check()) return true
+  return false
+}
+
+/** Whether the page may be left (asks when there are unsaved edits). */
+async function mayLeave(): Promise<boolean> {
+  if (!unsaved()) return true
+  if (prompting) return false
+  prompting = true
+  try {
+    return await leavePrompt()
+  } finally {
+    prompting = false
+  }
+}
+
+window.addEventListener('hashchange', (e) => {
+  const next = parse()
+  const kind = expect
+  expect = null
+  if (kind === 'undo') {
+    current = stampEntry()
+    return
+  }
+  const idx = entryIndex()
+  const steps = idx === undefined ? 1 : idx - current // a new entry (link) or Back/Forward
+  if (kind !== 'leave' && next.path !== loc.path && steps !== 0 && unsaved()) {
+    const target = e.newURL
+    expect = 'undo'
+    history.go(-steps)
+    void mayLeave().then((ok) => {
+      if (!ok) return
+      expect = 'leave'
+      if (idx === undefined) location.hash = new URL(target).hash
+      else history.go(steps)
+    })
+    return
+  }
+  current = stampEntry()
+  loc = next
 })
+
+window.addEventListener('beforeunload', (e) => {
+  if (unsaved()) e.preventDefault()
+})
+
+/**
+ * Asks before the page is left while check() reports unsaved edits (also
+ * on reload/close). Returns the unregister function; call it from an $effect:
+ *   $effect(() => guardLeave(() => form.dirty))
+ */
+export function guardLeave(check: LeaveCheck): () => void {
+  leaveChecks.add(check)
+  return () => {
+    leaveChecks.delete(check)
+  }
+}
+
+/** Sets how to ask (resolves true to discard the edits and leave). */
+export function setLeavePrompt(prompt: () => Promise<boolean>): void {
+  leavePrompt = prompt
+}
 
 function setParam(sp: URLSearchParams, k: string, v: QueryValue): void {
   sp.delete(k)
@@ -62,15 +165,20 @@ export const router = {
     const v = loc.query.get(name)
     return v ? v.split(',').filter(Boolean) : []
   },
-  /** Navigates to another page (adds a history entry unless replace). */
+  /** Navigates to another page (adds a history entry unless replace); asks first if there are unsaved edits. */
   navigate(path: string, query?: QueryPatch, opts: { replace?: boolean } = {}): void {
     const target = href(path, query)
-    if (opts.replace) {
-      history.replaceState(history.state, '', target)
-      loc = parse()
-    } else {
-      location.hash = target.slice(1)
+    const go = () => {
+      if (opts.replace) {
+        history.replaceState(history.state, '', target)
+        loc = parse()
+      } else if (target !== location.hash) {
+        expect = 'leave'
+        location.hash = target.slice(1)
+      }
     }
+    if (parse(target).path === loc.path || !unsaved()) return go()
+    void mayLeave().then((ok) => ok && go())
   },
   /**
    * Merges patch into the current query string. By default the history entry

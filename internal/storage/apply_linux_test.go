@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/config"
 )
@@ -98,5 +99,27 @@ func TestApplyHostStrictAsRoot(t *testing.T) {
 	}
 	if err := applyHost(context.Background(), h.env, cfg, tg.ID, nil, nil); err == nil {
 		t.Fatal("symbolic link mountpoint accepted")
+	}
+}
+
+// TestOpenConfigDBRefusesFIFO: a FIFO in place of picache.db would block the
+// root helper in open(2); it is refused before SQLite opens it.
+func TestOpenConfigDBRefusesFIFO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "picache.db")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skip("cannot create a FIFO:", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := openConfigDB(p)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("FIFO accepted: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("blocked on a FIFO")
 	}
 }

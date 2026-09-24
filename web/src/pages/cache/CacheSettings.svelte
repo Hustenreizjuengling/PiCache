@@ -216,7 +216,7 @@
           <p class="small">
             {t('cache.settings.answering')}
             {#each ips.data.ipv4 as ip (ip)}<span class="ip mono">{ip}</span>{/each}
-            {#if ips.data.reason}<span class="warn"> · {ips.data.reason}</span>{/if}
+            {#if ips.data.warning ?? ips.data.reason}<span class="warn"> · {ips.data.warning ?? ips.data.reason}</span>{/if}
           </p>
         {/if}
         {#if lan.dirty}<p class="subtle small">{t('cache.settings.saveFirst')}</p>{/if}

@@ -78,8 +78,10 @@ func (a *Service) Tokens(ctx context.Context) ([]TokenInfo, error) {
 	return out, rows.Err()
 }
 
-// CreateToken creates an API token and returns the secret once.
-func (a *Service) CreateToken(ctx context.Context, p *Principal, name string, scope Scope, ttl time.Duration) (string, TokenInfo, error) {
+// CreateToken creates an API token and returns the secret once. It requires
+// the user's password: a token outlives sessions and password changes that
+// keep tokens, so a stolen session alone must not be enough to create one.
+func (a *Service) CreateToken(ctx context.Context, p *Principal, currentPassword, name string, scope Scope, ttl time.Duration) (string, TokenInfo, error) {
 	name = strings.TrimSpace(name)
 	if err := validateTokenName(name); err != nil {
 		return "", TokenInfo{}, err
@@ -89,6 +91,9 @@ func (a *Service) CreateToken(ctx context.Context, p *Principal, name string, sc
 	}
 	if ttl < 0 || ttl > maxTokenTTL {
 		return "", TokenInfo{}, apperr.Invalid("expiresInDays", "must be between 0 (never) and 3650 days")
+	}
+	if err := a.verifyUserPassword(ctx, p, "currentPassword", currentPassword); err != nil {
+		return "", TokenInfo{}, err
 	}
 	raw := make([]byte, 32)
 	rand.Read(raw)
@@ -123,11 +128,11 @@ func (a *Service) CreateToken(ctx context.Context, p *Principal, name string, sc
 
 // DeleteToken revokes an API token.
 func (a *Service) DeleteToken(ctx context.Context, id int64) error {
-	res, err := a.db.W.ExecContext(ctx, `DELETE FROM auth_tokens WHERE id = ?`, id)
+	n, err := deleteVerified(ctx, a.db.W, "auth_tokens", "id = ?", id)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		return apperr.NotFound("API token", id)
 	}
 	return nil

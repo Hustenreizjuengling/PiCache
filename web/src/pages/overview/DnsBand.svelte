@@ -7,19 +7,29 @@
   import { t } from '../../i18n/index.svelte'
   import { api, resource, type RangePreset, type Series } from '../../lib/api'
   import { errorText } from '../../lib/errors'
-  import { formatCompact, formatNumber } from '../../lib/format'
+  import { formatCompact, formatNumber, formatTime } from '../../lib/format'
   import { Button, Chart } from '../../lib/ui'
   import Band from './Band.svelte'
   import { links } from './links'
   import TopTable from './TopTable.svelte'
+  import { topWindow } from './topWindow'
 
   let { range }: { range: RangePreset } = $props()
 
   const REFRESH = 60_000
 
   const series = resource((signal) => api.stats.dns(range, undefined, { signal }), { interval: REFRESH })
-  const blocked = resource((signal) => api.stats.top('blocked', range, 10, { signal }), { interval: REFRESH })
-  const clients = resource((signal) => api.stats.top('clients', range, 10, { signal }), { interval: REFRESH })
+  // Top lists are hourly: short ranges get an hour-aligned window, labelled with its start.
+  async function top(kind: 'blocked' | 'clients', signal: AbortSignal) {
+    const w = topWindow(range) // read before the first await: reloads when the range changes
+    return { since: w.since, items: await api.stats.top(kind, w.arg, 10, { signal }) }
+  }
+  const blocked = resource((signal) => top('blocked', signal), { interval: REFRESH })
+  const clients = resource((signal) => top('clients', signal), { interval: REFRESH })
+
+  function since(s: number | undefined): string | undefined {
+    return s === undefined ? undefined : t('overview.dns.topSince', { time: formatTime(s * 1000) })
+  }
 
   function perMinute(s: Series, key: 'allowed' | 'cached' | 'lancache' | 'blocked' | 'other'): number[] {
     const f = 60 / Math.max(1, s.step)
@@ -62,7 +72,9 @@
   {#snippet split()}
     <TopTable
       title={t('overview.dns.topBlocked')}
-      items={blocked.data}
+      note={since(blocked.data?.since)}
+      noteTitle={t('overview.dns.topSinceHint')}
+      items={blocked.data?.items}
       loading={blocked.loading && !blocked.loaded}
       error={blocked.error && !blocked.data ? errorText(blocked.error) : undefined}
       onretry={() => blocked.refresh()}
@@ -75,7 +87,9 @@
     />
     <TopTable
       title={t('overview.dns.topClients')}
-      items={clients.data}
+      note={since(clients.data?.since)}
+      noteTitle={t('overview.dns.topSinceHint')}
+      items={clients.data?.items}
       loading={clients.loading && !clients.loaded}
       error={clients.error && !clients.data ? errorText(clients.error) : undefined}
       onretry={() => clients.refresh()}

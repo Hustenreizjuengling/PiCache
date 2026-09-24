@@ -257,6 +257,7 @@ func TestGenerations(t *testing.T) {
 	if err != nil || gen2 <= gen {
 		t.Fatalf("new total: gen %d → %d (%v)", gen, gen2, err)
 	}
+	waitRemovals(t, s) // old slice files are deleted in the background
 	if fileExists(t, e, id, 0) || fileExists(t, e, id, 1) {
 		t.Fatal("old slice files must be removed")
 	}

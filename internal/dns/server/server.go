@@ -87,7 +87,8 @@ type Services interface {
 // Clients is the part of *clients.Registry the server uses.
 type Clients interface {
 	Identify(ip netip.Addr) *clients.Identity
-	Seen(ip netip.Addr)
+	Seen(ip netip.Addr)          // activity, persisted to logs.db
+	SeenTransient(ip netip.Addr) // activity kept in memory only (client addresses anonymised)
 }
 
 // Upstream is the part of *upstream.Resolver the server uses.
@@ -196,13 +197,19 @@ type BlockingStatus struct {
 	Permanent   bool       `json:"permanent"` // disabled until re-enabled
 }
 
-// CacheIPStatus describes the effective LanCache answer addresses.
+// CacheIPStatus describes the LanCache answer addresses. IPv4/IPv6 are the
+// addresses overrides are (or, while LanCache is disabled or not ready,
+// would be) answered with.
 type CacheIPStatus struct {
 	IPv4   []string `json:"ipv4"`
 	IPv6   []string `json:"ipv6"`
 	Auto   bool     `json:"auto"`             // auto-detected (not configured)
 	Ready  bool     `json:"ready"`            // overrides are being answered
-	Reason string   `json:"reason,omitempty"` // why not ready / warnings
+	Reason string   `json:"reason,omitempty"` // why not ready; while ready: the warning (compatibility)
+	// Warning is the address detection warning, reported whether or not
+	// LanCache is enabled: public or CGNAT primary address, container
+	// bridge network, no private address, no valid configured address.
+	Warning string `json:"warning,omitempty"`
 }
 
 // RouterStatus describes the router resolver.
@@ -238,8 +245,9 @@ type Server struct {
 	router   atomic.Pointer[routerState]
 	host     atomic.Pointer[hostInfo]
 
-	limMu   sync.Mutex // serialises limiter rebuilds
-	limiter atomic.Pointer[limiterState]
+	limMu   sync.Mutex // serialises limiter reconfiguration
+	limKey  string     // configuration the limiter was last set to (under limMu)
+	limiter *netutil.RateLimiter
 
 	routerKick chan struct{}
 	rotate     atomic.Uint32
@@ -253,12 +261,6 @@ type Server struct {
 type qpsSample struct {
 	at time.Time
 	n  int64
-}
-
-// limiterState is the active rate limiter and the configuration it was built from.
-type limiterState struct {
-	rl  *netutil.RateLimiter
-	key string
 }
 
 // New creates the server and migrates its tables (records, forwarders).
@@ -277,6 +279,7 @@ func New(ctx context.Context, d Deps) (*Server, error) {
 		log:        d.Log.With(slog.String("component", "dns")),
 		env:        defaultHostEnv(d.Container),
 		routerKick: make(chan struct{}, 1),
+		limiter:    netutil.NewRateLimiter(0, 0, nil), // configured by reloadConfig
 	}
 	if err := d.DB.Migrate(ctx, "dns", migrations); err != nil {
 		return nil, err
@@ -304,14 +307,15 @@ func (s *Server) settingsChanged(old, cur *settings.All) {
 		default:
 		}
 	}
-	s.rebuildLimiter()
+	s.reconfigureLimiter()
 	s.updateCacheIPs(cur)
 }
 
-// rebuildLimiter replaces the rate limiter when its configuration changed.
-// Exempt: dns.rateLimitExempt, loopback, the router resolver, local PTR
-// upstreams and conditional forwarder targets.
-func (s *Server) rebuildLimiter() {
+// reconfigureLimiter applies the rate-limit configuration when it changed.
+// The limiter keeps its buckets and drop statistics. Exempt:
+// dns.rateLimitExempt, loopback, the router resolver, local PTR upstreams
+// and conditional forwarder targets.
+func (s *Server) reconfigureLimiter() {
 	s.limMu.Lock()
 	defer s.limMu.Unlock()
 	set := s.d.Settings.Get()
@@ -334,10 +338,11 @@ func (s *Server) rebuildLimiter() {
 	}
 	slices.Sort(keys)
 	key := fmt.Sprintf("%d/%d/%s", set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, strings.Join(slices.Compact(keys), ","))
-	if cur := s.limiter.Load(); cur != nil && cur.key == key {
+	if s.limKey == key {
 		return
 	}
-	s.limiter.Store(&limiterState{rl: netutil.NewRateLimiter(set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, exempt), key: key})
+	s.limKey = key
+	s.limiter.Reconfigure(set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, exempt)
 }
 
 // Serve answers queries on the pre-bound sockets until ctx ends (blocks).
@@ -412,7 +417,7 @@ func (s *Server) maintain(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			s.limiter.Load().rl.Sweep(bucketIdle)
+			s.limiter.Sweep(bucketIdle)
 			s.sampleQPS(now)
 			s.expirePause(ctx, now)
 		}
@@ -463,7 +468,7 @@ func (s *Server) qps() float64 {
 
 // Stats returns live counters.
 func (s *Server) Stats() Stats {
-	top := s.limiter.Load().rl.Top(10)
+	top := s.limiter.Top(10)
 	if top == nil {
 		top = []netutil.RateLimited{}
 	}

@@ -22,6 +22,8 @@ export interface RequestOptions extends ReqOpts {
   timeoutMs?: number
   /** Do not treat 401 as "session expired" (status, login, setup). */
   allowUnauthorized?: boolean
+  /** Extra request headers (e.g. the password confirmation of a restore). */
+  headers?: Record<string, string>
 }
 
 /** An API or transport error. `field` names the invalid input (e.g. "dns.upstreams[1]"). */
@@ -128,7 +130,7 @@ async function readError(res: Response): Promise<ApiError> {
 
 /** Performs one API request. Resolves with the decoded JSON body (undefined for 204). */
 export async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
+  const headers: Record<string, string> = { ...opts.headers, Accept: 'application/json' }
   let body: BodyInit | undefined
   if (opts.raw !== undefined) {
     headers['Content-Type'] = 'application/octet-stream'
@@ -164,7 +166,9 @@ export async function request<T>(method: string, path: string, opts: RequestOpti
 
   if (!res.ok) {
     const err = await readError(res)
-    if (res.status === 401 && !opts.allowUnauthorized) hooks.unauthorized?.()
+    // 401 with field "password" is a wrong password confirmation (restore),
+    // not an ended session.
+    if (res.status === 401 && !opts.allowUnauthorized && err.field !== 'password') hooks.unauthorized?.()
     if (res.status === 421) hooks.misdirected?.(err.message)
     throw err
   }

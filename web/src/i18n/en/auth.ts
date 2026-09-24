@@ -6,7 +6,8 @@ export default {
   'login.password': 'Password',
   'login.submit': 'Sign in',
   'login.wrong': 'The user name or password is wrong.',
-  'login.throttled': 'Too many failed attempts. Wait 15 minutes and try again.',
+  'login.throttled':
+    'Too many attempts. Wait a moment and try again. After several wrong attempts from this device, signing in is blocked here for 15 minutes. If this keeps happening, sign in with a browser you have used for PiCache before.',
   'login.expired': 'Your session has ended. Sign in again to continue where you left off.',
   'login.totpTitle': 'Enter your code',
   'login.totpHelp': 'Open your authenticator app and enter the 6-digit code for PiCache.',
@@ -37,4 +38,8 @@ export default {
   'setup.strength.strong': 'Strong',
   'setup.forbidden': 'The setup token is wrong, or PiCache is already set up. Check the token, or sign in.',
   'setup.submit': 'Create account',
+
+  'https.title': 'This connection is not encrypted',
+  'https.text': 'Passwords and the setup token entered here cross the network in plain text. Use the HTTPS address instead:',
+  'https.cert': 'With the self-signed certificate your browser asks you once to accept it.',
 }

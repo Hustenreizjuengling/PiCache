@@ -35,10 +35,20 @@ type seenEntry struct {
 	first, last time.Time
 	pending     int64 // queries not yet written to logs.db
 	total       int64 // queries since start (used when logs.db is unavailable)
+	transient   bool  // last recorded by SeenTransient: never written to logs.db
 }
 
-// Seen records activity of ip (in memory; flushed periodically).
-func (r *Registry) Seen(ip netip.Addr) {
+// Seen records activity of ip (in memory; flushed to logs.db periodically
+// with the address, its MAC and hostname).
+func (r *Registry) Seen(ip netip.Addr) { r.recordSeen(ip, true) }
+
+// SeenTransient records activity of ip in memory only: Known lists it while
+// the process runs, but nothing about it is written to logs.db, and
+// activity of ip not yet written is discarded. The DNS server uses it
+// while client addresses are anonymised (logs.anonymizeClientIps).
+func (r *Registry) SeenTransient(ip netip.Addr) { r.recordSeen(ip, false) }
+
+func (r *Registry) recordSeen(ip netip.Addr, persist bool) {
 	ip = netutil.Canon(ip)
 	if !ip.IsValid() {
 		return
@@ -51,8 +61,13 @@ func (r *Registry) Seen(ip netip.Addr) {
 		r.seen.put(ip, e)
 	}
 	e.last = now
-	e.pending++
 	e.total++
+	e.transient = !persist
+	if persist {
+		e.pending++
+	} else {
+		e.pending = 0
+	}
 	r.seenMu.Unlock()
 	if !ok {
 		r.enqueueName(ip)
@@ -207,7 +222,7 @@ func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, er
 		k, ok := byIP[ip]
 		if !ok {
 			q := e.total
-			if r.ldb != nil {
+			if r.ldb != nil && !e.transient {
 				q = e.pending
 			}
 			byIP[ip] = &Known{IP: ip.String(), FirstSeen: e.first.UTC(), LastSeen: e.last.UTC(), Queries: q}

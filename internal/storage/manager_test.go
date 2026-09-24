@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
@@ -238,7 +239,7 @@ func TestInitStore(t *testing.T) {
 	t.Run("init empty", func(t *testing.T) {
 		mkdir(t, filepath.Join(cfg.MountRoot, "empty"))
 		tg := create("empty", nil)
-		if res := check(t, m, tg.ID); res.st.Online || !res.uninit || !res.usable() {
+		if res := check(t, m, tg.ID); res.st.Online || !res.uninit || !res.usable() || res.st.Initialised || !res.st.Writable {
 			t.Fatalf("before init: %+v", res.st)
 		}
 		if _, _, err := m.StoreRoot(tg.ID); !errors.Is(err, ErrNotInitialised) {
@@ -251,6 +252,9 @@ func TestInitStore(t *testing.T) {
 		root, id, err := m.StoreRoot(tg.ID)
 		if err != nil || id != res.StoreID || root != tg.Path {
 			t.Fatalf("StoreRoot = %q %q %v (status %+v)", root, id, err, m.Status(tg.ID))
+		}
+		if st := m.Status(tg.ID); !st.Initialised || !st.Writable {
+			t.Fatalf("after init: %+v", st)
 		}
 		if mk, err := cachestore.ReadMarker(tg.Path); err != nil || mk.StoreID != res.StoreID {
 			t.Fatalf("marker %+v %v", mk, err)
@@ -287,7 +291,7 @@ func TestInitStore(t *testing.T) {
 		}
 		tg := create("old", nil)
 		res := check(t, m, tg.ID)
-		if res.st.Online || !res.uninit || res.st.StoreID != id || !strings.Contains(res.st.Hint, "adopt") {
+		if res.st.Online || !res.uninit || res.st.StoreID != id || !strings.Contains(res.st.Hint, "adopt") || res.st.Initialised || !res.st.Writable {
 			t.Fatalf("before adopt: %+v", res.st)
 		}
 		got, err := m.InitStore(ctx, tg.ID, true)
@@ -327,7 +331,7 @@ func TestInitStore(t *testing.T) {
 	t.Run("missing path", func(t *testing.T) {
 		tg := create("absent", nil)
 		res := check(t, m, tg.ID)
-		if res.st.Online || res.located || !strings.Contains(res.st.Reason, "does not exist") {
+		if res.st.Online || res.located || !strings.Contains(res.st.Reason, "does not exist") || res.st.Initialised || res.st.Writable {
 			t.Fatalf("status %+v", res.st)
 		}
 		_, err := m.InitStore(ctx, tg.ID, false)
@@ -351,7 +355,7 @@ func TestInitStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		res := check(t, m, tg.ID)
-		if res.st.Online || res.uninit || !strings.Contains(res.st.Reason, "different cache store") {
+		if res.st.Online || res.uninit || !strings.Contains(res.st.Reason, "different cache store") || res.st.Initialised || !res.st.Writable {
 			t.Fatalf("status %+v", res.st)
 		}
 		if _, _, err := m.StoreRoot(tg.ID); apperr.KindOf(err) != apperr.KindUnavailable {
@@ -422,12 +426,25 @@ func TestStatusChangeAndRequestApply(t *testing.T) {
 	_, err = m.RequestApply(ctx, local.ID)
 	wantKind(t, err, apperr.KindConflict)
 
-	// Delete removes queued requests.
+	// Delete replaces the queued apply with a removal of the host mount.
 	if err := m.Delete(ctx, tg.ID, LocalTargetID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(requestsDir(cfg), tg.ID)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("request file left: %v", err)
+	b, err := os.ReadFile(filepath.Join(requestsDir(cfg), tg.ID))
+	if err != nil || !strings.Contains(string(b), `"action":"remove"`) {
+		t.Fatalf("request file %s %v", b, err)
+	}
+	// Deleting a target of another mode leaves nothing behind.
+	if err := os.WriteFile(filepath.Join(requestsDir(cfg), local.ID+resultSuffix), []byte(`{"ok":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Delete(ctx, local.ID, LocalTargetID); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{local.ID, local.ID + resultSuffix} {
+		if _, err := os.Stat(filepath.Join(requestsDir(cfg), n)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s left: %v", n, err)
+		}
 	}
 }
 
@@ -438,28 +455,67 @@ func TestReadApplyState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if s := readApplyState(dir, testID); s != "" {
+	if s := readApplyState(dir, testID, true); s != "" {
 		t.Fatalf("no files: %q", s)
 	}
-	writeResult(r, testID, errors.New("mount error(13): Permission denied\nsecond line"), componentLog(nil))
-	if s := readApplyState(dir, testID); s != "failed: mount error(13): Permission denied second line" {
+	writeResult(r, testID, errors.New("mount error(13): Permission denied\nsecond line"), false, componentLog(nil))
+	if s := readApplyState(dir, testID, true); s != "failed: mount error(13): Permission denied second line" {
 		t.Fatalf("failed: %q", s)
 	}
-	writeResult(r, testID, nil, componentLog(nil))
-	if s := readApplyState(dir, testID); s != applyApplied {
+	if s := readApplyState(dir, testID, false); s != "" { // an apply result means nothing in another mode
+		t.Fatalf("failed apply, external: %q", s)
+	}
+	writeResult(r, testID, nil, false, componentLog(nil))
+	if s := readApplyState(dir, testID, true); s != applyApplied {
 		t.Fatalf("applied: %q", s)
 	}
-	if err := writeRequest(dir, testID); err != nil {
+	if s := readApplyState(dir, testID, false); s != "" {
+		t.Fatalf("applied, external: %q", s)
+	}
+	for _, hostApply := range []bool{true, false} {
+		writeResult(r, testID, errors.New("cannot unmount"), true, componentLog(nil))
+		if s := readApplyState(dir, testID, hostApply); s != "failed: cannot unmount" {
+			t.Fatalf("failed removal: %q", s)
+		}
+		writeResult(r, testID, nil, true, componentLog(nil))
+		if s := readApplyState(dir, testID, hostApply); s != "" {
+			t.Fatalf("removed: %q", s)
+		}
+	}
+	if err := writeRequest(dir, testID, actionApply); err != nil {
 		t.Fatal(err)
 	}
-	if s := readApplyState(dir, testID); s != applyQueued {
+	if s := readApplyState(dir, testID, true); s != applyQueued {
 		t.Fatalf("queued: %q", s)
 	}
 	if err := os.WriteFile(filepath.Join(dir, testID+resultSuffix), []byte(strings.Repeat("x", maxResultSize+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	os.Remove(filepath.Join(dir, testID))
-	if s := readApplyState(dir, testID); s != "failed: unreadable result file" {
+	if s := readApplyState(dir, testID, true); s != "failed: unreadable result file" {
 		t.Fatalf("oversized: %q", s)
+	}
+}
+
+// TestAppliedButNotMountedHint: a successful apply that PiCache cannot see
+// (no mount propagation into its namespace) gets an explaining hint.
+func TestAppliedButNotMountedHint(t *testing.T) {
+	cfg := testConfig(t)
+	tg := Target{ID: testID, Name: "NAS", Kind: KindSMB, Mode: ModeHostApply, Path: hostApplyPath(cfg, testID)}
+	m := bareManager(cfg, tg)
+	m.probeFn = func(t Target) checkResult {
+		return checkResult{notMounted: true, st: Status{Reason: "nothing is mounted at " + t.Path, Hint: "Apply the mount", CheckedAt: time.Now()}}
+	}
+	if res := check(t, m, testID); res.st.Hint != "Apply the mount" {
+		t.Fatalf("not applied: %+v", res.st)
+	}
+	r, err := os.OpenRoot(requestsDir(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	writeResult(r, testID, nil, false, componentLog(nil))
+	if res := check(t, m, testID); res.st.Hint != appliedNotMountedHint || res.st.ApplyState != applyApplied {
+		t.Fatalf("applied: %+v", res.st)
 	}
 }

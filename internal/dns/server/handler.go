@@ -78,7 +78,7 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	// 3. Rate limit.
-	if ok, first := s.limiter.Load().rl.Allow(ip); !ok {
+	if ok, first := s.limiter.Allow(ip); !ok {
 		s.rateLimited.Add(1)
 		if first {
 			s.log.Warn("client exceeds the DNS rate limit; its queries are dropped (if it is a router or another DNS server forwarding to PiCache, add it to dns.rateLimitExempt)",
@@ -112,10 +112,16 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// 5. Identify.
+	// 5. Identify. Clients excluded from logs are not recorded as seen, and
+	// while client addresses are anonymised the activity is kept in memory
+	// only (nothing is written to logs.db).
 	qc.id = s.identify(ip)
-	if s.d.Clients != nil {
-		s.d.Clients.Seen(ip)
+	if s.d.Clients != nil && !qc.id.IgnoreLogs {
+		if set.Logs.AnonymizeClientIPs {
+			s.d.Clients.SeenTransient(ip)
+		} else {
+			s.d.Clients.Seen(ip)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(h.ctx, queryTimeout)

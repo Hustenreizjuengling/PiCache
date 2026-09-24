@@ -15,6 +15,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 )
 
 const (
@@ -62,14 +63,24 @@ func (a *Service) userByID(ctx context.Context, id int64) (userRow, error) {
 	return u, err
 }
 
-// Login verifies credentials (+ TOTP if enabled) with throttling.
+// Login verifies credentials (+ TOTP if enabled) with throttling per client
+// and per username (see throttle). A browser with a device cookie issued for
+// this username is throttled by its device instead of the username
+// (device.go); its failures still count for the username, and its success
+// leaves the username delay as it is (it says nothing about the other
+// browsers that failed).
 func (a *Service) Login(ctx context.Context, username, password, totp string, meta ReqMeta) (*Session, error) {
 	ckey, ukey := clientThrottleKey(meta.IP), userThrottleKey(username)
-	if err := a.throttle.allow(a.now(), ckey, ukey); err != nil {
+	checked, counted := []string{ckey, ukey}, []string{ckey, ukey}
+	if dev, ok := a.knownDevice(meta.Devices, username); ok {
+		dkey := deviceThrottleKey(dev.id)
+		checked, counted = []string{ckey, dkey}, []string{ckey, ukey, dkey}
+	}
+	if err := a.throttle.allow(a.now(), checked...); err != nil {
 		return nil, err
 	}
 	fail := func(reason string, err error) (*Session, error) {
-		a.recordFailure(ckey, ukey)
+		a.recordFailure(counted...)
 		a.auditFailure(ctx, meta, reason)
 		return nil, err
 	}
@@ -108,7 +119,7 @@ func (a *Service) Login(ctx context.Context, username, password, totp string, me
 			return fail("totp", errTOTPWrong())
 		}
 	}
-	a.throttle.succeed(ckey, ukey)
+	a.throttle.succeed(checked...)
 
 	now := a.now()
 	if newHash != "" {
@@ -123,6 +134,7 @@ func (a *Service) Login(ctx context.Context, username, password, totp string, me
 	if err != nil {
 		return nil, err
 	}
+	s.Device = a.issueDevice(u.ID, u.Username)
 	method := "password"
 	if u.TOTPEnabled {
 		method = "password+totp"
@@ -177,7 +189,7 @@ func (a *Service) Logout(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
-	_, err := a.db.W.ExecContext(ctx, `DELETE FROM auth_sessions WHERE hash = ?`, hashSecret(token))
+	_, err := deleteVerified(ctx, a.db.W, "auth_sessions", "hash = ?", hashSecret(token))
 	return err
 }
 
@@ -186,19 +198,37 @@ func (a *Service) Logout(ctx context.Context, token string) error {
 //
 // A Bearer value starting with "pc_" is an API token, any other Bearer value
 // a session token. Authorization headers with other schemes are ignored (a
-// reverse proxy may use Basic auth in front of PiCache).
+// reverse proxy may use Basic auth in front of PiCache). Both session cookie
+// names are accepted, the __Host- one first (cookies.go).
 func (a *Service) Authenticate(r *http.Request) (*Principal, error) {
+	p, err := a.authenticate(r)
+	if err != nil {
+		return nil, err
+	}
+	if ip := netutil.AddrFromRemote(r.RemoteAddr); ip.IsValid() {
+		p.IP = ip.String()
+	}
+	return p, nil
+}
+
+func (a *Service) authenticate(r *http.Request) (*Principal, error) {
 	if tok, ok := bearerToken(r); ok {
 		if strings.HasPrefix(tok, tokenPrefix) {
 			return a.authToken(r.Context(), tok)
 		}
 		return a.authSession(r.Context(), tok)
 	}
-	c, err := r.Cookie(SessionCookie)
-	if err != nil || c.Value == "" {
-		return nil, errNotAuthenticated
+	err := errNotAuthenticated
+	for _, v := range sessionCookies(r) {
+		var p *Principal
+		if p, err = a.authSession(r.Context(), v); err == nil {
+			return p, nil
+		}
+		if apperr.KindOf(err) != apperr.KindUnauthorized {
+			return nil, err
+		}
 	}
-	return a.authSession(r.Context(), c.Value)
+	return nil, err
 }
 
 func bearerToken(r *http.Request) (string, bool) {
@@ -260,34 +290,6 @@ func (a *Service) Valid(ctx context.Context, p *Principal) bool {
 	return err == nil && now.Before(a.sessionExpiry(db.Time(created), db.Time(lastSeen)))
 }
 
-// Cookie builds the session cookie (secure = request came over HTTPS).
-func (a *Service) Cookie(s *Session, secure bool) *http.Cookie {
-	return &http.Cookie{
-		Name:     SessionCookie,
-		Value:    s.Token,
-		Path:     "/",
-		Expires:  s.ExpiresAt,
-		MaxAge:   max(1, int(s.ExpiresAt.Sub(a.now()).Seconds())),
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
-	}
-}
-
-// ClearCookie builds a cookie that deletes the session cookie.
-func (a *Service) ClearCookie(secure bool) *http.Cookie {
-	return &http.Cookie{
-		Name:     SessionCookie,
-		Value:    "",
-		Path:     "/",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
-	}
-}
-
 // Me returns the user of a principal.
 func (a *Service) Me(ctx context.Context, p *Principal) (User, error) {
 	if p == nil {
@@ -297,8 +299,11 @@ func (a *Service) Me(ctx context.Context, p *Principal) (User, error) {
 	return u.User, err
 }
 
-// ChangePassword changes the password and revokes all other sessions.
-func (a *Service) ChangePassword(ctx context.Context, p *Principal, current, next string) error {
+// ChangePassword changes the password and revokes all other sessions and,
+// unless keepTokens, the user's API tokens: changing the password is how an
+// owner ends access that someone else may have set up (a stolen session
+// could have been used to create a token).
+func (a *Service) ChangePassword(ctx context.Context, p *Principal, current, next string, keepTokens bool) error {
 	if err := validatePassword("newPassword", next); err != nil {
 		return err
 	}
@@ -316,32 +321,88 @@ func (a *Service) ChangePassword(ctx context.Context, p *Principal, current, nex
 		if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET password_hash = ? WHERE id = ?`, h, p.UserID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM auth_sessions WHERE user_id = ? AND id != ?`, p.UserID, p.SessionID)
+		if _, err := deleteVerified(ctx, tx, "auth_sessions", "user_id = ? AND id != ?", p.UserID, p.SessionID); err != nil {
+			return err
+		}
+		if keepTokens {
+			return nil
+		}
+		_, err := deleteVerified(ctx, tx, "auth_tokens", "user_id = ?", p.UserID)
 		return err
 	})
 }
 
-// verifyUserPassword re-checks the password of an authenticated user
-// (password change, disabling TOTP). Failures count towards the user's
-// lockout so a stolen session cannot be used to guess the password.
-func (a *Service) verifyUserPassword(ctx context.Context, p *Principal, field, pw string) error {
+// checkUserPassword re-checks the password of an authenticated user with
+// the login throttle (per client, the global limit, and per session: 5
+// failures → 15 min), so a stolen session cannot be used to guess the
+// password faster than a single client can at the sign-in form. The session
+// key replaces the username delay: failed sign-ins that other hosts cause
+// for the username must not keep the signed-in owner from changing the
+// password (and a success does not reset that delay either). It reports
+// false for a wrong password (the failure is recorded and audited like a
+// failed sign-in).
+func (a *Service) checkUserPassword(ctx context.Context, p *Principal, pw string) (bool, error) {
+	if p == nil {
+		return false, errNotAuthenticated
+	}
 	u, err := a.userByID(ctx, p.UserID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	ukey := userThrottleKey(u.Username)
-	if err := a.throttle.allow(a.now(), ukey); err != nil {
-		return err
+	ckey, ukey := clientThrottleKey(p.IP), userThrottleKey(u.Username)
+	akey := ukey // only sessions confirm passwords (permSession); the username otherwise
+	if p.SessionID != "" {
+		akey = sessionThrottleKey(p.SessionID)
+	}
+	if err := a.throttle.allow(a.now(), ckey, akey); err != nil {
+		return false, err
 	}
 	ok := false
 	if len(pw) <= maxPasswordBytes {
 		if ok, _, err = a.checkPassword(ctx, u.passwordHash, pw); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if !ok {
-		a.recordFailure(ukey)
+		a.recordFailure(ckey, akey)
+		a.auditFailure(ctx, ReqMeta{IP: p.IP}, "password confirmation")
+		return false, nil
+	}
+	a.throttle.succeed(ckey, akey)
+	return true, nil
+}
+
+// verifyUserPassword re-checks the password of an authenticated user
+// (password change, creating an API token, starting or disabling TOTP) and
+// reports a missing or wrong password as invalid input of field.
+func (a *Service) verifyUserPassword(ctx context.Context, p *Principal, field, pw string) error {
+	if pw == "" {
+		return apperr.Invalid(field, "enter your current password")
+	}
+	ok, err := a.checkUserPassword(ctx, p, pw)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return apperr.Invalid(field, "wrong password")
+	}
+	return nil
+}
+
+// ConfirmPassword re-checks the password of a signed-in user before an
+// action that replaces the configuration (restore). A missing or wrong
+// password is reported as 401 with field "password"; attempts are throttled
+// like sign-ins.
+func (a *Service) ConfirmPassword(ctx context.Context, p *Principal, pw string) error {
+	if pw == "" {
+		return &apperr.Error{Kind: apperr.KindUnauthorized, Field: "password", Message: "enter your password to confirm"}
+	}
+	ok, err := a.checkUserPassword(ctx, p, pw)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &apperr.Error{Kind: apperr.KindUnauthorized, Field: "password", Message: "wrong password"}
 	}
 	return nil
 }
@@ -378,11 +439,11 @@ func (a *Service) RevokeSession(ctx context.Context, p *Principal, id string) er
 	if len(id) != 16 || strings.Trim(id, "0123456789abcdef") != "" {
 		return apperr.Invalid("id", "invalid session id")
 	}
-	res, err := a.db.W.ExecContext(ctx, `DELETE FROM auth_sessions WHERE id = ? AND user_id = ?`, id, p.UserID)
+	n, err := deleteVerified(ctx, a.db.W, "auth_sessions", "id = ? AND user_id = ?", id, p.UserID)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		return apperr.NotFound("session", id)
 	}
 	return nil

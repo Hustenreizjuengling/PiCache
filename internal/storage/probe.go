@@ -122,6 +122,7 @@ func (m *Manager) probe(t Target) checkResult {
 			return fail("cannot verify that "+t.Path+" is a mount point on this platform", "")
 		}
 		if !mounted {
+			res.notMounted = true
 			return fail("nothing is mounted at "+t.Path, m.notMountedHint(t))
 		}
 		step("%s is a mount point", t.Path)
@@ -166,6 +167,7 @@ func (m *Manager) probe(t Target) checkResult {
 	}
 
 	mc := checkMarker(t, st, step)
+	st.Initialised = mc.valid && mc.reason == ""
 	probeDir := "."
 	if mc.valid {
 		probeDir = "tmp" // the store's own temp directory
@@ -174,7 +176,7 @@ func (m *Manager) probe(t Target) checkResult {
 	if err != nil {
 		return fail("write test failed: "+errText(err), m.writeHint(err))
 	}
-	res.writable = true
+	res.writable, st.Writable = true, true
 	st.LatencyMs = math.Round(float64(lat.Microseconds())/10) / 100
 	step("Write, rename, read and delete test passed (%.2f ms)", st.LatencyMs)
 	if mc.reason != "" {
@@ -338,6 +340,12 @@ func (m *Manager) notMountedHint(t Target) string {
 	}
 	return h + "Mount the share on the host (see the configuration snippets); in Docker bind the mount root with propagation rslave."
 }
+
+// appliedNotMountedHint replaces the hint when the root helper reported a
+// successful mount that PiCache cannot see.
+const appliedNotMountedHint = "The root helper reported this share as mounted, but PiCache does not see a mount here. " +
+	"If the mount failed later (for example the NAS was offline at boot), apply it again. In a container whose / is not " +
+	"a shared mount, PiCache only sees mounts made before it started: restart PiCache, and make / shared (docs/DEPLOYMENT.md, host-apply)."
 
 func (m *Manager) accessHint() string {
 	return fmt.Sprintf("PiCache runs as uid %d / gid %d; make the directory accessible for that user.", m.caps.UID, m.caps.GID)

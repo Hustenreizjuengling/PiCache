@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 const (
@@ -91,6 +92,18 @@ func (h *heads) counts() (lru, overlay int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.nodes), len(h.overlay)
+}
+
+// waitRemovals waits until the background remover has emptied its queue.
+func waitRemovals(t *testing.T, s *Store) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.queuedRemovals() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d slice files still queued for removal", s.queuedRemovals())
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func mustFlush(t *testing.T, s *Store) {

@@ -1,14 +1,16 @@
 <!--
   @component
-  Creates an API token and shows its secret exactly once. Mount it only
-  while it is open ({#if}), so every opening starts with an empty form and
-  the secret is dropped from memory when it closes.
+  Creates an API token and shows its secret exactly once. Creating one needs
+  the current password (a token outlives the session). Mount it only while
+  it is open ({#if}), so every opening starts with an empty form and the
+  secret and the password are dropped from memory when it closes.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
   import { api, apiUrl, toApiError, type ApiError, type CreatedToken, type Scope, type TokenInfo } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { formatDate } from '$lib/format'
+  import { session } from '$lib/session.svelte'
   import { Button, CopyButton, Dialog, Field, Input, Notice, Select } from '$lib/ui'
   import { charCount, MAX_TOKEN_NAME, rangeError, RANGES } from '../forms'
 
@@ -25,6 +27,7 @@
   let scope = $state<Scope>('read')
   let expiry = $state<Expiry>('365')
   let customDays = $state<number | null>(180)
+  let password = $state('')
   let submitted = $state(false)
   let busy = $state(false)
   let apiErr = $state.raw<ApiError | null>(null)
@@ -47,6 +50,9 @@
     days:
       fieldError(apiErr, 'expiresInDays') ??
       (expiry === 'custom' ? rangeError(customDays, RANGES.tokenExpiryDays) : undefined),
+    password:
+      fieldError(apiErr, 'currentPassword') ??
+      (submitted && !password ? t('system.tokens.passwordRequired') : undefined),
   })
   const general = $derived(apiErr && !apiErr.field ? errorText(apiErr) : '')
 
@@ -70,11 +76,12 @@
     e.preventDefault()
     submitted = true
     apiErr = null
-    if (errors.name || errors.days) return
+    if (errors.name || errors.days || errors.password) return
     busy = true
     try {
-      const body = { name: name.trim(), scope, ...(days ? { expiresInDays: days } : {}) }
+      const body = { name: name.trim(), scope, currentPassword: password, ...(days ? { expiresInDays: days } : {}) }
       created = await api.tokens.create(body)
+      password = ''
       oncreated?.(created.info)
     } catch (err) {
       apiErr = toApiError(err)
@@ -144,6 +151,20 @@
       {#if expiry === 'never'}
         <p class="small muted">{t('system.tokens.neverHint')}</p>
       {/if}
+      <!-- Lets password managers offer the right account's password. -->
+      <input
+        class="visually-hidden"
+        type="text"
+        name="username"
+        autocomplete="username"
+        value={session.user?.username ?? ''}
+        readonly
+        tabindex="-1"
+        aria-hidden="true"
+      />
+      <Field label={t('system.tokens.password')} error={errors.password} help={t('system.tokens.passwordHelp')}>
+        <Input type="password" bind:value={password} autocomplete="current-password" maxlength={1024} required />
+      </Field>
     </form>
   {/if}
   {#snippet actions()}

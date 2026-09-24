@@ -75,12 +75,20 @@ type App struct {
 	ln listeners
 
 	store          atomic.Pointer[cachestore.Store]
-	storeMu        sync.Mutex // serialises store open/close
+	storeMu        sync.Mutex // guards publishing and closing the active store and storeClosed
+	storeClosed    bool       // closeState ran: no store is published any more
+	reconcileMu    sync.Mutex // serialises reconcileStore (held while a store opens)
+	storeOpening   atomic.Bool
+	openCacheStore func(context.Context, cachestore.Options) (*cachestore.Store, error) // nil: cachestore.Open (tests)
 	storeState     atomic.Pointer[api.StoreState]
 	storeKick      chan struct{}
 	storeFull      atomic.Bool
 	lastStoreErr   string
 	lastStoreErrAt time.Time
+
+	evictKick chan struct{} // low free space: evict now
+	evictSem  chan struct{} // serialises EvictNow
+	free      freeSpace
 
 	verifyMu sync.Mutex
 	verify   api.VerifyState
@@ -93,8 +101,7 @@ type App struct {
 // Run starts PiCache and blocks until ctx is cancelled, a restart is
 // requested (ErrRestart) or a fatal error occurs.
 func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
-	a := &App{cfg: cfg, paths: cfg.Paths(), log: log, started: time.Now(),
-		storeKick: make(chan struct{}, 1), restart: make(chan struct{}, 1)}
+	a := newApp(cfg, log)
 	info := version.Get()
 	log.Info("starting PiCache", slog.String("version", info.Version), slog.String("commit", info.Commit),
 		slog.String("go", info.GoVersion), slog.String("data_dir", cfg.DataDir), slog.String("cache_dir", cfg.CacheDir))
@@ -144,6 +151,13 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	return a.serve(ctx)
 }
 
+// newApp returns the process state before anything is opened.
+func newApp(cfg *config.Config, log *slog.Logger) *App {
+	return &App{cfg: cfg, paths: cfg.Paths(), log: log, started: time.Now(),
+		storeKick: make(chan struct{}, 1), evictKick: make(chan struct{}, 1), evictSem: make(chan struct{}, 1),
+		restart: make(chan struct{}, 1)}
+}
+
 func (a *App) prepareDirs() error {
 	for _, d := range []string{a.cfg.DataDir, a.paths.CacheIndexDir, a.paths.ListsDir, a.paths.CacheDomainsDir,
 		a.paths.TLSDir, filepath.Join(a.cfg.DataDir, "tmp"), filepath.Join(a.cfg.DataDir, "backups"),
@@ -164,7 +178,13 @@ func (a *App) prepareDirs() error {
 func (a *App) build(ctx context.Context) error {
 	var err error
 	log := a.log
+	a.storeMu.Lock()
+	a.storeClosed = false // Run builds again after a failed restore (closeState ran)
+	a.storeMu.Unlock()
 	if a.cdb, err = db.Open(a.paths.ConfigDB, 4); err != nil {
+		return err
+	}
+	if err := a.removePlantedSchema(ctx); err != nil {
 		return err
 	}
 	if err := a.preUpgradeBackup(ctx); err != nil {
@@ -213,11 +233,12 @@ func (a *App) build(ctx context.Context) error {
 		return fmt.Errorf("auth: %w", err)
 	}
 	if !a.restoredAt.IsZero() {
-		if err := a.cdb.Tx(ctx, func(tx *sqlTx) error { return auth.PurgeCredentials(ctx, tx) }); err != nil {
-			log.Warn("could not purge sessions/tokens after restore", slog.Any("err", err))
-		} else {
-			log.Warn("configuration restored from backup: all sessions and API tokens were revoked; re-issue API tokens")
+		// CarryOverAccounts already emptied the sessions; a failure here
+		// rolls the restore back.
+		if err := a.cdb.Tx(ctx, func(tx *sqlTx) error { return auth.PurgeSessions(ctx, tx) }); err != nil {
+			return fmt.Errorf("restore: end sessions: %w", err)
 		}
+		log.Warn("configuration restored from backup: accounts, API tokens and the audit log were kept; everyone has to sign in again")
 	}
 	if pw := a.cfg.AdminPassword; pw != "" {
 		err := a.auth.Provision(ctx, a.cfg.AdminUser, pw)
@@ -234,6 +255,9 @@ func (a *App) build(ctx context.Context) error {
 	a.set.Subscribe(func(o, n *settings.All) {
 		if o.Cache.ActiveStoreID != n.Cache.ActiveStoreID || o.Cache.MinFreeBytes != n.Cache.MinFreeBytes {
 			a.kickStore()
+		}
+		if o.Cache.MaxSizeBytes != n.Cache.MaxSizeBytes || o.Cache.MaxAgeDays != n.Cache.MaxAgeDays {
+			a.kickEvict() // apply a lowered limit now, not within the next minute
 		}
 	})
 
@@ -426,33 +450,73 @@ func (a *App) serve(ctx context.Context) error {
 		runErr = ErrRestart
 	}
 	cancel()
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer shutCancel()
-	for _, s := range servers {
-		_ = s.Shutdown(shutCtx)
-	}
-	a.ln.closeAll()
-	waitTimeout(&srv, shutCtx)
-	waitTimeout(&bg, shutCtx)
+	a.shutdown(servers, &srv, &bg)
 	a.log.Info("stopped")
 	return runErr
 }
 
-func waitTimeout(wg *sync.WaitGroup, ctx context.Context) {
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
+// Shutdown budgets. HTTP servers get httpShutdownGrace to finish their
+// requests and are then closed. The background components, cancelled when
+// the shutdown starts, get their own componentStopWait after that, so a long
+// download on the cache port cannot use up the time they need to flush
+// before the databases close. Together with closing the cache store (at most
+// 10 s for running operations) this stays below Docker's stop_grace_period
+// of 30 s.
+var (
+	httpShutdownGrace = 12 * time.Second
+	serverStopWait    = time.Second
+	componentStopWait = 5 * time.Second
+)
+
+// shutdown stops the HTTP servers, closes the listeners and waits for the
+// server goroutines (srv) and the background components (bg), each within
+// its own budget.
+func (a *App) shutdown(servers []*http.Server, srv, bg *sync.WaitGroup) {
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+	defer shutCancel()
+	var wg sync.WaitGroup
+	for _, s := range servers {
+		wg.Go(func() {
+			if err := s.Shutdown(shutCtx); err != nil {
+				_ = s.Close() // grace period over: drop the remaining connections
+			}
+		})
+	}
+	wg.Wait()
+	a.ln.closeAll()
+	if !waitFor(srv, serverStopWait) {
+		a.log.Warn("some servers did not stop in time")
+	}
+	if !waitFor(bg, componentStopWait) {
+		a.log.Warn("some components did not stop in time; closing the databases anyway")
 	}
 }
 
+// waitFor waits for wg at most d; false on timeout.
+func waitFor(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+// closeState closes the active store and the databases. It never waits for
+// a store that is being opened (reconcileStore holds only reconcileMu while
+// it opens); such a store is closed as soon as its open returns.
 func (a *App) closeState() {
 	a.storeMu.Lock()
-	if st := a.store.Swap(nil); st != nil {
+	a.storeClosed = true
+	st := a.store.Swap(nil)
+	a.storeMu.Unlock()
+	if st != nil {
 		_ = st.Close()
 	}
-	a.storeMu.Unlock()
 	if a.logs != nil {
 		_ = a.logs.Close()
 		a.logs = nil

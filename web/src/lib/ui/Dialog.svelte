@@ -2,6 +2,7 @@
   @component
   Modal dialog on the native <dialog> element (focus trap, Esc, inert
   background). Content is rendered only while open, so forms start fresh.
+  Toasts raised while it is open are shown in (and above) the dialog.
   <Dialog bind:open title="Add blocklist">
     <form id="add-list" onsubmit={…}>…</form>
     {#snippet actions()}
@@ -15,6 +16,7 @@
   import type { Snippet } from 'svelte'
   import { t } from '../../i18n/index.svelte'
   import IconButton from './IconButton.svelte'
+  import Toasts from './Toasts.svelte'
 
   interface Props {
     open?: boolean
@@ -92,6 +94,8 @@
       </header>
       <div class="body">{@render children()}</div>
       {#if actions}<footer>{@render actions()}</footer>{/if}
+      <!-- The page-level toasts are inert behind a modal dialog: show them here. -->
+      <Toasts dialog />
     </div>
   {/if}
 </dialog>

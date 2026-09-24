@@ -249,6 +249,10 @@ func TestStorageRoutesInitActivateTest(t *testing.T) {
 
 	w = e.call(e.srv.storageTest, "POST", id, "")
 	storageWant(t, "test", w, http.StatusOK, "")
+	// The UI decides "set up" vs "offline" from explicit fields.
+	if body := w.Body.String(); !strings.Contains(body, `"initialised":false`) || !strings.Contains(body, `"writable":true`) {
+		t.Fatalf("status fields before init: %s", body)
+	}
 	if res := storageDecode[storage.TestResult](t, w); !res.OK || len(res.Steps) == 0 || res.Status.Online {
 		t.Fatalf("test %+v", res)
 	}
@@ -262,6 +266,11 @@ func TestStorageRoutesInitActivateTest(t *testing.T) {
 	storageWant(t, "init", w, http.StatusOK, "")
 	if res := storageDecode[storage.InitResult](t, w); len(res.StoreID) != 32 || res.Adopted {
 		t.Fatalf("init %+v", res)
+	}
+	w = e.call(e.srv.storageTarget, "GET", id, "")
+	storageWant(t, "get after init", w, http.StatusOK, "")
+	if body := w.Body.String(); !strings.Contains(body, `"initialised":true`) || !strings.Contains(body, `"writable":true`) {
+		t.Fatalf("status fields after init: %s", body)
 	}
 
 	w = e.call(e.srv.storageActivate, "POST", id, "")

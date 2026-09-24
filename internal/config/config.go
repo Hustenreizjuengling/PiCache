@@ -30,6 +30,11 @@ type Config struct {
 	WebTLSCertFile string   // PICACHE_WEB_TLS_CERT (optional, else self-signed)
 	WebTLSKeyFile  string   // PICACHE_WEB_TLS_KEY
 	WebHosts       []string // PICACHE_WEB_HOSTS: extra allowed Host names for the UI
+	// WebSecureCookies (PICACHE_WEB_SECURE_COOKIES) sets the Secure flag on
+	// the session and device cookies for plain-HTTP requests too: for a
+	// TLS-terminating reverse proxy in front of the HTTP listener. Requests
+	// over TLS always get it.
+	WebSecureCookies bool
 
 	RunAs string // PICACHE_RUN_AS "uid:gid": drop privileges after binding when started as root
 
@@ -187,7 +192,7 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 		}
 		c.LogLevel = lvl
 	}
-	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev} {
+	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev, "PICACHE_WEB_SECURE_COOKIES": &c.WebSecureCookies} {
 		if v := getenv(key); v != "" {
 			b, err := strconv.ParseBool(v)
 			if err != nil {

@@ -12,8 +12,15 @@ import (
 	"sync/atomic"
 )
 
-// writeChunk is the amount WriteRange copies per I/O semaphore slot.
-const writeChunk = 256 << 10
+const (
+	// writeChunk is the largest amount WriteRange copies in one step.
+	writeChunk = 256 << 10
+	// copyChunk is the buffer size of WriteRange's buffered path.
+	copyChunk = 32 << 10
+)
+
+// copyBufs are the buffers of WriteRange's buffered path.
+var copyBufs = sync.Pool{New: func() any { b := make([]byte, copyChunk); return &b }}
 
 // ReadSlice opens a cached slice of generation gen. ErrSliceMissing if not
 // cached, ErrStale if the object changed; a corrupt/mismatched file is
@@ -62,7 +69,7 @@ func (s *Store) ReadSlice(ctx context.Context, id string, gen uint64, idx int64)
 		}
 		return nil, ErrStale
 	}
-	return &sliceReader{f: f, off: off, size: size, sem: s.sem}, nil
+	return &sliceReader{f: f, off: off, size: size, sem: s.sem, streams: s.streams}, nil
 }
 
 // openSlice opens and validates a slice file of an object of total bytes.
@@ -137,12 +144,13 @@ func (s *Store) sliceGone(ctx context.Context, id string, gen uint64, idx int64,
 
 // sliceReader implements SliceReader on an open slice file.
 type sliceReader struct {
-	f      *os.File
-	off    int64 // data offset in the file
-	size   int64
-	sem    chan struct{}
-	mu     sync.Mutex // serialises WriteRange (it moves the file offset)
-	closed atomic.Bool
+	f       *os.File
+	off     int64 // data offset in the file
+	size    int64
+	sem     chan struct{} // the store's filesystem I/O semaphore
+	streams chan struct{} // the store's zero-copy stream slots
+	mu      sync.Mutex    // serialises WriteRange (it moves the file offset)
+	closed  atomic.Bool
 }
 
 func (r *sliceReader) Size() int64 { return r.size }
@@ -173,8 +181,18 @@ func (r *sliceReader) ReadAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
-// WriteRange copies n bytes starting at off to w. It seeks the *os.File and
-// copies through io.LimitReader so net/http can use sendfile(2).
+// WriteRange copies n bytes starting at off to w in steps of at most
+// writeChunk bytes.
+//
+// A write to w blocks for as long as the client takes to read, so it never
+// holds a slot of the filesystem I/O semaphore: a slow or stalled client
+// must not starve the store's other I/O (fills, reads of other clients,
+// removals, verify). While one of the store's stream slots is free a step
+// seeks the *os.File and copies through io.LimitReader, so net/http can use
+// sendfile(2); the stream slots only bound how many of these copies (and
+// the threads a stalled NAS can pin in them) run at once. Without a free
+// stream slot the step is read into a buffer under the I/O semaphore (held
+// for the file read only) and then written.
 func (r *sliceReader) WriteRange(w io.Writer, off, n int64) (int64, error) {
 	if off < 0 || n < 0 || off > r.size || n > r.size-off {
 		return 0, fmt.Errorf("cachestore: range %d+%d outside slice of %d bytes", off, n, r.size)
@@ -184,19 +202,58 @@ func (r *sliceReader) WriteRange(w io.Writer, off, n int64) (int64, error) {
 	var done int64
 	for done < n {
 		chunk := min(n-done, writeChunk)
-		r.sem <- struct{}{}
 		var m int64
-		_, err := r.f.Seek(r.off+off+done, io.SeekStart)
-		if err == nil {
-			m, err = io.Copy(w, io.LimitReader(r.f, chunk))
+		var err error
+		select {
+		case r.streams <- struct{}{}:
+			m, err = r.stream(w, off+done, chunk)
+			<-r.streams
+		default:
+			m, err = r.buffered(w, off+done, chunk)
 		}
-		<-r.sem
 		done += m
 		if err != nil {
 			return done, err
 		}
 		if m < chunk {
 			return done, io.ErrUnexpectedEOF
+		}
+	}
+	return done, nil
+}
+
+// stream copies n bytes from data offset off through the file (sendfile).
+func (r *sliceReader) stream(w io.Writer, off, n int64) (int64, error) {
+	if _, err := r.f.Seek(r.off+off, io.SeekStart); err != nil {
+		return 0, err
+	}
+	return io.Copy(w, io.LimitReader(r.f, n))
+}
+
+// buffered copies n bytes from data offset off through a buffer; the I/O
+// semaphore is held while the buffer is read from the file only.
+func (r *sliceReader) buffered(w io.Writer, off, n int64) (int64, error) {
+	bp := copyBufs.Get().(*[]byte)
+	defer copyBufs.Put(bp)
+	buf := *bp
+	var done int64
+	for done < n {
+		k := min(n-done, int64(len(buf)))
+		r.sem <- struct{}{}
+		got, err := r.f.ReadAt(buf[:k], r.off+off+done)
+		<-r.sem
+		if got > 0 {
+			wn, werr := w.Write(buf[:got])
+			done += int64(wn)
+			if werr != nil {
+				return done, werr
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = nil // shorter than validated: reported by WriteRange
+			}
+			return done, err
 		}
 	}
 	return done, nil

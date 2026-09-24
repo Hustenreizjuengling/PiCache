@@ -1,22 +1,40 @@
 # PiCache host-apply root helper. Started by picache-storage.path only; do
-# not enable it directly. It re-validates every queued request against the
-# database (opened read-only, never trusted), writes
-# /etc/picache/credentials/<id>.cred and a .mount unit for /srv/picache/<id>
-# to /etc/systemd/system, then runs `systemctl daemon-reload` and
-# `systemctl enable --now` for that unit. systemd (PID 1) performs the mount,
-# so this helper needs no CAP_SYS_ADMIN.
+# not enable it directly. For every queued request it reads the target from
+# the database (opened read-only, never trusted) and makes the host match:
+# a host-apply target gets /etc/picache/credentials/<id>.cred and a .mount
+# unit for /srv/picache/<id> in /etc/systemd/system, then `systemctl
+# daemon-reload`, `enable` and `start` (or `restart` when the mounted
+# settings changed); a deleted target, or one switched to another mode, has
+# its unit disabled, stopped and deleted, its credentials deleted and its
+# mountpoint removed. systemd (PID 1) performs the mounts, so this helper
+# needs no CAP_SYS_ADMIN.
+#
+# Local changes belong in a drop-in (`systemctl edit picache-storage`):
+#  - a master key that picache.service gets as a systemd credential must be
+#    given to this unit too (the same LoadCredentialEncrypted= line);
+#  - custom PICACHE_DATA_DIR / PICACHE_MOUNT_ROOT: install.sh writes
+#    picache-storage.service.d/50-picache-paths.conf.
 [Unit]
 Description=PiCache storage helper (apply queued NAS mount requests)
 Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md
 # Removing this file disables host-apply without uninstalling anything.
 ConditionPathExists=/etc/picache/host-apply.enabled
+# No start rate limit: every click on "Apply" starts a run, and quick
+# failures must not leave picache-storage.path failed with
+# unit-start-limit-hit. The path unit's own trigger limit still applies.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 EnvironmentFile=-/etc/picache/picache.env
 ExecStart=/usr/local/bin/picache storage apply-pending
-# Each mount unit times out after 30 s; bound the whole run.
-TimeoutStartSec=5min
+# A run starts no new request after 3 minutes and bounds each one (every
+# mount unit times out after 30 s); this is only the last resort. Requests
+# left over start the next run.
+TimeoutStartSec=10min
+# The helper reads a small database and runs systemctl; a service-owned
+# file must not make it use up the host's memory.
+MemoryMax=256M
 
 # Runs as root. Writable: mount units, the credential store, the mount points
 # below /srv/picache and the request directory (result files). Everything

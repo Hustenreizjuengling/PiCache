@@ -1,6 +1,7 @@
 <!--
   @component
-  Centered layout for the sign-in and setup screens, with language and theme switchers.
+  Centered layout for the sign-in and setup screens, with language and theme
+  switchers and a pointer to HTTPS when the page was opened over plain HTTP.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte'
@@ -8,6 +9,7 @@
   import { theme, type ThemeChoice } from '../../lib/theme.svelte'
   import { Menu, type MenuItem } from '../../lib/ui'
   import Brand from '../../shell/Brand.svelte'
+  import HttpsNotice from './HttpsNotice.svelte'
 
   let { title, intro, children }: { title: string; intro?: string; children: Snippet } = $props()
 
@@ -33,6 +35,7 @@
     <section class="card" aria-labelledby="auth-title">
       <h1 id="auth-title">{title}</h1>
       {#if intro}<p class="intro">{intro}</p>{/if}
+      <HttpsNotice />
       {@render children()}
     </section>
     <div class="switchers">

@@ -90,17 +90,11 @@ func (s *Server) process(qc *qctx) result {
 	if r, ok := s.localAnswer(qc); ok { // 7
 		return r
 	}
-	groups := qc.id.GroupIDs
-	if qc.blocking && s.d.Filter != nil { // 8
-		if d := s.d.Filter.CheckRules(qc.qname, groups); d.Blocked() {
-			return s.blocked(qc, d, statusFor(d))
-		}
-	}
-	if r, ok := s.lanCacheOverride(qc); ok { // 9
+	if r, ok := s.lanCacheOverride(qc); ok { // 8 (user rules) + 9
 		return r
 	}
 	if qc.blocking && s.d.Filter != nil {
-		qc.dec = s.d.Filter.Check(qc.qname, groups)
+		qc.dec = s.d.Filter.Check(qc.qname, qc.id.GroupIDs)
 		if qc.dec.Action == filter.ActionAllow {
 			if qc.tracing() {
 				qc.note(fmt.Sprintf("allowed by %s %q", qc.dec.Source, qc.dec.Name))

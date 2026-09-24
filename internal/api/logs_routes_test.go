@@ -164,6 +164,10 @@ func TestLogsRoutesServeData(t *testing.T) {
 		if sum.DNSQueries != 3 || sum.DNSBlocked != 1 || sum.CacheBytesHit != 100 || sum.ActiveClients != 3 {
 			t.Fatalf("summary = %+v", sum)
 		}
+		// Top lists and activeClients start at the full hour before "from".
+		if !sum.TopFrom.Equal(sum.From.Truncate(time.Hour)) {
+			t.Fatalf("summary topFrom %v for from %v", sum.TopFrom, sum.From)
+		}
 		dl := logsDecode[struct {
 			Items []logs.Download `json:"items"`
 			Total int             `json:"total"`
@@ -214,7 +218,8 @@ func TestLogsStreams(t *testing.T) {
 			lines = append(lines, l)
 		}
 	}
-	if len(lines) != 2 || lines[0] != "event: query" || !strings.Contains(lines[1], `"qname":"ads.example"`) {
+	if len(lines) != 2 || lines[0] != "event: query" || !strings.Contains(lines[1], `"qname":"ads.example"`) ||
+		!strings.Contains(lines[1], `"seq":`) || strings.Contains(lines[1], `"seq":0`) {
 		t.Fatalf("stream lines = %q", lines)
 	}
 

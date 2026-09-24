@@ -3,7 +3,8 @@
   Cache › Downloads: what is downloading right now, download sessions per
   client and content, the raw request log, HTTPS pass-through connections
   and removed content. Tab and filters are in the URL; incoming links use
-  ?client=<ip>&active=true.
+  ?client=<ip>&active=true and ?from=&to= (unix seconds, an explicit time
+  window that all tabs use instead of their range).
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'

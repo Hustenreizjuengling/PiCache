@@ -57,18 +57,24 @@ type expectation struct {
 // released: right after storing (readers switch to the store), or when the
 // last reader detached if it could not be stored. Fills continue when
 // their clients disconnect.
+//
+// Two variants share the machinery (collapse.go): a whole-object fill
+// (noRange, keyed as slice 0) requests the object without Range, and a
+// capture fill has no goroutine of its own: a leading request reads a
+// slice of its body into the buffer and stores it.
 type fill struct {
-	s      *Server
-	key    sliceKey
-	st     SliceStore // nil: never stored
-	size   int64      // slice size
-	up     upReq      // request template (Range is added by run)
-	meta   cachestore.Meta
-	expect expectation
-	bypass bool
-	acct   *acct        // accounting of the request that started the fill
-	client netip.Prefix // slot owner
-	owned  bool         // a non-slice answer is handed to the creating request
+	s       *Server
+	key     sliceKey
+	st      SliceStore // nil: never stored
+	size    int64      // slice size
+	up      upReq      // request template (Range is added by run)
+	meta    cachestore.Meta
+	expect  expectation
+	bypass  bool
+	acct    *acct        // accounting of the request that started the fill
+	client  netip.Prefix // slot owner
+	owned   bool         // a non-slice answer is handed to the creating request
+	noRange bool         // whole-object fill: no Range header
 
 	mu        sync.Mutex
 	cond      sync.Cond
@@ -110,14 +116,16 @@ func (f *fill) run() {
 	start := f.key.idx * f.size
 	q := f.up
 	q.header = f.up.header.Clone()
-	q.header.Set("Range", "bytes="+strconv.FormatInt(start, 10)+"-"+strconv.FormatInt(start+f.size-1, 10))
+	if !f.noRange {
+		q.header.Set("Range", "bytes="+strconv.FormatInt(start, 10)+"-"+strconv.FormatInt(start+f.size-1, 10))
+	}
 	resp, err := s.roundTrip(s.ctx, &q)
 	if err != nil {
 		s.upstreamError(f.up.host, f.meta.Path, err)
 		f.finish(respInfo{}, err, nil)
 		return
 	}
-	info := classifyResponse(resp, f.key.idx, f.size, true)
+	info := classifyResponse(resp, f.key.idx, f.size, !f.noRange)
 	s.noteRangeOutcome(f.up.host, f.key.id, info)
 	if info.kind == kind416 && f.expect.known {
 		// The recorded object is shorter than the slice: it changed.
@@ -138,7 +146,13 @@ func (f *fill) run() {
 		return
 	}
 	discardBody(resp)
-	stored, gen := f.storeSlice()
+	f.complete(f.storeSlice())
+}
+
+// complete ends a fill whose buffer is complete: stored (readers switch to
+// the store with generation gen) or not.
+func (f *fill) complete(stored bool, gen uint64) {
+	s := f.s
 	if !stored {
 		s.fills.remove(f)
 	}
@@ -226,7 +240,9 @@ func (f *fill) storeSlice() (bool, uint64) {
 }
 
 // finish ends a fill that failed or got no slice. A non-slice response is
-// handed to the owning request if it still waits, else discarded.
+// handed to the owning request if it still waits, else discarded; a range
+// failure handed over announces the owner as the object's leader before
+// the fill's other readers wake up (they follow it).
 func (f *fill) finish(info respInfo, err error, resp *http.Response) {
 	f.s.fills.remove(f)
 	f.mu.Lock()
@@ -236,6 +252,9 @@ func (f *fill) finish(info respInfo, err error, resp *http.Response) {
 	f.err, f.phase = err, phaseDone
 	f.timer.Stop()
 	if resp != nil && f.owned && !f.ownerGone {
+		if info.kind == kindRangeFail {
+			resp.Body = f.s.withLead(f, info, resp.Body)
+		}
 		f.handoff, resp = resp, nil
 	}
 	f.cond.Broadcast()
@@ -395,6 +414,22 @@ func (f *fill) awaitLocked(ctx context.Context, idx, pos, total int64) error {
 	}
 }
 
+// usable reports whether the fill is expected to provide slice i of an
+// object of total bytes (for the predicted cache status).
+func (f *fill) usable(i, total int64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case f.phase == phaseHeaders:
+		return !f.stalled
+	case f.info.kind != kindSlice || f.info.dataIdx != i || f.info.total != total:
+		return false
+	case f.phase == phaseDone:
+		return f.stored
+	}
+	return !f.stalled
+}
+
 // fillTable holds the in-flight fills (bounded by the fill slots).
 type fillTable struct {
 	mu sync.Mutex
@@ -405,6 +440,22 @@ func (t *fillTable) get(k sliceKey) *fill {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.m[k]
+}
+
+// ofObject returns the in-flight fills of object id of store by slice.
+func (t *fillTable) ofObject(store, id string) map[int64]*fill {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out map[int64]*fill
+	for k, f := range t.m {
+		if k.store == store && k.id == id {
+			if out == nil {
+				out = make(map[int64]*fill)
+			}
+			out[k.idx] = f
+		}
+	}
+	return out
 }
 
 // insert adds f unless a fill for its key exists, which is returned.

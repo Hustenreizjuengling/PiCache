@@ -114,13 +114,15 @@ func newFakeFilter() *fakeFilter {
 	return &fakeFilter{check: map[string]filter.Decision{}, rules: map[string]filter.Decision{}}
 }
 
+// Check returns check[qname] (the full-precedence decision) if set, else
+// the user rule decision.
 func (f *fakeFilter) Check(qname string, _ []int64) filter.Decision {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if d, ok := f.rules[qname]; ok {
+	if d, ok := f.check[qname]; ok {
 		return d
 	}
-	return f.check[qname]
+	return f.rules[qname]
 }
 
 func (f *fakeFilter) CheckRules(qname string, _ []int64) filter.Decision {
@@ -151,9 +153,10 @@ func (f fakeServices) MatchDNS(qname string) (string, bool) {
 }
 
 type fakeClients struct {
-	mu   sync.Mutex
-	ids  map[netip.Addr]*clients.Identity
-	seen map[netip.Addr]int
+	mu        sync.Mutex
+	ids       map[netip.Addr]*clients.Identity
+	seen      map[netip.Addr]int
+	transient map[netip.Addr]int
 }
 
 func (f *fakeClients) Identify(ip netip.Addr) *clients.Identity {
@@ -169,6 +172,12 @@ func (f *fakeClients) Seen(ip netip.Addr) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seen[ip]++
+}
+
+func (f *fakeClients) SeenTransient(ip netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.transient[ip]++
 }
 
 func (f *fakeClients) set(id *clients.Identity) {
@@ -278,7 +287,7 @@ func newEnv(t *testing.T, mutate func(*settings.All)) *testEnv {
 		set:  set,
 		up:   &fakeUpstream{},
 		flt:  newFakeFilter(),
-		cl:   &fakeClients{ids: map[netip.Addr]*clients.Identity{}, seen: map[netip.Addr]int{}},
+		cl:   &fakeClients{ids: map[netip.Addr]*clients.Identity{}, seen: map[netip.Addr]int{}, transient: map[netip.Addr]int{}},
 		svc:  fakeServices{},
 		logs: &fakeLogger{},
 	}
@@ -301,8 +310,10 @@ func newEnv(t *testing.T, mutate func(*settings.All)) *testEnv {
 		ifaces:  func() ([]interfaceIPv4, bool) { return nil, false },
 		host: func() *hostInfo {
 			return &hostInfo{
-				addrs: []netip.Prefix{netip.PrefixFrom(testCacheIP, 24), netip.PrefixFrom(testServerV6, 64)},
-				own:   []netip.Addr{testCacheIP, testServerV6},
+				ifaces:   []hostIface{{name: "eth0", prefixes: []netip.Prefix{netip.PrefixFrom(testCacheIP, 24), netip.PrefixFrom(testServerV6, 64)}}},
+				own:      []netip.Addr{testCacheIP, testServerV6},
+				primary4: testCacheIP,
+				primary6: testServerV6,
 			}
 		},
 		gateway: func() (netip.Addr, error) { return netip.Addr{}, errors.New("no gateway in tests") },

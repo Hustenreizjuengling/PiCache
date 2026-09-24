@@ -1,6 +1,7 @@
 // Toast notifications confirming actions ("Blocklist added") or reporting
 // failures. Rendered by <Toasts /> in the app root.
 
+import { untrack } from 'svelte'
 import { errorText } from '../errors'
 
 export type ToastKind = 'success' | 'error' | 'info'
@@ -51,6 +52,35 @@ export function release(id: number): void {
     id,
     setTimeout(() => dismiss(id), DURATION[it.kind]),
   )
+}
+
+// Where toasts are shown. A modal dialog makes everything outside it inert,
+// so each open Dialog has its own host; the innermost open one shows the
+// toasts, the page-level host (id 0) only while no dialog is open.
+const hosts = $state<number[]>([])
+let nextHost = 1
+
+/**
+ * Registers a host inside an open modal dialog; returns its id and the
+ * unregister function. Called from effects: the list is changed untracked,
+ * so the calling effect does not depend on (and rerun for) it.
+ */
+export function registerHost(): { id: number; unregister: () => void } {
+  const id = nextHost++
+  untrack(() => hosts.push(id))
+  return {
+    id,
+    unregister: () =>
+      untrack(() => {
+        const i = hosts.indexOf(id)
+        if (i >= 0) hosts.splice(i, 1)
+      }),
+  }
+}
+
+/** The host that shows the toasts now (0 = the page-level host). */
+export function activeHost(): number {
+  return hosts.length > 0 ? hosts[hosts.length - 1] : 0
 }
 
 /** Visible toasts (reactive, oldest first). */

@@ -47,20 +47,28 @@ type fakeObj struct {
 }
 
 type fakeStore struct {
-	mu      sync.Mutex
-	id      string
-	size    int64
-	objs    map[string]*fakeObj
-	gen     uint64
-	closed  bool
-	writers []string // dynamic types of the writers given to WriteRange
-	writes  map[string]int
-	touched map[string]int64
+	mu         sync.Mutex
+	id         string
+	size       int64
+	objs       map[string]*fakeObj
+	gen        uint64
+	closed     bool
+	writeDelay time.Duration // WriteSlice takes this long (a slow NAS)
+	writers    []string      // dynamic types of the writers given to WriteRange
+	writes     map[string]int
+	touched    map[string]int64 // bytes served from the cache (Touch)
+	hits       map[string]int   // Touch calls with bytes served from the cache
+	access     map[string]int   // Touch calls
+	inUse      map[string]int   // Use without release
+	uses       map[string]int   // Use calls
+	// readHook, if set, runs before every ReadSlice (without the lock).
+	readHook func(id string, idx int64) error
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{id: "0123456789abcdef0123456789abcdef", size: testSlice, objs: map[string]*fakeObj{},
-		writes: map[string]int{}, touched: map[string]int64{}}
+		writes: map[string]int{}, touched: map[string]int64{}, hits: map[string]int{}, access: map[string]int{},
+		inUse: map[string]int{}, uses: map[string]int{}}
 }
 
 func (s *fakeStore) ID() string       { return s.id }
@@ -87,6 +95,11 @@ func (s *fakeStore) Head(_ context.Context, id string) (cachestore.ObjectHead, b
 }
 
 func (s *fakeStore) ReadSlice(_ context.Context, id string, gen uint64, idx int64) (cachestore.SliceReader, error) {
+	if hook := s.hook(); hook != nil {
+		if err := hook(id, idx); err != nil {
+			return nil, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -124,6 +137,10 @@ func (s *fakeStore) SetMeta(_ context.Context, id string, m cachestore.Meta) (ui
 
 func (s *fakeStore) WriteSlice(_ context.Context, id string, gen uint64, idx int64, data []byte) error {
 	s.mu.Lock()
+	delay := s.writeDelay
+	s.mu.Unlock()
+	time.Sleep(delay)
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return cachestore.ErrClosed
@@ -151,6 +168,43 @@ func (s *fakeStore) Touch(id string, n int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.touched[id] += n
+	s.access[id]++
+	if n > 0 {
+		s.hits[id]++
+	}
+}
+
+func (s *fakeStore) Use(id string) func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inUse[id]++
+	s.uses[id]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.inUse[id]--
+		})
+	}
+}
+
+func (s *fakeStore) hook() func(string, int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readHook
+}
+
+func (s *fakeStore) setReadHook(fn func(id string, idx int64) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readHook = fn
+}
+
+func (s *fakeStore) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
 }
 
 // sliceCount returns the cached slices of the object at path.
@@ -344,7 +398,10 @@ func (o *origin) serve(w http.ResponseWriter, r *http.Request) {
 	o.mu.Lock()
 	o.reqs = append(o.reqs, originReq{host: r.Host, uri: r.RequestURI, rng: r.Header.Get("Range"), method: r.Method,
 		header: r.Header.Clone(), body: string(body), tls: r.TLS != nil})
-	obj := o.objs[r.URL.Path]
+	obj := o.objs[r.URL.EscapedPath()] // objects can be set for an escaped form
+	if obj == nil {
+		obj = o.objs[r.URL.Path]
+	}
 	status := o.status
 	if o.tlsCheck && r.TLS != nil {
 		status = 0
@@ -488,7 +545,10 @@ type harness struct {
 	ids    *fakeClients
 	full   atomic.Bool
 	noSt   bool
-	real   SliceStore // used instead of the fake store
+	// switched: Deps.Store returns nil (the store was switched away or
+	// went offline); may be set while requests run.
+	switched atomic.Bool
+	real     SliceStore // used instead of the fake store
 	// untrusted: the TLS origin's certificate is not trusted.
 	untrusted bool
 }
@@ -541,11 +601,12 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 		t.Fatal(err)
 	}
 	h.set = set
+	h.updateSettings(func(a *settings.All) { a.LanCache.Enabled = true })
 	s, err := New(ctx, Deps{
 		DB: d, Settings: set, Services: h.cls, Lookup: lookup,
 		Store: func() SliceStore {
 			switch {
-			case h.noSt:
+			case h.noSt, h.switched.Load():
 				return nil
 			case h.real != nil:
 				return h.real
@@ -672,6 +733,20 @@ func (h *harness) events(n int) []logs.CacheEvent {
 	var evs []logs.CacheEvent
 	eventually(h.t, func() bool { evs = h.logs.all(); return len(evs) >= n })
 	return evs
+}
+
+// waitWrites waits until the fake store has stored n slices in total.
+func (h *harness) waitWrites(n int) {
+	h.t.Helper()
+	eventually(h.t, func() bool {
+		h.store.mu.Lock()
+		defer h.store.mu.Unlock()
+		sum := 0
+		for _, w := range h.store.writes {
+			sum += w
+		}
+		return sum >= n
+	})
 }
 
 // waitSlices waits until the object at path has n cached slices.

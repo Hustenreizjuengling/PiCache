@@ -17,7 +17,11 @@ type hub struct {
 	queries feed[QueryEvent]
 	cache   feed[CacheEvent]
 	dropped atomic.Uint64
+	seq     atomic.Uint64 // last sequence number given to a live event
 }
+
+// next returns the sequence number of the next live event (> 0).
+func (h *hub) next() uint64 { return h.seq.Add(1) }
 
 type feed[T any] struct {
 	subs map[*subscriber[T]]struct{}
