@@ -29,12 +29,32 @@
 // logs_downloads, logs_sni, logs_evictions, logs_dns_minute, logs_dns_hourly,
 // logs_cache_minute, logs_cache_hourly, logs_dns_top_hourly,
 // logs_cache_top_hourly.
+//
+// Implementation notes:
+//   - Count rollups (minute/hour) are upserted with every batch. Cache and
+//     SNI bytes are spread over the minutes/hours a transfer spanned, so
+//     throughput charts do not spike when a long transfer ends.
+//   - The hourly top tables are kept in memory for the current hour (bounded
+//     key sets per kind), checkpointed every 10 minutes, at the end of the
+//     hour and at shutdown (top 1000 per kind). Queries merge the in-memory
+//     current hour, so top lists are live.
+//   - Summary, series and service statistics read the minute rollups for
+//     ranges that start within the last 48 h and the hourly ones otherwise;
+//     top lists and client statistics read the hourly top tables. The start
+//     of a range is aligned down to that resolution (series: to the step).
+//   - Anonymisation masks IPv4 to /16 and IPv6 to /48 and also drops client
+//     names (a name identifies a client as well as its address).
+//   - While the query log is disabled no query rows are stored and the live
+//     query feed stays silent; statistics are still counted.
 package logs
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -43,10 +63,25 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-var errNotImplemented = errors.New("logs: not implemented")
-
 // MaxSubscribers bounds concurrent live feeds (all kinds together).
 const MaxSubscribers = 16
+
+const (
+	flushInterval = 5 * time.Second // batch writer cadence
+	batchRows     = 5000            // flush early at this many buffered raw rows
+	liveBuffer    = 256             // per live subscriber; slow subscribers lose events
+
+	// Ingestion queue capacities; events beyond are dropped and counted.
+	queryQueue    = 16384
+	cacheQueue    = 8192
+	sniQueue      = 2048
+	evictionQueue = 8192
+
+	sessionGap    = 120 * time.Second // a new download session starts after this gap
+	sessionActive = 30 * time.Second  // a session is active if its last request is this recent
+
+	minFreeDiskBytes = 1 << 30 // raw inserts pause below this much free space on the data disk
+)
 
 // QueryEvent is one DNS query.
 type QueryEvent struct {
@@ -152,9 +187,12 @@ type Summary struct {
 	EvictedBytes     int64     `json:"evictedBytes"`
 	ByteHitRatio     float64   `json:"byteHitRatio"` // hit / (hit + wan), 0..1
 	SNIBytes         int64     `json:"sniBytes"`
-	ActiveClients    int64     `json:"activeClients"`
-	ActiveDownloads  int64     `json:"activeDownloads"`
-	DroppedLogEvents uint64    `json:"droppedLogEvents"`
+	// ActiveClients counts the distinct clients with DNS queries or cache
+	// requests in the range; ActiveDownloads counts download sessions whose
+	// last request was within the last 30 s (independent of the range).
+	ActiveClients    int64  `json:"activeClients"`
+	ActiveDownloads  int64  `json:"activeDownloads"`
+	DroppedLogEvents uint64 `json:"droppedLogEvents"`
 }
 
 // Series is a time series set aligned on Timestamps (unix seconds, bucket
@@ -272,120 +310,210 @@ type Metrics struct {
 	QueueLength int       `json:"queueLength"`
 	LastFlush   time.Time `json:"lastFlush,omitzero"`
 	DBSizeBytes int64     `json:"dbSizeBytes"`
-	Disabled    string    `json:"disabled,omitempty"` // set for the Discard store
+	Disabled    string    `json:"disabled,omitempty"`  // set for the Discard store
+	LiveDropped uint64    `json:"liveDropped"`         // live-feed events not delivered to slow subscribers
+	TopOverflow uint64    `json:"topOverflow"`         // events not counted in the hourly top lists (key limit of the hour reached)
+	RawPaused   bool      `json:"rawPaused,omitempty"` // raw inserts paused: the data disk has < 1 GiB free
 }
 
 // Store is the logs.db owner.
 type Store struct {
-	set *settings.Store
-	log *slog.Logger
+	d        *db.DB
+	set      *settings.Store
+	log      *slog.Logger
+	disabled string // reason; set only for the Discard store
+
+	queries   chan QueryEvent
+	cache     chan CacheEvent
+	sni       chan SNIEvent
+	evictions chan EvictionEvent
+
+	dropped   atomic.Uint64
+	pending   atomic.Int64 // raw rows buffered in the writer
+	lastFlush atomic.Int64 // unix ms of the last successful batch
+	dbSize    atomic.Int64
+	paused    atomic.Bool // raw inserts paused (data disk low)
+	started   atomic.Bool
+	closed    atomic.Bool
+
+	sem  chan struct{} // bounds concurrent read queries
+	live hub
+	top  topSet
+	w    *writer // state owned by the Start goroutine
+
+	autoVacuum bool // logs.db uses incremental auto-vacuum
+	// diskFree reports the free bytes of the filesystem holding dir.
+	diskFree func(dir string) (uint64, bool)
 }
 
 // New opens the logs component on d (logs.db, opened by the app) and migrates.
 func New(ctx context.Context, d *db.DB, set *settings.Store, log *slog.Logger) (*Store, error) {
-	return &Store{set: set, log: log}, nil
+	if d == nil || d.W == nil || d.R == nil {
+		return nil, errors.New("logs: database is not open for writing")
+	}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	s := &Store{
+		d:         d,
+		set:       set,
+		log:       log.With(slog.String("component", "logs")),
+		queries:   make(chan QueryEvent, queryQueue),
+		cache:     make(chan CacheEvent, cacheQueue),
+		sni:       make(chan SNIEvent, sniQueue),
+		evictions: make(chan EvictionEvent, evictionQueue),
+		sem:       make(chan struct{}, queryConcurrency),
+		diskFree:  diskFree,
+	}
+	av, err := enableAutoVacuum(ctx, d)
+	if err != nil {
+		return nil, fmt.Errorf("logs: auto-vacuum: %w", err)
+	}
+	s.autoVacuum = av
+	if err := d.Migrate(ctx, "logs", migrations); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	if err := s.loadTop(ctx, hourStart(now.UnixMilli())); err != nil {
+		return nil, fmt.Errorf("logs: load hourly top lists: %w", err)
+	}
+	s.w = newWriter(s, now)
+	if _, _, err := s.refreshSize(ctx); err != nil {
+		return nil, fmt.Errorf("logs: database size: %w", err)
+	}
+	return s, nil
 }
 
 // Discard returns a Store that drops all events and answers queries with
 // apperr.Unavailable (used when logs.db cannot be opened; DNS keeps working).
-func Discard(reason string, log *slog.Logger) *Store { return &Store{log: log} }
+func Discard(reason string, log *slog.Logger) *Store {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	if reason == "" {
+		reason = "logs.db unavailable"
+	}
+	s := &Store{log: log.With(slog.String("component", "logs")), disabled: reason}
+	s.live.close()
+	return s
+}
 
 // Start runs the batch writer, rollups and retention pruning until ctx ends.
 // It blocks until ctx is done and pending events are flushed.
-func (s *Store) Start(ctx context.Context) { <-ctx.Done() }
+func (s *Store) Start(ctx context.Context) {
+	if s.disabled != "" || !s.started.CompareAndSwap(false, true) {
+		<-ctx.Done()
+		return
+	}
+	defer func() {
+		// The app closes logs.db after Start returns: refuse new queries
+		// and wait for running ones (each ends within queryTimeout).
+		s.closed.Store(true)
+		s.live.close()
+		for range cap(s.sem) {
+			s.sem <- struct{}{}
+		}
+	}()
+	s.w.run(ctx)
+}
 
 // Close closes the store (after Start has returned).
-func (s *Store) Close() error { return nil }
+func (s *Store) Close() error {
+	s.closed.Store(true)
+	s.live.close()
+	return nil
+}
 
 // LogQuery enqueues a query event (non-blocking).
-func (s *Store) LogQuery(e QueryEvent) {}
+func (s *Store) LogQuery(e QueryEvent) {
+	if s.queries == nil {
+		return
+	}
+	select {
+	case s.queries <- e:
+	default:
+		s.dropped.Add(1)
+	}
+}
 
 // LogCache enqueues a cache request event (non-blocking). Also feeds
 // download sessions and rollups.
-func (s *Store) LogCache(e CacheEvent) {}
+func (s *Store) LogCache(e CacheEvent) {
+	if s.cache == nil {
+		return
+	}
+	select {
+	case s.cache <- e:
+	default:
+		s.dropped.Add(1)
+	}
+}
 
 // LogSNI enqueues a pass-through event (non-blocking).
-func (s *Store) LogSNI(e SNIEvent) {}
+func (s *Store) LogSNI(e SNIEvent) {
+	if s.sni == nil {
+		return
+	}
+	select {
+	case s.sni <- e:
+	default:
+		s.dropped.Add(1)
+	}
+}
 
 // LogEviction enqueues an eviction event (non-blocking).
-func (s *Store) LogEviction(e EvictionEvent) {}
+func (s *Store) LogEviction(e EvictionEvent) {
+	if s.evictions == nil {
+		return
+	}
+	select {
+	case s.evictions <- e:
+	default:
+		s.dropped.Add(1)
+	}
+}
 
 // SubscribeQueries returns a live feed of query events matching filter (nil
 // = all) and a cancel func. apperr.TooMany beyond MaxSubscribers.
 func (s *Store) SubscribeQueries(filter func(QueryEvent) bool) (<-chan QueryEvent, func(), error) {
-	return nil, func() {}, apperr.Unavailable("live feed not available")
+	if s.disabled == "" && !s.cfg().QueryLogEnabled {
+		return nil, func() {}, apperr.Unavailable("the query log is disabled in the log settings")
+	}
+	return subscribe(&s.live, &s.live.queries, filter)
 }
 
 // SubscribeCache returns a live feed of cache events.
 func (s *Store) SubscribeCache(filter func(CacheEvent) bool) (<-chan CacheEvent, func(), error) {
-	return nil, func() {}, apperr.Unavailable("live feed not available")
-}
-
-// QueryLog returns a page of query events.
-func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) {
-	return QueryPage{}, errNotImplemented
-}
-
-// Summary returns dashboard totals for [from, to).
-func (s *Store) Summary(ctx context.Context, from, to time.Time) (Summary, error) {
-	return Summary{}, errNotImplemented
-}
-
-// DNSSeries returns DNS counts by status class per step.
-func (s *Store) DNSSeries(ctx context.Context, from, to time.Time, step time.Duration) (Series, error) {
-	return Series{}, errNotImplemented
-}
-
-// CacheSeries returns cache bytes (hit, wan, sni) per step, optionally for one service.
-func (s *Store) CacheSeries(ctx context.Context, from, to time.Time, step time.Duration, service string) (Series, error) {
-	return Series{}, errNotImplemented
-}
-
-// Top returns a top list.
-func (s *Store) Top(ctx context.Context, kind TopKind, from, to time.Time, limit int) ([]TopItem, error) {
-	return nil, errNotImplemented
-}
-
-// Downloads returns download sessions.
-func (s *Store) Downloads(ctx context.Context, f DownloadFilter) (listing.Page[Download], error) {
-	return listing.Page[Download]{}, errNotImplemented
-}
-
-// CacheRequests returns raw cache events.
-func (s *Store) CacheRequests(ctx context.Context, f EventFilter) (listing.Page[CacheEvent], error) {
-	return listing.Page[CacheEvent]{}, errNotImplemented
-}
-
-// SNIEvents returns pass-through events.
-func (s *Store) SNIEvents(ctx context.Context, f EventFilter) (listing.Page[SNIEvent], error) {
-	return listing.Page[SNIEvent]{}, errNotImplemented
-}
-
-// Evictions returns eviction events.
-func (s *Store) Evictions(ctx context.Context, f EventFilter) (listing.Page[EvictionEvent], error) {
-	return listing.Page[EvictionEvent]{}, errNotImplemented
-}
-
-// ServiceStats aggregates traffic per service for [from, to).
-func (s *Store) ServiceStats(ctx context.Context, from, to time.Time) ([]ServiceStat, error) {
-	return nil, errNotImplemented
-}
-
-// ClientStats aggregates per client for [from, to).
-func (s *Store) ClientStats(ctx context.Context, from, to time.Time) ([]ClientStat, error) {
-	return nil, errNotImplemented
-}
-
-// GroupClients lists the clients that downloaded a content group (within
-// the session retention).
-func (s *Store) GroupClients(ctx context.Context, service, groupKey string) ([]GroupClient, error) {
-	return nil, errNotImplemented
-}
-
-// GroupClientCounts counts distinct clients per content group (one query for a page of groups).
-func (s *Store) GroupClientCounts(ctx context.Context, refs []GroupRef) (map[GroupRef]int, error) {
-	return nil, errNotImplemented
+	return subscribe(&s.live, &s.live.cache, filter)
 }
 
 // Metrics returns internal counters.
-func (s *Store) Metrics() Metrics { return Metrics{} }
+func (s *Store) Metrics() Metrics {
+	m := Metrics{Dropped: s.dropped.Load(), Disabled: s.disabled}
+	if s.disabled != "" {
+		return m
+	}
+	m.QueueLength = len(s.queries) + len(s.cache) + len(s.sni) + len(s.evictions) + int(s.pending.Load())
+	if ms := s.lastFlush.Load(); ms != 0 {
+		m.LastFlush = time.UnixMilli(ms).UTC()
+	}
+	m.DBSizeBytes = s.dbSize.Load()
+	m.LiveDropped = s.live.dropped.Load()
+	m.TopOverflow = s.top.overflow.Load()
+	m.RawPaused = s.paused.Load()
+	return m
+}
+
+// defaultLogs is used when no settings store is wired (tests, tools).
+var defaultLogs = settings.Defaults().Logs
+
+// cfg returns the current log settings.
+func (s *Store) cfg() settings.Logs {
+	if s.set == nil {
+		return defaultLogs
+	}
+	return s.set.Get().Logs
+}
+
+// dataDir is the directory holding logs.db (checked for free space).
+func (s *Store) dataDir() string { return filepath.Dir(s.d.Path) }

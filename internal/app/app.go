@@ -200,6 +200,12 @@ func (a *App) build(ctx context.Context) error {
 	if a.filter, err = filter.New(ctx, a.cdb, a.set, fetch, a.paths.ListsDir, log); err != nil {
 		return fmt.Errorf("filter: %w", err)
 	}
+	// Group deletions/renumbering must reach the filter's source→groups table.
+	a.clients.OnChange(func() {
+		if err := a.filter.ReloadGroups(context.Background()); err != nil {
+			log.Warn("reload filter groups", slog.Any("err", err))
+		}
+	})
 	if a.services, err = services.New(ctx, a.cdb, a.set, fetch, a.paths.CacheDomainsDir, log); err != nil {
 		return fmt.Errorf("services: %w", err)
 	}

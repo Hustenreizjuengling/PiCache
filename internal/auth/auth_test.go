@@ -1,0 +1,651 @@
+package auth
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/hustenreizjuengling/picache/internal/apperr"
+	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/secrets"
+	"github.com/hustenreizjuengling/picache/internal/settings"
+)
+
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+type testEnv struct {
+	a         *Service
+	d         *db.DB
+	set       *settings.Store
+	clock     *fakeClock
+	setupFile string
+}
+
+func newEnv(t *testing.T) *testEnv {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "picache.db"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	set, err := settings.Open(ctx, d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupFile := filepath.Join(dir, "setup-token")
+	a, err := New(ctx, d, set, box, setupFile, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakeClock{t: time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)}
+	a.now = clock.Now
+	return &testEnv{a: a, d: d, set: set, clock: clock, setupFile: setupFile}
+}
+
+const testPassword = "correct horse battery"
+
+var meta = ReqMeta{IP: "192.168.1.10", UserAgent: "test"}
+
+// withAdmin provisions the user "admin".
+func (e *testEnv) withAdmin(t *testing.T) {
+	t.Helper()
+	if err := e.a.Provision(context.Background(), "admin", testPassword); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (e *testEnv) login(t *testing.T) *Session {
+	t.Helper()
+	s, err := e.a.Login(context.Background(), "admin", testPassword, "", meta)
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	return s
+}
+
+func cookieRequest(tok string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	r.AddCookie(&http.Cookie{Name: SessionCookie, Value: tok})
+	return r
+}
+
+func bearerRequest(tok string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	return r
+}
+
+func wantKind(t *testing.T, err error, k apperr.Kind) {
+	t.Helper()
+	if err == nil || apperr.KindOf(err) != k {
+		t.Fatalf("got error %v (kind %v), want kind %v", err, apperr.KindOf(err), k)
+	}
+}
+
+func TestSetup(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	b, err := os.ReadFile(e.setupFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := strings.TrimSpace(string(b))
+	if !validSetupToken(tok) {
+		t.Fatalf("setup token %q malformed", tok)
+	}
+	if runtime.GOOS != "windows" {
+		if fi, _ := os.Stat(e.setupFile); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("setup token mode %v, want 0600", fi.Mode().Perm())
+		}
+	}
+	if req, _ := e.a.SetupRequired(ctx); !req {
+		t.Fatal("setup must be required without users")
+	}
+
+	_, err = e.a.Setup(ctx, "WRONGWRONGWRONGWRONGWRONG2", "admin", testPassword, meta)
+	wantKind(t, err, apperr.KindForbidden)
+	_, err = e.a.Setup(ctx, tok, "admin", "short", meta)
+	wantKind(t, err, apperr.KindInvalid)
+	_, err = e.a.Setup(ctx, tok, "-bad", testPassword, meta)
+	wantKind(t, err, apperr.KindInvalid)
+
+	s, err := e.a.Setup(ctx, tok, "admin", testPassword, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := e.a.Authenticate(cookieRequest(s.Token)); err != nil || p.Username != "admin" || p.Scope != ScopeAdmin {
+		t.Fatalf("authenticate after setup: %+v, %v", p, err)
+	}
+	if _, err := os.Stat(e.setupFile); !os.IsNotExist(err) {
+		t.Fatalf("setup token file must be deleted, stat err = %v", err)
+	}
+	if req, _ := e.a.SetupRequired(ctx); req {
+		t.Fatal("setup must not be required after setup")
+	}
+	_, err = e.a.Setup(ctx, tok, "other", testPassword, meta)
+	wantKind(t, err, apperr.KindForbidden)
+
+	entries, _, err := e.a.AuditLog(ctx, AuditQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []string
+	for _, en := range entries {
+		actions = append(actions, en.Action)
+	}
+	if strings.Join(actions, ",") != "auth.setup,auth.login_failed" {
+		t.Fatalf("audit actions = %v", actions)
+	}
+}
+
+func TestSetupTokenReusedAcrossRestarts(t *testing.T) {
+	e := newEnv(t)
+	first := e.a.setupToken
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a2, err := New(context.Background(), e.d, e.set, e.a.box, e.setupFile, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a2.setupToken != first {
+		t.Fatal("a valid setup token file must be reused")
+	}
+	e.withAdmin(t)
+	if _, err := os.Stat(e.setupFile); !os.IsNotExist(err) {
+		t.Fatal("provisioning must delete the setup token file")
+	}
+	if err := e.a.Provision(context.Background(), "admin", "another password"); err != nil {
+		t.Fatal(err)
+	}
+	e.login(t) // the original password still works: Provision never overwrites
+}
+
+func TestLoginAndAuthenticate(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+
+	_, err := e.a.Login(ctx, "admin", "wrong password", "", meta)
+	wantKind(t, err, apperr.KindUnauthorized)
+	_, err = e.a.Login(ctx, "nobody", testPassword, "", meta)
+	wantKind(t, err, apperr.KindUnauthorized)
+
+	s, err := e.a.Login(ctx, "ADMIN", testPassword, "", meta) // usernames are case-insensitive
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, r := range map[string]*http.Request{"cookie": cookieRequest(s.Token), "bearer": bearerRequest(s.Token)} {
+		p, err := e.a.Authenticate(r)
+		if err != nil || p.SessionID != s.ID || p.TokenID != 0 || p.Scope != ScopeAdmin {
+			t.Fatalf("%s: principal %+v, err %v", name, p, err)
+		}
+	}
+	for name, r := range map[string]*http.Request{
+		"none":        httptest.NewRequest(http.MethodGet, "/", nil),
+		"bad cookie":  cookieRequest("x"),
+		"bad bearer":  bearerRequest(strings.Repeat("a", sessionTokenLen)),
+		"bad api tok": bearerRequest(tokenPrefix + strings.Repeat("0", 64)),
+	} {
+		if _, err := e.a.Authenticate(r); apperr.KindOf(err) != apperr.KindUnauthorized {
+			t.Fatalf("%s: err = %v, want unauthorized", name, err)
+		}
+	}
+	// A non-Bearer Authorization header (reverse proxy basic auth) falls back to the cookie.
+	r := cookieRequest(s.Token)
+	r.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	if _, err := e.a.Authenticate(r); err != nil {
+		t.Fatalf("basic auth header must be ignored: %v", err)
+	}
+	me, err := e.a.Me(ctx, &Principal{UserID: s.UserID})
+	if err != nil || me.Username != "admin" || me.LastLoginAt.IsZero() {
+		t.Fatalf("me = %+v, %v", me, err)
+	}
+	if err := e.a.Logout(ctx, s.Token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s.Token)); err == nil {
+		t.Fatal("session must be gone after logout")
+	}
+}
+
+func TestLoginThrottle(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	for range maxFailures {
+		_, err := e.a.Login(ctx, "admin", "wrong password", "", meta)
+		wantKind(t, err, apperr.KindUnauthorized)
+		e.clock.Advance(time.Second)
+	}
+	// Locked: even the right password is refused, from any client (per user).
+	_, err := e.a.Login(ctx, "admin", testPassword, "", meta)
+	wantKind(t, err, apperr.KindTooMany)
+	_, err = e.a.Login(ctx, "admin", testPassword, "", ReqMeta{IP: "192.168.1.99"})
+	wantKind(t, err, apperr.KindTooMany)
+	// The client is locked for other usernames too.
+	_, err = e.a.Login(ctx, "someone", testPassword, "", meta)
+	wantKind(t, err, apperr.KindTooMany)
+
+	e.clock.Advance(lockoutDuration)
+	e.login(t)
+
+	entries, total, err := e.a.AuditLog(ctx, AuditQuery{Search: "login_failed"})
+	if err != nil || total != 1 {
+		t.Fatalf("failed logins must be aggregated into one row: total %d, err %v", total, err)
+	}
+	if !strings.Contains(entries[0].Details, `"attempts":5`) || entries[0].Target != "192.168.1.10/32" {
+		t.Fatalf("aggregated entry = %+v", entries[0])
+	}
+}
+
+func TestSessionTimeouts(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	lastSeen := func(id string) int64 {
+		var v int64
+		if err := e.d.R.QueryRowContext(ctx, `SELECT last_seen FROM auth_sessions WHERE id = ?`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	s := e.login(t)
+	created := lastSeen(s.ID)
+	e.clock.Advance(30 * time.Second)
+	if _, err := e.a.Authenticate(cookieRequest(s.Token)); err != nil {
+		t.Fatal(err)
+	}
+	if lastSeen(s.ID) != created {
+		t.Fatal("last_seen must not be written more than once per minute")
+	}
+	e.clock.Advance(59 * time.Minute) // 59.5 min after login, idle limit 60 min
+	if _, err := e.a.Authenticate(cookieRequest(s.Token)); err != nil {
+		t.Fatalf("session within idle limit: %v", err)
+	}
+	if lastSeen(s.ID) == created {
+		t.Fatal("last_seen must slide")
+	}
+	e.clock.Advance(61 * time.Minute)
+	if _, err := e.a.Authenticate(cookieRequest(s.Token)); apperr.KindOf(err) != apperr.KindUnauthorized {
+		t.Fatalf("idle session must expire, err = %v", err)
+	}
+
+	// Absolute limit: active every 30 minutes, still ends after SessionMaxHours.
+	s = e.login(t)
+	p := &Principal{UserID: s.UserID, SessionID: s.ID}
+	for elapsed := time.Duration(0); elapsed < 167*time.Hour; elapsed += 30 * time.Minute {
+		e.clock.Advance(30 * time.Minute)
+		if _, err := e.a.Authenticate(cookieRequest(s.Token)); err != nil {
+			t.Fatalf("after %v: %v", elapsed, err)
+		}
+	}
+	if !e.a.Valid(ctx, p) {
+		t.Fatal("session must still be valid")
+	}
+	e.clock.Advance(90 * time.Minute)
+	if e.a.Valid(ctx, p) {
+		t.Fatal("Valid must honour the absolute limit")
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s.Token)); err == nil {
+		t.Fatal("session must end after the absolute limit")
+	}
+}
+
+func TestSessionsChangePasswordRevoke(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	s1, s2, s3 := e.login(t), e.login(t), e.login(t)
+	p1 := &Principal{UserID: s1.UserID, Username: "admin", SessionID: s1.ID, Scope: ScopeAdmin}
+
+	list, err := e.a.Sessions(ctx, p1)
+	if err != nil || len(list) != 3 {
+		t.Fatalf("sessions = %v, %v", list, err)
+	}
+	current := 0
+	for _, s := range list {
+		if s.Current {
+			current++
+			if s.ID != s1.ID {
+				t.Fatal("wrong current session")
+			}
+		}
+	}
+	if current != 1 {
+		t.Fatalf("%d current sessions", current)
+	}
+
+	wantKind(t, e.a.RevokeSession(ctx, p1, "zz"), apperr.KindInvalid)
+	wantKind(t, e.a.RevokeSession(ctx, p1, "0123456789abcdef"), apperr.KindNotFound)
+	if err := e.a.RevokeSession(ctx, p1, s3.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s3.Token)); err == nil {
+		t.Fatal("revoked session still valid")
+	}
+
+	wantKind(t, e.a.ChangePassword(ctx, p1, "wrong password", "a new password"), apperr.KindInvalid)
+	wantKind(t, e.a.ChangePassword(ctx, p1, testPassword, "short"), apperr.KindInvalid)
+	if err := e.a.ChangePassword(ctx, p1, testPassword, "a new password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s1.Token)); err != nil {
+		t.Fatal("the current session must survive a password change")
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s2.Token)); err == nil {
+		t.Fatal("other sessions must be revoked by a password change")
+	}
+	if _, err := e.a.Login(ctx, "admin", "a new password", "", meta); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionCap(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	first := e.login(t)
+	for range maxSessionsPerUser {
+		e.clock.Advance(time.Second)
+		e.login(t)
+	}
+	var n int
+	if err := e.d.R.QueryRow(`SELECT COUNT(*) FROM auth_sessions`).Scan(&n); err != nil || n != maxSessionsPerUser {
+		t.Fatalf("sessions = %d, %v", n, err)
+	}
+	if _, err := e.a.Authenticate(cookieRequest(first.Token)); err == nil {
+		t.Fatal("the oldest session must be ended beyond the cap")
+	}
+}
+
+func TestAPITokens(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	s := e.login(t)
+	p := &Principal{UserID: s.UserID, Username: "admin", SessionID: s.ID, Scope: ScopeAdmin}
+
+	for _, tc := range []struct {
+		name  string
+		scope Scope
+		ttl   time.Duration
+	}{
+		{"", ScopeRead, 0},
+		{"x", "root", 0},
+		{"x", ScopeRead, -time.Hour},
+		{"bad\nname", ScopeRead, 0},
+	} {
+		_, _, err := e.a.CreateToken(ctx, p, tc.name, tc.scope, tc.ttl)
+		wantKind(t, err, apperr.KindInvalid)
+	}
+
+	secret, info, err := e.a.CreateToken(ctx, p, "grafana", ScopeRead, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(secret, tokenPrefix) || len(secret) != tokenLen || info.Prefix != secret[:tokenDisplayChars] {
+		t.Fatalf("secret %q info %+v", secret, info)
+	}
+	tp, err := e.a.Authenticate(bearerRequest(secret))
+	if err != nil || tp.TokenID != info.ID || tp.Scope != ScopeRead || tp.SessionID != "" || tp.Username != "admin" {
+		t.Fatalf("token principal %+v, %v", tp, err)
+	}
+	if !e.a.Valid(ctx, tp) {
+		t.Fatal("token must be valid")
+	}
+	list, err := e.a.Tokens(ctx)
+	if err != nil || len(list) != 1 || list[0].LastUsed.IsZero() || list[0].ExpiresAt.IsZero() {
+		t.Fatalf("tokens = %+v, %v", list, err)
+	}
+
+	e.clock.Advance(25 * time.Hour)
+	if _, err := e.a.Authenticate(bearerRequest(secret)); apperr.KindOf(err) != apperr.KindUnauthorized {
+		t.Fatalf("expired token: err = %v", err)
+	}
+	if e.a.Valid(ctx, tp) {
+		t.Fatal("expired token must not be valid")
+	}
+
+	admin, info2, err := e.a.CreateToken(ctx, p, "ci", ScopeAdmin, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ap, err := e.a.Authenticate(bearerRequest(admin)); err != nil || ap.Scope != ScopeAdmin {
+		t.Fatalf("admin token: %+v, %v", ap, err)
+	}
+	if err := e.a.DeleteToken(ctx, info2.ID); err != nil {
+		t.Fatal(err)
+	}
+	wantKind(t, e.a.DeleteToken(ctx, info2.ID), apperr.KindNotFound)
+	if _, err := e.a.Authenticate(bearerRequest(admin)); err == nil {
+		t.Fatal("deleted token still valid")
+	}
+}
+
+func TestTOTP(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	s := e.login(t)
+	p := &Principal{UserID: s.UserID, Username: "admin", SessionID: s.ID, Scope: ScopeAdmin}
+	code := func(secret []byte) string { return totpCode(secret, e.clock.Now().Unix()/totpPeriod) }
+
+	b32secret, uri, err := e.a.TOTPBegin(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(uri, "otpauth://totp/PiCache:admin?") || !strings.Contains(uri, "secret="+b32secret) {
+		t.Fatalf("uri = %q", uri)
+	}
+	secret, err := totpB32.DecodeString(b32secret)
+	if err != nil || len(secret) != totpSecretLen {
+		t.Fatalf("secret %q: %v", b32secret, err)
+	}
+	var sealed string
+	if err := e.d.R.QueryRow(`SELECT totp_pending FROM auth_users`).Scan(&sealed); err != nil || strings.Contains(sealed, b32secret) {
+		t.Fatalf("pending secret must be sealed: %q, %v", sealed, err)
+	}
+
+	wantKind(t, e.a.TOTPConfirm(ctx, p, "12345"), apperr.KindInvalid)
+	// A code that is wrong for every step this test accepts codes in.
+	wrong := ""
+	for c := 0; wrong == ""; c++ {
+		cand, cur := fmt.Sprintf("%06d", c), e.clock.Now().Unix()/totpPeriod
+		if !slices.ContainsFunc([]int64{cur - 1, cur, cur + 1, cur + 2}, func(s int64) bool { return totpCode(secret, s) == cand }) {
+			wrong = cand
+		}
+	}
+	wantKind(t, e.a.TOTPConfirm(ctx, p, wrong), apperr.KindInvalid)
+	if err := e.a.TOTPConfirm(ctx, p, code(secret)); err != nil {
+		t.Fatal(err)
+	}
+	if me, _ := e.a.Me(ctx, p); !me.TOTPEnabled {
+		t.Fatal("TOTP must be enabled")
+	}
+	_, _, err = e.a.TOTPBegin(ctx, p)
+	wantKind(t, err, apperr.KindConflict)
+
+	// The step used for confirmation cannot be replayed for a login.
+	_, err = e.a.Login(ctx, "admin", testPassword, code(secret), meta)
+	if ae, ok := apperr.As(err); !ok || ae.Kind != apperr.KindUnauthorized || ae.Field != "totp" {
+		t.Fatalf("replayed code: err = %v", err)
+	}
+	_, err = e.a.Login(ctx, "admin", testPassword, "", meta)
+	if ae, ok := apperr.As(err); !ok || ae.Field != "totp" {
+		t.Fatalf("missing code: err = %v", err)
+	}
+
+	e.clock.Advance(totpPeriod * time.Second)
+	if _, err := e.a.Login(ctx, "admin", testPassword, code(secret), meta); err != nil {
+		t.Fatalf("login with fresh code: %v", err)
+	}
+	_, err = e.a.Login(ctx, "admin", testPassword, code(secret), meta)
+	wantKind(t, err, apperr.KindUnauthorized) // single use
+
+	// Wrong codes count towards the lockout (one replay above + 4 here).
+	for range maxFailures - 1 {
+		_, _ = e.a.Login(ctx, "admin", testPassword, wrong, ReqMeta{IP: "10.0.0.1"})
+	}
+	_, err = e.a.Login(ctx, "admin", testPassword, code(secret), ReqMeta{IP: "10.0.0.2"})
+	wantKind(t, err, apperr.KindTooMany)
+	e.clock.Advance(lockoutDuration)
+
+	wantKind(t, e.a.TOTPDisable(ctx, p, "wrong password"), apperr.KindInvalid)
+	if err := e.a.TOTPDisable(ctx, p, testPassword); err != nil {
+		t.Fatal(err)
+	}
+	e.login(t)
+}
+
+func TestResetPasswordAndPurge(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	s := e.login(t)
+	p := &Principal{UserID: s.UserID, Username: "admin", SessionID: s.ID, Scope: ScopeAdmin}
+	if _, _, err := e.a.TOTPBegin(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.d.W.Exec(`UPDATE auth_users SET totp_secret = totp_pending`); err != nil {
+		t.Fatal(err)
+	}
+	secret, _, err := e.a.CreateToken(ctx, p, "t", ScopeRead, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantKind(t, ResetPassword(ctx, e.d, "admin", "short"), apperr.KindInvalid)
+	if err := ResetPassword(ctx, e.d, "admin", "reset password 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.Authenticate(cookieRequest(s.Token)); err == nil {
+		t.Fatal("reset must revoke sessions")
+	}
+	if _, err := e.a.Login(ctx, "admin", "reset password 1", "", meta); err != nil {
+		t.Fatalf("login after reset (TOTP must be off): %v", err)
+	}
+	if err := ResetPassword(ctx, e.d, "second", "reset password 2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.Login(ctx, "second", "reset password 2", "", meta); err != nil {
+		t.Fatalf("reset must create a missing user: %v", err)
+	}
+
+	if err := e.d.Tx(ctx, func(tx *sql.Tx) error { return PurgeCredentials(ctx, tx) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.Authenticate(bearerRequest(secret)); err == nil {
+		t.Fatal("purge must delete API tokens")
+	}
+	var n int
+	if err := e.d.R.QueryRow(`SELECT COUNT(*) FROM auth_sessions`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("sessions after purge = %d, %v", n, err)
+	}
+}
+
+func TestCleanupRetention(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	e.login(t)
+	e.a.Audit(ctx, nil, "", "old.action", "", nil)
+	e.clock.Advance(auditRetention + time.Hour)
+	e.a.Audit(ctx, nil, "", "new.action", "", nil)
+	e.a.cleanup(ctx)
+
+	var sessions int
+	if err := e.d.R.QueryRow(`SELECT COUNT(*) FROM auth_sessions`).Scan(&sessions); err != nil || sessions != 0 {
+		t.Fatalf("expired sessions must be deleted: %d, %v", sessions, err)
+	}
+	entries, _, err := e.a.AuditLog(ctx, AuditQuery{Search: "action"})
+	if err != nil || len(entries) != 1 || entries[0].Action != "new.action" {
+		t.Fatalf("audit after retention = %+v, %v", entries, err)
+	}
+}
+
+func TestAuditLogSearchAndPaging(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	p := &Principal{Username: "admin", TokenID: 7}
+	for i := range 5 {
+		e.clock.Advance(time.Second)
+		e.a.Audit(ctx, p, "10.0.0.1", "list.create", "list-"+string(rune('a'+i)), map[string]any{"url": "https://x/100%_"})
+	}
+	entries, total, err := e.a.AuditLog(ctx, AuditQuery{Search: "list.", Limit: 2, Offset: 1})
+	if err != nil || total != 5 || len(entries) != 2 || entries[0].Target != "list-d" {
+		t.Fatalf("page = %+v total %d err %v", entries, total, err)
+	}
+	if entries[0].Username != "admin (API token #7)" {
+		t.Fatalf("username = %q", entries[0].Username)
+	}
+	// LIKE wildcards in the search are literal.
+	if _, total, _ := e.a.AuditLog(ctx, AuditQuery{Search: "100%_"}); total != 5 {
+		t.Fatalf("literal search total = %d", total)
+	}
+	if _, total, _ := e.a.AuditLog(ctx, AuditQuery{Search: "1%0"}); total != 0 {
+		t.Fatalf("wildcard must not match, total = %d", total)
+	}
+}
+
+func TestStartCleansUpAndStops(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	e.login(t)
+	e.clock.Advance(2 * time.Hour) // past the idle limit
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.a.Start(ctx); close(done) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var n int
+		if err := e.d.R.QueryRow(`SELECT COUNT(*) FROM auth_sessions`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Start did not clean up expired sessions")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start did not return after cancel")
+	}
+}

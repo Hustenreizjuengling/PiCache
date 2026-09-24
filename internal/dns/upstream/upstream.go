@@ -12,25 +12,40 @@
 // cached (minimum 0; stale answers use 30). De-duplicated waiters each get
 // their own copy. The cache key uses the DO bit sent upstream.
 //
+// Upstream queries are built fresh for every exchange: random ID (0 for
+// DoH), RD=1, AD=1, our OPT with a 1232-byte buffer and DO=1 if the client
+// set DO or dns.dnssec is on. Client EDNS options, the CD bit and the
+// client's ID never reach an upstream. Every reply must echo the question
+// (qname case-insensitively, qtype, qclass); UDP replies that do not are
+// discarded and the exchange keeps waiting, TCP/DoT/DoH replies fail the
+// attempt.
+//
 // Clock guard: while time.Now() is before the binary's build date
 // (version.Date; ignored when "unknown"), encrypted upstreams are skipped and
 // queries go over plain UDP/TCP to the bootstrap IPs (logged once at WARN,
 // reported by ClockGuard). Certificate errors alone never trigger this.
+//
+// Bounds: response cache ≤ dns.cacheSize entries and 64 MiB of wire data
+// (responses above 16 KiB are not cached; TTLs capped at 7 days), 4096
+// distinct in-flight queries, 16 upstreams per set, 64 ResolveVia sets,
+// 256 queued stale refreshes, 4 idle DoT connections per upstream, DoH
+// bodies ≤ 64 KiB, 64 bootstrap hostnames, 1024 LookupIP results.
 package upstream
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"log/slog"
-	"net/netip"
+	"math"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/miekg/dns"
-
 	"github.com/hustenreizjuengling/picache/internal/settings"
+	"github.com/hustenreizjuengling/picache/internal/version"
 )
-
-var errNotImplemented = errors.New("upstream: not implemented")
 
 // Info describes how a response was obtained.
 type Info struct {
@@ -54,8 +69,8 @@ type UpstreamStat struct {
 // CacheStat describes the response cache.
 type CacheStat struct {
 	Entries   int   `json:"entries"`
-	Capacity  int   `json:"capacity"`
-	Hits      int64 `json:"hits"`
+	Capacity  int   `json:"capacity"` // 0 while the cache is disabled
+	Hits      int64 `json:"hits"`     // answers from the cache, stale ones included
 	Misses    int64 `json:"misses"`
 	StaleHits int64 `json:"staleHits"`
 }
@@ -69,64 +84,363 @@ type TestResult struct {
 	Error    string  `json:"error,omitempty"`
 }
 
+const (
+	defaultAttemptTimeout = 3 * time.Second // per upstream attempt
+	probeTimeout          = time.Second
+	testTimeout           = 5 * time.Second
+	refreshWorkers        = 4
+	refreshQueueSize      = 256
+	maxInflight           = 4096
+	maxViaSets            = 64
+)
+
+var (
+	errClosed      = errors.New("upstream: resolver is closed")
+	errBusy        = errors.New("upstream: too many concurrent queries")
+	errBadRequest  = errors.New("upstream: request must have exactly one question")
+	errNoUpstreams = errors.New("upstream: no usable upstream configured")
+	errNoPlainPTR  = errors.New("upstream: no plain DNS server given for the PTR lookup")
+	errInvalidAddr = errors.New("upstream: invalid address")
+)
+
+// options are internal knobs; tests override them through newResolver.
+type options struct {
+	rootCAs   *x509.CertPool // nil = system roots
+	plainPort int            // port for bootstrap servers and probes (53)
+	attempt   time.Duration  // per-attempt timeout
+	buildDate time.Time      // clock guard threshold; zero disables it
+	// transport, if set and returning non-nil, replaces the real transport
+	// for an upstream (fakes in tests).
+	transport func(spec settings.UpstreamSpec) transport
+}
+
+func defaultOptions() options {
+	return options{
+		plainPort: 53,
+		attempt:   defaultAttemptTimeout,
+		buildDate: parseBuildDate(version.Date),
+	}
+}
+
+// parseBuildDate parses version.Date (RFC 3339 or YYYY-MM-DD); anything else
+// ("unknown") disables the clock guard.
+func parseBuildDate(s string) time.Time {
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+// defaultSets is the upstream configuration derived from one settings
+// snapshot. It is replaced as a whole when the upstreams change.
+type defaultSets struct {
+	normal *upstreamSet
+	guard  *upstreamSet // plain fallback for the clock guard; nil if none
+	boot   *bootstrap
+}
+
 // Resolver is safe for concurrent use. It follows settings changes.
 type Resolver struct {
-	set *settings.Store
-	log *slog.Logger
+	set  *settings.Store
+	log  *slog.Logger
+	opts options
+
+	life      context.Context // cancelled on shutdown; parent of all exchanges
+	stop      context.CancelFunc
+	unsub     func()
+	closeOnce sync.Once
+
+	lifeMu sync.Mutex // guards closed and wg.Add
+	closed bool
+	wg     sync.WaitGroup // exchange and refresh goroutines
+
+	mu  sync.Mutex // serialises rebuilds and guards via
+	def atomic.Pointer[defaultSets]
+	via map[string]*upstreamSet
+	// viaOrder is the insertion order of via (oldest first) for eviction.
+	viaOrder []string
+
+	cache    respCache
+	flight   flightGroup
+	ips      ipCache
+	refreshQ chan refreshJob
+	workers  atomic.Bool // refresh workers are running
+
+	guardLogged atomic.Bool
 }
 
 // New creates a resolver from the current settings and subscribes to changes.
 func New(set *settings.Store, log *slog.Logger) (*Resolver, error) {
-	return &Resolver{set: set, log: log}, nil
+	return newResolver(set, log, defaultOptions()), nil
 }
 
-// Start runs background maintenance (stale refresh workers, health). Blocks
-// until ctx is done and its goroutines have exited.
-func (r *Resolver) Start(ctx context.Context) { <-ctx.Done() }
-
-// Close releases connections.
-func (r *Resolver) Close() error { return nil }
-
-// Resolve answers req via the configured upstreams (with cache). req is not
-// modified; see the package doc for the reply contract.
-func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg) (*dns.Msg, Info, error) {
-	return nil, Info{}, errNotImplemented
+func newResolver(set *settings.Store, log *slog.Logger, opts options) *Resolver {
+	r := &Resolver{
+		set:      set,
+		log:      log.With(slog.String("component", "upstream")),
+		opts:     opts,
+		via:      map[string]*upstreamSet{},
+		refreshQ: make(chan refreshJob, refreshQueueSize),
+	}
+	r.life, r.stop = context.WithCancel(context.Background())
+	r.cache.init()
+	r.flight.m = map[cacheKey]*call{}
+	r.ips.m = map[ipKey]ipEntry{}
+	r.rebuild(set.Get().DNS)
+	r.unsub = set.Subscribe(func(old, next *settings.All) { r.onSettings(old.DNS, next.DNS) })
+	return r
 }
 
-// ResolveVia answers req via the given upstreams (conditional forwarding,
-// router resolver, local PTR resolvers). Cached separately per upstream set.
-func (r *Resolver) ResolveVia(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, Info, error) {
-	return nil, Info{}, errNotImplemented
+// Start runs background maintenance (stale refresh workers). Blocks until
+// ctx is done and its goroutines have exited; afterwards no new upstream
+// exchanges are started (cache hits are still answered).
+func (r *Resolver) Start(ctx context.Context) {
+	var workers sync.WaitGroup
+	for range refreshWorkers {
+		workers.Go(func() { r.refreshLoop(ctx) })
+	}
+	r.workers.Store(true)
+	<-ctx.Done()
+	r.workers.Store(false)
+	r.shutdown()
+	workers.Wait()
+	r.wg.Wait()
 }
 
-// LookupIP resolves host to addresses via the default upstreams, bypassing
-// all local data. IPv4 only unless want6. Cached by TTL.
-func (r *Resolver) LookupIP(ctx context.Context, host string, want6 bool) ([]netip.Addr, error) {
-	return nil, errNotImplemented
+// Close releases connections. In-flight exchanges are cancelled.
+func (r *Resolver) Close() error {
+	r.closeOnce.Do(func() {
+		r.shutdown()
+		r.unsub()
+		r.mu.Lock()
+		if ds := r.def.Load(); ds != nil {
+			ds.close()
+		}
+		r.dropViaLocked()
+		r.mu.Unlock()
+		r.wg.Wait()
+	})
+	return nil
 }
 
-// LookupPTR resolves the hostname of ip via the given plain-DNS servers; "" if none.
-func (r *Resolver) LookupPTR(ctx context.Context, ip netip.Addr, servers []string) (string, error) {
-	return "", errNotImplemented
+func (r *Resolver) shutdown() {
+	r.lifeMu.Lock()
+	r.closed = true
+	r.lifeMu.Unlock()
+	r.stop()
 }
 
-// Probe reports whether a plain DNS server answers (used to validate the
-// auto-detected router resolver). Timeout 1 s.
-func (r *Resolver) Probe(ctx context.Context, server netip.Addr) bool { return false }
-
-// Test resolves a fixed name through one upstream string.
-func (r *Resolver) Test(ctx context.Context, upstream string) TestResult {
-	return TestResult{Upstream: upstream, Error: errNotImplemented.Error()}
+// goTracked runs fn in a goroutine that Start and Close wait for. It returns
+// false (and does not run fn) after shutdown.
+func (r *Resolver) goTracked(fn func()) bool {
+	r.lifeMu.Lock()
+	if r.closed {
+		r.lifeMu.Unlock()
+		return false
+	}
+	r.wg.Add(1)
+	r.lifeMu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		fn()
+	}()
+	return true
 }
 
-// Stats returns per-upstream health.
-func (r *Resolver) Stats() []UpstreamStat { return nil }
+// onSettings follows settings changes: a new upstream or bootstrap list
+// rebuilds the upstream sets; cache changes resize or empty the cache.
+func (r *Resolver) onSettings(old, next settings.DNS) {
+	if !slices.Equal(old.Upstreams, next.Upstreams) || !slices.Equal(old.Bootstrap, next.Bootstrap) {
+		r.rebuild(next)
+	}
+	switch {
+	case !next.CacheEnabled || next.CacheSize == 0:
+		r.FlushCache()
+	case next.CacheSize < old.CacheSize:
+		r.cache.trim(next.CacheSize)
+	}
+}
+
+// rebuild replaces the default upstream sets and drops all ResolveVia sets
+// (their DoT/DoH hostnames depend on the bootstrap servers). Per-upstream
+// statistics survive for upstreams that stay configured.
+func (r *Resolver) rebuild(d settings.DNS) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lifeMu.Lock()
+	closed := r.closed
+	r.lifeMu.Unlock()
+	if closed {
+		return
+	}
+	prev := map[string]*upstreamStats{}
+	old := r.def.Load()
+	if old != nil {
+		old.collectStats(prev)
+	}
+	boot := newBootstrap(d.Bootstrap, r.opts.plainPort)
+	normal, errs := r.buildSet("default", d.Upstreams, boot, prev)
+	for _, err := range errs {
+		r.log.Warn("ignoring upstream", slog.Any("err", err))
+	}
+	ds := &defaultSets{normal: normal, boot: boot, guard: r.buildGuardSet(d, boot, prev)}
+	r.def.Store(ds)
+	if old != nil {
+		old.close()
+	}
+	r.dropViaLocked()
+	r.log.Info("upstreams configured", slog.Any("upstreams", normal.names()), slog.Int("bootstrap", len(boot.servers)))
+}
+
+// buildGuardSet returns the clock-guard fallback: the configured plain
+// upstreams followed by the bootstrap servers over plain DNS; nil if there
+// is neither.
+func (r *Resolver) buildGuardSet(d settings.DNS, boot *bootstrap, prev map[string]*upstreamStats) *upstreamSet {
+	var list []string
+	seen := map[string]bool{}
+	for _, u := range append(slices.Clone(d.Upstreams), boot.servers...) {
+		spec, err := settings.ParseUpstream(u)
+		if err == nil && (spec.Proto == "udp" || spec.Proto == "tcp") && !seen[spec.Addr()] {
+			seen[spec.Addr()] = true
+			list = append(list, u)
+		}
+	}
+	if len(list) == 0 {
+		return nil
+	}
+	s, _ := r.buildSet("guard", list, boot, prev)
+	if len(s.ups) == 0 {
+		return nil
+	}
+	return s
+}
+
+// defaultSet returns the set used by Resolve and LookupIP: the configured
+// upstreams, or the plain fallback while the clock guard is active.
+func (r *Resolver) defaultSet() *upstreamSet {
+	ds := r.def.Load()
+	if ds.guard != nil && r.clockBehind() {
+		if !r.guardLogged.Swap(true) {
+			r.log.Warn("system clock is before the build date: encrypted upstreams are skipped and plain DNS to the bootstrap servers is used until the clock is set",
+				slog.Time("buildDate", r.opts.buildDate), slog.Time("now", time.Now()))
+		}
+		return ds.guard
+	}
+	return ds.normal
+}
+
+func (r *Resolver) clockBehind() bool {
+	return !r.opts.buildDate.IsZero() && time.Now().Before(r.opts.buildDate)
+}
+
+// viaSet returns the (cached) upstream set for ResolveVia and LookupPTR.
+func (r *Resolver) viaSet(upstreams []string) (*upstreamSet, error) {
+	if len(upstreams) == 0 {
+		return nil, errNoUpstreams
+	}
+	key := joinKey(upstreams)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.via[key]; ok {
+		return s, nil
+	}
+	s, errs := r.buildSet("via", upstreams, r.def.Load().boot, nil)
+	if len(s.ups) == 0 {
+		return nil, errors.Join(append([]error{errNoUpstreams}, errs...)...)
+	}
+	if len(r.viaOrder) >= maxViaSets {
+		oldest := r.viaOrder[0]
+		r.viaOrder = r.viaOrder[1:]
+		r.via[oldest].close()
+		delete(r.via, oldest)
+	}
+	r.via[key] = s
+	r.viaOrder = append(r.viaOrder, key)
+	return s, nil
+}
+
+func (r *Resolver) dropViaLocked() {
+	for _, s := range r.via {
+		s.close()
+	}
+	clear(r.via)
+	r.viaOrder = nil
+}
+
+func (ds *defaultSets) close() {
+	ds.normal.close()
+	if ds.guard != nil {
+		ds.guard.close()
+	}
+}
+
+func (ds *defaultSets) collectStats(into map[string]*upstreamStats) {
+	for _, s := range []*upstreamSet{ds.normal, ds.guard} {
+		if s == nil {
+			continue
+		}
+		for _, u := range s.ups {
+			into[u.name] = u.st
+		}
+	}
+}
+
+// Stats returns per-upstream health of the upstreams currently in use (the
+// plain fallback while the clock guard is active).
+func (r *Resolver) Stats() []UpstreamStat {
+	set := r.defaultSet()
+	out := make([]UpstreamStat, 0, len(set.ups))
+	for _, u := range set.ups {
+		out = append(out, u.st.snapshot(u.name))
+	}
+	return out
+}
 
 // CacheStats returns response cache counters.
-func (r *Resolver) CacheStats() CacheStat { return CacheStat{} }
+func (r *Resolver) CacheStats() CacheStat {
+	d := r.set.Get().DNS
+	st := CacheStat{
+		Entries:   r.cache.len(),
+		Hits:      r.cache.hits.Load(),
+		Misses:    r.cache.misses.Load(),
+		StaleHits: r.cache.staleHits.Load(),
+	}
+	if d.CacheEnabled {
+		st.Capacity = d.CacheSize
+	}
+	return st
+}
 
 // ClockGuard reports whether the clock guard is active (plain DNS fallback).
-func (r *Resolver) ClockGuard() bool { return false }
+func (r *Resolver) ClockGuard() bool {
+	ds := r.def.Load()
+	return ds != nil && ds.guard != nil && r.clockBehind()
+}
 
-// FlushCache empties the response cache.
-func (r *Resolver) FlushCache() {}
+// FlushCache empties the response cache and the LookupIP cache.
+func (r *Resolver) FlushCache() {
+	r.cache.flush()
+	r.ips.flush()
+}
+
+func joinKey(list []string) string {
+	n := 0
+	for _, s := range list {
+		n += len(s) + 1
+	}
+	b := make([]byte, 0, n)
+	for i, s := range list {
+		if i > 0 {
+			b = append(b, '\n')
+		}
+		b = append(b, s...)
+	}
+	return string(b)
+}
+
+// msFloat converts d to milliseconds rounded to 0.1 ms.
+func msFloat(d time.Duration) float64 {
+	return math.Round(float64(d)/float64(time.Millisecond)*10) / 10
+}

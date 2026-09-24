@@ -12,11 +12,13 @@
 //     URLs are built with url.JoinPath(domainsSource, name); snapshots are
 //     written only through os.Root (temp + rename) into the snapshot dir.
 //   - cache_domains.json ≤ 1 MiB and ≤ 128 services; each .txt ≤ 4 MiB and
-//     ≤ 50 000 lines (io.LimitReader(max+1) → error).
+//     ≤ 50 000 lines (io.LimitReader(max+1) → error); at most 16 files per
+//     service and 100 000 patterns in total.
 //   - service IDs must match ^[a-z0-9][a-z0-9_-]{0,31}$.
 //   - every host pattern (source, custom, extra) passes ValidatePattern;
 //     rejected ones are reported in SourceStatus.Skipped.
-//   - no redirects to other hosts; never private destinations.
+//   - no redirects are followed; never private destinations (the fetch
+//     client dials through netutil.SafeDialer).
 //
 // The registry subscribes to settings: it rebuilds the matcher snapshot when
 // lancache.disabledServices changes and refetches when domainsSource changes.
@@ -24,22 +26,38 @@ package services
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
+	"os"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
-
-var errNotImplemented = errors.New("services: not implemented")
 
 // SteamUserAgentSuffix identifies Steam CDN requests.
 const SteamUserAgentSuffix = "Valve/Steam HTTP Client 1.0"
 
 // SteamTrigger is the name Steam resolves to detect a LanCache.
 const SteamTrigger = "lancache.steamcontent.com"
+
+// steamID is the service that the Steam User-Agent rule and the trigger
+// name belong to.
+const steamID = "steam"
+
+// Refresh scheduling.
+const (
+	refreshTimeout = 5 * time.Minute
+	minRetry       = time.Minute
+	maxRetry       = time.Hour
+	errorLogEvery  = time.Hour
+)
 
 // Service is one LanCache service.
 type Service struct {
@@ -83,24 +101,274 @@ type Group struct {
 
 // Registry is safe for concurrent use; matchers are immutable snapshots.
 type Registry struct {
-	db  *db.DB
-	set *settings.Store
-	log *slog.Logger
+	db    *db.DB
+	set   *settings.Store
+	fetch *http.Client
+	dir   string
+	log   *slog.Logger
+
+	snap   atomic.Pointer[snapshot]
+	labels atomic.Pointer[map[string]string] // user labels (copy on write)
+
+	// mu guards the fields below and serialises rebuilds and DB writes. It
+	// is never held while calling settings.Update (whose listeners take it).
+	mu       sync.Mutex
+	src      *sourceSnapshot
+	custom   []customService // sorted by ID
+	extras   map[string][]string
+	status   SourceStatus
+	failures int     // consecutive failed fetches (retry backoff)
+	jitter   float64 // factor applied to the refresh interval (0.9–1.1)
+	lastErr  string  // last logged fetch error
+	lastErrT time.Time
+
+	fetchSem chan struct{} // one fetch at a time
+	refetch  chan struct{} // domainsSource changed
+	resched  chan struct{} // updateIntervalHours changed
+	unsub    func()
 }
 
-// New creates the registry. fetch downloads cache-domains (SafeDialer over
-// the bypass resolver, no redirects followed); dir holds the snapshot.
+// New creates the registry and loads the last cache-domains snapshot from
+// dir (offline start). fetch downloads cache-domains (SafeDialer over the
+// bypass resolver); redirects are never followed.
 func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client, dir string, log *slog.Logger) (*Registry, error) {
-	return &Registry{db: d, set: set, log: log}, nil
+	r := &Registry{
+		db:       d,
+		set:      set,
+		dir:      dir,
+		log:      log.With(slog.String("component", "services")),
+		extras:   map[string][]string{},
+		jitter:   1,
+		fetchSem: make(chan struct{}, 1),
+		refetch:  make(chan struct{}, 1),
+		resched:  make(chan struct{}, 1),
+	}
+	if fetch != nil {
+		c := *fetch
+		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		r.fetch = &c
+	}
+	if err := d.Migrate(ctx, "services", migrations); err != nil {
+		return nil, err
+	}
+	if err := r.loadDB(ctx); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	src, err := loadSnapshot(dir)
+	switch {
+	case err != nil:
+		r.log.Warn("ignoring unreadable cache-domains snapshot; it is fetched again", slog.Any("err", err))
+		r.status.Error = "the stored snapshot is unreadable; waiting for a new download"
+	case src == nil:
+		r.status.Error = "waiting for the first download"
+	default:
+		r.applySourceLocked(src)
+	}
+	r.rebuildLocked(set.Get())
+	r.mu.Unlock()
+
+	r.unsub = set.Subscribe(r.onSettings)
+	return r, nil
 }
 
-// Start loads the snapshot, fetches if missing/stale and refreshes
-// periodically. Blocks until ctx is done and its goroutines have exited.
-func (r *Registry) Start(ctx context.Context) { <-ctx.Done() }
+// onSettings reacts to settings changes (called synchronously by
+// settings.Update).
+func (r *Registry) onSettings(old, n *settings.All) {
+	if !slices.Equal(old.LanCache.DisabledServices, n.LanCache.DisabledServices) {
+		r.mu.Lock()
+		r.rebuildLocked(n)
+		r.mu.Unlock()
+	}
+	if old.LanCache.DomainsSource != n.LanCache.DomainsSource {
+		signal(r.refetch)
+	}
+	if old.LanCache.UpdateIntervalHours != n.LanCache.UpdateIntervalHours {
+		signal(r.resched)
+	}
+}
+
+func signal(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// Start fetches the source if it is missing or stale, refreshes it every
+// lancache.updateIntervalHours (±10 %, 0 = manual only) and refetches when
+// the source URL changes. Failed fetches are retried with backoff (1 min to
+// 1 h). Blocks until ctx is done.
+func (r *Registry) Start(ctx context.Context) {
+	defer r.unsub()
+	for {
+		var timer *time.Timer
+		var fire <-chan time.Time
+		if d, ok := r.nextFetch(time.Now()); ok {
+			timer = time.NewTimer(d)
+			fire = timer.C
+		}
+		fetch := false
+		select {
+		case <-ctx.Done():
+		case <-fire:
+			fetch = true
+		case <-r.refetch:
+			fetch = true
+		case <-r.resched:
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if fetch {
+			r.refreshAndLog(ctx)
+		}
+	}
+}
+
+// nextFetch returns the delay until the next scheduled fetch; ok=false
+// means none is scheduled (manual updates only).
+func (r *Registry) nextFetch(now time.Time) (time.Duration, bool) {
+	lc := r.set.Get().LanCache
+	hours := lc.UpdateIntervalHours
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// current: a snapshot of the configured source is loaded (the source
+	// may have been changed while PiCache was not running).
+	current := r.src != nil && r.src.Source == lc.DomainsSource
+	var due time.Time
+	switch {
+	case current && hours > 0:
+		interval := time.Duration(float64(time.Duration(hours)*time.Hour) * r.jitter)
+		due = r.status.LastFetched.Add(interval)
+	case !current && r.failures == 0:
+		return 0, true
+	}
+	if r.failures > 0 && (!current || hours > 0) {
+		// Retry failed fetches with backoff, also after a failed manual
+		// refresh or source change while the old snapshot stays active.
+		if retry := r.status.LastAttempt.Add(retryDelay(r.failures)); due.IsZero() || retry.Before(due) {
+			due = retry
+		}
+	}
+	if due.IsZero() {
+		return 0, false // manual updates only
+	}
+	return max(due.Sub(now), 0), true
+}
+
+// retryDelay is the backoff after n consecutive failures.
+func retryDelay(n int) time.Duration {
+	d := minRetry
+	for i := 1; i < n && d < maxRetry; i++ {
+		d *= 2
+	}
+	return min(d, maxRetry)
+}
+
+// refreshAndLog runs a background refresh; repeated identical errors are
+// logged at most hourly.
+func (r *Registry) refreshAndLog(ctx context.Context) {
+	err := r.Refresh(ctx)
+	if ctx.Err() != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil {
+		r.lastErr = ""
+		r.log.Info("cache-domains updated", slog.Int("services", r.status.ServiceCount),
+			slog.Int("domains", r.status.DomainCount), slog.Int("skipped", len(r.status.Skipped)))
+		return
+	}
+	msg := r.status.Error
+	if msg != r.lastErr || time.Since(r.lastErrT) >= errorLogEvery {
+		r.lastErr, r.lastErrT = msg, time.Now()
+		r.log.Warn("cache-domains update failed", slog.String("err", msg), slog.Bool("snapshot", r.src != nil))
+	}
+}
+
+// Refresh fetches the cache-domains source now. On failure the last good
+// snapshot stays active and the error is recorded in Status.
+func (r *Registry) Refresh(ctx context.Context) error {
+	select {
+	case r.fetchSem <- struct{}{}:
+	case <-ctx.Done():
+		return apperr.Unavailable("another cache-domains update is still running")
+	}
+	defer func() {
+		<-r.fetchSem
+		signal(r.resched) // the schedule depends on the outcome
+	}()
+	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
+
+	base := r.set.Get().LanCache.DomainsSource
+	started := time.Now().UTC()
+	src, err := fetchSource(ctx, r.fetch, base)
+
+	r.mu.Lock()
+	r.status.LastAttempt = started
+	if err != nil {
+		r.failures++
+		r.status.Error = err.Error()
+		r.mu.Unlock()
+		return apperr.Wrap(apperr.KindUnavailable, err, "cache-domains update failed: %s", err.Error())
+	}
+	src.FetchedAt = time.Now().UTC()
+	r.failures = 0
+	r.jitter = 0.9 + 0.2*rand.Float64()
+	r.applySourceLocked(src)
+	r.rebuildLocked(r.set.Get())
+	r.mu.Unlock()
+
+	if err := saveSnapshot(r.dir, src); err != nil {
+		r.log.Warn("could not save the cache-domains snapshot; the next start needs Internet access", slog.Any("err", err))
+	}
+	return nil
+}
+
+// applySourceLocked makes src the active source.
+func (r *Registry) applySourceLocked(src *sourceSnapshot) {
+	r.src = src
+	r.status.LastFetched = src.FetchedAt
+	r.status.Error = ""
+	r.status.ServiceCount = len(src.Services)
+	r.status.DomainCount = src.domainCount()
+	r.status.Skipped = src.Skipped
+	r.status.Ready = true
+}
+
+// Status returns the source status.
+func (r *Registry) Status() SourceStatus {
+	r.mu.Lock()
+	st := r.status
+	st.Skipped = slices.Clone(st.Skipped)
+	r.mu.Unlock()
+	st.Source = redactURL(r.set.Get().LanCache.DomainsSource)
+	return st
+}
 
 // MatchDNS returns the enabled service whose host patterns match qname
-// (lower-case, no trailing dot). The Steam trigger matches when steam is enabled.
-func (r *Registry) MatchDNS(qname string) (serviceID string, ok bool) { return "", false }
+// (lower-case, no trailing dot). The Steam trigger matches when steam is
+// enabled. Nothing matches before a cache-domains snapshot is loaded.
+func (r *Registry) MatchDNS(qname string) (serviceID string, ok bool) {
+	s := r.snap.Load()
+	if !s.ready {
+		return "", false
+	}
+	sv, found := s.lookup(normalizeHost(qname))
+	if !found || !sv.Enabled {
+		return "", false
+	}
+	return sv.ID, true
+}
 
 // Classify maps an HTTP request to a service:
 //   - User-Agent ending in SteamUserAgentSuffix AND (path matches
@@ -110,83 +378,39 @@ func (r *Registry) MatchDNS(qname string) (serviceID string, ok bool) { return "
 //
 // known=false means the host belongs to no service (the proxy refuses it).
 func (r *Registry) Classify(host, userAgent, path string) (serviceID string, enabled, known bool) {
-	return "", false, false
+	s := r.snap.Load()
+	if strings.HasSuffix(userAgent, SteamUserAgentSuffix) && isSteamPath(path) {
+		return steamID, s.services[s.steam].Enabled, true
+	}
+	sv, found := s.lookup(normalizeHost(host))
+	if !found {
+		return "", false, false
+	}
+	return sv.ID, sv.Enabled, true
 }
 
 // SNIAllowed reports whether sni belongs to an enabled service.
-func (r *Registry) SNIAllowed(sni string) (serviceID string, ok bool) { return "", false }
+func (r *Registry) SNIAllowed(sni string) (serviceID string, ok bool) {
+	sv, found := r.snap.Load().lookup(normalizeHost(sni))
+	if !found || !sv.Enabled {
+		return "", false
+	}
+	return sv.ID, true
+}
 
-// Services lists all services with effective state.
-func (r *Registry) Services(ctx context.Context) ([]Service, error) { return nil, errNotImplemented }
+// Services lists all services with effective state: the source services
+// in source order, then the custom services by ID. The Domains and
+// ExtraDomains slices are shared and must not be modified.
+func (r *Registry) Services(ctx context.Context) ([]Service, error) {
+	return slices.Clone(r.snap.Load().services), nil
+}
 
 // Service returns one service.
 func (r *Registry) Service(ctx context.Context, id string) (Service, error) {
-	return Service{}, errNotImplemented
-}
-
-// SetEnabled enables or disables a service (persisted in settings.LanCache.DisabledServices).
-func (r *Registry) SetEnabled(ctx context.Context, id string, enabled bool) error {
-	return errNotImplemented
-}
-
-// SetExtraDomains replaces the user-added hosts of a service (ValidatePattern each).
-func (r *Registry) SetExtraDomains(ctx context.Context, id string, domains []string) error {
-	return errNotImplemented
-}
-
-// CreateCustom adds a custom service.
-func (r *Registry) CreateCustom(ctx context.Context, in ServiceInput) (Service, error) {
-	return Service{}, errNotImplemented
-}
-
-// UpdateCustom updates a custom service.
-func (r *Registry) UpdateCustom(ctx context.Context, id string, in ServiceInput) (Service, error) {
-	return Service{}, errNotImplemented
-}
-
-// DeleteCustom deletes a custom service.
-func (r *Registry) DeleteCustom(ctx context.Context, id string) error { return errNotImplemented }
-
-// Refresh fetches the cache-domains source now.
-func (r *Registry) Refresh(ctx context.Context) error { return errNotImplemented }
-
-// Status returns the source status.
-func (r *Registry) Status() SourceStatus { return SourceStatus{} }
-
-// Label returns the display label for a group key: user override, else the
-// built-in product label (Blizzard, Riot, …), else the rule default.
-// Never blocks on the network.
-func (r *Registry) Label(groupKey string) string { return groupKey }
-
-// Labels resolves several keys at once.
-func (r *Registry) Labels(keys []string) map[string]string {
-	out := make(map[string]string, len(keys))
-	for _, k := range keys {
-		out[k] = r.Label(k)
+	s := r.snap.Load()
+	i, ok := s.index[id]
+	if !ok {
+		return Service{}, apperr.NotFound("service", id)
 	}
-	return out
+	return s.services[i], nil
 }
-
-// SearchLabels returns the group keys whose user label or built-in product
-// label contains q (case-insensitive), for Library search by name.
-func (r *Registry) SearchLabels(q string) []string { return nil }
-
-// SetLabel stores a user label override for a group key ("" removes it).
-func (r *Registry) SetLabel(ctx context.Context, groupKey, label string) error {
-	return errNotImplemented
-}
-
-// ValidatePattern checks a host pattern: exact host or "*.suffix", valid
-// A-labels, at least two labels, not "*", and the base (without "*.") must
-// not be a public suffix (x/net/publicsuffix) such as "com" or "co.uk".
-func ValidatePattern(p string) error { return nil }
-
-// GroupFor derives the content group of a request (pure function, rules in
-// ARCHITECTURE 8.4). path is the canonical path without query.
-func GroupFor(service, host, path string) Group {
-	return Group{Key: service + ":" + host, Label: service + " · " + host}
-}
-
-// IsBypassPath reports whether a request path must be passed through
-// uncached (ARCHITECTURE 8.2 step 6).
-func IsBypassPath(path string) bool { return false }

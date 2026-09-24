@@ -24,7 +24,7 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 
 | Method & path | P | Request | Response |
 |---|---|---|---|
-| GET `/auth/status` | P | – | `{setupRequired:bool, authenticated:bool, user?:auth.User, scope?:string, tokenAuth:bool, language:string, setupHints?:[string]}` (setupHints: where to find the token: log, `picache setup-token`, `docker exec … picache setup-token`) |
+| GET `/auth/status` | P | – | `{setupRequired:bool, authenticated:bool, user?:auth.User, scope?:string, tokenAuth:bool, language:string, setupHints?:[string]}` (setupHints: where to find the token: log, `picache setup-token`, `docker exec -u 65532:65532 … /picache setup-token`) |
 | POST `/auth/setup` | P | `{setupToken, username, password}` | 200 `auth.User` + cookie. 403 if setup already done or token wrong. Password ≥ 10 chars. |
 | POST `/auth/login` | P | `{username, password, totp?}` | 200 `auth.User` + cookie; 401 `unauthorized` (wrong credentials); 401 with `field:"totp"` when a TOTP code is required or wrong; 429 throttled |
 | POST `/auth/logout` | R | – | 204, clears cookie |

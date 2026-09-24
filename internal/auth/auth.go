@@ -29,10 +29,9 @@ package auth
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"log/slog"
-	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -41,14 +40,13 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-var errNotImplemented = errors.New("auth: not implemented")
-
 // SessionCookie is the name of the session cookie.
 const SessionCookie = "picache_session"
 
 // Scope of a principal.
 type Scope string
 
+// Scopes. Browser sessions always have ScopeAdmin; API tokens have either.
 const (
 	ScopeAdmin Scope = "admin"
 	ScopeRead  Scope = "read"
@@ -58,6 +56,11 @@ const (
 // missing or wrong (the UI shows the code field when Field == "totp").
 func ErrTOTPRequired() error {
 	return &apperr.Error{Kind: apperr.KindUnauthorized, Field: "totp", Message: "enter the code from your authenticator app"}
+}
+
+// errTOTPWrong is returned by Login for a wrong or reused TOTP code.
+func errTOTPWrong() error {
+	return &apperr.Error{Kind: apperr.KindUnauthorized, Field: "totp", Message: "wrong or already used code"}
 }
 
 // User is an account (v1: a single admin, the model allows more).
@@ -133,119 +136,91 @@ type AuditQuery struct {
 	Offset int
 }
 
+// cleanupInterval is how often Start prunes expired sessions, stale TOTP
+// enrolments, old audit rows and throttle records.
+const cleanupInterval = 10 * time.Minute
+
 // Service is safe for concurrent use.
 type Service struct {
 	db  *db.DB
 	set *settings.Store
 	box *secrets.Box
 	log *slog.Logger
+
+	now      func() time.Time // clock (tests replace it)
+	hashSem  chan struct{}    // bounds concurrent argon2id computations
+	throttle *throttle
+
+	setupFile  string
+	setupMu    sync.Mutex
+	setupToken string      // "" once setup is done (guarded by setupMu)
+	setupDone  atomic.Bool // a user exists (never becomes false again)
 }
 
 // New creates the service. setupTokenFile is where the one-time setup token
 // is written (0600) while no user exists; the token is also logged at WARN.
 func New(ctx context.Context, d *db.DB, set *settings.Store, box *secrets.Box, setupTokenFile string, log *slog.Logger) (*Service, error) {
-	return &Service{db: d, set: set, box: box, log: log}, nil
+	if err := d.Migrate(ctx, "auth", migrations); err != nil {
+		return nil, err
+	}
+	a := &Service{
+		db:        d,
+		set:       set,
+		box:       box,
+		log:       log.With(slog.String("component", "auth")),
+		now:       time.Now,
+		hashSem:   make(chan struct{}, maxConcurrentHashes),
+		throttle:  newThrottle(),
+		setupFile: setupTokenFile,
+	}
+	if err := a.initSetup(ctx); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 // Start runs session and audit cleanup until ctx ends (blocks until done).
-func (a *Service) Start(ctx context.Context) { <-ctx.Done() }
-
-// Provision creates the first admin from bootstrap config if no user exists.
-func (a *Service) Provision(ctx context.Context, username, password string) error {
-	return errNotImplemented
+func (a *Service) Start(ctx context.Context) {
+	// Compute the timing-equalisation hash now, so that the first login with
+	// an unknown username is not measurably slower than later ones.
+	dummyHash()
+	t := time.NewTicker(cleanupInterval)
+	defer t.Stop()
+	for {
+		a.cleanup(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
-// SetupRequired reports whether no user exists yet.
-func (a *Service) SetupRequired(ctx context.Context) (bool, error) { return true, nil }
-
-// Setup creates the first admin (requires the setup token) and logs in.
-func (a *Service) Setup(ctx context.Context, token, username, password string, meta ReqMeta) (*Session, error) {
-	return nil, errNotImplemented
+// cleanup deletes expired sessions and stale TOTP enrolments, applies the
+// audit retention and forgets expired throttle records.
+func (a *Service) cleanup(ctx context.Context) {
+	now := a.now()
+	w := a.set.Get().Web
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM auth_sessions WHERE created_at < ? OR last_seen < ?`, []any{
+			now.Add(-time.Duration(w.SessionMaxHours) * time.Hour).UnixMilli(),
+			now.Add(-time.Duration(w.SessionIdleMinutes) * time.Minute).UnixMilli(),
+		}},
+		{`UPDATE auth_users SET totp_pending = NULL, totp_pending_at = 0
+		  WHERE totp_pending IS NOT NULL AND totp_pending_at < ?`, []any{now.Add(-totpPendingTTL).UnixMilli()}},
+		{`DELETE FROM auth_audit WHERE time < ?`, []any{now.Add(-auditRetention).UnixMilli()}},
+		{`DELETE FROM auth_audit WHERE id < (SELECT id FROM auth_audit ORDER BY id DESC LIMIT 1 OFFSET ?)`, []any{auditMaxRows - 1}},
+	}
+	for _, s := range stmts {
+		if _, err := a.db.W.ExecContext(ctx, s.q, s.args...); err != nil {
+			if ctx.Err() == nil {
+				a.log.Warn("cleanup failed", slog.Any("err", err))
+			}
+			return
+		}
+	}
+	a.throttle.sweep(now)
 }
-
-// Login verifies credentials (+ TOTP if enabled) with throttling.
-func (a *Service) Login(ctx context.Context, username, password, totp string, meta ReqMeta) (*Session, error) {
-	return nil, errNotImplemented
-}
-
-// Logout ends the session with the given cookie token.
-func (a *Service) Logout(ctx context.Context, token string) error { return errNotImplemented }
-
-// Authenticate resolves the principal from the session cookie or a Bearer
-// token and refreshes the session idle timer. Returns apperr.Unauthorized.
-func (a *Service) Authenticate(r *http.Request) (*Principal, error) {
-	return nil, apperr.Unauthorized("not authenticated")
-}
-
-// Valid reports whether p's session or token is still active (used by
-// long-lived SSE streams every 15 s).
-func (a *Service) Valid(ctx context.Context, p *Principal) bool { return false }
-
-// Cookie builds the session cookie (secure = request came over HTTPS).
-func (a *Service) Cookie(s *Session, secure bool) *http.Cookie { return &http.Cookie{} }
-
-// ClearCookie builds a cookie that deletes the session cookie.
-func (a *Service) ClearCookie(secure bool) *http.Cookie { return &http.Cookie{} }
-
-// Me returns the user of a principal.
-func (a *Service) Me(ctx context.Context, p *Principal) (User, error) {
-	return User{}, errNotImplemented
-}
-
-// ChangePassword changes the password and revokes all other sessions.
-func (a *Service) ChangePassword(ctx context.Context, p *Principal, current, next string) error {
-	return errNotImplemented
-}
-
-// Sessions lists the user's sessions.
-func (a *Service) Sessions(ctx context.Context, p *Principal) ([]SessionInfo, error) {
-	return nil, errNotImplemented
-}
-
-// RevokeSession ends one of the user's sessions.
-func (a *Service) RevokeSession(ctx context.Context, p *Principal, id string) error {
-	return errNotImplemented
-}
-
-// Tokens lists API tokens.
-func (a *Service) Tokens(ctx context.Context) ([]TokenInfo, error) { return nil, errNotImplemented }
-
-// CreateToken creates an API token and returns the secret once.
-func (a *Service) CreateToken(ctx context.Context, p *Principal, name string, scope Scope, ttl time.Duration) (string, TokenInfo, error) {
-	return "", TokenInfo{}, errNotImplemented
-}
-
-// DeleteToken revokes an API token.
-func (a *Service) DeleteToken(ctx context.Context, id int64) error { return errNotImplemented }
-
-// TOTPBegin generates a new (unconfirmed) TOTP secret; returns it and the otpauth:// URI.
-func (a *Service) TOTPBegin(ctx context.Context, p *Principal) (secret, uri string, err error) {
-	return "", "", errNotImplemented
-}
-
-// TOTPConfirm enables TOTP after verifying a code for the pending secret.
-func (a *Service) TOTPConfirm(ctx context.Context, p *Principal, code string) error {
-	return errNotImplemented
-}
-
-// TOTPDisable disables TOTP (requires the password).
-func (a *Service) TOTPDisable(ctx context.Context, p *Principal, password string) error {
-	return errNotImplemented
-}
-
-// Audit records an action with redacted details (errors are logged).
-func (a *Service) Audit(ctx context.Context, p *Principal, ip, action, target string, details any) {}
-
-// AuditLog returns audit entries.
-func (a *Service) AuditLog(ctx context.Context, q AuditQuery) ([]AuditEntry, int, error) {
-	return nil, 0, errNotImplemented
-}
-
-// ResetPassword sets a user's password (CLI `picache reset-password`),
-// creating the user if missing, disables TOTP and revokes all sessions.
-func ResetPassword(ctx context.Context, d *db.DB, username, password string) error {
-	return errNotImplemented
-}
-
-// PurgeCredentials deletes all sessions and API tokens (after a restore).
-func PurgeCredentials(ctx context.Context, tx *sql.Tx) error { return errNotImplemented }

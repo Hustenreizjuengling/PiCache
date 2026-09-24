@@ -1,0 +1,95 @@
+# PiCache with host networking (recommended Docker setup).
+#
+#   cd deploy/docker
+#   docker compose up -d --build
+#   docker exec -u 65532:65532 picache /picache setup-token   # one-time setup token
+#   # then open http://<this host's LAN IP>:8080/ and create the admin account
+#
+# Why host networking: PiCache sees real client addresses (IPv4 and IPv6),
+# can detect this host's LAN IP for LanCache answers and can identify clients
+# by MAC address. Use docker-compose.bridge.yml only if you cannot use it.
+#
+# Port conflicts: PiCache needs 53/udp+tcp (DNS), 80 and 443 (LanCache) and
+# 8080/8443 (web UI) on the host.
+#   - Port 53 is often taken by systemd-resolved's stub listener
+#     (127.0.0.53), dnsmasq, Pi-hole or AdGuard Home. DNS is mandatory, so the
+#     container then exits with "port 53 is in use". Fix: disable the other
+#     listener (docs/DEPLOYMENT.md, "Port 53 conflicts") or bind PiCache to
+#     specific addresses with PICACHE_DNS_LISTEN (see environment below).
+#   - A clash on 80/443/8080/8443 is logged and shown under
+#     System -> Health & about; DNS keeps running. Free the port or change
+#     PICACHE_*_LISTEN.
+#
+# Security: the container starts as root only to bind the ports, then drops to
+# 65532:65532 before touching any file. Keep the capability and read-only
+# settings below; never add SYS_ADMIN or "privileged".
+name: picache
+
+services:
+  picache:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: picache:latest
+    # Always built from this source tree, never pulled from a registry.
+    pull_policy: build
+    container_name: picache
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m
+    # PiCache shuts down within 15 s; give it time to close its databases.
+    stop_grace_period: 30s
+    volumes:
+      # Configuration, logs, keys (local disk only; never a NAS).
+      - picache-data:/data
+      # Built-in local cache store. To use another local disk instead, bind a
+      # host directory owned by 65532:65532:
+      #   sudo install -d -o 65532 -g 65532 -m 0750 /mnt/ssd/picache-cache
+      # - /mnt/ssd/picache-cache:/cache
+      - picache-cache:/cache
+      # NAS cache store: mount the share on the HOST below /srv/picache
+      # (fstab with nofail, uid=65532/gid=65532 for SMB; NFS export owned by
+      # 65532), then bind the whole mount root with rslave propagation so
+      # mounts made after the container started become visible. Add the
+      # target under Cache -> Storage (mode "external", path
+      # /srv/picache/nas); the UI shows the matching fstab line.
+      #   sudo mkdir -p /srv/picache/nas
+      # - type: bind
+      #   source: /srv/picache
+      #   target: /srv/picache
+      #   bind:
+      #     propagation: rslave
+    # environment:
+    #   # Extra host names for the web UI (DNS-rebinding protection); IP
+    #   # addresses and localhost always work.
+    #   PICACHE_WEB_HOSTS: "picache.lan"
+    #   # Port 53 conflict: listen on specific addresses instead of all.
+    #   PICACHE_DNS_LISTEN: "192.168.1.5:53,127.0.0.1:53"
+    #   # Create the first admin from a Docker secret instead of the setup
+    #   # token (at least 10 characters). The file is read as root before
+    #   # the privilege drop and without CAP_DAC_OVERRIDE, so on the host it
+    #   # must be owned by root with mode 0400:
+    #   #   sudo install -m 0400 -o root -g root /dev/stdin ./admin_password
+    #   # Remove the variable and the secret again after the first start.
+    #   PICACHE_ADMIN_PASSWORD_FILE: /run/secrets/picache_admin_password
+    #   PICACHE_LOG_FORMAT: json
+    # secrets:
+    #   - picache_admin_password
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  picache-data:
+  picache-cache:
+
+# secrets:
+#   picache_admin_password:
+#     file: ./admin_password

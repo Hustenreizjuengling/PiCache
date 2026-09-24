@@ -1,0 +1,14 @@
+# PiCache host-apply: starts the root helper whenever the web UI queues a NAS
+# mount request. Installed only by `install.sh --with-host-apply`.
+[Unit]
+Description=Watch for PiCache NAS mount requests
+Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md
+
+[Path]
+# The unprivileged service writes request files here; it never mounts itself.
+PathChanged=/var/lib/picache/storage-requests/
+MakeDirectory=no
+Unit=picache-storage.service
+
+[Install]
+WantedBy=paths.target

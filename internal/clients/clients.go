@@ -13,8 +13,8 @@
 // reference client_groups(id) ON DELETE CASCADE. Clients: client_clients,
 // client_identifiers, client_memberships.
 // Seen/known addresses are runtime data and live in logs.db (component
-// "clients-seen", table clients_seen), pruned after 30 days; IPv6 entries are
-// keyed by MAC when the neighbour table knows it.
+// "clients-seen", table clients_seen), pruned after 30 days. Entries are
+// keyed by IP address; the MAC column is filled from the IPv4 ARP table.
 //
 // Bounds: the identity cache and the seen map hold at most 65 536 entries
 // (LRU); PTR lookups for names run in one worker with a de-duplicated queue
@@ -25,18 +25,31 @@ package clients
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 )
-
-var errNotImplemented = errors.New("clients: not implemented")
 
 // DefaultGroupID is the ID of the built-in "Default" group.
 const DefaultGroupID int64 = 1
+
+// Bounds and intervals.
+const (
+	maxCacheEntries  = 65536
+	maxSeenEntries   = 65536
+	maxNameEntries   = 65536
+	maxPTRQueue      = 1024
+	arpInterval      = 30 * time.Second
+	seenFlushEvery   = time.Minute
+	seenRetention    = 30 * 24 * time.Hour
+	nameRefreshEvery = time.Hour
+	ptrTimeout       = 3 * time.Second
+)
 
 // Group is a policy group. Lists and rules (package filter) reference groups.
 type Group struct {
@@ -69,7 +82,8 @@ type Client struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
-// ClientInput creates or updates a client.
+// ClientInput creates or updates a client. An empty GroupIDs puts the client
+// into the Default group.
 type ClientInput struct {
 	Name           string   `json:"name"`
 	Identifiers    []string `json:"identifiers"`
@@ -79,7 +93,8 @@ type ClientInput struct {
 	IgnoreLogs     bool     `json:"ignoreLogs"`
 }
 
-// Identity is the resolved identity of a querying address.
+// Identity is the resolved identity of a querying address. Identities are
+// shared between callers and must be treated as read-only.
 type Identity struct {
 	IP             netip.Addr
 	ClientID       int64   // 0 if no configured client matched
@@ -108,69 +123,155 @@ type PTRResolver func(ctx context.Context, ip netip.Addr) (string, error)
 // Registry holds groups, clients and the identity cache.
 type Registry struct {
 	db  *db.DB
+	ldb *db.DB // logs.db (seen data); nil = memory only
 	log *slog.Logger
+
+	writeMu sync.Mutex // serialises configuration writes with their snapshot reload
+	snap    atomic.Pointer[snapshot]
+	arp     atomic.Pointer[map[netip.Addr]string] // IPv4 → MAC
+	readARP func() map[netip.Addr]string          // neighbour table source (replaced in tests)
+
+	cacheMu  sync.Mutex
+	cacheGen uint64
+	cache    *lru[netip.Addr, *Identity]
+
+	seenMu sync.Mutex
+	seen   *lru[netip.Addr, *seenEntry]
+
+	namesMu sync.Mutex
+	names   *lru[netip.Addr, hostName]
+	queued  map[netip.Addr]struct{}
+	queue   chan netip.Addr
+	ptr     atomic.Pointer[PTRResolver]
+
+	cbMu     sync.Mutex
+	onChange []func()
 }
 
 // New opens the registry: cdb = picache.db (configuration), ldb = logs.db
 // (seen data; may be nil when logs are disabled).
 func New(ctx context.Context, cdb, ldb *db.DB, log *slog.Logger) (*Registry, error) {
-	return &Registry{db: cdb, log: log}, nil
+	if log == nil {
+		log = slog.Default()
+	}
+	r := &Registry{
+		db:      cdb,
+		ldb:     ldb,
+		log:     log.With(slog.String("component", "clients")),
+		cache:   newLRU[netip.Addr, *Identity](maxCacheEntries),
+		seen:    newLRU[netip.Addr, *seenEntry](maxSeenEntries),
+		names:   newLRU[netip.Addr, hostName](maxNameEntries),
+		queued:  make(map[netip.Addr]struct{}),
+		queue:   make(chan netip.Addr, maxPTRQueue),
+		readARP: readARP,
+	}
+	empty := map[netip.Addr]string{}
+	r.arp.Store(&empty)
+	if err := cdb.Migrate(ctx, "clients", migrations); err != nil {
+		return nil, err
+	}
+	if ldb != nil {
+		if err := ldb.Migrate(ctx, "clients-seen", seenMigrations); err != nil {
+			return nil, err
+		}
+	}
+	if err := r.reload(ctx); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // Start runs background refreshes (ARP table every 30 s, hostnames hourly,
 // flushing "seen" data every minute, daily pruning). Blocks until ctx is done.
-func (r *Registry) Start(ctx context.Context) { <-ctx.Done() }
+func (r *Registry) Start(ctx context.Context) {
+	var wg sync.WaitGroup
+	wg.Go(func() { r.arpLoop(ctx) })
+	wg.Go(func() { r.ptrWorker(ctx) })
+	wg.Go(func() { r.seenLoop(ctx) })
+	wg.Wait()
+}
 
 // SetPTRResolver sets the resolver used for client hostnames.
-func (r *Registry) SetPTRResolver(fn PTRResolver) {}
+func (r *Registry) SetPTRResolver(fn PTRResolver) {
+	if fn == nil {
+		r.ptr.Store(nil)
+		return
+	}
+	r.ptr.Store(&fn)
+}
+
+// OnChange registers a callback invoked after groups or clients change. It
+// runs synchronously in the writing goroutine and must not modify groups or
+// clients itself.
+func (r *Registry) OnChange(fn func()) {
+	r.cbMu.Lock()
+	defer r.cbMu.Unlock()
+	r.onChange = append(r.onChange, fn)
+}
 
 // Identify returns the identity of ip. Hot path; never blocks on I/O.
 func (r *Registry) Identify(ip netip.Addr) *Identity {
-	return &Identity{IP: ip, GroupIDs: []int64{DefaultGroupID}}
-}
+	ip = netutil.Canon(ip)
+	r.cacheMu.Lock()
+	if id, ok := r.cache.get(ip); ok {
+		r.cacheMu.Unlock()
+		return id
+	}
+	gen := r.cacheGen
+	r.cacheMu.Unlock()
 
-// Seen records activity of ip (in memory; flushed periodically).
-func (r *Registry) Seen(ip netip.Addr) {}
+	id := r.resolve(ip)
+
+	r.cacheMu.Lock()
+	if r.cacheGen == gen {
+		r.cache.put(ip, id)
+	}
+	r.cacheMu.Unlock()
+	return id
+}
 
 // DisplayName returns the best display name for ip ("" if none).
-func (r *Registry) DisplayName(ip netip.Addr) string { return "" }
+func (r *Registry) DisplayName(ip netip.Addr) string { return r.Identify(ip).Name }
 
-// OnChange registers a callback invoked after groups or clients change.
-func (r *Registry) OnChange(fn func()) {}
-
-// Groups lists all groups.
-func (r *Registry) Groups(ctx context.Context) ([]Group, error) { return nil, errNotImplemented }
-
-// CreateGroup creates a group.
-func (r *Registry) CreateGroup(ctx context.Context, in GroupInput) (Group, error) {
-	return Group{}, errNotImplemented
+// resolve computes an identity from the current snapshot, ARP table and
+// hostname cache.
+func (r *Registry) resolve(ip netip.Addr) *Identity {
+	snap := r.snap.Load()
+	mac := (*r.arp.Load())[ip]
+	id := &Identity{IP: ip, MAC: mac}
+	c := snap.match(ip, mac)
+	if c != nil {
+		id.ClientID = c.id
+		id.Name = c.name
+		id.GroupIDs = snap.enabledGroups(c.groups)
+		id.LanCacheBypass = c.lanCacheBypass
+		id.IgnoreLogs = c.ignoreLogs
+	} else {
+		id.GroupIDs = snap.defaultGroups
+	}
+	if id.Name == "" {
+		id.Name = r.hostname(ip)
+	}
+	return id
 }
 
-// UpdateGroup updates a group.
-func (r *Registry) UpdateGroup(ctx context.Context, id int64, in GroupInput) (Group, error) {
-	return Group{}, errNotImplemented
+// invalidate drops all cached identities (after configuration, ARP or
+// hostname changes).
+func (r *Registry) invalidate() {
+	r.cacheMu.Lock()
+	r.cacheGen++
+	r.cache.clear()
+	r.cacheMu.Unlock()
 }
 
-// DeleteGroup deletes a group (not the Default group).
-func (r *Registry) DeleteGroup(ctx context.Context, id int64) error { return errNotImplemented }
-
-// Clients lists configured clients.
-func (r *Registry) Clients(ctx context.Context) ([]Client, error) { return nil, errNotImplemented }
-
-// CreateClient creates a client.
-func (r *Registry) CreateClient(ctx context.Context, in ClientInput) (Client, error) {
-	return Client{}, errNotImplemented
-}
-
-// UpdateClient updates a client.
-func (r *Registry) UpdateClient(ctx context.Context, id int64, in ClientInput) (Client, error) {
-	return Client{}, errNotImplemented
-}
-
-// DeleteClient deletes a client.
-func (r *Registry) DeleteClient(ctx context.Context, id int64) error { return errNotImplemented }
-
-// Known lists addresses seen within the last `within` (0 = 30 days).
-func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, error) {
-	return nil, errNotImplemented
+// changed invalidates the identity cache and notifies the OnChange
+// listeners after a committed and reloaded configuration change.
+func (r *Registry) changed() {
+	r.invalidate()
+	r.cbMu.Lock()
+	cbs := append([]func(){}, r.onChange...)
+	r.cbMu.Unlock()
+	for _, fn := range cbs {
+		fn()
+	}
 }

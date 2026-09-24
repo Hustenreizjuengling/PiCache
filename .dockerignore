@@ -1,0 +1,19 @@
+# Allowlist: the image is built only from the Go module and the web sources.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!web/
+
+# Built inside the image (web stage), never taken from the host.
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+web/node_modules/
+web/dist/
+
+# Never send local runtime data or secrets.
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/secret.key

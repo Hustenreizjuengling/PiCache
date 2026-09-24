@@ -10,10 +10,13 @@
 // Compilation: list files are parsed line by line (bufio, never io.ReadAll)
 // only when their downloaded content changed; the per-list parse result is
 // kept, and the matcher snapshot is rebuilt from those results. Editing a
-// list's or rule's groups swaps only the small source→groups table.
-// Recompile calls are coalesced (one running + one pending). Compiled
-// patterns (regex + wildcard) are capped at 20 000 in total (excess counted
-// as unsupported). Explain rescans list files one at a time with a 10 s timeout.
+// list's name or groups swaps only the small source→groups table; the (small)
+// user-rule matcher is rebuilt synchronously on every rule change. List
+// recompile calls are coalesced (one running + one pending). Compiled
+// patterns (regex + wildcard) are capped at 20 000 in total (excess within a
+// list is counted as unsupported, excess across lists is reported as
+// Stats.PatternsDropped). Explain rescans list files one at a time with a
+// 10 s timeout.
 //
 // Downloads: at most 256 MiB (io.LimitReader), streamed to <lists>/<id>.tmp;
 // the fetch client does not follow redirects itself: this package follows up
@@ -21,20 +24,27 @@
 // when the configured URL host is a private IP literal, never after a
 // redirect to another host. http:// URLs are accepted only for private IP
 // literal hosts.
+//
+// $badfilter cancels matching rules of the same list. User rules are
+// bounded (20 000, of which at most 1 000 regular expressions); a list
+// subscription is the right tool for larger sets.
 package filter
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
-
-var errNotImplemented = errors.New("filter: not implemented")
 
 // Action is a filtering verdict.
 type Action uint8
@@ -45,6 +55,7 @@ const (
 	ActionBlock               // blocked
 )
 
+// String returns "allow", "block" or "none".
 func (a Action) String() string {
 	switch a {
 	case ActionAllow:
@@ -91,7 +102,10 @@ type List struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
-// ListInput creates or updates a list.
+// ListInput creates or updates a list. Empty Kind and PlainDomains default
+// to "block" and "exact"; an empty Name is derived from the URL. GroupIDs
+// nil means the Default group on create and "unchanged" on update; an empty
+// non-nil slice means no group (the list applies to nobody).
 type ListInput struct {
 	Name         string  `json:"name"`
 	URL          string  `json:"url"`
@@ -117,7 +131,9 @@ type Rule struct {
 
 // RuleInput creates or updates a rule. For type subtree, "*.example.com",
 // "||example.com^" and "example.com" are all accepted and stored as
-// "example.com". Regex patterns are Go RE2, ≤ 1024 characters.
+// "example.com". Regex patterns are Go RE2, ≤ 1024 characters (matched
+// case-insensitively; enclosing slashes are removed). GroupIDs as in
+// ListInput.
 type RuleInput struct {
 	Action   string  `json:"action"`
 	Type     string  `json:"type"`
@@ -151,16 +167,17 @@ type Match struct {
 
 // Stats describes the compiled matcher.
 type Stats struct {
-	Lists       int       `json:"lists"`
-	Entries     int       `json:"entries"`
-	Patterns    int       `json:"patterns"` // regex + wildcard patterns
-	Rules       int       `json:"rules"`
-	CompiledAt  time.Time `json:"compiledAt,omitzero"`
-	CompileMs   int64     `json:"compileMs"`
-	MemoryBytes int64     `json:"memoryBytes"`
-	Updating    bool      `json:"updating"`
-	FailedLists int       `json:"failedLists"` // enabled lists in failed-* state
-	StaleLists  int       `json:"staleLists"`  // last success older than 3× update interval
+	Lists           int       `json:"lists"`
+	Entries         int       `json:"entries"`
+	Patterns        int       `json:"patterns"`        // regex + wildcard patterns
+	PatternsDropped int       `json:"patternsDropped"` // patterns beyond the total cap of 20 000
+	Rules           int       `json:"rules"`
+	CompiledAt      time.Time `json:"compiledAt,omitzero"`
+	CompileMs       int64     `json:"compileMs"`
+	MemoryBytes     int64     `json:"memoryBytes"`
+	Updating        bool      `json:"updating"`
+	FailedLists     int       `json:"failedLists"` // enabled lists in failed-* state
+	StaleLists      int       `json:"staleLists"`  // last success older than 3× update interval
 }
 
 // CatalogEntry is a curated list suggestion (embedded, no network needed).
@@ -174,83 +191,278 @@ type CatalogEntry struct {
 	Recommended  bool   `json:"recommended"`
 }
 
+// List status values.
+const (
+	statusPending      = "pending"
+	statusOK           = "ok"
+	statusUnchanged    = "unchanged"
+	statusFailedCached = "failed-cached"
+	statusFailedEmpty  = "failed-empty"
+)
+
+// listRT is the in-memory state of a list: its row plus runtime data.
+type listRT struct {
+	List
+	etag, lastModified, hash string
+	parsed                   *parsed // nil when not loaded (disabled, never downloaded)
+	jitter                   float64 // factor in [0.9, 1.1] for the next scheduled update
+	wantDownload             bool
+	wantReparse              bool
+}
+
 // Engine owns lists, rules and the compiled matcher.
 type Engine struct {
-	db  *db.DB
-	set *settings.Store
-	log *slog.Logger
+	db       *db.DB
+	set      *settings.Store
+	log      *slog.Logger
+	fetch    *http.Client
+	dir      string // downloaded copies: <dir>/<id>.txt
+	localDir string // file:// lists must live here
+	maxBytes int64  // download size cap
+	now      func() time.Time
+
+	snap atomic.Pointer[snapshot] // read lock-free by Check
+
+	mu          sync.Mutex // guards the fields below and snapshot publication
+	lists       map[int64]*listRT
+	parseGen    uint64 // incremented whenever the set of parse results changes
+	compiledGen uint64 // parseGen the current list matcher was built from
+	compiledAt  time.Time
+	compileMs   int64
+	stopped     bool
+
+	compileMu sync.Mutex    // serialises list matcher builds
+	ruleMu    sync.Mutex    // serialises rule writes and rule matcher rebuilds
+	dlSem     chan struct{} // cap 1: serialises downloads and parses of list files
+	explain   chan struct{} // bounds concurrent Explain rescans
+
+	compileCh chan struct{} // cap 1: coalesced recompile request
+	wake      chan struct{} // cap 1: list work is pending
+	busy      atomic.Int32  // running downloads, parses and compiles
+	inflight  sync.WaitGroup
+	base      context.Context // cancelled when Start returns
+	cancel    context.CancelFunc
 }
 
 // New creates the engine. fetch is the HTTP client for list downloads
 // (SafeDialer over the bypass resolver, redirects not followed); listsDir
 // stores downloaded copies. The clients package must be migrated first.
 func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client, listsDir string, log *slog.Logger) (*Engine, error) {
-	return &Engine{db: d, set: set, log: log}, nil
+	if err := d.Migrate(ctx, "filter", migrations); err != nil {
+		return nil, err
+	}
+	dir, err := filepath.Abs(listsDir)
+	if err != nil {
+		return nil, fmt.Errorf("filter: lists dir: %w", err)
+	}
+	localDir := filepath.Join(dir, "local")
+	if err := os.MkdirAll(localDir, 0o750); err != nil {
+		return nil, fmt.Errorf("filter: create %s: %w", localDir, err)
+	}
+	base, cancel := context.WithCancel(context.Background())
+	e := &Engine{
+		db: d, set: set, log: log.With(slog.String("component", "filter")),
+		fetch: fetch, dir: dir, localDir: localDir, maxBytes: maxListBytes, now: utcNow,
+		lists:     map[int64]*listRT{},
+		compileCh: make(chan struct{}, 1), wake: make(chan struct{}, 1), dlSem: make(chan struct{}, 1),
+		explain: make(chan struct{}, maxConcurrentExplains),
+		base:    base, cancel: cancel,
+	}
+	e.snap.Store(emptySnapshot)
+	rows, err := loadLists(ctx, d)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	for _, rt := range rows {
+		rt.jitter = newJitter()
+		e.lists[rt.ID] = rt
+	}
+	if err := e.rebuildRules(ctx); err != nil {
+		cancel()
+		return nil, err
+	}
+	return e, nil
 }
+
+func newJitter() float64 { return 0.9 + rand.Float64()*0.2 }
 
 // Start loads cached list files, compiles and schedules updates (±10 %
 // jitter). Blocks until ctx is done and its goroutines have exited.
-func (e *Engine) Start(ctx context.Context) { <-ctx.Done() }
+func (e *Engine) Start(ctx context.Context) {
+	defer e.stop()
+	e.loadCached(ctx)
+	e.requestCompile()
+	var wg sync.WaitGroup
+	wg.Go(func() { e.compileLoop(ctx) })
+	wg.Go(func() { e.updateLoop(ctx) })
+	wg.Wait()
+}
+
+// stop ends in-flight synchronous operations (RefreshList) and waits for them.
+func (e *Engine) stop() {
+	e.mu.Lock()
+	e.stopped = true
+	e.mu.Unlock()
+	e.cancel()
+	e.inflight.Wait()
+}
+
+// beginOp registers a synchronous long-running operation; false after Start returned.
+func (e *Engine) beginOp() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stopped {
+		return false
+	}
+	e.inflight.Add(1)
+	return true
+}
 
 // Check evaluates qname (lower-case, no trailing dot) for a client with the
 // given enabled group IDs, with the precedence of ARCHITECTURE 7.2. Hot
 // path: lock-free, allocation-free in the common case.
-func (e *Engine) Check(qname string, groups []int64) Decision { return Decision{} }
+func (e *Engine) Check(qname string, groups []int64) Decision {
+	return e.snap.Load().check(qname, groups, false)
+}
 
 // CheckRules evaluates only user rules (used before LanCache overrides: a
 // user block rule for the client's groups wins over the override).
-func (e *Engine) CheckRules(qname string, groups []int64) Decision { return Decision{} }
-
-// Explain lists every source matching qname and marks which applies to groups
-// and which is decisive ("why is this blocked?").
-func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]Match, error) {
-	return nil, errNotImplemented
+func (e *Engine) CheckRules(qname string, groups []int64) Decision {
+	return e.snap.Load().check(qname, groups, true)
 }
 
 // Stats returns matcher statistics.
-func (e *Engine) Stats() Stats { return Stats{} }
-
-// Lists returns all lists.
-func (e *Engine) Lists(ctx context.Context) ([]List, error) { return nil, errNotImplemented }
-
-// CreateList adds a list and triggers its first download (background).
-func (e *Engine) CreateList(ctx context.Context, in ListInput) (List, error) {
-	return List{}, errNotImplemented
+func (e *Engine) Stats() Stats {
+	s := e.snap.Load()
+	interval, now := e.interval(), e.now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	st := Stats{
+		Lists:           len(s.lists.ids),
+		Entries:         s.lists.entries,
+		Patterns:        s.lists.patterns,
+		PatternsDropped: s.lists.dropped,
+		Rules:           len(s.rules.rules),
+		CompiledAt:      e.compiledAt,
+		CompileMs:       e.compileMs,
+		MemoryBytes:     s.lists.memory + s.rules.memory,
+		Updating:        e.busy.Load() > 0,
+	}
+	for _, rt := range e.lists {
+		if rt.parsed != nil {
+			st.MemoryBytes += rt.parsed.memory()
+		}
+		if !rt.Enabled {
+			continue
+		}
+		if rt.Status == statusFailedCached || rt.Status == statusFailedEmpty {
+			st.FailedLists++
+		}
+		last := rt.LastSuccess
+		if last.IsZero() {
+			last = rt.CreatedAt
+		}
+		if interval > 0 && now.Sub(last) > 3*interval {
+			st.StaleLists++
+		}
+	}
+	return st
 }
 
-// UpdateList updates a list.
-func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, error) {
-	return List{}, errNotImplemented
+// publishLocked stores a new snapshot. nil arguments keep the current
+// matcher; list names and groups are always rebuilt from e.lists, so a list
+// that was disabled or deleted stops applying immediately. e.mu must be held.
+func (e *Engine) publishLocked(lists *listMatcher, rules *ruleMatcher) {
+	cur := e.snap.Load()
+	if lists == nil {
+		lists = cur.lists
+	}
+	if rules == nil {
+		rules = cur.rules
+	}
+	next := &snapshot{
+		lists:      lists,
+		rules:      rules,
+		listNames:  make([]string, len(lists.ids)),
+		listGroups: make([][]int64, len(lists.ids)),
+	}
+	for i, id := range lists.ids {
+		if rt, ok := e.lists[id]; ok {
+			next.listNames[i] = rt.Name
+			if rt.Enabled {
+				next.listGroups[i] = rt.GroupIDs
+			}
+		}
+	}
+	e.snap.Store(next)
 }
 
-// DeleteList removes a list and its cached copy.
-func (e *Engine) DeleteList(ctx context.Context, id int64) error { return errNotImplemented }
-
-// RefreshList re-downloads one list now and recompiles (waits for completion).
-func (e *Engine) RefreshList(ctx context.Context, id int64) (List, error) {
-	return List{}, errNotImplemented
+// requestCompile asks the compile loop for a rebuild (coalesced).
+func (e *Engine) requestCompile() {
+	select {
+	case e.compileCh <- struct{}{}:
+	default:
+	}
 }
 
-// RefreshAll re-downloads all enabled lists and recompiles (background).
-func (e *Engine) RefreshAll(ctx context.Context) error { return errNotImplemented }
-
-// Catalog returns the embedded list catalogue.
-func (e *Engine) Catalog() []CatalogEntry { return nil }
-
-// Rules returns user rules.
-func (e *Engine) Rules(ctx context.Context, q RuleQuery) ([]Rule, error) {
-	return nil, errNotImplemented
+// signal wakes the update loop.
+func (e *Engine) signal() {
+	select {
+	case e.wake <- struct{}{}:
+	default:
+	}
 }
 
-// CreateRule adds a rule.
-func (e *Engine) CreateRule(ctx context.Context, in RuleInput) (Rule, error) {
-	return Rule{}, errNotImplemented
+func (e *Engine) compileLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.compileCh:
+			e.compile()
+		}
+	}
 }
 
-// UpdateRule updates a rule.
-func (e *Engine) UpdateRule(ctx context.Context, id int64, in RuleInput) (Rule, error) {
-	return Rule{}, errNotImplemented
+// compile rebuilds the list matcher from the parse results of the enabled
+// lists, unless nothing changed since the last build.
+func (e *Engine) compile() {
+	e.compileMu.Lock()
+	defer e.compileMu.Unlock()
+	e.mu.Lock()
+	gen := e.parseGen
+	if gen == e.compiledGen && !e.compiledAt.IsZero() {
+		e.mu.Unlock()
+		return
+	}
+	var ids []int64
+	var results []*parsed
+	for _, rt := range sortedLists(e.lists) {
+		if rt.Enabled && rt.parsed != nil {
+			ids = append(ids, rt.ID)
+			results = append(results, rt.parsed)
+		}
+	}
+	e.mu.Unlock()
+
+	e.busy.Add(1)
+	defer e.busy.Add(-1)
+	start := time.Now()
+	m := buildListMatcher(ids, results)
+	took := time.Since(start)
+
+	e.mu.Lock()
+	e.compiledGen = gen
+	e.compiledAt = e.now()
+	e.compileMs = took.Milliseconds()
+	e.publishLocked(m, nil)
+	e.mu.Unlock()
+	e.log.Info("blocklists compiled", slog.Int("lists", len(ids)), slog.Int("entries", m.entries),
+		slog.Int("patterns", m.patterns), slog.Int("patternsDropped", m.dropped),
+		slog.Duration("took", took.Round(time.Millisecond)))
 }
 
-// DeleteRule deletes a rule.
-func (e *Engine) DeleteRule(ctx context.Context, id int64) error { return errNotImplemented }
+// utcNow returns the current time in UTC with the millisecond precision of
+// the database.
+func utcNow() time.Time { return time.Now().UTC().Truncate(time.Millisecond) }

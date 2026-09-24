@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hustenreizjuengling/picache/internal/netutil"
-
+	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/config"
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -27,6 +27,9 @@ const csp = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inl
 // HTTPS redirect → cross-origin protection → handler.
 func (s *Server) middleware(h http.Handler) http.Handler {
 	cop := http.NewCrossOriginProtection()
+	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, r, s.log, apperr.Forbidden("cross-origin request rejected"))
+	}))
 	h = cop.Handler(h)
 	h = s.httpsRedirect(h)
 	h = s.hosts.middleware(h, s.log)

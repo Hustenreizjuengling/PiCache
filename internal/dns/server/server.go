@@ -8,21 +8,27 @@
 // Serving: UDP with (&dns.Server{PacketConn: pc, Handler: h}).ActivateAndServe()
 // (miekg replies from the query's destination address via IP_PKTINFO) and TCP
 // with Listener: ln, MaxTCPQueries 128, IdleTimeout 8 s. No custom
-// ReadFrom/WriteTo loops. The rate limiter is swept every 10 s.
+// ReadFrom/WriteTo loops; a reader decorator drops UDP packets from sources
+// outside the ACL before they are parsed. The rate limiter is swept every 10 s.
 //
 // Tables (picache.db, component "dns"): dns_records, dns_forwarders.
 //
 // Bounds: CNAME chains (local and upstream) are followed at most 8 hops with
 // a visited set (else SERVFAIL, status "error"); records that reference
-// themselves are rejected.
+// themselves are rejected. At most 4096 queries are processed concurrently.
 package dnsserver
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -35,8 +41,6 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
-
-var errNotImplemented = errors.New("dnsserver: not implemented")
 
 // Query statuses (stable strings stored in logs.db and used by the API/UI).
 const (
@@ -53,6 +57,17 @@ const (
 	StatusBlockedSpecial = "blocked-special"
 	StatusRefused        = "refused"
 	StatusError          = "error"
+)
+
+// Background intervals.
+const (
+	maintainEvery = 10 * time.Second // rate-limiter sweep, QPS sample, pause expiry
+	refreshEvery  = 5 * time.Minute  // router resolver, cache IPs, host addresses
+	bucketIdle    = time.Minute      // idle rate-limit buckets are dropped
+	shutdownWait  = 5 * time.Second
+	udpReadSize   = dns.DefaultMsgSize
+	tcpIdle       = 8 * time.Second
+	maxTCPQueries = 128
 )
 
 // Consumer-side interfaces (implemented by the concrete packages; fakes in tests).
@@ -205,75 +220,260 @@ type Stats struct {
 	Refused        int64                 `json:"refused"`
 	RateLimited    int64                 `json:"rateLimited"`
 	InFlight       int64                 `json:"inFlight"`
+	Overloaded     int64                 `json:"overloaded"` // dropped because too many queries were in flight
 	TopRateLimited []netutil.RateLimited `json:"topRateLimited"`
 }
 
 // Server is the DNS server.
 type Server struct {
-	d Deps
+	d   Deps
+	log *slog.Logger
+	env hostEnv
+
+	writeMu  sync.Mutex // records/forwarders writes with their snapshot reload
+	zone     atomic.Pointer[zone]
+	fwd      atomic.Pointer[fwdTable]
+	cacheIPs atomic.Pointer[cacheIPState]
+	routerMu sync.Mutex // orders router state updates from settings and detection
+	router   atomic.Pointer[routerState]
+	host     atomic.Pointer[hostInfo]
+
+	limMu   sync.Mutex // serialises limiter rebuilds
+	limiter atomic.Pointer[limiterState]
+
+	routerKick chan struct{}
+	rotate     atomic.Uint32
+
+	queries, refused, rateLimited, inFlight, overloaded atomic.Int64
+
+	qpsMu      sync.Mutex
+	qpsSamples []qpsSample // the last 7 (time, queries) samples, 10 s apart
+}
+
+type qpsSample struct {
+	at time.Time
+	n  int64
+}
+
+// limiterState is the active rate limiter and the configuration it was built from.
+type limiterState struct {
+	rl  *netutil.RateLimiter
+	key string
 }
 
 // New creates the server and migrates its tables (records, forwarders).
-func New(ctx context.Context, d Deps) (*Server, error) { return &Server{d: d}, nil }
+func New(ctx context.Context, d Deps) (*Server, error) {
+	if d.DB == nil || d.Settings == nil {
+		return nil, errors.New("dnsserver: DB and Settings are required")
+	}
+	if d.Log == nil {
+		d.Log = slog.Default()
+	}
+	if d.ACL == nil {
+		d.ACL = netutil.NewACLWatcher(d.Settings)
+	}
+	s := &Server{
+		d:          d,
+		log:        d.Log.With(slog.String("component", "dns")),
+		env:        defaultHostEnv(d.Container),
+		routerKick: make(chan struct{}, 1),
+	}
+	if err := d.DB.Migrate(ctx, "dns", migrations); err != nil {
+		return nil, err
+	}
+	set := d.Settings.Get()
+	s.host.Store(s.env.host())
+	s.router.Store(configuredRouter(set))
+	s.updateCacheIPs(set)
+	if err := s.reloadConfig(ctx); err != nil {
+		return nil, err
+	}
+	d.Settings.Subscribe(s.settingsChanged)
+	return s, nil
+}
+
+// settingsChanged applies settings live: rate limits, cache IPs and the
+// router resolver. Everything else is read per query.
+func (s *Server) settingsChanged(old, cur *settings.All) {
+	if old.DNS.RouterResolver != cur.DNS.RouterResolver {
+		s.routerMu.Lock()
+		s.router.Store(configuredRouter(cur))
+		s.routerMu.Unlock()
+		select {
+		case s.routerKick <- struct{}{}:
+		default:
+		}
+	}
+	s.rebuildLimiter()
+	s.updateCacheIPs(cur)
+}
+
+// rebuildLimiter replaces the rate limiter when its configuration changed.
+// Exempt: dns.rateLimitExempt, loopback, the router resolver, local PTR
+// upstreams and conditional forwarder targets.
+func (s *Server) rebuildLimiter() {
+	s.limMu.Lock()
+	defer s.limMu.Unlock()
+	set := s.d.Settings.Get()
+	exempt := settings.ParsePrefixes(set.DNS.RateLimitExempt)
+	exempt = append(exempt, netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"))
+	var ips []netip.Addr
+	if st := s.router.Load(); st.addr.IsValid() {
+		ips = append(ips, st.addr)
+	}
+	ips = append(ips, upstreamIPs(set.DNS.LocalPTRUpstreams)...)
+	if t := s.fwd.Load(); t != nil {
+		ips = append(ips, t.ips...)
+	}
+	for _, ip := range ips {
+		exempt = append(exempt, netip.PrefixFrom(ip, ip.BitLen()))
+	}
+	keys := make([]string, 0, len(exempt))
+	for _, p := range exempt {
+		keys = append(keys, p.String())
+	}
+	slices.Sort(keys)
+	key := fmt.Sprintf("%d/%d/%s", set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, strings.Join(slices.Compact(keys), ","))
+	if cur := s.limiter.Load(); cur != nil && cur.key == key {
+		return
+	}
+	s.limiter.Store(&limiterState{rl: netutil.NewRateLimiter(set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, exempt), key: key})
+}
 
 // Serve answers queries on the pre-bound sockets until ctx ends (blocks).
+// It also runs the background refreshes (rate-limiter sweep, router
+// resolver, cache IPs, pause expiry) and returns after all of them exited.
 func (s *Server) Serve(ctx context.Context, udp []net.PacketConn, tcp []net.Listener) error {
-	<-ctx.Done()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	h := &dnsHandler{s: s, ctx: ctx}
+	var servers []*dns.Server
+	for _, pc := range udp {
+		servers = append(servers, &dns.Server{PacketConn: pc, Handler: h, UDPSize: udpReadSize, DecorateReader: s.decorateReader})
+	}
+	for _, ln := range tcp {
+		servers = append(servers, &dns.Server{Listener: ln, Handler: h, MaxTCPQueries: maxTCPQueries,
+			IdleTimeout: func() time.Duration { return tcpIdle }})
+	}
+
+	var bg sync.WaitGroup
+	bg.Go(func() { s.maintain(ctx) })
+	bg.Go(func() { s.refresh(ctx) })
+
+	errc := make(chan error, len(servers))
+	var running []*dns.Server
+	var wg sync.WaitGroup
+	var runErr error
+	for _, srv := range servers {
+		started := make(chan struct{})
+		srv.NotifyStartedFunc = func() { close(started) }
+		wg.Go(func() {
+			if err := srv.ActivateAndServe(); err != nil {
+				errc <- err
+			}
+		})
+		select {
+		case <-started:
+			running = append(running, srv)
+		case runErr = <-errc:
+		}
+		if runErr != nil {
+			break
+		}
+	}
+	if runErr == nil {
+		select {
+		case <-ctx.Done():
+		case runErr = <-errc:
+		}
+	}
+	cancel()
+	for _, srv := range running {
+		sctx, scancel := context.WithTimeout(context.Background(), shutdownWait)
+		_ = srv.ShutdownContext(sctx)
+		scancel()
+	}
+	wg.Wait()
+	bg.Wait()
+	if runErr != nil {
+		return fmt.Errorf("dns: %w", runErr)
+	}
 	return nil
 }
 
-// Lookup runs the pipeline for a test query without sending the reply
-// anywhere (does not log to the query log).
-func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Addr) (LookupResult, error) {
-	return LookupResult{}, errNotImplemented
+// maintain sweeps the rate limiter, samples the query rate and ends elapsed
+// blocking pauses.
+func (s *Server) maintain(ctx context.Context) {
+	t := time.NewTicker(maintainEvery)
+	defer t.Stop()
+	s.sampleQPS(time.Now())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			s.limiter.Load().rl.Sweep(bucketIdle)
+			s.sampleQPS(now)
+			s.expirePause(ctx, now)
+		}
+	}
 }
 
-// SetBlocking enables/disables blocking; pause > 0 disables for that long.
-func (s *Server) SetBlocking(ctx context.Context, enabled bool, pause time.Duration) (BlockingStatus, error) {
-	return BlockingStatus{}, errNotImplemented
+// refresh re-detects the router resolver, the host addresses and the
+// automatic cache IPs every 5 minutes (router also on settings changes).
+func (s *Server) refresh(ctx context.Context) {
+	t := time.NewTicker(refreshEvery)
+	defer t.Stop()
+	for {
+		s.host.Store(s.env.host())
+		s.updateCacheIPs(s.d.Settings.Get())
+		s.detectRouter(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		case <-s.routerKick:
+		}
+	}
 }
 
-// Blocking returns the current blocking state.
-func (s *Server) Blocking() BlockingStatus { return BlockingStatus{} }
+func (s *Server) sampleQPS(now time.Time) {
+	s.qpsMu.Lock()
+	defer s.qpsMu.Unlock()
+	s.qpsSamples = append(s.qpsSamples, qpsSample{at: now, n: s.queries.Load()})
+	if len(s.qpsSamples) > 7 { // 7 samples × 10 s cover the last minute
+		s.qpsSamples = slices.Delete(s.qpsSamples, 0, len(s.qpsSamples)-7)
+	}
+}
 
-// CacheIPs returns the effective LanCache answer addresses (auto-detection
-// is recomputed every 5 minutes).
-func (s *Server) CacheIPs() CacheIPStatus { return CacheIPStatus{} }
-
-// Router returns the router-resolver state.
-func (s *Server) Router() RouterStatus { return RouterStatus{} }
+// qps returns the average query rate over the sampled window (≤ 1 minute).
+func (s *Server) qps() float64 {
+	s.qpsMu.Lock()
+	defer s.qpsMu.Unlock()
+	if len(s.qpsSamples) == 0 {
+		return 0
+	}
+	first := s.qpsSamples[0]
+	secs := time.Since(first.at).Seconds()
+	if secs < 1 {
+		return 0
+	}
+	return float64(s.queries.Load()-first.n) / secs
+}
 
 // Stats returns live counters.
-func (s *Server) Stats() Stats { return Stats{} }
-
-// Records lists local records.
-func (s *Server) Records(ctx context.Context) ([]Record, error) { return nil, errNotImplemented }
-
-// CreateRecord adds a record.
-func (s *Server) CreateRecord(ctx context.Context, in RecordInput) (Record, error) {
-	return Record{}, errNotImplemented
+func (s *Server) Stats() Stats {
+	top := s.limiter.Load().rl.Top(10)
+	if top == nil {
+		top = []netutil.RateLimited{}
+	}
+	return Stats{
+		Queries:        s.queries.Load(),
+		QPS:            s.qps(),
+		Refused:        s.refused.Load(),
+		RateLimited:    s.rateLimited.Load(),
+		InFlight:       s.inFlight.Load(),
+		Overloaded:     s.overloaded.Load(),
+		TopRateLimited: top,
+	}
 }
-
-// UpdateRecord updates a record.
-func (s *Server) UpdateRecord(ctx context.Context, id int64, in RecordInput) (Record, error) {
-	return Record{}, errNotImplemented
-}
-
-// DeleteRecord deletes a record.
-func (s *Server) DeleteRecord(ctx context.Context, id int64) error { return errNotImplemented }
-
-// Forwarders lists conditional forwarders.
-func (s *Server) Forwarders(ctx context.Context) ([]Forwarder, error) { return nil, errNotImplemented }
-
-// CreateForwarder adds a forwarder.
-func (s *Server) CreateForwarder(ctx context.Context, in ForwarderInput) (Forwarder, error) {
-	return Forwarder{}, errNotImplemented
-}
-
-// UpdateForwarder updates a forwarder.
-func (s *Server) UpdateForwarder(ctx context.Context, id int64, in ForwarderInput) (Forwarder, error) {
-	return Forwarder{}, errNotImplemented
-}
-
-// DeleteForwarder deletes a forwarder.
-func (s *Server) DeleteForwarder(ctx context.Context, id int64) error { return errNotImplemented }

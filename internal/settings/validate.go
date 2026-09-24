@@ -138,6 +138,19 @@ func (a *All) Validate() error {
 	if len(d.Upstreams) == 0 {
 		return apperr.Invalid("dns.upstreams", "at least one upstream is required")
 	}
+	for field, n := range map[string]int{"dns.upstreams": len(d.Upstreams), "dns.bootstrap": len(d.Bootstrap),
+		"dns.localPtrUpstreams": len(d.LocalPTRUpstreams), "dns.serverNames": len(d.ServerNames)} {
+		if n > 16 {
+			return apperr.Invalid(field, "at most 16 entries")
+		}
+	}
+	for field, n := range map[string]int{"dns.allowedNetworks": len(d.AllowedNetworks), "dns.rateLimitExempt": len(d.RateLimitExempt),
+		"lancache.cacheIpv4": len(a.LanCache.CacheIPv4), "lancache.cacheIpv6": len(a.LanCache.CacheIPv6),
+		"lancache.nocacheClients": len(a.LanCache.NocacheClients), "web.allowedHosts": len(a.Web.AllowedHosts)} {
+		if n > 256 {
+			return apperr.Invalid(field, "at most 256 entries")
+		}
+	}
 	needBootstrap := false
 	for i, u := range d.Upstreams {
 		spec, err := ParseUpstream(u)

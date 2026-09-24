@@ -18,21 +18,31 @@
 //     "picache/storage/<id>/password"), write-only in the API, never logged,
 //     never put into snippets (placeholder "<your NAS password>"); only the
 //     root CLI decrypts it to write /etc/picache/credentials/<id>.cred (0600).
+//
+// The mount guard checks every target every 30 s in single-flight goroutines
+// with a timeout, so a hung NAS never blocks a caller: Status and StoreRoot
+// only read the last result from memory.
 package storage
 
 import (
+	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 )
-
-var errNotImplemented = errors.New("storage: not implemented")
 
 // ErrNotInitialised is wrapped by StoreRoot when the target has no store
 // marker yet (activate with initialize=true or adopt=true).
@@ -41,6 +51,13 @@ var ErrNotInitialised = &apperr.Error{Kind: apperr.KindConflict, Message: "stora
 // LocalTargetID is the built-in target backed by PICACHE_CACHE_DIR. It is
 // initialised automatically when its directory is empty.
 const LocalTargetID = "local"
+
+// HostApplyFlagFile exists when the root helper is installed (created by
+// install.sh together with the picache-storage.path unit).
+const HostApplyFlagFile = "/etc/picache/host-apply.enabled"
+
+// CredentialsDir holds the NAS credential files written by the root helper.
+const CredentialsDir = "/etc/picache/credentials"
 
 // Kind of storage.
 type Kind string
@@ -84,6 +101,7 @@ type Target struct {
 }
 
 // TargetInput creates or updates a target. Password: nil = keep, "" = clear.
+// Fields that do not apply to the kind are ignored.
 type TargetInput struct {
 	Name              string  `json:"name"`
 	Kind              Kind    `json:"kind"`
@@ -136,6 +154,7 @@ type Capabilities struct {
 	Container    string          `json:"container"` // docker | podman | lxc | "" (bare metal / VM)
 	InitUserNS   bool            `json:"initUserNs"`
 	UIDMapOffset int64           `json:"uidMapOffset"` // host uid = offset + container uid (LXC)
+	GIDMapOffset int64           `json:"gidMapOffset"` // host gid = offset + container gid (LXC)
 	UID          int             `json:"uid"`
 	GID          int             `json:"gid"`
 	Systemd      bool            `json:"systemd"`
@@ -176,108 +195,297 @@ type InitResult struct {
 	Adopted bool   `json:"adopted"`
 }
 
-// Manager owns targets and their health.
+// Bounds and timings.
+const (
+	maxTargets    = 32               // storage targets per installation
+	maxListeners  = 16               // OnStatusChange callbacks
+	guardInterval = 30 * time.Second // mount guard period
+	checkTimeout  = 15 * time.Second // one guard check (statfs, marker, write test)
+	testTimeout   = 90 * time.Second // Test waits this long for a fresh check
+	initTimeout   = 30 * time.Second // InitStore file system work
+	shutdownGrace = 10 * time.Second // Start waits this long for checks stuck in the kernel
+)
+
+// Manager owns targets and their health. It is safe for concurrent use.
 type Manager struct {
-	db  *db.DB
-	box *secrets.Box
-	cfg *config.Config
-	log *slog.Logger
+	db            *db.DB
+	box           *secrets.Box
+	cfg           *config.Config
+	log           *slog.Logger
+	sliceSize     func() int64
+	hostApplyFlag string
+	caps          Capabilities // static part, detected once in New
+	probeFn       func(Target) checkResult
+
+	opMu sync.Mutex // serialises Create, Update, Delete and InitStore
+
+	mu        sync.Mutex // guards the fields below
+	targets   map[string]*entry
+	listeners []func(id string, st Status)
+	closed    bool
+
+	kick chan struct{}  // wakes the guard loop after changes
+	wg   sync.WaitGroup // check and init goroutines
+}
+
+// entry is the in-memory state of one target.
+type entry struct {
+	t        Target
+	gen      uint64 // bumped when the location changes; older check results are discarded
+	st       Status
+	uninit   bool      // offline only because no store has been initialised or adopted
+	notified Status    // last status passed to listeners
+	run      *checkRun // in-flight check (single flight)
+	busy     bool      // InitStore is writing; the guard leaves the target alone
 }
 
 // New creates the manager, ensuring the built-in local target exists (and
 // initialising its store marker when the cache dir is empty). sliceSize is
 // used for new store markers.
 func New(ctx context.Context, d *db.DB, box *secrets.Box, cfg *config.Config, sliceSize func() int64, log *slog.Logger) (*Manager, error) {
-	return &Manager{db: d, box: box, cfg: cfg, log: log}, nil
+	if d == nil || cfg == nil || sliceSize == nil {
+		return nil, errors.New("storage: missing dependency")
+	}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	m := &Manager{
+		db:            d,
+		box:           box,
+		cfg:           cfg,
+		log:           log.With(slog.String("component", "storage")),
+		sliceSize:     sliceSize,
+		hostApplyFlag: HostApplyFlagFile,
+		targets:       make(map[string]*entry),
+		kick:          make(chan struct{}, 1),
+	}
+	m.probeFn = m.probe
+	if err := d.Migrate(ctx, "storage", migrations); err != nil {
+		return nil, fmt.Errorf("storage: %w", err)
+	}
+	m.caps = detectStaticCapabilities(cfg)
+	if err := m.load(ctx); err != nil {
+		return nil, err
+	}
+	m.autoInitLocal(ctx)
+	return m, nil
 }
 
-// Start runs the 30 s health loop (statfs with timeout, single-flight) until
-// ctx ends. Start blocks until ctx is done and its goroutines have exited.
-func (m *Manager) Start(ctx context.Context) { <-ctx.Done() }
+// load makes sure the built-in target exists and reads all targets.
+func (m *Manager) load(ctx context.Context) error {
+	now := db.NowMs()
+	if _, err := m.db.W.ExecContext(ctx, `INSERT INTO storage_targets
+		(id, name, kind, mode, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO NOTHING`,
+		LocalTargetID, "Local disk", string(KindLocal), string(ModeExternal), localPath(m.cfg), now, now); err != nil {
+		return fmt.Errorf("storage: create built-in target: %w", err)
+	}
+	ts, err := loadTargets(ctx, m.db.R)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range ts {
+		t = resolveTarget(t, m.cfg)
+		m.targets[t.ID] = &entry{t: t, st: pendingStatus(t, "not checked yet")}
+	}
+	return nil
+}
+
+// autoInitLocal initialises the built-in store when the cache directory is
+// empty, or adopts the marker already there when the database has no store
+// id for it (for example after the configuration database was recreated).
+func (m *Manager) autoInitLocal(ctx context.Context) {
+	t, ok := m.get(LocalTargetID)
+	if !ok || t.StoreID != "" {
+		return
+	}
+	dir := t.Path
+	mk, err := cachestore.ReadMarker(dir)
+	switch {
+	case err == nil:
+		m.log.Info("adopted the existing cache store in the cache directory", slog.String("dir", dir), slog.String("store", mk.StoreID))
+	case errors.Is(err, cachestore.ErrNoMarker):
+		if mk, err = cachestore.InitRoot(dir, newID(), m.sliceSize()); err != nil {
+			m.log.Warn("cannot initialise the built-in cache store; initialise it under Cache → Storage",
+				slog.String("dir", dir), slog.Any("err", err))
+			return
+		}
+		m.log.Info("initialised the built-in cache store", slog.String("dir", dir), slog.String("store", mk.StoreID))
+	default:
+		m.log.Warn("cannot read the built-in cache store", slog.String("dir", dir), slog.Any("err", err))
+		return
+	}
+	if err := m.setStoreID(ctx, LocalTargetID, mk.StoreID); err != nil {
+		m.log.Warn("cannot record the built-in store id", slog.Any("err", err))
+	}
+}
 
 // Capabilities returns the detected environment capabilities.
-func (m *Manager) Capabilities() Capabilities { return Capabilities{} }
+func (m *Manager) Capabilities() Capabilities {
+	c := m.caps
+	c.Filesystems = kernelFilesystems()
+	c.MountHelpers = mountHelpers()
+	c.HostApply = fileExists(m.hostApplyFlag)
+	return c
+}
 
 // Targets lists targets with status; active marks cache.activeStoreId.
 func (m *Manager) Targets(ctx context.Context, activeID string) ([]TargetWithStatus, error) {
-	return nil, errNotImplemented
+	m.mu.Lock()
+	out := make([]TargetWithStatus, 0, len(m.targets))
+	for id, e := range m.targets {
+		out = append(out, TargetWithStatus{Target: e.t, Status: e.st, Active: id == activeID})
+	}
+	m.mu.Unlock()
+	slices.SortFunc(out, func(a, b TargetWithStatus) int {
+		if (a.ID == LocalTargetID) != (b.ID == LocalTargetID) {
+			if a.ID == LocalTargetID {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
+	})
+	return out, nil
 }
 
 // Target returns one target.
 func (m *Manager) Target(ctx context.Context, id string) (Target, error) {
-	return Target{}, errNotImplemented
-}
-
-// Create adds a target (ValidateTarget).
-func (m *Manager) Create(ctx context.Context, in TargetInput) (Target, error) {
-	return Target{}, errNotImplemented
-}
-
-// Update changes a target (ValidateTarget). The built-in local target only
-// allows renaming.
-func (m *Manager) Update(ctx context.Context, id string, in TargetInput) (Target, error) {
-	return Target{}, errNotImplemented
-}
-
-// Delete removes a target (not "local", not the active one).
-func (m *Manager) Delete(ctx context.Context, id, activeID string) error { return errNotImplemented }
-
-// Test runs a full functional test (mount guard, write/rename/read/delete in
-// tmp/, statfs) without changing anything else.
-func (m *Manager) Test(ctx context.Context, id string) TestResult {
-	return TestResult{Error: errNotImplemented.Error()}
-}
-
-// RequestApply queues a host-apply request for the root helper (writes
-// <data>/storage-requests/<id>); apperr.Unavailable if the helper is not installed.
-func (m *Manager) RequestApply(ctx context.Context, id string) (Status, error) {
-	return Status{}, errNotImplemented
-}
-
-// InitStore writes the store marker into an empty, guarded root (adopt=false),
-// or adopts an existing marker (adopt=true) and records its store id.
-func (m *Manager) InitStore(ctx context.Context, id string, adopt bool) (InitResult, error) {
-	return InitResult{}, errNotImplemented
+	t, ok := m.get(id)
+	if !ok {
+		return Target{}, apperr.NotFound("storage target", id)
+	}
+	return t, nil
 }
 
 // Status returns the last known status (in memory).
-func (m *Manager) Status(id string) Status { return Status{} }
+func (m *Manager) Status(id string) Status {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e, ok := m.targets[id]; ok {
+		return e.st
+	}
+	return Status{Reason: "unknown storage target"}
+}
 
 // StoreRoot returns the validated store root and store id of an online,
 // initialised target, or an apperr error (Unavailable with the reason, or
 // ErrNotInitialised).
 func (m *Manager) StoreRoot(id string) (root, storeID string, err error) {
-	return "", "", errNotImplemented
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.targets[id]
+	switch {
+	case !ok:
+		return "", "", apperr.NotFound("storage target", id)
+	case e.st.Online && e.t.StoreID != "" && e.st.StoreID == e.t.StoreID:
+		return e.st.StoreRoot, e.t.StoreID, nil
+	case e.uninit || (e.t.StoreID == "" && e.st.CheckedAt.IsZero()):
+		return "", "", ErrNotInitialised
+	}
+	reason := e.st.Reason
+	if reason == "" {
+		reason = "storage is offline"
+	}
+	return "", "", &apperr.Error{Kind: apperr.KindUnavailable, Message: reason}
 }
 
 // OnStatusChange registers a callback for status transitions (online,
-// offline, space).
-func (m *Manager) OnStatusChange(fn func(id string, st Status)) {}
+// offline, space). Callbacks run on the guard goroutine and must not block.
+func (m *Manager) OnStatusChange(fn func(id string, st Status)) {
+	if fn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.listeners) >= maxListeners {
+		m.log.Error("too many storage status listeners; ignoring one")
+		return
+	}
+	m.listeners = append(m.listeners, fn)
+}
 
 // Snippets renders configuration snippets for a target (never the password).
 func (m *Manager) Snippets(ctx context.Context, id string) (Snippets, error) {
-	return Snippets{}, errNotImplemented
+	t, err := m.Target(ctx, id)
+	if err != nil {
+		return Snippets{}, err
+	}
+	return renderSnippets(t, m.Capabilities(), m.cfg), nil
 }
 
-// ValidateTarget checks every field of t with strict allowlists (id, IP
-// literal, share/export/username/domain charsets, versions, relative subdir,
-// path below cfg.MountRoot and not inside cfg.DataDir).
-func ValidateTarget(t Target, cfg *config.Config) error { return nil }
-
-// ApplyHost is the root-only `picache storage apply <id>` implementation. It
-// opens picache.db read-only (db.OpenReadOnly), re-validates the target,
-// loads the master key without generating one (secrets.Load) to decrypt the
-// password (or reads it from passwordStdin when non-nil), writes
-// /etc/picache/credentials/<id>.cred (0600, O_EXCL|O_NOFOLLOW, root-owned
-// 0700 dir) and a systemd .mount unit for MountRoot/<id>, then runs
-// `systemctl daemon-reload` and `systemctl enable --now <unit>`.
-func ApplyHost(ctx context.Context, cfg *config.Config, id string, passwordStdin []byte, log *slog.Logger) error {
-	return errNotImplemented
+// get returns a copy of a target.
+func (m *Manager) get(id string) (Target, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.targets[id]
+	if !ok {
+		return Target{}, false
+	}
+	return e.t, true
 }
 
-// ApplyPending processes all queued requests (root helper started by the
-// picache-storage.path unit). Results are written to
-// <data>/storage-requests/<id>.result for the service to display.
-func ApplyPending(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
-	return errNotImplemented
+// notify calls the status listeners (never with m.mu held).
+func (m *Manager) notify(id string, st Status) {
+	m.mu.Lock()
+	fns := slices.Clone(m.listeners)
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return
+	}
+	for _, fn := range fns {
+		fn(id, st)
+	}
 }
+
+// localPath is the absolute path of the built-in store (PICACHE_CACHE_DIR).
+func localPath(cfg *config.Config) string {
+	p := filepath.Clean(cfg.CacheDir)
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	return p
+}
+
+// hostApplyPath is the only mountpoint the root helper ever uses for id.
+func hostApplyPath(cfg *config.Config, id string) string {
+	return filepath.Join(cfg.MountRoot, id)
+}
+
+// resolveTarget fills in paths that are computed, never stored: the
+// built-in target uses PICACHE_CACHE_DIR, host-apply targets MountRoot/<id>.
+func resolveTarget(t Target, cfg *config.Config) Target {
+	switch {
+	case t.ID == LocalTargetID:
+		t.Path = localPath(cfg)
+	case t.Mode == ModeHostApply:
+		t.Path = hostApplyPath(cfg, t.ID)
+	}
+	return t
+}
+
+// storeRootPath is the directory holding the store marker.
+func storeRootPath(t Target) string {
+	if t.Subdir == "" {
+		return t.Path
+	}
+	return filepath.Join(t.Path, filepath.FromSlash(t.Subdir))
+}
+
+// pendingStatus is the status of a target that has not been checked (again) yet.
+func pendingStatus(t Target, reason string) Status {
+	return Status{Reason: reason, StoreRoot: storeRootPath(t)}
+}
+
+// newID returns 32 random lower-case hex characters.
+func newID() string {
+	var b [16]byte
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// passwordAAD binds a sealed password to its target.
+func passwordAAD(id string) string { return "picache/storage/" + id + "/password" }

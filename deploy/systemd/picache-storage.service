@@ -1,0 +1,51 @@
+# PiCache host-apply root helper. Started by picache-storage.path only; do
+# not enable it directly. It re-validates every queued request against the
+# database (opened read-only, never trusted), writes
+# /etc/picache/credentials/<id>.cred and a .mount unit for /srv/picache/<id>
+# to /etc/systemd/system, then runs `systemctl daemon-reload` and
+# `systemctl enable --now` for that unit. systemd (PID 1) performs the mount,
+# so this helper needs no CAP_SYS_ADMIN.
+[Unit]
+Description=PiCache storage helper (apply queued NAS mount requests)
+Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md
+# Removing this file disables host-apply without uninstalling anything.
+ConditionPathExists=/etc/picache/host-apply.enabled
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/picache/picache.env
+ExecStart=/usr/local/bin/picache storage apply-pending
+# Each mount unit times out after 30 s; bound the whole run.
+TimeoutStartSec=5min
+
+# Runs as root. Writable: mount units, the credential store, the mount points
+# below /srv/picache and the request directory (result files). Everything
+# else, including the databases, is read-only. The database is opened
+# read-only; that needs its -wal/-shm files, which exist while
+# picache.service runs (it is the service that queues the requests).
+ProtectSystem=strict
+ReadWritePaths=/etc/systemd/system -/etc/picache/credentials -/srv/picache -/var/lib/picache/storage-requests
+# Root needs the DAC and ownership capabilities to read the picache-owned
+# database and master key, to give new mount points to the service user and
+# to hand result files back to it.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# systemctl talks to PID 1 over a Unix socket; no network access needed.
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

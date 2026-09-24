@@ -1,0 +1,73 @@
+# PiCache with published ports (Docker bridge networking).
+#
+#   cd deploy/docker
+#   docker compose -f docker-compose.bridge.yml up -d --build
+#   docker exec -u 65532:65532 picache /picache setup-token
+#
+# Prefer docker-compose.yml (host networking). In bridge mode:
+#   - REQUIRED for LanCache: set the cache IPv4 address (lancache.cacheIpv4,
+#     under Cache -> Cache settings) to this host's LAN IP. PiCache only sees
+#     the container's own address here, so it cannot auto-detect it and the
+#     LanCache DNS answers stay off until it is set.
+#   - IPv4 client addresses are preserved, but traffic that passes through
+#     docker-proxy (IPv6 to an IPv4-only bridge, loopback, hairpin) appears to
+#     come from the Docker gateway, so per-client statistics, groups and rate
+#     limits see one client.
+#   - Clients cannot be identified by MAC address (the container has its own
+#     neighbour table).
+#   - Router resolver "auto" sees the Docker gateway instead of your router:
+#     set the router resolver (dns.routerResolver) to your router's IP under
+#     DNS -> DNS settings to resolve local host names.
+#
+# Port 53: publishing 0.0.0.0:53 fails while systemd-resolved's stub
+# (127.0.0.53) or another DNS server listens on the host. Publish on the
+# host's LAN address instead ("192.168.1.5:53:53/udp", same for tcp) or
+# disable the other listener (docs/DEPLOYMENT.md, "Port 53 conflicts").
+name: picache
+
+services:
+  picache:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: picache:latest
+    # Always built from this source tree, never pulled from a registry.
+    pull_policy: build
+    container_name: picache
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "8080:8080/tcp"
+      - "8443:8443/tcp"
+    read_only: true
+    cap_drop: [ALL]
+    # SETUID/SETGID are needed for the in-process privilege drop.
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m
+    stop_grace_period: 30s
+    volumes:
+      - picache-data:/data
+      - picache-cache:/cache
+      # NAS cache store: see docker-compose.yml (host mount below
+      # /srv/picache plus a bind with rslave propagation).
+      # - type: bind
+      #   source: /srv/picache
+      #   target: /srv/picache
+      #   bind:
+      #     propagation: rslave
+    # environment:
+    #   PICACHE_WEB_HOSTS: "picache.lan"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  picache-data:
+  picache-cache:

@@ -161,6 +161,8 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	switch {
 	case m.Disabled != "":
 		add("logs", "warn", "logging disabled: "+m.Disabled, "check the data directory; logs.db was moved aside")
+	case m.RawPaused:
+		add("logs", "warn", "raw log inserts are paused: the data disk has less than 1 GiB free", "free space on the data disk")
 	case m.Dropped > 0:
 		add("logs", "ok", fmt.Sprintf("%d events dropped under load", m.Dropped), "")
 	default:

@@ -1,0 +1,204 @@
+package dnsserver
+
+import (
+	"fmt"
+	"net/netip"
+	"strings"
+
+	"github.com/miekg/dns"
+
+	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
+	"github.com/hustenreizjuengling/picache/internal/settings"
+)
+
+// specialTTL is the TTL of locally generated special-use answers.
+const specialTTL uint32 = 60
+
+// serverName reports whether name is one of this server's names
+// (dns.serverNames, also below the local domain).
+func serverName(set *settings.All, name string) bool {
+	ld := set.DNS.LocalDomain
+	for _, n := range set.DNS.ServerNames {
+		if name == n || (ld != "" && name == n+"."+ld) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownPTRName is the PTR target for this server's own addresses.
+func ownPTRName(set *settings.All) (string, bool) {
+	if len(set.DNS.ServerNames) == 0 {
+		return "", false
+	}
+	n := set.DNS.ServerNames[0]
+	if !strings.Contains(n, ".") && set.DNS.LocalDomain != "" {
+		n += "." + set.DNS.LocalDomain
+	}
+	return n, true
+}
+
+// specialUse handles special-use names (ARCHITECTURE 7.1 step 6): they are
+// answered locally, never forwarded to the default upstreams and exempt
+// from blocking.
+func (s *Server) specialUse(qc *qctx) (result, bool) {
+	name := qc.qname
+	switch {
+	case inZone(name, "localhost"):
+		qc.note("special-use name localhost")
+		return s.addrAnswer(qc, []netip.Addr{netip.MustParseAddr("127.0.0.1")}, []netip.Addr{netip.IPv6Loopback()}), true
+	case serverName(qc.set, name):
+		qc.note("this server's own name")
+		h := s.host.Load()
+		return s.addrAnswer(qc, h.addrsFor(qc.client, false), h.addrsFor(qc.client, true)), true
+	case inZone(name, "resolver.arpa"):
+		qc.note("special-use name resolver.arpa: NODATA")
+		return s.negative(qc, dns.RcodeSuccess, StatusSpecial, "resolver.arpa"), true
+	}
+	if zone, ok := privateReverseZone(name); ok {
+		return s.reverseZone(qc, zone), true
+	}
+	if zone, router, ok := s.localZone(qc.set, name); ok {
+		return s.localZoneAnswer(qc, zone, router), true
+	}
+	return result{}, false
+}
+
+// addrAnswer answers A/AAAA with the given addresses (NODATA for other
+// types or when no address of the family exists).
+func (s *Server) addrAnswer(qc *qctx, v4, v6 []netip.Addr) result {
+	m := newReply(qc.req)
+	m.Authoritative = true
+	var ips []netip.Addr
+	switch qc.qtype {
+	case dns.TypeA:
+		ips = v4
+	case dns.TypeAAAA:
+		ips = v6
+	}
+	for _, ip := range ips {
+		if ip.Is4() {
+			m.Answer = append(m.Answer, &dns.A{Hdr: rrHeader(qc.q.Name, dns.TypeA, specialTTL), A: ip.AsSlice()})
+		} else {
+			m.Answer = append(m.Answer, &dns.AAAA{Hdr: rrHeader(qc.q.Name, dns.TypeAAAA, specialTTL), AAAA: ip.AsSlice()})
+		}
+	}
+	if len(m.Answer) == 0 {
+		m.Ns = []dns.RR{syntheticSOA(qc.q.Name, specialTTL)}
+	}
+	return result{msg: m, status: StatusSpecial}
+}
+
+// negative returns an authoritative NXDOMAIN or NODATA with the synthetic SOA.
+func (s *Server) negative(qc *qctx, rcode int, status, reason string) result {
+	m := newReply(qc.req)
+	m.Authoritative = true
+	m.Rcode = rcode
+	m.Ns = []dns.RR{syntheticSOA(qc.q.Name, specialTTL)}
+	return result{msg: m, status: status, reason: reason}
+}
+
+// reverseZone answers names in locally served reverse zones: local records
+// (auto-PTR), this server's addresses, the most specific conditional
+// forwarder, dns.localPtrUpstreams, the router resolver, else NXDOMAIN.
+// Nothing here reaches the default upstreams.
+func (s *Server) reverseZone(qc *qctx, zone string) result {
+	if qc.tracing() {
+		qc.note(fmt.Sprintf("private reverse zone %s: never sent to public upstreams", zone))
+	}
+	if r, ok := s.localAnswer(qc); ok {
+		return r
+	}
+	if qc.qtype == dns.TypePTR {
+		if ip, ok := parseReverse(qc.qname); ok && s.host.Load().isOwn(ip) {
+			if name, ok := ownPTRName(qc.set); ok {
+				qc.note("address of this server")
+				m := newReply(qc.req)
+				m.Authoritative = true
+				m.Answer = []dns.RR{&dns.PTR{Hdr: rrHeader(qc.q.Name, dns.TypePTR, specialTTL), Ptr: fqdn(name)}}
+				return result{msg: m, status: StatusSpecial}
+			}
+		}
+	}
+	if f := s.fwd.Load().match(qc.qname); f != nil {
+		return s.resolveVia(qc, f.upstreams, f.ips, "conditional forwarder "+f.domain)
+	}
+	if ups := qc.set.DNS.LocalPTRUpstreams; len(ups) > 0 {
+		return s.resolveVia(qc, ups, upstreamIPs(ups), "local PTR upstreams")
+	}
+	if ip, ok := s.routerAddr(); ok {
+		return s.resolveVia(qc, []string{routerUpstream(ip)}, []netip.Addr{ip}, "router resolver")
+	}
+	qc.note("no local resolver for this reverse zone: NXDOMAIN")
+	return s.negative(qc, dns.RcodeNameError, StatusSpecial, zone)
+}
+
+// localZone returns the special-use or local zone containing name and
+// whether the router resolver may answer it.
+func (s *Server) localZone(set *settings.All, name string) (zone string, router, ok bool) {
+	for _, z := range specialZones {
+		if inZone(name, z) {
+			return z, false, true
+		}
+	}
+	if inZone(name, "home.arpa") {
+		return "home.arpa", true, true
+	}
+	if ld := set.DNS.LocalDomain; ld != "" && inZone(name, ld) {
+		return ld, true, true
+	}
+	for _, d := range s.host.Load().search {
+		if inZone(name, d) {
+			return d, true, true
+		}
+	}
+	return "", false, false
+}
+
+// localZoneAnswer answers names in special-use and local zones: local
+// records and forwarders first, then (if allowed) the router resolver,
+// otherwise NXDOMAIN.
+func (s *Server) localZoneAnswer(qc *qctx, zone string, router bool) result {
+	if qc.tracing() {
+		qc.note(fmt.Sprintf("local zone %s: never sent to the default upstreams", zone))
+	}
+	if r, ok := s.localAnswer(qc); ok {
+		return r
+	}
+	if f := s.fwd.Load().match(qc.qname); f != nil {
+		return s.resolveVia(qc, f.upstreams, f.ips, "conditional forwarder "+f.domain)
+	}
+	if router {
+		if ip, ok := s.routerAddr(); ok {
+			return s.resolveVia(qc, []string{routerUpstream(ip)}, []netip.Addr{ip}, "router resolver")
+		}
+	}
+	qc.note("no local data or resolver for this name: NXDOMAIN")
+	return s.negative(qc, dns.RcodeNameError, StatusSpecial, zone)
+}
+
+// routeName resolves a name on behalf of qc without filtering (CNAME targets
+// of local records): conditional forwarder, local zones (router resolver
+// only), otherwise the default upstreams. A nil reply means the name has no
+// resolver (local zone without router).
+func (s *Server) routeName(qc *qctx, name string, q dns.Question) (*dns.Msg, upstream.Info, error) {
+	if f := s.fwd.Load().match(name); f != nil {
+		return s.exchange(qc, q, f.upstreams, f.ips)
+	}
+	_, private := privateReverseZone(name)
+	_, router, local := s.localZone(qc.set, name)
+	special := inZone(name, "localhost") || inZone(name, "resolver.arpa") || serverName(qc.set, name)
+	switch {
+	case private && len(qc.set.DNS.LocalPTRUpstreams) > 0:
+		ups := qc.set.DNS.LocalPTRUpstreams
+		return s.exchange(qc, q, ups, upstreamIPs(ups))
+	case private || router:
+		if ip, ok := s.routerAddr(); ok {
+			return s.exchange(qc, q, []string{routerUpstream(ip)}, []netip.Addr{ip})
+		}
+		return nil, upstream.Info{}, nil
+	case local || special:
+		return nil, upstream.Info{}, nil
+	}
+	return s.exchange(qc, q, nil, nil)
+}

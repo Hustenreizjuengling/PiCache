@@ -9,6 +9,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/api"
 	"github.com/hustenreizjuengling/picache/internal/apperr"
+	"github.com/hustenreizjuengling/picache/internal/lancache/services"
 	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/settings"
@@ -79,6 +80,7 @@ func (a *App) reconcileStore(ctx context.Context) {
 			Root:      root,
 			IndexPath: filepath.Join(a.paths.CacheIndexDir, storeID+".db"),
 			StoreID:   storeID,
+			GroupKey:  func(svc, host, path string) string { return services.GroupFor(svc, host, path).Key },
 			Log:       a.log,
 		})
 		if err != nil {

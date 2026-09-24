@@ -5,9 +5,20 @@
 // read the index DB by primary key through a bounded LRU of compact entries
 // (default 65 536). Access statistics accumulate in a dirty map and are
 // flushed every 30 s. Index writes from SetMeta/WriteSlice are batched (one
-// transaction every 250 ms or 512 rows). A `store_groups` aggregate table is
-// maintained in the same transactions so Groups()/Services() never scan all
-// objects.
+// transaction every 250 ms or 512 rows). Until a change is committed its
+// entry lives in an in-memory overlay (bounded by the pending-write limit),
+// so Head/HasSlice/ReadSlice see every change immediately while listings may
+// lag by one batch. A `store_groups` aggregate table is maintained in the
+// same transactions so Groups()/Services() never scan all objects.
+//
+// Generations are allocated from a store-wide counter (persisted in
+// store_meta), so a generation is never reused for an object, not even after
+// the object was deleted and cached again.
+//
+// Locking: per-object stripe locks serialise changes of one object (the
+// rename of a slice file happens under it); removals install a tombstone
+// first, so no new slice of a removed object can appear while its files are
+// deleted. Lock order: I/O semaphore → stripe lock → leaf mutexes.
 //
 // Tables (index DB, component "cachestore"): store_objects, store_slices,
 // store_groups, store_pinned_groups, store_meta.
@@ -27,16 +38,20 @@ package cachestore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
-	"regexp"
+	"os"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/hustenreizjuengling/picache/internal/listing"
+	"github.com/hustenreizjuengling/picache/internal/apperr"
+	"github.com/hustenreizjuengling/picache/internal/db"
 )
-
-var errNotImplemented = errors.New("cachestore: not implemented")
 
 var (
 	// ErrSliceMissing is returned by ReadSlice when a slice is not cached.
@@ -53,11 +68,6 @@ var (
 // MaxTotal is the largest object PiCache caches (larger ones are passed through).
 const MaxTotal int64 = 1 << 40 // 1 TiB
 
-var objectIDRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
-
-// ValidObjectID reports whether id is a well-formed object id.
-func ValidObjectID(id string) bool { return objectIDRE.MatchString(id) }
-
 // Options configure a store.
 type Options struct {
 	Root          string // store root directory (local path or NAS mountpoint), already initialised (InitRoot)
@@ -66,6 +76,9 @@ type Options struct {
 	IOConcurrency int    // max concurrent filesystem operations (default 64)
 	LRUEntries    int    // head cache size (default 65536)
 	Log           *slog.Logger
+	// GroupKey derives the content group of an object rebuilt from its slice
+	// headers by Verify (services.GroupFor(...).Key). Default: "<service>:<host>".
+	GroupKey func(service, host, path string) string
 }
 
 // Meta is the object metadata recorded before the first slice is written.
@@ -232,20 +245,234 @@ type ObjectQuery struct {
 
 // Store is safe for concurrent use.
 type Store struct {
-	opt Options
+	opt       Options
+	log       *slog.Logger
+	root      *os.Root
+	db        *db.DB
+	sliceSize int64
+	groupKey  func(service, host, path string) string
+
+	ctx       context.Context // cancelled when Close starts (aborts Evict, Verify and waits)
+	cancel    context.CancelFunc
+	state     atomic.Int64  // number of in-flight calls, | closedBit once Close started
+	idle      chan struct{} // signalled when the last in-flight call leaves after Close started
+	closeOnce sync.Once
+	closeErr  error
+
+	sem   chan struct{} // filesystem I/O semaphore
+	locks [numStripes]sync.Mutex
+	heads *heads
+	gen   atomic.Uint64 // last allocated generation (store-wide, never reused while open)
+	usage usageCounters
+
+	pendMu      sync.Mutex
+	pending     []indexOp
+	flushMu     sync.Mutex
+	kick        chan struct{}
+	stopFlush   chan struct{}
+	flusherDone chan struct{}
+
+	statsMu sync.Mutex
+	stats   map[string]*statDelta
+
+	dirMu sync.Mutex
+	dirs  map[string]struct{} // shard directories known to exist (≤ 65 792 by construction)
+
+	retryMu sync.Mutex
+	retry   map[retryRemoval]struct{} // failed removals (≤ maxRetries)
+
+	evictSem  chan struct{}
+	verifySem chan struct{}
+
+	cbMu    sync.Mutex
+	onEvict []func(Object, string)
+
+	errMu     sync.Mutex
+	lastErr   string
+	lastErrAt time.Time
 }
 
-// ObjectID derives the object id: first 32 hex chars of SHA-256(service + "\x00" + path).
-func ObjectID(service, path string) string { return "" }
+const (
+	numStripes      = 1024           // per-object lock stripes
+	closedBit       = int64(1) << 62 // in state: Close has started
+	closeWait       = 10 * time.Second
+	defaultIO       = 64
+	defaultLRU      = 65536
+	lruBytesPerSlot = 512 // LRU byte budget per entry slot (bounds memory for large headers/bitmaps)
+	maxCallbacks    = 16
+)
+
+var errInvalidID = apperr.Invalid("id", "malformed object id")
 
 // Open opens the store at opt.Root. The root must have been initialised with
 // InitRoot and its marker must carry opt.StoreID. If the index DB cannot be
 // opened or migrated it is moved aside, a fresh index is created and a
 // background Verify(repair) rebuilds it from the slice headers.
-func Open(ctx context.Context, opt Options) (*Store, error) { return nil, errNotImplemented }
+func Open(ctx context.Context, opt Options) (*Store, error) {
+	if !ValidStoreID(opt.StoreID) {
+		return nil, errors.New("cachestore: invalid store id")
+	}
+	if opt.Root == "" || opt.IndexPath == "" {
+		return nil, errors.New("cachestore: root and index path are required")
+	}
+	if opt.IOConcurrency <= 0 {
+		opt.IOConcurrency = defaultIO
+	}
+	opt.IOConcurrency = min(opt.IOConcurrency, 1024)
+	if opt.LRUEntries <= 0 {
+		opt.LRUEntries = defaultLRU
+	}
+	opt.LRUEntries = min(max(opt.LRUEntries, 16), 1<<22)
+	if opt.Log == nil {
+		opt.Log = slog.Default()
+	}
+	log := opt.Log.With(slog.String("component", "cachestore"))
+
+	m, err := ReadMarker(opt.Root)
+	if err != nil {
+		return nil, err
+	}
+	if m.StoreID != opt.StoreID {
+		return nil, fmt.Errorf("cachestore: store marker has id %s, expected %s", m.StoreID, opt.StoreID)
+	}
+	root, err := os.OpenRoot(opt.Root)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range []string{"tmp", "slices"} {
+		if err := root.Mkdir(d, 0o750); err != nil && !errors.Is(err, fs.ErrExist) {
+			_ = root.Close()
+			return nil, fmt.Errorf("cachestore: create %s: %w", d, err)
+		}
+	}
+	idx, err := openIndex(ctx, opt.IndexPath, opt.StoreID, m.SliceSize)
+	rebuild := false
+	if err != nil {
+		if _, serr := os.Stat(opt.IndexPath); serr != nil {
+			_ = root.Close()
+			return nil, fmt.Errorf("cachestore: open index: %w", err)
+		}
+		log.Warn("cache index is unusable; moving it aside and rebuilding it from the slice files", slog.Any("err", err))
+		if merr := moveAside(opt.IndexPath); merr != nil {
+			_ = root.Close()
+			return nil, fmt.Errorf("cachestore: move broken index aside: %w", errors.Join(err, merr))
+		}
+		if idx, err = openIndex(ctx, opt.IndexPath, opt.StoreID, m.SliceSize); err != nil {
+			_ = root.Close()
+			return nil, fmt.Errorf("cachestore: create index: %w", err)
+		}
+		rebuild = true
+	}
+
+	s := &Store{
+		opt:         opt,
+		log:         log,
+		root:        root,
+		db:          idx,
+		sliceSize:   m.SliceSize,
+		groupKey:    opt.GroupKey,
+		idle:        make(chan struct{}, 1),
+		sem:         make(chan struct{}, opt.IOConcurrency),
+		heads:       newHeads(opt.LRUEntries, int64(opt.LRUEntries)*lruBytesPerSlot),
+		kick:        make(chan struct{}, 1),
+		stopFlush:   make(chan struct{}),
+		flusherDone: make(chan struct{}),
+		stats:       map[string]*statDelta{},
+		dirs:        map[string]struct{}{},
+		retry:       map[retryRemoval]struct{}{},
+		evictSem:    make(chan struct{}, 1),
+		verifySem:   make(chan struct{}, 1),
+	}
+	if s.groupKey == nil {
+		s.groupKey = func(service, host, _ string) string { return service + ":" + host }
+	}
+	var gen int64
+	err = idx.W.QueryRowContext(ctx, `SELECT num FROM store_meta WHERE key = 'gen'`).Scan(&gen)
+	if err == nil {
+		err = s.usage.load(ctx, idx.W)
+	}
+	if err != nil {
+		_ = idx.Close()
+		_ = root.Close()
+		return nil, fmt.Errorf("cachestore: read index: %w", err)
+	}
+	s.gen.Store(uint64(gen))
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+
+	go s.flusher()
+	s.enter() // the background task counts as in-flight; Close cancels it
+	go s.background(rebuild)
+	return s, nil
+}
+
+// background removes stale temp files and, after an index reset, rebuilds
+// the index from the slice files.
+func (s *Store) background(rebuild bool) {
+	defer s.leave()
+	s.cleanTmp(s.ctx, time.Hour)
+	if !rebuild {
+		return
+	}
+	res, err := s.verify(s.ctx, true, nil)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.log.Error("index rebuild failed", slog.Any("err", err))
+		}
+		return
+	}
+	s.log.Info("index rebuilt from slice files", slog.Int64("files", res.FilesScanned),
+		slog.Int64("added", res.Added), slog.Int64("corrupt", res.Corrupt), slog.Duration("duration", res.Duration))
+}
+
+// enter registers an in-flight call; false once the store is closed.
+func (s *Store) enter() bool {
+	if s.state.Add(1)&closedBit != 0 {
+		s.leave()
+		return false
+	}
+	return true
+}
+
+func (s *Store) leave() {
+	if s.state.Add(-1) == closedBit {
+		select {
+		case s.idle <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (s *Store) closed() bool { return s.state.Load()&closedBit != 0 }
+
+// opCtx derives a context that is also cancelled when Close starts.
+func (s *Store) opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.ctx, cancel)
+	return ctx, func() { stop(); cancel() }
+}
 
 // Close: see the package documentation.
-func (s *Store) Close() error { return nil }
+func (s *Store) Close() error {
+	s.closeOnce.Do(func() {
+		s.state.Or(closedBit)
+		s.cancel()
+		timer := time.NewTimer(closeWait)
+		defer timer.Stop()
+	wait:
+		for s.state.Load() != closedBit {
+			select {
+			case <-s.idle:
+			case <-timer.C:
+				s.log.Warn("closing cache store with operations still running", slog.Int64("inflight", s.state.Load()&^closedBit))
+				break wait
+			}
+		}
+		close(s.stopFlush)
+		<-s.flusherDone
+		s.closeErr = errors.Join(s.db.Close(), s.root.Close())
+	})
+	return s.closeErr
+}
 
 // ID returns the store id.
 func (s *Store) ID() string { return s.opt.StoreID }
@@ -254,98 +481,170 @@ func (s *Store) ID() string { return s.opt.StoreID }
 func (s *Store) Root() string { return s.opt.Root }
 
 // SliceSize returns the store's slice size (from its marker).
-func (s *Store) SliceSize() int64 { return 1 << 20 }
+func (s *Store) SliceSize() int64 { return s.sliceSize }
+
+// lockFor returns the lock stripe of a (valid) object id.
+func (s *Store) lockFor(id string) *sync.Mutex {
+	h := 0
+	for i := range 3 {
+		c := int(id[i])
+		if c >= 'a' {
+			c -= 'a' - 10
+		} else {
+			c -= '0'
+		}
+		h = h<<4 | c
+	}
+	return &s.locks[h%numStripes]
+}
+
+// lookup returns the current entry of id (nil if unknown). Tombstones are
+// returned as they are (busy != nil).
+func (s *Store) lookup(ctx context.Context, id string) (*entry, error) {
+	if e := s.heads.get(id); e != nil {
+		return e, nil
+	}
+	mu := s.lockFor(id)
+	mu.Lock()
+	defer mu.Unlock()
+	return s.lookupLocked(ctx, id)
+}
+
+// lookupLocked is lookup with the object's stripe lock held, so loading
+// from the index and caching cannot race with a change of the object.
+func (s *Store) lookupLocked(ctx context.Context, id string) (*entry, error) {
+	if e := s.heads.get(id); e != nil {
+		return e, nil
+	}
+	e, err := s.loadEntry(ctx, id)
+	if err != nil || e == nil {
+		return nil, err
+	}
+	s.heads.setClean(id, e)
+	return e, nil
+}
 
 // Head returns the compact object view (LRU → index DB). ok=false if unknown.
 func (s *Store) Head(ctx context.Context, id string) (h ObjectHead, ok bool, err error) {
-	return ObjectHead{}, false, errNotImplemented
+	if !s.enter() {
+		return ObjectHead{}, false, ErrClosed
+	}
+	defer s.leave()
+	if !ValidObjectID(id) {
+		return ObjectHead{}, false, errInvalidID
+	}
+	e, err := s.lookup(ctx, id)
+	if err != nil || e == nil || e.busy != nil {
+		return ObjectHead{}, false, err
+	}
+	return ObjectHead{
+		ID:           id,
+		Gen:          e.gen,
+		Total:        e.total,
+		SliceSize:    s.sliceSize,
+		ContentType:  e.header.Get("Content-Type"),
+		LastModified: e.header.Get("Last-Modified"),
+		Header:       e.header.Clone(),
+		NoSlice:      e.noSlice,
+		Present:      slices.Clone(e.present),
+	}, true, nil
 }
 
 // HasSlice reports whether slice idx of object id (generation gen) is cached.
-func (s *Store) HasSlice(ctx context.Context, id string, gen uint64, idx int64) bool { return false }
-
-// ReadSlice opens a cached slice of generation gen. ErrSliceMissing if not
-// cached, ErrStale if the object changed; a corrupt/mismatched file is
-// deleted and reported as missing.
-func (s *Store) ReadSlice(ctx context.Context, id string, gen uint64, idx int64) (SliceReader, error) {
-	return nil, ErrSliceMissing
-}
-
-// SetMeta creates or updates the object record and returns its generation.
-// A new record or a different Total increments the generation and discards
-// existing slices. New objects of a pinned group are pinned.
-func (s *Store) SetMeta(ctx context.Context, id string, m Meta) (gen uint64, err error) {
-	return 0, errNotImplemented
-}
-
-// WriteSlice stores slice idx of generation gen (temp → close → rename →
-// index). It returns ErrStale if the record is gone or gen differs, and an
-// error unless len(data) == min(SliceSize, Total−idx·SliceSize). crc32c of
-// data is recorded in the slice header.
-func (s *Store) WriteSlice(ctx context.Context, id string, gen uint64, idx int64, data []byte) error {
-	return errNotImplemented
+func (s *Store) HasSlice(ctx context.Context, id string, gen uint64, idx int64) bool {
+	if !s.enter() {
+		return false
+	}
+	defer s.leave()
+	if !ValidObjectID(id) {
+		return false
+	}
+	e, err := s.lookup(ctx, id)
+	return err == nil && e != nil && e.busy == nil && e.gen == gen && e.has(idx)
 }
 
 // Touch records an access (in memory, flushed periodically).
-func (s *Store) Touch(id string, bytesServed int64) {}
+func (s *Store) Touch(id string, bytesServed int64) {
+	if s.closed() || !ValidObjectID(id) {
+		return
+	}
+	now := time.Now().UnixMilli()
+	s.statsMu.Lock()
+	d, ok := s.stats[id]
+	if !ok {
+		if len(s.stats) >= maxDirtyStats {
+			s.statsMu.Unlock()
+			s.kickFlush()
+			return
+		}
+		d = &statDelta{}
+		s.stats[id] = d
+	}
+	d.hits++
+	d.bytes += max(bytesServed, 0)
+	d.last = max(d.last, now)
+	n := len(s.stats)
+	s.statsMu.Unlock()
+	if n >= statsSoftLimit {
+		s.kickFlush()
+	}
+}
 
-// Invalidate deletes all slices of an object and its record.
-func (s *Store) Invalidate(ctx context.Context, id string, reason string) error {
-	return errNotImplemented
+// touched reports whether id has unflushed access statistics, i.e. it was
+// used after the statistics were last written.
+func (s *Store) touched(id string) bool {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	_, ok := s.stats[id]
+	return ok
 }
 
 // OnEvict registers a callback for every removed object (eviction, purge,
 // corruption, invalidation). Called outside locks.
-func (s *Store) OnEvict(fn func(o Object, reason string)) {}
+func (s *Store) OnEvict(fn func(o Object, reason string)) {
+	if fn == nil {
+		return
+	}
+	s.cbMu.Lock()
+	defer s.cbMu.Unlock()
+	if len(s.onEvict) < maxCallbacks {
+		s.onEvict = append(s.onEvict, fn)
+	}
+}
+
+func (s *Store) notifyRemoved(objs []Object, reason string) {
+	if len(objs) == 0 {
+		return
+	}
+	s.cbMu.Lock()
+	cbs := slices.Clone(s.onEvict)
+	s.cbMu.Unlock()
+	for _, o := range objs {
+		for _, fn := range cbs {
+			fn(o, reason)
+		}
+	}
+}
 
 // Usage returns totals (from the aggregate table; cheap).
-func (s *Store) Usage() Usage { return Usage{} }
-
-// Evict applies retention and size limits once. Calls are serialised; a
-// concurrent call waits and then runs its own pass.
-func (s *Store) Evict(ctx context.Context, p Policy) (EvictResult, error) {
-	return EvictResult{}, errNotImplemented
+func (s *Store) Usage() Usage {
+	return Usage{
+		StoreID:     s.opt.StoreID,
+		Objects:     s.usage.objects.Load(),
+		Slices:      s.usage.slices.Load(),
+		CachedBytes: s.usage.cached.Load(),
+		SliceSize:   s.sliceSize,
+	}
 }
 
-// Verify scans the slice tree and reconciles it with the index (checks
-// headers, sizes and crc32c). With repair it fixes the index and deletes
-// corrupt files; otherwise it only reports.
-func (s *Store) Verify(ctx context.Context, repair bool, progress func(VerifyProgress)) (VerifyResult, error) {
-	return VerifyResult{}, errNotImplemented
+// acquireIO takes a slot of the filesystem I/O semaphore.
+func (s *Store) acquireIO(ctx context.Context) error {
+	select {
+	case s.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-// Services aggregates per service.
-func (s *Store) Services(ctx context.Context) ([]ServiceUsage, error) { return nil, errNotImplemented }
-
-// Groups lists content groups.
-func (s *Store) Groups(ctx context.Context, q GroupQuery) (listing.Page[GroupUsage], error) {
-	return listing.Page[GroupUsage]{}, errNotImplemented
-}
-
-// Objects lists objects.
-func (s *Store) Objects(ctx context.Context, q ObjectQuery) (listing.Page[Object], error) {
-	return listing.Page[Object]{}, errNotImplemented
-}
-
-// DeleteObject purges one object (apperr.Invalid for a malformed id).
-func (s *Store) DeleteObject(ctx context.Context, id string) error { return errNotImplemented }
-
-// DeleteGroup purges a content group; returns bytes freed.
-func (s *Store) DeleteGroup(ctx context.Context, service, groupKey string) (int64, error) {
-	return 0, errNotImplemented
-}
-
-// DeleteService purges all content of a service; returns bytes freed.
-func (s *Store) DeleteService(ctx context.Context, service string) (int64, error) {
-	return 0, errNotImplemented
-}
-
-// SetPinned pins/unpins one object (pinned objects are never evicted).
-func (s *Store) SetPinned(ctx context.Context, id string, pinned bool) error {
-	return errNotImplemented
-}
-
-// SetGroupPinned pins/unpins a group persistently (existing and future objects).
-func (s *Store) SetGroupPinned(ctx context.Context, service, groupKey string, pinned bool) error {
-	return errNotImplemented
-}
+func (s *Store) releaseIO() { <-s.sem }

@@ -326,7 +326,7 @@ func setupToken() int {
 	b, err := os.ReadFile(cfg.Paths().SetupTokenFile)
 	switch {
 	case errors.Is(err, fs.ErrPermission):
-		fmt.Fprintln(os.Stderr, "permission denied: run `sudo picache setup-token` or `docker exec <container> picache setup-token`")
+		fmt.Fprintln(os.Stderr, "permission denied: run `sudo picache setup-token` or `docker exec -u 65532:65532 <container> /picache setup-token`")
 		return 1
 	case err != nil:
 		fmt.Fprintln(os.Stderr, "no setup token (setup already completed, or PiCache has not been started yet)")

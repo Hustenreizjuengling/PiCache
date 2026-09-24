@@ -139,6 +139,7 @@ func New(d Deps) *Server {
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = io.WriteString(w, "ok")
 	})
+	s.registerMetrics()
 
 	s.registerAuthRoutes()
 	s.registerSystemRoutes()
@@ -156,7 +157,17 @@ func New(d Deps) *Server {
 		writeError(w, r, s.log, errNotFoundRoute)
 	})
 	if d.UI != nil {
-		s.mux.Handle("GET /", d.UI)
+		// Registered without a method: "GET /" would conflict with "/api/"
+		// in the ServeMux (neither pattern is more specific) and panic.
+		ui := d.UI
+		s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			ui.ServeHTTP(w, r)
+		})
 	}
 	s.handler = s.middleware(s.mux)
 	return s
