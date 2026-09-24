@@ -1,6 +1,7 @@
 package netutil
 
 import (
+	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -75,6 +76,15 @@ func (c *limitConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(func() { c.l.release(c.key) })
 	return err
+}
+
+// ReadFrom delegates to the underlying connection so net/http can use
+// sendfile(2)/splice(2) for responses written through this listener.
+func (c *limitConn) ReadFrom(r io.Reader) (int64, error) {
+	if rf, ok := c.Conn.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(c.Conn, r)
 }
 
 // TCPConn returns the underlying *net.TCPConn (for splice-friendly copies),

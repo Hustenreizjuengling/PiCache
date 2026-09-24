@@ -1,0 +1,303 @@
+# PiCache web UI
+
+Svelte 5 (runes) + Vite 8 + TypeScript 6 single-page app with a hash router,
+uPlot for charts and no other runtime dependencies. It builds into
+`../internal/webui/dist`, which the Go binary embeds. Design rules:
+`docs/DESIGN.md`. REST contract: `docs/API.md`.
+
+```sh
+npm ci
+npm run dev      # Vite dev server, proxies /api to http://127.0.0.1:8080
+npm run check    # svelte-check: must report 0 errors and 0 warnings
+npm run build    # production build into ../internal/webui/dist
+```
+
+While several people or agents work at the same time, never build into the
+shared `dist` directory. Verify with
+`npx vite build --outDir <some temp dir> --emptyOutDir` and
+`npx svelte-check --tsconfig ./tsconfig.json`.
+
+## Layout
+
+```
+index.html               no inline script; public/theme-init.js applies the stored theme before paint
+src/main.ts              fonts, app.css, API hooks (401 → login, 421 → host-name screen), mount
+src/App.svelte           picks setup / login / app; hosts <Toasts /> and <ConfirmHost />
+src/app.css              design tokens (light/dark), base styles, utilities, uPlot theme
+src/routes.ts            route table (path → lazily loaded page), sidebar sections
+src/shell/               pair strip, sidebar/drawer, top bar (status, blocking menu, search, theme, language, account)
+src/pages/               Login, Setup, Overview (+ overview/, auth/) and the section pages
+src/pages/dns/**         owned by the DNS page work
+src/pages/cache/**       owned by the cache page work
+src/pages/system/**      owned by the system page work
+src/lib/api/             typed REST client, polling, SSE
+src/lib/ui/              components (import from '$lib/ui')
+src/lib/*.ts             router, session, app status, settings forms, formatters, icons, theme, errors
+src/i18n/                t(), dictionaries en/ and de/ per namespace
+```
+
+Aliases: `$lib` = `src/lib`, `$i18n` = `src/i18n`.
+
+## Rules for page work
+
+- **No new dependencies.** Everything needed is in `lib/`.
+- **Do not change** `lib/`, `shell/`, `routes.ts`, `app.css`, `App.svelte`,
+  `main.ts`, `i18n/index.svelte.ts` or `i18n/*/common.ts`. Put page-local
+  components in a folder next to your page (`pages/dns/querylog/Row.svelte`).
+  If you need a change in `lib/`, work around it locally and list the request
+  in your report.
+- Your files: `pages/<section>/**` and `i18n/{en,de}/<section>.ts`. Keep the
+  page file names (`routes.ts` imports them): `dns/{QueryLog,Filtering,Clients,LocalDns,DnsSettings}.svelte`,
+  `cache/{Downloads,Library,Services,Storage,CacheSettings}.svelte`,
+  `system/{Account,Tokens,Audit,Backup,Health}.svelte`.
+- **Never render HTML from data**: no `{@html}`, no `innerHTML`. No inline
+  scripts, no `eval`, no external requests (CSP `script-src 'self'`,
+  `connect-src 'self'`). Inline `style=` / `style:` is allowed.
+- The top bar already shows the page title as `<h1>`: pages start with
+  content, section headings are `<h2>` (Panel titles).
+- Wrap the page in `<div class="page">` (vertical rhythm between panels).
+- Tables are the core component: put them in `<Panel flush>`, row click opens
+  a `SidePanel` with details and actions (not a new page).
+- Read-only principals (`session.isAdmin === false`, API tokens with scope
+  `read`) see admin actions disabled; show `t('common.state.readOnly')` once in
+  a `Notice` where editing would happen.
+- Destructive actions use `confirm()` with a title that names the object
+  ("Delete list HaGeZi Multi?"). Successful actions show a toast that repeats
+  the verb ("Blocklist added"). Errors: `toast.error(err)` or an inline
+  `Notice` with `errorText(err)`; form fields show `fieldError(err, 'name')`.
+- Writing: sentence case, buttons say what happens, empty states say what to
+  do next. Machine values (domains, IPs, MACs, paths, hashes, rule text) use
+  `mono`, never labels. Pair colours only for traffic meaning (blue answered,
+  orange blocked, green cache hit, brown WAN); health uses tones ok/warn/fail.
+- Keep filters, tabs and the selected row in the URL (`router.setQuery`) so
+  views can be linked and reloaded.
+- Must work at 360 px width, by keyboard, in light and dark, in English and
+  German, with `prefers-reduced-motion`.
+
+## Pages and routing
+
+```ts
+import { router, href } from '$lib/router.svelte'
+import type { PageProps } from '../../routes'
+
+let { params }: PageProps = $props()   // params['*'] = sub-path below the page ('' if none)
+
+router.path                    // '/dns/queries'
+router.param('domain')         // '' when absent
+router.list('status')          // ?status=a,b → ['a', 'b']
+router.setQuery({ domain: 'x', cursor: null })      // merge; null/''/false/undefined remove; replaces history
+router.setQuery({ selected: id }, { push: true })   // adds a history entry
+router.navigate('/dns/clients', { ip: '192.168.1.5' })
+href('/dns/queries', { status: ['blocked-list', 'blocked-rule'], range: '1h' })  // '#/dns/queries?status=…'
+```
+
+**Incoming links** (other pages, the overview and the global search link here;
+support these query parameters):
+
+| Target | Parameters |
+|---|---|
+| `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d), `status` (comma list of query statuses; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name) |
+| `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here) |
+| `#/cache/downloads` | `client` (IP), `active=true` |
+| `#/cache/library`, `#/cache/storage`, `#/cache/settings` | – |
+| `#/system/health`, `#/system/account` | – |
+
+## API layer (`$lib/api`)
+
+```ts
+import { api, resource, streamQueries, isApiError, type DnsRecord } from '$lib/api'
+```
+
+`api` has one typed function per endpoint of docs/API.md; every function takes
+an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.ts`).
+
+| Group | Functions |
+|---|---|
+| `api.auth` | `status() setup(b) login({username,password,totp?}) logout() me() changePassword({currentPassword,newPassword}) sessions() revokeSession(id) totpBegin() totpConfirm(code) totpDisable(password)` |
+| `api.tokens` | `list() create({name,scope,expiresInDays?}) remove(id)` |
+| `api.system` | `info() health() overview() audit({search,limit,offset}) backupUrl(includeSecrets) restore(blob) restart()` |
+| `api.settings` | `get() put(all) patch(section, partial) defaults()` |
+| `api.dns` | `blocking() setBlocking(enabled, pauseSeconds?) lookup(req) stats() cacheIps() router()`, `records.{list,create,update,remove}`, `forwarders.{list,create,update,remove}` |
+| `api.upstreams` | `get() test(upstream) flushCache()` |
+| `api.clients` | `list() create(c) update(id,c) remove(id) known(within?)` |
+| `api.groups` | `list() create(g) update(id,g) remove(id)` (403 for group 1, `DEFAULT_GROUP_ID`) |
+| `api.filter` | `lists.{list,create,update,remove,refresh(id),refreshAll}`, `catalog()`, `rules.{list(query),create,update,remove}`, `stats()`, `explain(domain, clientIp?)` |
+| `api.lancache` | `services() service(id) setEnabled(id,on) setExtraDomains(id,list) createService(s) updateService(id,s) deleteService(id) source() refreshSource() setLabel(groupKey,label) sni()` |
+| `api.cache` | `state() services() groups(q) groupDetail(service,key) objects(q) deleteObject(id) pinObject(id,pinned) deleteGroup(service,key) pinGroup(service,key,pinned) purgeService(service) evict() verify(repair) verifyState() live() active() proxyStats() noSlice() resetNoSlice(host) downloads(q) requests(q) sniEvents(q) evictions(q)` |
+| `api.storage` | `capabilities() targets() target(id) create(t) update(id,t) remove(id) test(id) apply(id) init(id,adopt) activate(id) snippets(id)` |
+| `api.logs` | `queries(q)` (cursor page) |
+| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?) services(range) clients(range)` – `range` is a preset (`'24h'`) or `{ from, to }` |
+
+Long-running calls (list/source refresh, storage test, restore) already carry
+longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`.
+
+**Errors.** Every failure is an `ApiError { status, code, message, field? }`;
+`code` is one of `invalid not_found conflict forbidden unavailable unauthorized
+too_many_requests internal misdirected` plus client-side `network` and
+`aborted`. `isApiError(err, 'conflict')` narrows. A 401 anywhere switches the
+app to the login screen (the URL is kept); a 421 shows the host-name screen.
+
+```ts
+import { errorText, fieldError } from '$lib/errors'
+errorText(err)                        // user-facing sentence (translated for transport errors)
+fieldError(err, 'upstreams')          // message if err.field is 'upstreams', 'upstreams[2]' or 'upstreams.x'
+```
+
+**Loading and polling.** `resource()` binds a request to the component: it
+starts on mount, reloads when reactive values read synchronously in the loader
+change, polls with `interval` (paused while the tab is hidden, never
+overlapping) and aborts on destroy.
+
+```ts
+const range = $derived(router.param('range') || '1h')
+const top = resource((signal) => api.stats.top('blocked', range, 10, { signal }), { interval: 30_000 })
+// top.data · top.error (ApiError) · top.loading · top.loaded · top.refresh() · top.set(value)
+```
+
+`new Resource(loader, opts)` + `start()/stop()` for manual control;
+`poll(fn, ms)` returns a stop function. App-wide status is already polled every
+10 s: `appStatus.overview.data` (`/system/overview`) and `appStatus.strip.data`
+(`/stats/summary?range=15m`) from `$lib/status.svelte`; call
+`appStatus.overview.refresh()` after changing blocking, LanCache or storage.
+
+**Cursor lists** (query log, cache requests, SNI events, evictions):
+
+```ts
+import { CursorStack } from '$lib/ui'
+const pages = new CursorStack()
+const log = resource((s) => api.logs.queries({ ...filters, cursor: pages.current || undefined }, { signal: s }))
+// <Pager mode="cursor" hasPrev={pages.hasPrev} hasNext={!!log.data?.next} count={log.data?.items.length}
+//        onprev={() => pages.prev()} onnext={() => pages.next(log.data!.next!)} onfirst={() => pages.reset()} />
+// call pages.reset() whenever a filter changes
+```
+
+**Live streams (SSE).** Reconnect with backoff (the server ends streams after
+1 h), pause while hidden, batched delivery, `state` and `paused` are reactive:
+
+```ts
+const live = streamQueries({ client, status }, {
+  onEvents: (batch) => (rows = [...batch.reverse(), ...rows].slice(0, 500)),
+  onReconnect: () => log.refresh(),   // events may have been missed
+})
+$effect(() => () => live.close())
+// live.pause() · live.resume() · live.state: connecting | open | paused | retrying | closed
+```
+
+`streamCache(opts)` streams cache requests. At most 16 streams exist per
+server: open one per page, close it on destroy.
+
+**Settings sections** (`$lib/settings.svelte`): load a section plus its
+defaults, edit a draft, save only the changed members (important: the filter
+section also holds the blocking pause).
+
+```ts
+const form = settingsForm('dns')
+// form.draft (bind to it) · form.saved · form.defaults · form.dirty · form.changes
+// await form.save() → boolean · form.revert() · form.resetToDefault('cacheSize') · form.isDefault('cacheSize')
+// form.error('upstreams') → field message · form.errorMessage · form.loadError · form.loading · form.saving
+```
+
+## Components (`$lib/ui`)
+
+All components are keyboard accessible, themed and translated. Props marked
+`bind:` are bindable.
+
+| Component | Props (defaults) | Notes |
+|---|---|---|
+| `Button` | `variant` primary\|secondary\|ghost\|danger (secondary), `size` sm\|md, `icon`, `loading`, `href`, `download`, `type` (button), `disabled`, + button attributes | One primary per view. With `href` renders a link. |
+| `IconButton` | `icon`, `label` (accessible name + tooltip), `variant` ghost\|secondary\|danger, `size`, `loading`, `pressed`, `href` | |
+| `Input` | `bind:value`, `type`, `mono`, `invalid`, `icon`, `size`, `bind:ref`, + input attributes | Inside `Field` it gets id/aria automatically. |
+| `Select` | `bind:value`, `options: SelectOption[]` ({value,label,disabled?}), `placeholder`, `invalid`, `size` | Native select. |
+| `Textarea` | `bind:value`, `rows` (4), `mono`, `invalid` | One entry per line lists. |
+| `Toggle` | `bind:checked`, `label`, `description`, `disabled`, `ariaLabel`, `onchange(checked)` | role=switch, for settings that apply immediately. |
+| `Checkbox` | `bind:checked`, `bind:indeterminate`, `label`, `description`, `disabled`, `ariaLabel`, `onchange(checked)` | |
+| `Field` | `label`, `help`, `error`, `required`, `optional`, `hideLabel`, `id`, children | Label above, error + help below. |
+| `Chip` | `pair` blue\|orange\|green\|brown, `striped`, `tone` neutral\|info\|ok\|warn\|fail, `size` sm\|md, `icon`, `label` or children, `title` | Always carries text. |
+| `QueryStatusChip` / `CacheStatusChip` / `HealthChip` | `status`, `size` (sm) | Translated labels, fixed colours (`lib/traffic.ts`). |
+| `Badge` | `tone`, `title`, children | Counts and tags ("Default", "3"). |
+| `Panel` | `title`, `description`, `level` 2\|3, `flush`, `id`, snippets `actions`, `footer`, children | Tables go into `flush` panels. |
+| `Table<T>` | `columns: Column<T>[]`, `rows`, `key(row)`, `loading`, `error`, `onretry`, `skeletonRows` (5), `bind:sort` / `onsort` (server-side), `onrowclick`, `selected`, `compact`, `maxHeight` (sticky header), `caption`, `emptyText` / snippet `empty`, `rowClass` | `Column`: `key`, `label`, `align`, `mono`, `sortable`, `width`, `value(row)` (sort + default text), `format(row)`, `cell` snippet, `title`, `truncate`. Without `onsort` sorting is client-side by `value`. |
+| `Pager` | offset: `total`, `bind:limit` (50), `bind:offset`, `onchange(offset)`; cursor: `mode="cursor"`, `hasPrev`, `hasNext`, `onprev`, `onnext`, `onfirst`, `count`; `limits` + `onlimit` | Place it directly below the table inside the flush Panel (it draws its own top border). |
+| `SidePanel` | `bind:open`, `title`, `subtitle`, `size` md\|lg, `dismissible`, `onclose`, snippet `actions`, children | Drawer from the right for row details. |
+| `Dialog` | `bind:open`, `title`, `subtitle`, `size` sm\|md\|lg, `dismissible` (true), `onclose`, snippet `actions`, children | Content mounts only while open (forms start fresh). |
+| `ConfirmDialog` | `bind:open`, `title`, `message`, `confirmLabel`, `cancelLabel`, `danger` (true), `onconfirm` (async; errors stay in the dialog), `oncancel`, children | Prefer `confirm()`. |
+| `confirm(opts)` | `{ title, message?, confirmLabel, cancelLabel?, danger?, action? }` → `Promise<boolean>` | With `action` the dialog runs it with a spinner and shows its error. |
+| `toast` | `toast.success(msg)`, `toast.info(msg)`, `toast.error(errOrMsg)` | |
+| `Tabs` | `tabs: TabItem[]` ({id,label,count?,icon?}), `bind:active`, `label`, `onchange(id)`, snippet `children(active)` | Keep `tab` in the URL. |
+| `Menu` | `items: MenuItem[]` ({label, icon?, danger?, disabled?, checked?, href?, onselect?} or {separator:true}), `label`, `icon`, `iconOnly`, `variant` secondary\|ghost, `size`, `align` start\|end (end), `disabled`, snippet `trigger` | Row "more actions" menus: `iconOnly icon="more"`. |
+| `Tooltip` | `text`, `focusable` (true), children | Never for essential information. |
+| `Stat` | `value`, `label`, `href`, `title`, `tone` | Inline linked number (status sentences), not a card. |
+| `Chart` | `label`, `timestamps` (unix s), `series: ChartSeries[]` ({label, values, pair?, colorVar?, dashed?, fill?}), `stacked`, `height` (220), `yFormat` (formatCompact), `valueFormat`, `loading`, `minMax` (1), `integer` (true) | uPlot; legend doubles as the tooltip; follows theme and width. |
+| `Meter` | `label`, `max`, `segments: MeterSegment[]` ({label, value, text?, pair?, tone?}), `rest` {label,text}, `marker` {value,label}, `legend` (true) | Used/free bars. |
+| `PairStrip` | `allowed`, `blocked`, `hit`, `wan`, `caption` | Used by the shell. |
+| `TimeRangePicker` | `bind:value` (24h), `options` (15m 1h 24h 7d 30d), `label`, `onchange(range)` | |
+| `KeyValue` | `items: KeyValueItem[]` ({label, value, mono?, href?}), children (extra `<dt>/<dd>`) | Details in side panels. |
+| `Notice` | `tone` info\|ok\|warn\|fail, `title`, `icon`, `ondismiss`, snippet `actions`, children | What happened + how to fix it. |
+| `EmptyState` | `title`, `text`, `icon`, `compact`, children (actions) | Says what to do next. |
+| `CopyButton` | `text`, `label`, `showLabel`, `size` (sm) | Works on plain-HTTP LAN addresses. |
+| `Icon` | `name: IconName`, `size` (20), `label` | Decorative unless labelled. |
+| `Skeleton` / `Spinner` | `width`, `height` / `size`, `label` | |
+| `Trans` | `key`, `params`, one snippet per placeholder | Translations with links or chips inside. |
+
+Icons (`lib/icons.ts`, 20 px grid, 1.5 px stroke): menu close search
+chevron-down chevron-up chevron-left chevron-right first check plus minus sun
+moon monitor globe logout pause play shield shield-check shield-off alert info
+error success copy external refresh trash edit pin download upload filter more
+sort arrow-up arrow-down overview list users user home sliders layers grid
+drive key lock document archive activity clock eye eye-off link power.
+
+CSS utilities (`app.css`): `.page`, `.stack`, `.stack-sm`, `.row`, `.spacer`,
+`.cols-2`, `.toolbar`, `.mono`, `.num`, `.muted`, `.subtle`, `.small`,
+`.xsmall`, `.nowrap`, `.truncate`, `.visually-hidden`. Tokens: `--bg`,
+`--surface`, `--surface-2`, `--surface-3`, `--line`, `--line-strong`,
+`--text`, `--text-2`, `--text-3`, `--focus`, `--danger`, `--warning`, pair
+colours `--blue --orange --green --brown`, tones `--ok --warn --fail`, sizes
+`--fs-xs … --fs-2xl`, spacing `--sp-1 … --sp-7` (4 px grid), radii
+`--r-control --r-panel --r-pill`, `--shadow-float`, `--dur-fast`.
+
+## Formatters and helpers
+
+```ts
+import { formatNumber, formatCompact, formatPercent, formatBytes, formatRate, formatDuration,
+         formatMicros, formatRelative, formatDateTime, formatTime, formatDate } from '$lib/format'
+formatNumber(12345)          // "12,345" / "12.345"
+formatPercent(0.183)         // ratio 0..1 → "18%" / "18 %"
+formatBytes(38e9)            // "38 GB" (decimal units)
+formatRate(112e6)            // "112 MB/s"
+formatDuration(ms)           // "850 ms", "4.2 sec", "3 hr 5 min"
+formatMicros(us)             // DNS durations
+formatRelative(iso)          // "5 minutes ago"
+formatDateTime(iso, seconds?) · formatTime(iso) · formatDate(iso)
+```
+
+All formatters follow the active language and return "–" for missing values.
+
+- `lib/traffic.ts`: `queryStatusStyle(status)`, `cacheStatusStyle(status)`, `isBlockedStatus(status)`, `healthTone(status)`; `BLOCKED_STATUSES` and `DEFAULT_GROUP_ID` come from `$lib/api`.
+- `lib/session.svelte.ts`: `session.user`, `session.isAdmin`, `session.status` (AuthStatus), `session.logout()`.
+- `lib/theme.svelte.ts`: `theme.effective` ('light' | 'dark'), `prefersReducedMotion()`.
+- `lib/storage.ts`: `loadPref(key)` / `savePref(key, value)` for per-browser conveniences only (never secrets or server state).
+
+## Translations (`$i18n/index.svelte`)
+
+```ts
+import { t, tn } from '$i18n/index.svelte'
+t('dns.queryLog.title')
+t('dns.lists.deleteTitle', { name: list.name })       // {name} placeholders; numbers are formatted
+tn('dns.queryLog.results', count)                     // uses 'queryLog.results.one' / '.other', provides {count}
+```
+
+- One flat dictionary per namespace and language: `i18n/en/dns.ts` is
+  `export default { 'queryLog.title': 'Query log', … }`; keys are prefixed by
+  the page (`queryLog.`, `filtering.`, `clients.`, `localDns.`, `settings.`),
+  used as `t('dns.queryLog.title')`.
+- `i18n/de/dns.ts` is typed `const de: Messages<typeof en> = { … }` so
+  svelte-check reports missing or extra keys. German uses "du" and sentence
+  case.
+- Shared strings live in `common` (read-only for page work): actions
+  (`common.action.save|cancel|delete|edit|add|refresh|retry|copy|…`), states
+  (`common.state.loading|saving|saved|on|off|enabled|disabled|never|readOnly`),
+  labels (`common.label.name|comment|groups|status|time|client|domain|service|type|size|actions|details|created|updated|lastSeen`),
+  `common.queryStatus.*`, `common.cacheStatus.*`, `common.health.*`,
+  `common.range.long.*`, `common.field.required`.
+- Messages with links or components inside: `<Trans key="…">{#snippet link()}<a …>…</a>{/snippet}</Trans>`.
+- Server messages (API errors) are English and shown as they are.

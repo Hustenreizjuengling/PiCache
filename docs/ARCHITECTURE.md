@@ -110,7 +110,7 @@ docs/                        this file, API.md, DESIGN.md, DEPLOYMENT.md, SECURI
 
 Dependency rules:
 - Foundation packages (`version`, `config`, `db`, `apperr`, `listing`, `settings`, `secrets`, `netutil`) import only each other (`settings` → `db`, `apperr`; `netutil` → `settings`).
-- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker only). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore` import no other domain package.
+- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker only). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore` import no other domain package.
 - `dnsserver`, `proxy` and `sni` declare **consumer-side interfaces** for their collaborators (see their `Deps`) so they can be tested with fakes.
 - `api` imports domain packages; domain packages never import `api`. `app` imports everything and is imported only by `cmd`.
 

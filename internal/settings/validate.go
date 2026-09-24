@@ -227,6 +227,16 @@ func (a *All) Validate() error {
 	}
 
 	f := a.Filter
+	if f.BlockingIPv4 != "" {
+		if ip, err := netip.ParseAddr(f.BlockingIPv4); err != nil || !ip.Is4() {
+			return apperr.Invalid("filter.blockingIpv4", "must be an IPv4 address")
+		}
+	}
+	if f.BlockingIPv6 != "" {
+		if ip, err := netip.ParseAddr(f.BlockingIPv6); err != nil || !ip.Is6() || ip.Is4In6() {
+			return apperr.Invalid("filter.blockingIpv6", "must be an IPv6 address")
+		}
+	}
 	switch f.BlockingMode {
 	case "null", "nxdomain", "nodata", "refused":
 	case "custom_ip":
