@@ -1,0 +1,24 @@
+# Build output
+/bin/
+/dist/
+/web/dist/
+!/web/dist/.gitkeep
+/internal/webui/dist/*
+!/internal/webui/dist/.gitkeep
+
+# Frontend deps
+node_modules/
+
+# Local runtime data (never commit)
+/data/
+/cache/
+*.db
+*.db-wal
+*.db-shm
+secret.key
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
