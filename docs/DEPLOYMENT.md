@@ -66,7 +66,12 @@ installation. It never downloads anything. It:
 
 1. requires systemd, warns (and continues) on systems other than Debian
    12/13, and checks that the binary runs on this machine;
-2. creates the system user and group `picache`;
+2. creates the system user and group `picache`. An existing `picache` login
+   account or non-system group (ID above `SYS_UID_MAX`/`SYS_GID_MAX`, by
+   default `UID_MIN`/`GID_MIN` − 1) is refused, and so is a system account
+   `picache` with a login shell, because the service owns the database and
+   the master key. The error shows the fix (rename the login account, or set
+   the shell to `nologin`);
 3. installs the binary to `/usr/local/bin/picache` and the unit
    `picache.service` to `/usr/local/lib/systemd/system/`;
 4. creates `/etc/picache/` (`0750 root:picache`) and, if missing,

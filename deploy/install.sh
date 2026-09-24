@@ -75,11 +75,55 @@ is_unprivileged_container() {
 
 install_unit() { install -m 0644 -o root -g root "$UNIT_SRC/$1" "$UNIT_DIR/$1"; }
 
+# login_def KEY DEFAULT prints a numeric value from /etc/login.defs.
+login_def() {
+	v=$(awk -v k="$1" '$1 == k && $2 ~ /^[0-9]+$/ { v = $2 } END { print v }' /etc/login.defs 2>/dev/null) || v=""
+	printf '%s' "${v:-$2}"
+}
+
+# sys_id_max UID|GID prints the highest system UID or GID the way
+# useradd/groupadd compute it: SYS_UID_MAX, else UID_MIN - 1 (same for GID).
+sys_id_max() {
+	min=$(login_def "$1_MIN" 1000)
+	login_def "SYS_$1_MAX" "$((min - 1))"
+}
+
+# ensure_user creates the system user and group picache or checks existing
+# ones. The service owns the database and the master key, so it must never
+# run as an account that people log in with (for example a user named
+# picache created by the Debian installer).
 ensure_user() {
-	if ! getent group picache >/dev/null; then
-		groupadd --system picache
+	entry=$(getent passwd picache) || entry=""
+	if [ -n "$entry" ]; then
+		uid=$(printf '%s' "$entry" | cut -d: -f3)
+		shell=$(printf '%s' "$entry" | cut -d: -f7)
+		if [ "$uid" -eq 0 ] || [ "$uid" -gt "$(sys_id_max UID)" ]; then
+			die "a login account named picache exists (uid $uid).
+The service needs its own system account of that name, which owns the
+database and the master key and must not be used to log in. Rename the login
+account from another session (root on the console or another admin account;
+end its sessions first: loginctl terminate-user picache), for example:
+    usermod -l NEWNAME -d /home/NEWNAME -m picache && groupmod -n NEWNAME picache
+then run install.sh again."
+		fi
+		case $shell in
+		*/nologin | */false) ;;
+		*)
+			die "the system account picache has the login shell '${shell:-/bin/sh}'.
+The service account must not be usable for logins. Fix it with:
+    usermod -s /usr/sbin/nologin picache && passwd -l picache
+then run install.sh again."
+			;;
+		esac
 	fi
-	if ! getent passwd picache >/dev/null; then
+	gid=$(getent group picache | cut -d: -f3)
+	if [ -z "$gid" ]; then
+		groupadd --system picache
+	elif [ "$gid" -gt "$(sys_id_max GID)" ]; then
+		die "a group named picache exists that is not a system group (gid $gid).
+Rename it (groupmod -n NEWNAME picache) or remove it, then run install.sh again."
+	fi
+	if [ -z "$entry" ]; then
 		useradd --system --gid picache --home-dir "$DATA_DIR" --no-create-home \
 			--shell /usr/sbin/nologin --comment "PiCache" picache
 		say "created system user picache"
