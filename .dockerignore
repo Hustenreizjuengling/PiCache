@@ -16,4 +16,9 @@ web/dist/
 **/*.db
 **/*.db-wal
 **/*.db-shm
-**/secret.key
+**/*.key
+**/*.pem
+**/.env
+**/.env.*
+**/*.env
+web/*.local

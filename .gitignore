@@ -5,20 +5,33 @@
 !/web/dist/.gitkeep
 /internal/webui/dist/*
 !/internal/webui/dist/.gitkeep
+/picache
+*.exe
+*.test
+*.out
+coverage*
 
 # Frontend deps
 node_modules/
 
-# Local runtime data (never commit)
+# Local runtime data and secrets (never commit)
 /data/
 /cache/
 *.db
 *.db-wal
 *.db-shm
-secret.key
+*.key
+*.pem
+.env
+.env.*
+*.env
+admin_password
+setup-token
+*.log
 
-# Editors / OS
+# Editors / OS / tools
 .vscode/
 .idea/
+/.claude/
 .DS_Store
 Thumbs.db
