@@ -354,6 +354,12 @@ the Proxmox host and bind-mount it below $MOUNT_ROOT (deploy/lxc/README.md)."
 	if [ -n "$missing" ]; then
 		say "host-apply: mount helpers are missing; install them for the share types you use:"
 		say "    apt install$missing"
+		case $missing in
+		*nfs-common*)
+			say "  NFS 4 does not need the rpcbind service that nfs-common brings; turn it off with:"
+			say "    systemctl mask --now rpcbind.service rpcbind.socket"
+			;;
+		esac
 	fi
 	say "host-apply helper installed (picache-storage.path)"
 }

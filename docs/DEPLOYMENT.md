@@ -801,6 +801,17 @@ Recommendations:
 
 - Give the server as an **IP address**. PiCache requires it, and it avoids a
   boot-time dependency on PiCache's own DNS.
+- Host-apply needs the mount program of the share type on the PiCache
+  machine: `cifs-utils` for SMB, `nfs-common` for NFS (the helper refuses
+  with that hint when it is missing). NFS 4 does not need the `rpcbind`
+  service that `nfs-common` installs; turn it off so nothing listens on
+  port 111: `sudo systemctl mask --now rpcbind.service rpcbind.socket`.
+- NFS checks permissions by user id: PiCache writes as its service user
+  (shown on the storage page). Either make that uid the owner of the export
+  on the NAS, or map all users of the export to one NAS account that owns the
+  directory (`all_squash,anonuid=…,anongid=…` on Linux; TrueNAS: *Mapall
+  User* and *Mapall Group* of the NFS share; Synology: *Squash* → *Map all
+  users to admin*). Allow only the PiCache machine's address in the export.
 - Use a dedicated share and a NAS account that can access only that share.
   SMB 3.1.1 is the default (optionally encrypted with *seal*). NFS uses
   version 4.2 with `softerr`. NFS relies on the client's address, so allow

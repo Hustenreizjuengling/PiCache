@@ -32,6 +32,7 @@ func systemHostEnv() hostEnv {
 		systemctl:    runSystemctl,
 		diagnose:     unitDiagnostics,
 		serviceOwner: ownerOf,
+		hasHelper:    func(name string) bool { return mountHelpers()[name] },
 	}
 }
 

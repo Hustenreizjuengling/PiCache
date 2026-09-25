@@ -359,7 +359,8 @@ func (m *Manager) writeHint(err error) string {
 			m.cfg.MountRoot + " (PICACHE_MOUNT_ROOT); in Docker, do not bind the directory read-only."
 	case errors.Is(err, fs.ErrPermission):
 		return fmt.Sprintf("PiCache runs as uid %d / gid %d and may not write here. For SMB mount with uid=%d,gid=%d; "+
-			"for NFS give this user write access on the NAS (owner of the export, or all_squash with anonuid/anongid).",
+			"for NFS give this user write access on the NAS: make it the owner of the export, or map all users to one NAS account "+
+			"that owns it (all_squash with anonuid/anongid; TrueNAS: Mapall User/Group; Synology: Squash \"Map all users to admin\").",
 			m.caps.UID, m.caps.GID, m.caps.UID, m.caps.GID)
 	case errors.Is(err, syscall.ENOSPC):
 		return "The file system is full."

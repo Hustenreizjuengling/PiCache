@@ -868,3 +868,25 @@ func TestCappedBuffer(t *testing.T) {
 		t.Fatalf("%q", b.String())
 	}
 }
+
+// TestApplyHostNeedsMountHelper: without mount.nfs / mount.cifs the helper
+// refuses before it writes a unit, and says which package to install.
+func TestApplyHostNeedsMountHelper(t *testing.T) {
+	cfg, m, _, h := setupApply(t)
+	ctx := context.Background()
+	h.env.hasHelper = func(name string) bool { return name != "mount.nfs" }
+	tg, err := m.Create(ctx, TargetInput{Name: "NFS", Kind: KindNFS, Mode: ModeHostApply, Server: "192.168.1.20", Export: "/volume1/picache"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = applyHost(ctx, h.env, cfg, tg.ID, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "sudo apt install nfs-common") {
+		t.Fatalf("want the nfs-common hint, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.env.unitDir, mountUnitName(filepath.Join(cfg.MountRoot, tg.ID)))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a unit was written: %v", err)
+	}
+	if len(h.calls) != 0 {
+		t.Fatalf("systemctl was called: %v", h.calls)
+	}
+}

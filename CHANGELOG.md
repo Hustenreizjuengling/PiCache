@@ -5,6 +5,16 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- NAS mounts through the root helper: a missing `mount.nfs` (package
+  `nfs-common`) or `mount.cifs` (`cifs-utils`) is now reported with the
+  package to install, instead of the kernel's misleading "Server address does
+  not match proto= option" for NFS. The installer also says that NFS 4 does
+  not need `rpcbind`.
+- The storage page's hint for NFS permission errors names the settings of
+  common NAS systems (TrueNAS Mapall User/Group, Synology Squash).
+
 ## [0.3.0] - 2026-09-25
 
 ### Added

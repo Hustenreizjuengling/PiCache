@@ -46,6 +46,9 @@ type hostEnv struct {
 	// unit's journal since the job started). Optional.
 	diagnose     func(ctx context.Context, unit string, since time.Time) unitDiag
 	serviceOwner func(dataDir string) (uid, gid int, err error) // the PiCache user
+	// hasHelper reports whether a mount program (mount.cifs, mount.nfs) is
+	// installed. nil skips the check (tests).
+	hasHelper func(name string) bool
 }
 
 // helper is one root helper run.
@@ -154,6 +157,9 @@ func (h *helper) applyTarget(ctx context.Context, t Target, stdinPassword []byte
 	t.Path = hostApplyPath(h.cfg, id)
 	if err := ValidateTarget(t, h.cfg); err != nil {
 		return fmt.Errorf("refusing storage target %s: %w", id, err)
+	}
+	if err := h.checkMountHelper(t.Kind); err != nil {
+		return err
 	}
 	uid, gid, err := h.env.serviceOwner(h.cfg.DataDir)
 	if err != nil {
@@ -396,6 +402,23 @@ func (h *helper) password(ctx context.Context, t Target, stdin []byte) ([]byte, 
 		return nil, err
 	}
 	return pw, nil
+}
+
+// checkMountHelper refuses a share whose mount program is missing. Without
+// it the kernel mounts on its own and fails with misleading messages (NFS:
+// "Server address does not match proto= option").
+func (h *helper) checkMountHelper(kind Kind) error {
+	if h.env.hasHelper == nil {
+		return nil
+	}
+	switch {
+	case kind == KindSMB && !h.env.hasHelper("mount.cifs"):
+		return errors.New("mount.cifs is not installed on this machine; install it with: sudo apt install cifs-utils")
+	case kind == KindNFS && !h.env.hasHelper("mount.nfs"):
+		return errors.New("mount.nfs is not installed on this machine; install it with: sudo apt install nfs-common " +
+			"(NFS 4 does not need the rpcbind service that comes with it: sudo systemctl mask --now rpcbind.service rpcbind.socket)")
+	}
+	return nil
 }
 
 // credentialsFile renders the mount.cifs credentials file (the caller clears it).
