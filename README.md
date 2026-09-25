@@ -438,7 +438,8 @@ bin/picache serve --dev --data-dir ./data --cache-dir ./cache \
 The UI development server (`npm run dev` in `web/`) proxies `/api` to
 `127.0.0.1:8080`. `scripts/test-install.sh bin/picache-linux-amd64` runs the
 installer smoke test in a throwaway Debian container (needs Docker). See
-[CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request.
+[CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request; the
+project follows its [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Kurzüberblick (Deutsch)
 
