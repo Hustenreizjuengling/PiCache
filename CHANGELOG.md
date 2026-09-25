@@ -3,10 +3,11 @@
 All notable changes to PiCache are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-PiCache has not had a release yet. Everything so far is listed under
-Unreleased.
-
 ## [Unreleased]
+
+## [0.1.0] - 2026-09-25
+
+First release.
 
 ### Added
 
@@ -52,39 +53,34 @@ Unreleased.
 - CI: web UI type check and build, Go vet and tests on Linux, Windows and
   macOS, govulncheck, release builds, an installer smoke test and a
   multi-arch Docker build.
+- Updates: **System → Updates** shows the installed version and the newest
+  release with its notes. PiCache asks the GitHub API once a day whether a
+  new release is out (can be turned off; pre-releases only on request) and
+  never installs anything by itself. An admin installs an update with the
+  password; a root helper (`picache-update.path` and `.service`, installed
+  by `install.sh` unless `--without-updater`) downloads the release, checks
+  its signature and checksum, replaces the binary, restarts PiCache and
+  rolls back to the previous binary and database if the new version fails
+  its health check. The web UI never offers a downgrade.
+- `picache update`: `--check` (exit code 10 when an update is available),
+  install the newest release or `--version vX.Y.Z` with the same checks and
+  rollback, `--prerelease`, `--allow-downgrade`, and offline installs with
+  `--from <dir>`.
+- Signed releases: pushing a tag `vX.Y.Z` builds the static binaries,
+  `picache-deploy.tar.gz` (installer, units, compose files, license texts)
+  and `SHA256SUMS` with `make dist`, signs `SHA256SUMS` with the project's
+  Ed25519 release key (`docs/release-key.pem`, also built into PiCache) and
+  publishes a GitHub release with the matching section of this file as
+  notes. Tags with a hyphen become pre-releases.
+- One-line installer: `curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh`
+  installs the newest release after checking its signature, upgrades an
+  existing installation when run again, and removes PiCache with
+  `--uninstall` (`--purge` also deletes the configuration, the data, the
+  local cache and the picache user).
+- Container images for linux/amd64, linux/arm64 and linux/arm/v7 at
+  `ghcr.io/hustenreizjuengling/picache`, tagged `X.Y.Z`, `X.Y` and `latest`.
+  Docker installations update with
+  `docker compose pull && docker compose up -d`.
 
-### Fixed
-
-- The Docker health check no longer shows up as a client. `picache
-  healthcheck` now asks for `healthcheck.picache.invalid`, which PiCache
-  answers locally for queries from its own machine without counting, rate
-  limiting or logging them. Before, its `localhost` query every 30 s
-  appeared in the query log, the statistics and the client lists.
-- Duplicate records in upstream replies (Docker's embedded DNS repeats every
-  A and AAAA record) are removed before the reply is cached, answered and
-  logged.
-- After a restart, the services page showed "Last attempt: Never" next to
-  the time of the last update of the domain list. It now shows "Last failed
-  attempt" only when the last attempt failed.
-- Charts: the last x-axis label is no longer cut off, and the bucket that is
-  still filling no longer draws a false drop at the end of live charts.
-- Counts use singular and plural forms in English and German, chosen for
-  the number as it is shown ("1 query/min" instead of "1 queries/min").
-- Truncated table columns (audit log, rules, groups, local records,
-  forwarders, clients seen, API tokens) no longer cut targets, details and
-  comments to a few characters. The download sessions table uses compact
-  dates and fits a 1440 px wide window.
-- Downloads: an active session shows the same byte counts as "Downloading
-  now", and the list updates as soon as a download starts or ends.
-- Filtering: the tab badges count all lists and rules, including disabled
-  ones, and the summary says that its pattern count covers only the lists.
-- Clients: the "Traffic in" range picker no longer shifts the tabs, the
-  range last chosen is kept for links without `?range=`, and the "Seen
-  recently" description reads correctly for every range.
-- Storage: the Docker bridge warning appears only when the cache address is
-  detected automatically, and the note about the space kept free on a disk
-  shared with PiCache's data shows the same value as "Kept free".
-- A side panel opened from a link no longer shows a focus ring on its close
-  button.
-
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/commits/main
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Hustenreizjuengling/PiCache/releases/tag/v0.1.0
