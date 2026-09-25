@@ -1,0 +1,83 @@
+name: Bug report
+description: Something in PiCache does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        **Security vulnerabilities do not belong here.** Report them privately, see [docs/SECURITY.md](https://github.com/Hustenreizjuengling/PiCache/blob/main/docs/SECURITY.md).
+
+        Before you paste logs or configuration, remove passwords, API tokens, setup tokens, NAS credentials and anything else you would not publish. Replace your own addresses and host names with examples if you prefer.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Cache → Storage
+        2. Add an SMB target with …
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PiCache version
+      description: "Output of `picache version` (in Docker: `docker exec picache /picache version`), or the commit you built."
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Debian with systemd (bare metal or VM)
+        - Raspberry Pi
+        - Proxmox LXC
+        - Docker, host networking
+        - Docker, bridge networking
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: Debian 13, arm64
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - DNS filtering
+        - DNS resolution and upstreams
+        - LanCache download cache
+        - Storage and NAS
+        - Web UI
+        - API
+        - Installation and upgrades
+        - Documentation
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and health
+      description: Relevant log lines (`journalctl -u picache` or `docker compose logs picache`) and warnings from System → Health & about.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed passwords, tokens and other secrets from everything I pasted.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

@@ -52,8 +52,9 @@ The Docker image builds everything itself (see [Docker](#docker)).
 
 ## Bare metal and VMs (Debian 12/13)
 
-Copy the binary and the `deploy/` directory of the same version to the
-machine, then run the installer as root:
+Copy the binary, the `deploy/` directory and the license texts `LICENSE` and
+`THIRD_PARTY_NOTICES.md` of the same version to the machine (the two files
+next to `deploy/`, as in the source tree), then run the installer as root:
 
 ```sh
 sudo sh deploy/install.sh --binary ./picache-linux-amd64
@@ -72,8 +73,10 @@ installation. It never downloads anything. It:
    `picache` with a login shell, because the service owns the database and
    the master key. The error shows the fix (rename the login account, or set
    the shell to `nologin`);
-3. installs the binary to `/usr/local/bin/picache` and the unit
-   `picache.service` to `/usr/local/lib/systemd/system/`;
+3. installs the binary to `/usr/local/bin/picache`, the unit
+   `picache.service` to `/usr/local/lib/systemd/system/`, and `LICENSE` and
+   `THIRD_PARTY_NOTICES.md` to `/usr/share/doc/picache/` (`0644 root`). If
+   they are not next to `deploy/`, it warns and continues without them;
 4. creates `/etc/picache/` (`0750 root:picache`) and, if missing,
    `/etc/picache/picache.env` (`0640 root:picache`, all settings commented
    out); an existing file is kept;
@@ -153,16 +156,19 @@ Then open `http://<host LAN IP>:8080/`.
 `deploy/docker/docker-compose.yml` uses **host networking**, so PiCache sees
 real client addresses (IPv4 and IPv6) and MAC addresses and can detect the
 host's LAN IP for LanCache answers. The image (`deploy/docker/Dockerfile`) is
-distroless (no shell) and contains only `/picache`. The container:
+distroless (no shell) and contains only `/picache` and its license texts
+`LICENSE` and `THIRD_PARTY_NOTICES.md` in `/usr/share/doc/picache/` (copy
+them out with `docker cp picache:/usr/share/doc/picache/ .`). The container:
 
 - starts as root only to bind ports 53, 80 and 443 (Docker gives non-root
   users no ambient capabilities), then drops to `PICACHE_RUN_AS=65532:65532`
-  before it touches any file, and checks that it cannot regain root;
+  before it opens its data, and checks that it cannot regain root;
 - runs with `cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE, SETUID, SETGID]`,
   `no-new-privileges`, a read-only root filesystem and a small `/tmp` tmpfs;
 - keeps its data in the named volumes `picache-data` (`/data`) and
   `picache-cache` (`/cache`), which inherit the owner 65532 from the image;
-- reports health with `picache healthcheck` (web UI and DNS on loopback).
+- reports health with `picache healthcheck` (web UI and DNS on loopback;
+  the DNS probe never shows up in the query log or the statistics).
 
 PiCache never chowns. If you replace a named volume with a bind-mounted host
 directory, give it to 65532 first, or PiCache stops with a clear error:
@@ -405,11 +411,15 @@ A NAS store is adopted by initialising the target with *adopt* in
 PiCache migrates its databases automatically. When a new version starts for
 the first time, it saves a copy of `picache.db` to
 `<data>/backups/picache-<previous version>-<timestamp>.db` and keeps the
-newest three. Development builds (version `dev`) skip this.
+newest three. The version comes from the build (`git describe` with `make`).
+Builds that report the version `dev` skip this copy: a plain `go build`, and
+the image that `docker compose up --build` builds, because the compose files
+pass no `VERSION` build argument. With Docker, download a backup
+(**System → Backup & restore**) before you upgrade.
 
 - **Bare metal / LXC:** run the installer of the new version with the new
-  binary. It replaces binary and units and restarts the service. Your
-  `picache.env` is kept.
+  binary. It replaces binary, units and license texts and restarts the
+  service. Your `picache.env` is kept.
 
   ```sh
   sudo sh deploy/install.sh --binary ./picache-linux-amd64
@@ -428,12 +438,13 @@ version has migrated.
 ## Uninstall
 
 - **Bare metal / LXC:** `sudo sh deploy/install.sh --uninstall` stops and
-  disables the units and removes the binary, the unit files, the installer's
-  drop-ins and `/etc/picache/host-apply.enabled`. Configuration and data are
-  kept. The script lists what remains, including NAS mount units written by
-  the helper (`/etc/systemd/system/srv-picache-*.mount`) with the commands
-  that remove them and their credentials. Before uninstalling you can
-  instead run `sudo picache storage remove <id>` for each host-apply target.
+  disables the units and removes the binary, the unit files, the license
+  texts in `/usr/share/doc/picache/`, the installer's drop-ins and
+  `/etc/picache/host-apply.enabled`. Configuration and data are kept. The
+  script lists what remains, including NAS mount units written by the helper
+  (`/etc/systemd/system/srv-picache-*.mount`) with the commands that remove
+  them and their credentials. Before uninstalling you can instead run
+  `sudo picache storage remove <id>` for each host-apply target.
   To remove everything:
 
   ```sh
@@ -489,7 +500,8 @@ sudo mount /srv/picache/ssd && sudo chown picache:picache /srv/picache/ssd
   databases and logs are off the SD card too. Otherwise mount the SSD below
   `/srv/picache` as shown above and activate it as a local target.
 - Use a power supply that can also feed the SSD.
-- The Pi has no battery-backed clock. Until NTP has set the time, PiCache
+- The Pi has no battery-backed clock. While its clock is still before the
+  binary's build date (after a boot, until NTP has set the time), PiCache
   uses plain DNS to its bootstrap servers instead of DoH/DoT (health warning).
   Keep `systemd-timesyncd` enabled.
 - Cache hits are limited by the Pi's Gigabit port (about 110 MB/s).
@@ -639,7 +651,7 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 |---|---|
 | `picache [serve] [flags]` | Run PiCache (the default command). |
 | `picache version` | Print version, commit, build date, Go version and platform. |
-| `picache healthcheck [url]` | Exit 0 if the local web endpoint answers `/healthz` with `ok` and the DNS listener resolves `localhost`. It uses the first address of `PICACHE_WEB_LISTEN` (or of `PICACHE_WEB_TLS_LISTEN` if HTTP is off) and of `PICACHE_DNS_LISTEN`, with wildcard addresses replaced by `127.0.0.1`. With a URL, only that URL is checked. Used by the Docker `HEALTHCHECK`. |
+| `picache healthcheck [url]` | Exit 0 if the local web endpoint answers `/healthz` with `ok` and the DNS listener answers the probe name `healthcheck.picache.invalid` with a loopback address. PiCache answers that name like `localhost` when the query comes from this machine and never counts or logs it. Another DNS server on the port answers it with NXDOMAIN, so the check fails. It uses the first address of `PICACHE_WEB_LISTEN` (or of `PICACHE_WEB_TLS_LISTEN` if HTTP is off) and of `PICACHE_DNS_LISTEN`, with wildcard addresses replaced by `127.0.0.1`. With a URL, only that URL is checked. Used by the Docker `HEALTHCHECK`. |
 | `picache reset-password [user]` | Set a new password for the existing account `user` (default `admin`), read from stdin (at least 10 characters). The input is not hidden; you can redirect it from a file. Disables TOTP for the account, signs out all sessions and revokes all API tokens, then prints exactly what changed. A name that matches no account is refused and the existing names are listed; an account is created only when none exists yet. Run it as root or as the service user. As root it switches to the owner of the data directory first. |
 | `picache setup-token` | Print the first-run setup token (until setup is done). Needs read access to the data directory: `sudo` on bare metal, `-u 65532:65532` in Docker. |
 | `picache storage apply <id> [--password-stdin]` | Root only. Validate the storage target, write `/etc/picache/credentials/<id>.cred` and a systemd `.mount` unit for `/srv/picache/<id>`, then `systemctl daemon-reload`, `enable` and `start`, or `restart` when the mounted settings are outdated. The NAS password is decrypted from the database with the master key, or read from stdin with `--password-stdin`. |

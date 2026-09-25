@@ -9,11 +9,20 @@ gives a hardening checklist and explains how to report vulnerabilities.
 ## Reporting a vulnerability
 
 Please report vulnerabilities **privately** through GitHub's private
-vulnerability reporting for this repository (**Security → Report a
-vulnerability**). Do not open a public issue. Include the version
-(`picache version`), the deployment type, and steps to reproduce. Never
-include real passwords, tokens, setup tokens or NAS credentials; the database
-and backups contain secrets and personal data (query logs).
+vulnerability reporting:
+[report a vulnerability](https://github.com/Hustenreizjuengling/PiCache/security/advisories/new)
+(or **Security → Report a vulnerability** on the repository page). Do not
+open a public issue, discussion or pull request for a vulnerability. If
+private reporting is not available, open an issue that only asks for a
+private contact, without any details.
+
+Include the version (`picache version`, or the commit you built), the
+deployment type, and steps to reproduce. Never include real passwords,
+tokens, setup tokens or NAS credentials, and do not attach databases or
+backups: they contain secrets and personal data (query logs).
+
+PiCache has no releases yet. Security fixes go to the `main` branch; please
+test against a current build of `main`.
 
 ## Scope and assumptions
 
@@ -30,7 +39,7 @@ and backups contain secrets and personal data (query logs).
 | Threat | Controls |
 |---|---|
 | Open resolver, DNS amplification | Answers only loopback, private (RFC 1918, ULA, CGNAT, link-local) and directly connected private networks, plus CIDRs you add. Other UDP queries are dropped; TCP connections are closed at accept. Per-client rate limit (default 50 qps, burst 200), `ANY` refused, CHAOS/`version.bind` refused, EDNS capped at 1232 bytes. `allowAllNetworks` is an explicit, dangerous switch. |
-| DNS cache poisoning | Encrypted upstreams (DoH/DoT) by default, random IDs and ports, the question is verified on every reply, in-flight deduplication, no client EDNS options forwarded. |
+| DNS cache poisoning | Encrypted upstreams by default (DNS-over-HTTPS; DNS-over-TLS is also supported), random IDs and ports, the question is verified on every reply, in-flight deduplication, no client EDNS options forwarded. |
 | Private reverse-DNS leaks | PTR/SOA/NS queries for private and special-use reverse zones never reach public upstreams. |
 | Open HTTP proxy / SSRF via :80 | Only hosts of known LanCache services are served; unknown hosts get 403. Upstream addresses must be public unicast and not this machine; link-local (cloud metadata) is always refused, and redirects are re-checked. Non-canonical paths are never stored. Per-client fill limits and at most 16 ranges per request prevent WAN amplification. |
 | Open TLS relay via :443 | TLS is never terminated. The SNI must match an enabled service, the same SSRF rules apply, and connections are capped and time out. |
@@ -114,8 +123,10 @@ Known residual risks:
 - [ ] `/etc/picache/picache.env` is `0640 root:picache`,
       `/etc/picache/credentials` is `0700 root`.
 - [ ] The system clock is synchronised (NTP). Encrypted upstreams depend on
-      it, and PiCache falls back to plain DNS to its bootstrap servers while
-      the clock is wrong.
+      it. While the clock is before the binary's build date, PiCache falls
+      back to plain DNS to its bootstrap servers. A build without a build
+      date (such as the image `docker compose up --build` builds) has no such
+      fallback: its encrypted upstreams fail until the clock is right.
 - [ ] Host-apply (`--with-host-apply`) is installed only if you use it.
       To disable the root helper, delete `/etc/picache/host-apply.enabled`
       and run `systemctl disable --now picache-storage.path`.

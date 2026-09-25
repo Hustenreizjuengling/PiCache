@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest a new feature or a change to an existing one.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        PiCache's priorities are security, simplicity, correctness, performance and features, in that order. Some things are deliberately out of scope for now (for example a DHCP server, DNS-over-HTTPS/TLS for clients, local DNSSEC validation) and TLS interception of downloads will never be added; see the non-goals in [docs/ARCHITECTURE.md](https://github.com/Hustenreizjuengling/PiCache/blob/main/docs/ARCHITECTURE.md#1-goals-and-non-goals).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what stops you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How should PiCache behave? Include UI or API details if you have them.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you use now, or how Pi-hole, AdGuard Home or LanCache handle it.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - DNS filtering
+        - DNS resolution and upstreams
+        - LanCache download cache
+        - Storage and NAS
+        - Web UI
+        - API
+        - Installation and upgrades
+        - Documentation

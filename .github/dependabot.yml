@@ -1,0 +1,54 @@
+# Dependency updates. Minor and patch updates of one ecosystem arrive as one
+# grouped pull request per week; major updates get their own pull requests.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      go-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # modernc.org/libc is pinned to the exact version modernc.org/sqlite
+      # requires and must never be bumped alone (docs/ARCHITECTURE.md,
+      # section 4). An update of modernc.org/sqlite brings the matching libc.
+      - dependency-name: modernc.org/libc
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /deploy/docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      docker-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # The Go version of the build image moves only by hand, together with
+      # go.mod and GO_VERSION in .github/workflows/ci.yml. Go patch releases
+      # arrive through the golang:1.27-alpine tag itself.
+      - dependency-name: golang
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
