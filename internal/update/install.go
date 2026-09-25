@@ -254,7 +254,13 @@ func (a *applier) checkTarget(ctx context.Context) error {
 		if resolved, err := filepath.EvalSymlinks(svc); err == nil {
 			svc = resolved
 		}
-		if filepath.Clean(svc) != a.bin {
+		// Compare resolved paths on both sides (a symlinked directory,
+		// macOS /var → /private/var, Windows 8.3 short names).
+		bin := a.bin
+		if resolved, err := filepath.EvalSymlinks(bin); err == nil {
+			bin = resolved
+		}
+		if filepath.Clean(svc) != filepath.Clean(bin) {
 			return fmt.Errorf("%s runs %s, not %s; run `sudo %s update` instead", Service, svc, a.bin, svc)
 		}
 	}

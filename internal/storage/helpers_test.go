@@ -18,7 +18,7 @@ const testID = "0123456789abcdef0123456789abcdef"
 // temp dir (all created).
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
-	dir := t.TempDir()
+	dir := longTempDir(t)
 	cfg := &config.Config{
 		DataDir:   filepath.Join(dir, "data"),
 		CacheDir:  filepath.Join(dir, "cache"),
@@ -94,4 +94,17 @@ func smbInput(pw *string) TargetInput {
 
 func localInput(path string) TargetInput {
 	return TargetInput{Name: "Disk", Kind: KindLocal, Mode: ModeExternal, Path: path}
+}
+
+// longTempDir returns t.TempDir() with symbolic links and Windows 8.3 short
+// names (C:\Users\RUNNER~1 on CI runners) resolved: validatePath rightly
+// refuses "~", and macOS temp dirs live below the /var symlink.
+func longTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	long, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return long
 }

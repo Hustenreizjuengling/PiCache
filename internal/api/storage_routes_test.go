@@ -69,7 +69,12 @@ type storageTestEnv struct {
 func newStorageTestEnv(t *testing.T) *storageTestEnv {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
+	// Resolved: Windows runners have 8.3 short names (RUNNER~1) in the temp
+	// path, which the storage path validation refuses.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{DataDir: filepath.Join(dir, "data"), CacheDir: filepath.Join(dir, "cache"), MountRoot: filepath.Join(dir, "mnt")}
 	for _, p := range []string{cfg.DataDir, cfg.CacheDir, cfg.MountRoot, filepath.Join(cfg.DataDir, "storage-requests")} {
 		if err := os.MkdirAll(p, 0o750); err != nil {

@@ -223,7 +223,10 @@ func TestReapplyChangedTargetRemounts(t *testing.T) {
 		t.Fatalf("failed remount: %v", err)
 	}
 	wantCalls(t, h, "daemon-reload", "enable "+unit, "reset-failed "+unit, "restart "+unit)
-	if s := readApplyState(requestsDir(cfg), tg.ID, true); !strings.HasPrefix(s, "failed: cannot remount") || !strings.Contains(s, "target is busy") {
+	// The stored state is clipped to maxMessage runes; with the long temp
+	// paths of macOS runners the reason may fall behind the clip.
+	if s := readApplyState(requestsDir(cfg), tg.ID, true); !strings.HasPrefix(s, "failed: cannot remount") ||
+		!(strings.Contains(s, "target is busy") || strings.HasSuffix(s, "…")) {
 		t.Fatalf("apply state %q", s)
 	}
 
