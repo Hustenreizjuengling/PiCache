@@ -21,8 +21,9 @@ deployment type, and steps to reproduce. Never include real passwords,
 tokens, setup tokens or NAS credentials, and do not attach databases or
 backups: they contain secrets and personal data (query logs).
 
-PiCache has no releases yet. Security fixes go to the `main` branch; please
-test against a current build of `main`.
+Security fixes are published as a new release (see [Updates](#updates)) and
+listed in [CHANGELOG.md](../CHANGELOG.md). Only the newest release gets
+fixes; please test against it or a current build of `main`.
 
 ## Scope and assumptions
 
@@ -54,6 +55,7 @@ test against a current build of `main`.
 | Secret leakage | NAS passwords and TOTP secrets are sealed (XChaCha20-Poly1305) with a master key that is never part of a backup. Secrets are write-only in the API and redacted in logs, snippets and the audit log. Only the root helper decrypts NAS passwords. CDN query strings are never logged or stored. |
 | Privilege escalation | The service runs unprivileged and never holds `CAP_SYS_ADMIN`. NAS mounts are done by systemd on request of a separate root helper that re-validates every request and never trusts the database: it opens it read-only as a regular file (no links, FIFOs or devices) with an untrusted schema, touches only names derived from the target id, never follows links in the service-owned request directory, and runs sandboxed with a memory limit. |
 | Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total. |
+| Malicious or tampered update | A release is installed only if its `SHA256SUMS` carries an Ed25519 signature by a key compiled into the running binary, the binary matches its checksum and reports the expected version. The web UI can only queue a version number; the root helper installs exactly that release from the fixed GitHub repository and never an older one. Starting an update needs a browser session and the password. Details in [Updates](#updates). |
 
 Known residual risks:
 
@@ -74,6 +76,160 @@ Known residual risks:
   floods sign-ins from very many addresses can also use up the global
   attempt limit while it continues. The audit log (`auth.login_failed`, per
   client) shows where the attempts come from.
+
+## Updates
+
+How to update is described in
+[DEPLOYMENT.md](DEPLOYMENT.md#updates); the binding rules are in
+[ARCHITECTURE.md §14](ARCHITECTURE.md#14-releases-and-updates).
+
+### What PiCache trusts
+
+- **Only the release key.** The Ed25519 public keys that may sign releases
+  are compiled into the binary (`internal/update/keys.go`). The current key
+  is published as [release-key.pem](release-key.pem). Before PiCache trusts
+  anything of a release, it downloads `SHA256SUMS` and `SHA256SUMS.sig`
+  (at most 64 KiB each) and verifies the signature. Then it downloads the
+  binary for this machine (at most 256 MiB), checks its SHA-256 against the
+  signed list, runs it once and requires it to report the expected version.
+  A file that fails any check is deleted and nothing is replaced.
+- **Not GitHub alone.** HTTPS protects the transfer, and the signature proves
+  the origin: someone who takes over the GitHub account or changes release
+  files, but does not hold the private key, cannot get PiCache to install a
+  binary. Release notes are shown in the web UI as text; they are never
+  turned into HTML.
+- **Not the download location.** The release is looked up by its version in
+  the fixed repository `Hustenreizjuengling/PiCache`. No setting, request or
+  API response can point PiCache at another URL.
+- Only the program is replaced. Unit files and the installer are changed
+  only by running `install.sh` yourself.
+- The container images on GHCR are not signed. They are built by the same
+  workflow from the same tag as the signed binaries. Pin a tag (or a digest)
+  in the compose file if you want to decide when the image changes.
+
+### The update helper
+
+The PiCache service runs unprivileged and cannot replace its own program. On
+bare metal, VMs and LXC containers the installer adds a root helper
+(`picache-update.path` and `picache-update.service`) unless you pass
+`--without-updater`:
+
+- The service only writes a request file to `<data>/update-requests/`. It
+  contains a version number and who asked for it (for the log), nothing
+  else: no URL, file name or command.
+- The web UI queues a request only for the version that the last check found
+  (always newer than the running one), only when no update is running, and
+  only for a browser session that enters the password again (API tokens
+  cannot, like restores). The audit log records it as
+  `system.update_queued`.
+- The helper checks the version string against
+  `^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`, refuses an older or the same version,
+  downloads that release from the fixed repository and runs the checks above.
+  It writes only the installed binary's directory
+  (`/usr/local/bin/.picache.update`, `picache.prev`, `picache`), restarts
+  `picache.service`, writes its progress to `<data>/update-requests/`, and in
+  a rollback puts back `picache.prev` and the pre-upgrade copy of
+  `picache.db` from `<data>/backups/`.
+- So a compromised service can at most ask for another signed, newer release
+  of PiCache (for example a pre-release). It cannot make the helper run
+  anything else.
+- Without the helper (`--without-updater`, or after deleting
+  `/etc/picache/updater.enabled` and disabling `picache-update.path`), updates
+  are installed only by an administrator with `sudo picache update`, which
+  runs the same checks.
+
+### The update check
+
+- The service asks `https://api.github.com/repos/Hustenreizjuengling/PiCache/releases`
+  once a day (and on **Check now**), with `User-Agent: PiCache/<version>`.
+  GitHub therefore sees your public IP address and the installed version.
+  Nothing else is sent, and no account or token is used.
+- The check only reads release information; it never downloads or installs a
+  binary. Turn off **Check for updates daily** on **System → Updates** if
+  PiCache must not contact GitHub.
+- While the repository is private, GitHub answers the check and the
+  downloads only for signed-in users. PiCache does not sign in, so it
+  reports that the release information is not reachable; install releases by
+  hand then (`picache update --from <dir>`), which checks the signature the
+  same way.
+
+### The one-line installer
+
+`curl … | sudo sh` trusts the HTTPS connection to GitHub for the script
+itself. `get-picache.sh` then trusts nothing else it downloads until the
+signature of `SHA256SUMS` verifies against the release key it carries, and
+it checks every file it uses against `SHA256SUMS`. It runs everything from
+its last line, so a truncated download runs nothing. If you want to check
+the script too, download it, compare it with `SHA256SUMS` of the release
+(verified as below) and read it before you run it.
+
+### Verifying a release by hand
+
+The workflow that publishes a release checks its signature before it
+publishes it. To check a release yourself, for example before the first
+installation, download `SHA256SUMS`, `SHA256SUMS.sig`, the files you want and
+the public key [docs/release-key.pem](release-key.pem) (from the repository,
+not from the release), then run, with OpenSSL 3.0 or later:
+
+```sh
+base64 -d SHA256SUMS.sig > SHA256SUMS.sig.bin
+openssl pkeyutl -verify -pubin -inkey release-key.pem -rawin \
+  -in SHA256SUMS -sigfile SHA256SUMS.sig.bin    # "Signature Verified Successfully"
+sha256sum -c --ignore-missing SHA256SUMS        # "OK" for every file you downloaded
+```
+
+Both commands must succeed. `SHA256SUMS.sig` is one line of base64: the
+Ed25519 signature over the exact bytes of `SHA256SUMS`. LibreSSL (the default
+`openssl` on macOS) cannot verify it; use OpenSSL 3 (`brew install openssl@3`).
+The key in `release-key.pem` is the same as the base64 key in
+`internal/update/keys.go`:
+
+```sh
+openssl pkey -pubin -in release-key.pem -outform DER | tail -c 32 | base64
+```
+
+Release builds are meant to be reproducible: the build date is the commit
+time, and paths, file order, owners and time stamps are fixed. `make dist
+VERSION=<tag>` on a clean checkout of the tag with the same Go version
+(`picache version` shows it) should give files with the same checksums as
+the release.
+
+### The release key
+
+- The private key exists in two places only: the secret
+  `RELEASE_SIGNING_KEY` of the GitHub environment `release`, and an offline
+  backup kept by the maintainer (for example on an encrypted
+  medium). It is never committed; `.gitignore` excludes `*.pem` and `*.key`
+  except the public `docs/release-key.pem`.
+- Only the `sign` job of the release workflow can read the secret. That job
+  checks out no code, runs no third-party actions and gets `SHA256SUMS`
+  from the build job as a job output; it writes the key to a private
+  temporary file, signs and deletes the file. The build (with `npm ci` and
+  the Go build) runs in a job without secrets, so a compromised dependency
+  cannot reach the key. The environment `release` only admits `v*` tags.
+- GitHub gives no secrets to
+  workflows of pull requests from forks, and the release workflow runs only
+  for pushed `v*` tags. The privilege to guard is therefore write access to
+  the repository; a tag ruleset can also limit who may create `v*` tags.
+- **Rotation** (planned, the old key is still safe):
+  1. Create the new key offline, as in
+     [CONTRIBUTING.md](../CONTRIBUTING.md#one-time-setup-the-signing-key).
+  2. Add its raw public key (the command above) to `internal/update/keys.go`,
+     keeping the old key, and publish a release. It is still signed with the
+     old key, so every installed version accepts it.
+  3. Then replace `docs/release-key.pem` with the new public key and the
+     secret `RELEASE_SIGNING_KEY` with the new private key. Later releases
+     are signed with the new key only.
+  4. Versions older than the release of step 2 cannot verify the new
+     signatures. Update them to that release first
+     (`sudo picache update --version <that release>`, or with the installer),
+     and say so in the release notes. Remove the old key from `keys.go` once
+     no supported version needs it.
+- **Compromised key:** delete the secret at once, create a new key and follow
+  the rotation, but remove the old key in step 2 instead of keeping it, and
+  publish a security advisory. Every version that still trusts the old key
+  accepts anything signed with it, so affected installations must be updated
+  by hand, with the files checked against the new `docs/release-key.pem`.
 
 ## Hardening checklist
 
@@ -154,7 +310,14 @@ Known residual risks:
 
 **Maintenance**
 
-- [ ] PiCache is kept up to date. The CI runs `govulncheck` against the
-      dependencies.
+- [ ] PiCache is kept up to date (**System → Updates**, or
+      `picache update --check` in your monitoring). The CI runs
+      `govulncheck` against the dependencies.
+- [ ] The update helper is installed only if you want to update from the
+      web UI (otherwise `--without-updater`). The daily update check is off
+      if PiCache must not contact GitHub.
+- [ ] Before the first installation, the release files were checked with
+      `sha256sum -c` and their signature
+      ([Verifying a release by hand](#verifying-a-release-by-hand)).
 - [ ] The health page (**System → Health & about**) and the audit log are
       reviewed now and then.

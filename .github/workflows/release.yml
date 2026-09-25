@@ -1,0 +1,250 @@
+name: Release
+
+# Publishes a release when a version tag is pushed (docs/ARCHITECTURE.md,
+# section 14.1; the steps are in CONTRIBUTING.md): builds the assets from the
+# tag, signs SHA256SUMS, creates the GitHub release with the CHANGELOG.md
+# section as notes and pushes the container images to GHCR. Tags with a
+# hyphen (v1.2.3-rc.1) become pre-releases.
+#
+# The signing key is only ever present in the job `sign`, which runs no
+# checked-out code, no npm or Go dependency and no action: the build job
+# (npm ci runs the install scripts of every dependency, and processes it
+# starts live until the job ends) never sees the key.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Same as ci.yml. Not go-version-file: go.mod says "go 1.27.0", which
+  # would pin setup-go to 1.27.0 without the later security fixes.
+  GO_VERSION: "1.27.x"
+  GOTOOLCHAIN: local
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  build:
+    name: Release assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.info.outputs.commit }}
+      date: ${{ steps.info.outputs.date }}
+      sums: ${{ steps.sums.outputs.sums }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The pattern the update helper accepts; make dist then checks SemVer.
+      - name: Check the tag
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::The tag is not a release version such as v1.2.3 or v1.2.3-rc.1."
+            exit 1
+          fi
+
+      # Fail before building if CHANGELOG.md has no section for the tag
+      # (the release job takes the notes from the same commit).
+      - name: Release notes from CHANGELOG.md
+        run: sh scripts/release-notes.sh "$TAG" > /dev/null
+
+      # The values make dist uses by default, passed on explicitly so that the
+      # image job stamps its binary with exactly the same ones.
+      - name: Build information
+        id: info
+        run: |
+          {
+            echo "commit=$(git rev-parse --short=12 HEAD)"
+            echo "date=$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          # Release builds download and verify every module themselves
+          # instead of trusting a restored module cache.
+          cache: false
+
+      - name: Build the release assets
+        env:
+          COMMIT: ${{ steps.info.outputs.commit }}
+          DATE: ${{ steps.info.outputs.date }}
+        run: make dist VERSION="$TAG" COMMIT="$COMMIT" DATE="$DATE"
+
+      # The signing job gets exactly these bytes (and nothing else).
+      - name: SHA256SUMS for the signing job
+        id: sums
+        run: echo "sums=$(base64 -w0 dist/SHA256SUMS)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign SHA256SUMS
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Keep RELEASE_SIGNING_KEY as a secret of this environment and give the
+    # environment a deployment rule for tags v* (and a required reviewer):
+    # then no other workflow, branch or job can read the key.
+    environment: release
+    permissions: {}
+    outputs:
+      sig: ${{ steps.sign.outputs.sig }}
+    steps:
+      - name: Sign SHA256SUMS
+        id: sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          SUMS: ${{ needs.build.outputs.sums }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::The secret RELEASE_SIGNING_KEY is missing or empty. Add the Ed25519 release key (PEM) under Settings > Environments > release (or Settings > Secrets and variables > Actions), see CONTRIBUTING.md."
+            exit 1
+          fi
+          dir=$(mktemp -d "$RUNNER_TEMP/sign.XXXXXX")
+          trap 'rm -rf "$dir"' EXIT
+          (umask 077 && printf '%s\n' "$RELEASE_SIGNING_KEY" > "$dir/key.pem")
+          printf '%s' "$SUMS" | base64 -d > "$dir/SHA256SUMS"
+          openssl pkeyutl -sign -rawin -inkey "$dir/key.pem" -in "$dir/SHA256SUMS" -out "$dir/SHA256SUMS.sig.bin"
+          echo "sig=$(base64 -w0 "$dir/SHA256SUMS.sig.bin")" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: GitHub release
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the release and upload its assets
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: dist/
+
+      - name: Release notes from CHANGELOG.md
+        run: sh scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/release-notes.md"
+
+      - name: Add the signature
+        env:
+          SIG: ${{ needs.sign.outputs.sig }}
+        run: printf '%s\n' "$SIG" > dist/SHA256SUMS.sig
+
+      - name: Verify the release assets
+        env:
+          SUMS: ${{ needs.build.outputs.sums }}
+        run: |
+          expected="SHA256SUMS SHA256SUMS.sig get-picache.sh picache-deploy.tar.gz picache-linux-amd64 picache-linux-arm64 picache-linux-armv7"
+          actual=$(find dist -mindepth 1 -printf '%P\n' | LC_ALL=C sort | paste -sd ' ')
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::dist/ holds \"$actual\", expected \"$expected\"."
+            exit 1
+          fi
+          if [ "$(base64 -w0 dist/SHA256SUMS)" != "$SUMS" ]; then
+            echo "::error::dist/SHA256SUMS is not the file that was signed."
+            exit 1
+          fi
+          # The check every user can do by hand (docs/SECURITY.md).
+          base64 -d dist/SHA256SUMS.sig > "$RUNNER_TEMP/SHA256SUMS.sig.bin"
+          if ! openssl pkeyutl -verify -pubin -inkey docs/release-key.pem -rawin \
+              -in dist/SHA256SUMS -sigfile "$RUNNER_TEMP/SHA256SUMS.sig.bin"; then
+            echo "::error::SHA256SUMS.sig does not verify against docs/release-key.pem. Is RELEASE_SIGNING_KEY the matching private key?"
+            exit 1
+          fi
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          chmod +x dist/picache-linux-amd64
+          out=$(dist/picache-linux-amd64 version)
+          echo "$out"
+          case "$out" in
+            "picache $TAG "*) ;;
+            *) echo "::error::The binary does not report the version $TAG."; exit 1 ;;
+          esac
+          tar -tvzf dist/picache-deploy.tar.gz
+          sh -n dist/get-picache.sh
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "PiCache $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" "${prerelease[@]}" \
+            dist/picache-linux-amd64 dist/picache-linux-arm64 dist/picache-linux-armv7 \
+            dist/picache-deploy.tar.gz dist/get-picache.sh dist/SHA256SUMS dist/SHA256SUMS.sig
+
+  image:
+    name: Container image
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # X.Y.Z always; X.Y and latest only for releases without a hyphen.
+      - name: Image tags
+        id: tags
+        run: |
+          image=ghcr.io/hustenreizjuengling/picache
+          version=${TAG#v}
+          tags="$image:$version"
+          case "$version" in
+            *-*) ;;
+            *) tags="$tags,$image:${version%.*},$image:latest" ;;
+          esac
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      # No QEMU: the build stages run on the runner's platform and
+      # cross-compile, and the final stage has no RUN step.
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ needs.build.outputs.commit }}
+            DATE=${{ needs.build.outputs.date }}

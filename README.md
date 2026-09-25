@@ -70,6 +70,10 @@ or an unprivileged Proxmox LXC container.
 - A single static binary for Linux amd64, arm64 and armv7. Deploy it with
   hardened systemd units, in a Proxmox LXC container, or as a distroless
   Docker image.
+- Updates: the UI shows new releases with their notes and installs one on
+  request, only with a valid release signature and with an automatic
+  rollback if the new version does not start. `sudo picache update` does the
+  same on the command line; Docker images come from GHCR.
 
 ## Screenshots
 
@@ -118,19 +122,22 @@ Select an image to see it at full size.
 
 ## Status
 
-PiCache is in early development. There are no tagged releases, prebuilt
-binaries or published container images yet, so you build it from source.
-The version a build reports depends on how it was built:
+PiCache is in early development. Releases are published on
+[GitHub](https://github.com/Hustenreizjuengling/PiCache/releases) as static
+binaries with signed checksums, and as container images at
+`ghcr.io/hustenreizjuengling/picache`. The version a build reports depends
+on how it was built:
 
+- Releases (binaries and images): the tag, for example `v0.1.0`.
 - `make` and `make docker`: the output of
-  `git describe --tags --always --dirty`, which is the short commit hash
-  until a release is tagged (with `-dirty` if the tree has uncommitted
-  changes). `make VERSION=v0.1.0` sets it explicitly.
+  `git describe --tags --always --dirty`, for example `v0.1.0-3-gabc1234`
+  (with `-dirty` if the tree has uncommitted changes). `make VERSION=v0.1.0`
+  sets it explicitly.
 - CI builds: the commit hash.
 - A plain `go build`, and the image that `docker compose up --build` builds
   (the compose files pass no build arguments): `dev`. Such builds skip the
   automatic database copy before an upgrade, see
-  [Upgrade](docs/DEPLOYMENT.md#upgrade).
+  [Updates](docs/DEPLOYMENT.md#updates).
 
 Not included: a DHCP server, DNS-over-HTTPS/TLS for clients, local DNSSEC
 validation, and more than one user account (one admin plus API tokens). TLS
@@ -139,7 +146,55 @@ is not a deployment target.
 
 ## Quick start
 
-Build it (Go 1.27, Node.js 22, GNU make):
+**Debian 12/13 (bare metal, VM, Raspberry Pi, LXC), one line:**
+
+```sh
+curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh
+# open http://<ip>:8080/ and create the admin account with the setup token it shows
+```
+
+The script verifies the release signature before it installs anything
+([details and options](docs/DEPLOYMENT.md#one-line-install); to read it
+first, download it and run `sudo sh get-picache.sh`).
+
+**Debian 12/13 by hand:** download the binary for
+your machine (`picache-linux-amd64`, `-arm64` or `-armv7`),
+`picache-deploy.tar.gz`, `SHA256SUMS` and `SHA256SUMS.sig` from the
+[latest release](https://github.com/Hustenreizjuengling/PiCache/releases/latest)
+and check them ([how](docs/DEPLOYMENT.md#download)). Then:
+
+```sh
+tar -xzf picache-deploy.tar.gz          # deploy/, LICENSE, THIRD_PARTY_NOTICES.md
+sudo sh deploy/install.sh --binary ./picache-linux-amd64
+sudo picache setup-token
+# open http://<ip>:8080/ and create the admin account
+```
+
+**Proxmox VE (unprivileged LXC):** create a Debian 12/13 container with
+`nesting=1` and a static IP, copy the binary and `picache-deploy.tar.gz`
+into it and run the same installer. See
+[deploy/lxc/README.md](deploy/lxc/README.md), which also covers NAS mounts.
+
+**Docker (host networking)**
+
+```sh
+git clone https://github.com/hustenreizjuengling/picache.git   # or unpack picache-deploy.tar.gz
+cd picache/deploy/docker
+docker compose up -d        # pulls ghcr.io/hustenreizjuengling/picache:latest
+docker exec -u 65532:65532 picache /picache setup-token
+# open http://<host-ip>:8080/
+```
+
+Then point your router's DHCP DNS option at PiCache. If port 53 is already
+in use (for example by systemd-resolved), see
+[Port 53 conflicts](docs/DEPLOYMENT.md#port-53-conflicts).
+
+**Updates:** **System → Updates** in the web UI shows new releases and, on
+bare metal, VMs and LXC, installs them; on the command line use
+`sudo picache update`, with Docker `docker compose pull && docker compose up -d`.
+See [Updates](docs/DEPLOYMENT.md#updates).
+
+**From source** (Go 1.27, Node.js 22, GNU make):
 
 ```sh
 git clone https://github.com/hustenreizjuengling/picache.git
@@ -148,31 +203,9 @@ make              # web UI + bin/picache for this machine
 make build-all    # static bin/picache-linux-{amd64,arm64,armv7}
 ```
 
-**Debian 12/13 (bare metal, VM, Raspberry Pi)**
-
-```sh
-sudo sh deploy/install.sh --binary bin/picache-linux-amd64   # or -arm64 / -armv7
-sudo picache setup-token
-# open http://<ip>:8080/ and create the admin account
-```
-
-**Proxmox VE (unprivileged LXC):** create a Debian 12/13 container with
-`nesting=1` and a static IP, copy the binary, `deploy/`, `LICENSE` and
-`THIRD_PARTY_NOTICES.md` into it and run the same installer. See
-[deploy/lxc/README.md](deploy/lxc/README.md), which also covers NAS mounts.
-
-**Docker (host networking)**
-
-```sh
-cd deploy/docker
-docker compose up -d --build
-docker exec -u 65532:65532 picache /picache setup-token
-# open http://<host-ip>:8080/
-```
-
-Then point your router's DHCP DNS option at PiCache. If port 53 is already
-in use (for example by systemd-resolved), see
-[Port 53 conflicts](docs/DEPLOYMENT.md#port-53-conflicts).
+Install such a binary with `sudo sh deploy/install.sh --binary
+bin/picache-linux-amd64`, or build the Docker image with
+`docker compose up -d --build` in `deploy/docker`.
 
 ## Architecture
 
@@ -298,7 +331,9 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   `RestrictAddressFamilies`, `MemoryDenyWriteExecute` and
   `SystemCallFilter=@system-service ~@privileged`, among others. An optional
   root helper (`picache-storage.path` and `.service`) mounts NAS shares on
-  request of the web UI.
+  request of the web UI, and the update helper (`picache-update.path` and
+  `.service`, installed unless `--without-updater`) installs signed releases
+  on request of the web UI.
 - Docker: a multi-stage build (Node 22 and Go 1.27 Alpine stages) into
   `gcr.io/distroless/static-debian13` (no shell). The container starts as
   root only to bind ports 53, 80 and 443, then drops to `65532:65532` before
@@ -324,7 +359,16 @@ on pushes to `main` and on pull requests)
   `docker compose config` for both compose files, and an installer smoke test
   in a Debian container.
 - A multi-arch Docker build (linux/amd64, linux/arm64, linux/arm/v7) that is
-  not pushed anywhere.
+  not pushed anywhere, and a check of `make dist` (the release files).
+
+**Releases** ([`.github/workflows/release.yml`](.github/workflows/release.yml),
+on pushed `v*` tags): `make dist` builds the three static binaries,
+`picache-deploy.tar.gz` and `SHA256SUMS`; the workflow signs `SHA256SUMS`
+with the Ed25519 release key, publishes a GitHub release with the
+`CHANGELOG.md` section as notes (a pre-release for tags with a hyphen), and
+pushes multi-arch images to `ghcr.io/hustenreizjuengling/picache` (`X.Y.Z`,
+and for stable releases `X.Y` and `latest`). See
+[CONTRIBUTING.md](CONTRIBUTING.md#releases).
 
 ## Persistent data
 
@@ -356,6 +400,11 @@ Details, including backup and restore, are in
   HTTPS is relayed without being decrypted.
 - NAS passwords and TOTP secrets are sealed with XChaCha20-Poly1305. Backups
   never contain accounts, sessions or API tokens.
+- Updates are installed only with a valid Ed25519 signature from the release
+  key built into PiCache ([docs/release-key.pem](docs/release-key.pem)). The
+  web UI can only ask the root helper for a newer version number, and the
+  daily update check, which contacts only `api.github.com`, can be turned
+  off.
 
 Threat model, hardening checklist and how to report a vulnerability:
 [docs/SECURITY.md](docs/SECURITY.md). Please report vulnerabilities
@@ -363,11 +412,12 @@ privately, not in a public issue.
 
 ## Documentation
 
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): installation, first-run setup,
-  backup and restore, upgrades, storage, environment variables, CLI.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): downloads, installation,
+  first-run setup, backup and restore, updates, storage, environment
+  variables, CLI.
 - [deploy/lxc/README.md](deploy/lxc/README.md): Proxmox LXC and NAS.
-- [docs/SECURITY.md](docs/SECURITY.md): threat model, hardening checklist,
-  reporting vulnerabilities.
+- [docs/SECURITY.md](docs/SECURITY.md): threat model, updates and the
+  release key, hardening checklist, reporting vulnerabilities.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): design and specification.
 - [docs/API.md](docs/API.md): REST API.
 - [docs/DESIGN.md](docs/DESIGN.md) and [web/README.md](web/README.md): UI
@@ -411,11 +461,19 @@ Englisch).
   Zwei-Faktor-Anmeldung, API-Tokens.
 - **Betrieb** auf Debian 12/13 (auch Raspberry Pi 4/5), in einem Proxmox-LXC
   oder mit Docker.
-- **Stand:** frühe Entwicklung. Es gibt noch keine Releases, fertigen
-  Binärdateien oder Container-Images; PiCache wird aus dem Quellcode gebaut.
+- **Updates:** Die Oberfläche zeigt neue Versionen an und installiert sie auf
+  Wunsch, nur mit gültiger Signatur und mit automatischer Rückkehr zur alten
+  Version, falls die neue nicht startet (`sudo picache update` auf der
+  Kommandozeile, bei Docker `docker compose pull && docker compose up -d`).
+- **Stand:** frühe Entwicklung. Releases gibt es auf
+  [GitHub](https://github.com/Hustenreizjuengling/PiCache/releases)
+  (Binärdateien mit signierten Prüfsummen) und als Container-Image
+  `ghcr.io/hustenreizjuengling/picache`.
 
-Schnellstart auf Debian: `sudo sh deploy/install.sh --binary <datei>`, dann
-`sudo picache setup-token` ausführen und `http://<ip>:8080/` öffnen.
+Schnellstart auf Debian: Binärdatei und `picache-deploy.tar.gz` des neuesten
+Releases herunterladen und prüfen, `tar -xzf picache-deploy.tar.gz`, dann
+`sudo sh deploy/install.sh --binary <datei>` und `sudo picache setup-token`
+ausführen und `http://<ip>:8080/` öffnen.
 Anschließend im Router (DHCP) die IP von PiCache als DNS-Server eintragen.
 Auf einem Raspberry Pi gehört der Cache auf eine USB-SSD, nicht auf die
 SD-Karte. Details stehen in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)

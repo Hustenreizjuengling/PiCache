@@ -1,7 +1,7 @@
 # PiCache with host networking (recommended Docker setup).
 #
 #   cd deploy/docker
-#   docker compose up -d --build
+#   docker compose up -d        # image from ghcr.io; `up -d --build` builds from source
 #   docker exec -u 65532:65532 picache /picache setup-token   # one-time setup token
 #   # then open http://<this host's LAN IP>:8080/ and create the admin account
 #
@@ -30,9 +30,9 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    image: picache:latest
-    # Always built from this source tree, never pulled from a registry.
-    pull_policy: build
+    # Release images from GitHub: `docker compose pull && docker compose up -d`
+    # updates. `docker compose up -d --build` builds this source tree instead.
+    image: ghcr.io/hustenreizjuengling/picache:latest
     container_name: picache
     restart: unless-stopped
     network_mode: host

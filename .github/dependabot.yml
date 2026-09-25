@@ -26,6 +26,11 @@ updates:
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # TypeScript majors move by hand: svelte-check must support them first
+      # (svelte-check 4.7 accepts TypeScript 5 and 6 only).
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -48,7 +53,11 @@ updates:
         update-types: [minor, patch]
     ignore:
       # The Go version of the build image moves only by hand, together with
-      # go.mod and GO_VERSION in .github/workflows/ci.yml. Go patch releases
-      # arrive through the golang:1.27-alpine tag itself.
+      # go.mod and GO_VERSION in .github/workflows/ci.yml and release.yml.
+      # Go patch releases arrive through the golang:1.27-alpine tag itself.
       - dependency-name: golang
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Node (web build stage) moves by hand from one LTS line to the next,
+      # together with node-version in the workflows; odd majors never get LTS.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]

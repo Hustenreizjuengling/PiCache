@@ -37,16 +37,28 @@ cache on its own volume (step 3), not on the root disk.
 
 ## 2. Install PiCache
 
-Copy a binary for the host architecture (from `make build-all`) and the
-`deploy/` directory, `LICENSE` and `THIRD_PARTY_NOTICES.md` of the same
-version into the container, then run the installer inside it:
+The simplest way is the one-line installer inside the container (it needs
+`curl`; minimal templates get it with `apt install curl`):
 
 ```sh
-# on the Proxmox host, in the PiCache source tree
-tar -czf /tmp/picache-deploy.tar.gz deploy LICENSE THIRD_PARTY_NOTICES.md
+pct enter 120
+apt-get update && apt-get install -y curl
+curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sh
+```
+
+Or by hand: copy the release binary for the host architecture and `picache-deploy.tar.gz`
+(`deploy/`, `LICENSE` and `THIRD_PARTY_NOTICES.md`) of the same release into
+the container, then run the installer inside it. Both are assets of every
+[GitHub release](https://github.com/Hustenreizjuengling/PiCache/releases)
+(check them with `SHA256SUMS`, see [DEPLOYMENT.md](../../docs/DEPLOYMENT.md));
+a source build gives the same files with `make dist VERSION=vX.Y.Z` in
+`dist/`:
+
+```sh
+# on the Proxmox host, in the directory with the release assets
 pct start 120
-pct push 120 /tmp/picache-deploy.tar.gz /root/picache-deploy.tar.gz
-pct push 120 bin/picache-linux-amd64 /root/picache
+pct push 120 picache-deploy.tar.gz /root/picache-deploy.tar.gz
+pct push 120 picache-linux-amd64 /root/picache
 
 pct enter 120
 cd /root && tar -xzf picache-deploy.tar.gz

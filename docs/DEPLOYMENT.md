@@ -19,17 +19,57 @@ Whichever you choose:
 - Never expose these ports to the Internet (no port forwarding). PiCache
   answers only private networks by default.
 
-Contents: [Build](#build) · [Bare metal](#bare-metal-and-vms-debian-1213) ·
-[LXC](#proxmox-lxc) · [Docker](#docker) · [First-run setup](#first-run-setup) ·
+Contents: [Download](#download) · [Build from source](#build-from-source) ·
+[Bare metal](#bare-metal-and-vms-debian-1213) · [LXC](#proxmox-lxc) ·
+[Docker](#docker) · [First-run setup](#first-run-setup) ·
 [Port conflicts](#port-conflicts) · [Persistent data](#persistent-data) ·
-[Backup and restore](#backup-and-restore) · [Upgrade](#upgrade) ·
+[Backup and restore](#backup-and-restore) · [Updates](#updates) ·
 [Uninstall](#uninstall) · [Cache storage](#cache-storage) ·
 [Environment variables](#environment-variables) · [CLI](#cli-reference) ·
 [Troubleshooting](#troubleshooting)
 
 ---
 
-## Build
+## Download
+
+Releases are published on
+[GitHub](https://github.com/Hustenreizjuengling/PiCache/releases). Each
+release has these files:
+
+| File | Contents |
+|---|---|
+| `picache-linux-amd64` | static binary for x86-64 |
+| `picache-linux-arm64` | static binary for 64-bit ARM (Raspberry Pi OS 64-bit, Debian arm64) |
+| `picache-linux-armv7` | static binary for 32-bit ARM (`armhf`) |
+| `picache-deploy.tar.gz` | `deploy/` (installer, systemd units, compose files, LXC guide), `LICENSE` and `THIRD_PARTY_NOTICES.md` |
+| `SHA256SUMS` | SHA-256 checksums of the four files above |
+| `SHA256SUMS.sig` | Ed25519 signature of `SHA256SUMS` made with the PiCache release key |
+
+Download the binary for the machine, `picache-deploy.tar.gz` and both
+checksum files of the newest release, check them, and unpack the deploy
+files:
+
+```sh
+arch=$(dpkg --print-architecture)          # amd64, arm64 or armhf
+[ "$arch" = armhf ] && arch=armv7
+base=https://github.com/Hustenreizjuengling/PiCache/releases/latest/download
+for f in "picache-linux-$arch" picache-deploy.tar.gz SHA256SUMS SHA256SUMS.sig; do
+  curl -fLO "$base/$f"
+done
+sha256sum -c --ignore-missing SHA256SUMS   # every file must say OK
+tar -xzf picache-deploy.tar.gz             # deploy/, LICENSE, THIRD_PARTY_NOTICES.md
+```
+
+`sha256sum -c` protects against broken downloads. To also make sure the
+files come from the PiCache project, check the signature of `SHA256SUMS`
+with OpenSSL 3 as described in
+[SECURITY.md](SECURITY.md#verifying-a-release-by-hand). Later updates check
+the signature by themselves ([Updates](#updates)).
+
+Container images for linux/amd64, linux/arm64 and linux/arm/v7 are published
+as `ghcr.io/hustenreizjuengling/picache` ([Docker](#docker)).
+
+## Build from source
 
 You need Go 1.27 and Node.js 22 (for the web UI), plus GNU make:
 
@@ -44,17 +84,54 @@ The binary is static (`CGO_ENABLED=0`). You can build on a workstation and
 copy it to the target. Use `picache-linux-arm64` for 64-bit Raspberry Pi OS
 or Debian arm64, and `picache-linux-armv7` for 32-bit ARM systems. A binary
 built without `make web` serves a short "web UI is not built" notice instead
-of the UI; the API still works.
+of the UI; the API still works. `make dist VERSION=vX.Y.Z` builds the
+release files in `dist/`, as the release workflow does
+([CONTRIBUTING.md](../CONTRIBUTING.md#releases)).
 
-The Docker image builds everything itself (see [Docker](#docker)).
+The Docker image can also be built from source (see [Docker](#docker)).
 
 ---
 
 ## Bare metal and VMs (Debian 12/13)
 
-Copy the binary, the `deploy/` directory and the license texts `LICENSE` and
-`THIRD_PARTY_NOTICES.md` of the same version to the machine (the two files
-next to `deploy/`, as in the source tree), then run the installer as root:
+### One-line install
+
+On a Debian 12/13 machine or LXC container with systemd, as root:
+
+```sh
+curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh
+```
+
+`get-picache.sh` downloads the newest release, verifies the signature of
+`SHA256SUMS` with the release key it carries and the checksums of the files
+it uses, and then runs the release's installer (described below). It shows
+the setup token at the end. Options go after `sh -s --`:
+
+```sh
+curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh -s -- --version v0.1.0      # a specific release
+curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh -s -- --with-host-apply     # NAS mounts from the web UI
+curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh -s -- --without-updater     # no update helper
+```
+
+To read the script before running it, download it first:
+
+```sh
+curl -fsSLO https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh
+less get-picache.sh
+sudo sh get-picache.sh
+```
+
+Running it again upgrades an existing installation, unit files included.
+It needs `curl` (or `wget`); `openssl` and `ca-certificates` are installed
+with apt when they are missing, as in minimal LXC templates.
+
+### Manual install
+
+You need the binary, the `deploy/` directory and the license texts `LICENSE`
+and `THIRD_PARTY_NOTICES.md` of the same version on the machine, with the two
+files next to `deploy/`. That is what unpacking `picache-deploy.tar.gz` of a
+release gives you ([Download](#download)); from a source tree, copy them.
+Then run the installer as root:
 
 ```sh
 sudo sh deploy/install.sh --binary ./picache-linux-amd64
@@ -94,11 +171,17 @@ installation. It never downloads anything. It:
    ([Host-apply](#host-apply-root-helper)). Later runs keep the helper up to
    date as long as that marker file exists. In an unprivileged container the
    helper is skipped, because it cannot mount anything there;
-7. checks ports 53, 80, 443, 8080 and 8443 for other programs. If port 53 is
+7. installs the update helper `picache-update.path` and
+   `picache-update.service` and creates `/etc/picache/updater.enabled`, so
+   that updates can be installed from the web UI ([Updates](#updates)).
+   `--without-updater` skips both and removes a helper that an earlier run
+   installed. With a custom `PICACHE_DATA_DIR` it writes
+   a path drop-in for the helper, as for host-apply;
+8. checks ports 53, 80, 443, 8080 and 8443 for other programs. If port 53 is
    taken it prints the fix and does **not** start PiCache
    ([Port 53 conflicts](#port-53-conflicts)); it never reconfigures
    systemd-resolved or other services;
-8. enables and (re)starts `picache.service` and prints the web UI address and
+9. enables and (re)starts `picache.service` and prints the web UI address and
    the setup-token command.
 
 `/var/lib/picache` and `/var/cache/picache` are created by systemd
@@ -146,12 +229,18 @@ including the UID offset (host UID = 100000 + container UID), is in
 
 ```sh
 git clone https://github.com/hustenreizjuengling/picache.git
-cd picache/deploy/docker
-docker compose up -d --build
+cd picache/deploy/docker     # or unpack picache-deploy.tar.gz and cd deploy/docker
+docker compose up -d
 docker exec -u 65532:65532 picache /picache setup-token
 ```
 
 Then open `http://<host LAN IP>:8080/`.
+
+`docker compose up -d` pulls the release image
+`ghcr.io/hustenreizjuengling/picache:latest` (linux/amd64, linux/arm64 and
+linux/arm/v7). To build the image from the source tree instead, run
+`docker compose up -d --build` in a clone of the repository. Such an image
+reports the version `dev` ([Updates](#updates)).
 
 `deploy/docker/docker-compose.yml` uses **host networking**, so PiCache sees
 real client addresses (IPv4 and IPv6) and MAC addresses and can detect the
@@ -311,7 +400,7 @@ Everything persistent lives in exactly two places plus optional NAS mounts.
 
 | Path (bare metal / LXC) | Docker | Contents | Backup? |
 |---|---|---|---|
-| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3); `storage-requests/` (mount requests for the root helper); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
+| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and progress of the update helper); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
 | `/var/cache/picache` (`PICACHE_CACHE_DIR`) | `/cache` | The built-in **local** cache store (slice files). Large. | No |
 | `/srv/picache/<id>` (`PICACHE_MOUNT_ROOT`) | `/srv/picache` (bind, `rslave`) | NAS cache stores. The only place outside the cache dir where stores may live (the only NAS path writable inside the sandbox). | No |
 | `/etc/picache/picache.env` | environment | Bootstrap settings only. Read by systemd **and by every CLI command**. | Yes |
@@ -406,53 +495,240 @@ A NAS store is adopted by initialising the target with *adopt* in
 
 ---
 
-## Upgrade
+## Updates
+
+PiCache looks for new releases by itself, but it installs one only when an
+admin starts it. Every release comes with a `SHA256SUMS` file signed with the
+PiCache release key, and PiCache installs no file whose checksum and
+signature it cannot verify with the keys built into the running binary
+([SECURITY.md](SECURITY.md#updates)).
+
+| Deployment | How to update |
+|---|---|
+| Bare metal, VM, LXC | **Install update** in the web UI, or `sudo picache update` |
+| Without Internet access | `sudo picache update --from <dir>` with the release files |
+| Docker | `docker compose pull && docker compose up -d` |
+| Bare metal, VM, LXC, by hand | the installer of the new release ([below](#manual-upgrade-with-the-installer)), or `get-picache.sh` again ([One-line install](#one-line-install)) |
+
+### Checking for updates
+
+- **System → Updates** shows the installed version, the newest release with
+  its release notes and the time of the last check. A dot next to
+  **Updates** in the navigation marks an available update.
+- With **Check for updates daily** (on by default) PiCache asks the GitHub
+  API (`api.github.com`) for the list of releases once a day; the first
+  check runs about 5 minutes after the start. **Check now** checks at once.
+  Checking never downloads or installs anything. Turn the setting off if
+  PiCache must not contact GitHub; the CLI and **Check now** still work.
+- Only stable releases are offered, unless **Include pre-releases** is on.
+  Pre-releases are the tags with a hyphen, such as `v1.4.0-rc.1`; they are
+  tested less.
+- Only a release newer than the running version is offered; the web UI never
+  offers a downgrade. A development build counts as newer than the release
+  it is based on (`v1.2.3-4-gabc1234` is newer than `v1.2.3`); a build
+  without a release version (`dev`, a commit hash) is offered every release.
+- The check needs the GitHub repository to be public. Otherwise it reports
+  that the release information is not reachable.
+- Checks and downloads use HTTPS and need the CA certificates of the system
+  (Debian package `ca-certificates`, part of every standard installation;
+  minimal images may lack it). The Docker image brings its own.
+
+### In the web UI (bare metal, VM, LXC)
+
+The service runs as the unprivileged user `picache` and cannot replace its
+own program. As with [host-apply](#host-apply-root-helper), it only queues a
+request, and a root helper does the work:
+
+1. **Install update** on **System → Updates** asks for your password (an
+   interactive session is required; API tokens cannot start an update). It
+   queues a request for exactly the version that the last check found:
+   `<data>/update-requests/request` names only that version, never a URL, a
+   file or a command.
+2. `picache-update.path` starts `picache-update.service`
+   (`picache update apply-pending`, root). The helper downloads
+   `SHA256SUMS` and `SHA256SUMS.sig` of that release from the PiCache
+   repository on GitHub and verifies the signature, downloads the binary for
+   this machine and checks its SHA-256, and runs it once to check that it
+   reports the expected version.
+3. It keeps the installed program as `/usr/local/bin/picache.prev`, replaces
+   `/usr/local/bin/picache` in one step (rename) and restarts
+   `picache.service`.
+4. It waits up to 90 seconds for the new version to pass the health check
+   (the checks of `picache healthcheck`: the web UI and DNS). If it does not
+   pass, the helper **rolls back**: it stops PiCache, puts `picache.prev`
+   back, restores the copy of `picache.db` that the new version made before
+   it migrated the database, and starts the previous version again.
+
+The page shows each step and reloads itself when the new version answers.
+DNS, the cache and the web UI are unavailable for a few seconds during the
+restart. A failed or rolled-back update is reported on the page; the details
+are in `journalctl -u picache-update`.
+
+Only the program is replaced. Unit files and the installer change rarely.
+When a release needs them updated, its release notes say so: then also run
+the installer of that release ([below](#manual-upgrade-with-the-installer)).
+
+**The update helper.** The installer sets it up by default
+(`picache-update.path`, `picache-update.service` and the marker
+`/etc/picache/updater.enabled`). Without the marker, or when PiCache does not
+run under systemd, the page shows the command for the host instead of the
+button. `--without-updater` installs PiCache without the helper and removes
+a helper that an earlier run installed; a later run without the flag adds it
+again.
+`--uninstall` removes the helper. If you change `PICACHE_DATA_DIR`, run the
+installer again: it points the helper at the new request directory with a
+drop-in. If a request is not picked up within 3 minutes, the page says so;
+check `systemctl status picache-update.path`.
+
+### With the CLI
+
+```sh
+picache update --check                 # installed and newest version, release URL (no root needed)
+sudo picache update                    # shows the start of the release notes, asks, installs
+sudo picache update --yes              # installs without asking
+sudo picache update --version v1.2.3   # a specific release
+sudo picache update --prerelease       # consider pre-releases too
+```
+
+`picache update --check` exits with `0` when PiCache is up to date, `10` when
+an update is available and `1` on an error, so monitoring scripts can use it.
+Installing exits with `0` when the update is installed (or PiCache is already
+up to date), `1` when it failed, was rolled back or declined, and `2` on a
+usage error. The CLI and the helper never run at the same time (a lock on
+the data directory).
+`sudo picache update` runs the same steps as the helper, including the
+signature check, the health check and the rollback. It needs no update
+helper, so it also works after `--without-updater`.
+
+`--allow-downgrade` lets `picache update` install an older release. It
+replaces only the program: an older version cannot be expected to open a
+database that a newer version has migrated, so restore the matching database
+copy as described in
+[Going back to an earlier version](#going-back-to-an-earlier-version).
+
+### Offline
+
+On a machine without Internet access, put the release files into one
+directory with their original names: `SHA256SUMS`, `SHA256SUMS.sig` and the
+binary for the machine (`picache-linux-amd64`, `-arm64` or `-armv7`). Then:
+
+```sh
+sudo picache update --from /path/to/release-files
+```
+
+The signature and the checksum are checked exactly as for a download from
+GitHub. Without `--version`, PiCache installs the version that the verified
+binary reports; it must be a release newer than the installed one (or use
+`--allow-downgrade`), and PiCache asks before it installs.
+
+### Docker
+
+A container cannot replace its own program. Pull the new image and recreate
+the container in `deploy/docker`:
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+The volumes keep the data. **System → Updates** shows this command when a
+new release is out; the update check runs in the container as well.
+
+The images are `ghcr.io/hustenreizjuengling/picache:<tag>` for linux/amd64,
+linux/arm64 and linux/arm/v7:
+
+| Tag | Points to |
+|---|---|
+| `X.Y.Z` (for example `1.4.2`) | exactly that release; every release, including pre-releases (`1.5.0-rc.1`) |
+| `X.Y` (for example `1.4`) | the newest release of that minor version |
+| `latest` | the newest stable release |
+
+The compose file uses `latest`. To stay on a minor version, or to go back to
+an earlier release, set the tag in its `image:` line. An image built with
+`docker compose up -d --build` is updated with `git pull` and the same
+command.
+
+### Manual upgrade with the installer
+
+Running the installer of a new release is still supported. It is necessary
+when the release notes ask for it (changed unit files), and it also works
+with a binary built from source:
+
+```sh
+tar -xzf picache-deploy.tar.gz             # of the new release
+sudo sh deploy/install.sh --binary ./picache-linux-amd64
+```
+
+It replaces the binary, the units and the license texts and restarts the
+service. Your `picache.env` is kept.
+
+### Database copies before an upgrade
 
 PiCache migrates its databases automatically. When a new version starts for
 the first time, it saves a copy of `picache.db` to
-`<data>/backups/picache-<previous version>-<timestamp>.db` and keeps the
-newest three. The version comes from the build (`git describe` with `make`).
-Builds that report the version `dev` skip this copy: a plain `go build`, and
-the image that `docker compose up --build` builds, because the compose files
-pass no `VERSION` build argument. With Docker, download a backup
-(**System → Backup & restore**) before you upgrade.
+`<data>/backups/picache-<previous version>-<timestamp>.db` before it runs
+any migration, and keeps the newest three. If the copy cannot be made (for
+example because the disk is full), the new version does not start, so a
+database is never migrated without a copy; an update then rolls back. The
+rollback of a failed update restores the first copy of that run, only when
+the service could be stopped and the copy fits into the free space. The version
+comes from the build: releases report their tag, `make` reports
+`git describe`. Builds that report the version `dev` skip the copy: a plain
+`go build`, and the image that `docker compose up --build` builds, because
+the compose files pass no `VERSION` build argument. Before you upgrade such
+a build, download a backup (**System → Backup & restore**).
 
-- **Bare metal / LXC:** run the installer of the new version with the new
-  binary. It replaces binary, units and license texts and restarts the
-  service. Your `picache.env` is kept.
+### Going back to an earlier version
 
-  ```sh
-  sudo sh deploy/install.sh --binary ./picache-linux-amd64
-  ```
+After a successful update, the previous program stays in
+`/usr/local/bin/picache.prev` until the next update. To go back to it (or to
+another binary of an older release), stop PiCache, put the program and the
+matching database copy back (as for a file restore) and start it:
 
-- **Docker:** `git pull`, then `docker compose up -d --build` in
-  `deploy/docker`.
+```sh
+sudo systemctl stop picache
+sudo install -m 0755 /usr/local/bin/picache.prev /usr/local/bin/picache
+sudo ls /var/lib/picache/backups/          # picache-<version>-<timestamp>.db
+sudo install -m 0600 -o picache -g picache \
+  /var/lib/picache/backups/picache-v1.2.3-20260925T101500.db /var/lib/picache/picache.db
+sudo rm -f /var/lib/picache/picache.db-wal /var/lib/picache/picache.db-shm
+sudo systemctl start picache
+```
 
-**Rollback:** stop PiCache, install the previous binary, copy the matching
-file from `<data>/backups/` over `picache.db` (as for a file restore), and
-start it. An older binary cannot be expected to open a database that a newer
-version has migrated.
+Pick the copy named after the version you go back to. An older binary cannot
+be expected to open a database that a newer version has migrated. Changes to
+the configuration made since the upgrade are lost. With Docker, set the
+previous image tag in the compose file and restore the copy from the
+`picache-data` volume the same way.
 
 ---
 
 ## Uninstall
 
 - **Bare metal / LXC:** `sudo sh deploy/install.sh --uninstall` stops and
-  disables the units and removes the binary, the unit files, the license
-  texts in `/usr/share/doc/picache/`, the installer's drop-ins and
-  `/etc/picache/host-apply.enabled`. Configuration and data are kept. The
+  disables the units and removes the binary, the unit files (including the
+  update helper's), the license texts in `/usr/share/doc/picache/`, the
+  installer's drop-ins, `/etc/picache/host-apply.enabled` and
+  `/etc/picache/updater.enabled`. Configuration and data are kept. The
   script lists what remains, including NAS mount units written by the helper
   (`/etc/systemd/system/srv-picache-*.mount`) with the commands that remove
   them and their credentials. Before uninstalling you can instead run
   `sudo picache storage remove <id>` for each host-apply target.
-  To remove everything:
+  To remove everything, add `--purge`:
 
   ```sh
-  # disable and remove NAS mount units first (the script prints the commands)
-  sudo rm -rf /var/lib/picache /var/cache/picache /etc/picache
-  sudo rmdir /srv/picache        # fails while anything is still mounted there
-  sudo userdel picache
+  sudo sh deploy/install.sh --uninstall --purge
+  # or without a local copy of the installer:
+  curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh -s -- --uninstall --purge
   ```
+
+  `--purge` also stops and removes the NAS mount units of the host-apply
+  helper and deletes `/etc/picache`, `/var/lib/picache` (with the database
+  backups), `/var/cache/picache` and the `picache` user. It deletes only
+  these default paths: custom `PICACHE_DATA_DIR`, `PICACHE_CACHE_DIR` or
+  `PICACHE_MOUNT_ROOT` directories and mount points (a cache volume, a
+  share) are listed instead, and it stops without deleting anything while a
+  share is still mounted below them. It asks on the terminal first;
+  `--yes` skips the question.
 
   In LXC you can instead destroy the container, then remove the host's NAS
   fstab entry and credentials file.
@@ -657,6 +933,10 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `picache storage apply <id> [--password-stdin]` | Root only. Validate the storage target, write `/etc/picache/credentials/<id>.cred` and a systemd `.mount` unit for `/srv/picache/<id>`, then `systemctl daemon-reload`, `enable` and `start`, or `restart` when the mounted settings are outdated. The NAS password is decrypted from the database with the master key, or read from stdin with `--password-stdin`. |
 | `picache storage remove <id>` | Root only. Disable, stop and delete the `.mount` unit of `/srv/picache/<id>`, delete its credentials file and remove the empty mountpoint. Works without the database, for example after the target was deleted. |
 | `picache storage apply-pending` | Root only. Process the requests the web UI queued in `<data>/storage-requests/`: mount host-apply targets, remove the mounts of deleted targets and of targets switched to another mode. Run by `picache-storage.service`. |
+| `picache update --check` | Print the installed and the newest release and its URL. Exit code `0` up to date, `10` update available, `1` error. Needs no root. |
+| `picache update [--version vX.Y.Z] [--prerelease] [--allow-downgrade] [--yes]` | Root only. Show the start of the release notes, ask (unless `--yes`), then download, verify and install the newest release (or the given one) and restart PiCache; roll back if the new version fails its health check ([Updates](#updates)). `--prerelease` also considers pre-releases; `--allow-downgrade` allows an older release. |
+| `picache update --from <dir> [--yes]` | Root only. The same from a directory with the release files (`SHA256SUMS`, `SHA256SUMS.sig`, the binary), without network access. |
+| `picache update apply-pending` | Root only. Install the version the web UI queued in `<data>/update-requests/`. Run by `picache-update.service`. |
 | `picache help` | Print the usage. |
 
 Exit codes: `0` success, `1` error or unhealthy, `2` usage or configuration
@@ -682,6 +962,12 @@ process).
 - **NAS mount (host-apply) fails or stays queued:** the UI shows the mount
   program's message; see [Host-apply](#host-apply-root-helper) for the
   helper's logs, the path unit, custom paths and containers.
+- **Update check fails:** PiCache must be able to reach `api.github.com`
+  (like the blocklist downloads), and the GitHub repository must be public.
+  **Check now**
+  on **System → Updates** shows the error. An update that failed or was
+  rolled back is logged in `journalctl -u picache-update` (web UI) or printed
+  by `sudo picache update`; see [Updates](#updates).
 - **No LanCache answers:** LanCache must be enabled, the cache-domains list
   loaded, the :80 listener bound and a private cache IPv4 address known, and
   the client must not be in a group that bypasses LanCache. The health page

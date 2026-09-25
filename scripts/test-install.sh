@@ -1,6 +1,7 @@
 #!/bin/sh
 # Smoke test for deploy/install.sh. It installs, re-installs, enables
-# host-apply, hits a port-53 conflict and uninstalls PiCache in a throwaway
+# host-apply, checks the update helper (default, custom data directory,
+# --without-updater), hits a port-53 conflict and uninstalls PiCache in a throwaway
 # Debian container. systemd does not run there: systemctl and journalctl are
 # stand-ins that record their arguments, so PiCache itself is never started.
 #
@@ -67,6 +68,11 @@ check_mode /usr/local/lib/systemd/system/picache.service 644 root:root
 grep -q '^enable picache.service' /tmp/systemctl.log || fail "service not enabled"
 [ "$(starts)" = 1 ] || fail "service not started"
 [ ! -e /etc/picache/host-apply.enabled ] || fail "host-apply installed without the flag"
+check_mode /etc/picache/updater.enabled 644 root:root
+check_mode /usr/local/lib/systemd/system/picache-update.path 644 root:root
+check_mode /usr/local/lib/systemd/system/picache-update.service 644 root:root
+grep -q '^enable --now picache-update.path' /tmp/systemctl.log || fail "update path unit not enabled"
+[ ! -e /etc/systemd/system/picache-update.path.d ] || fail "update drop-in written for the default data directory"
 
 echo "== re-install keeps the configuration"
 echo 'PICACHE_LOG_LEVEL=debug' >>/etc/picache/picache.env
@@ -80,6 +86,27 @@ check_mode /etc/picache/host-apply.enabled 644 root:root
 check_mode /usr/local/lib/systemd/system/picache-storage.path 644 root:root
 check_mode /usr/local/lib/systemd/system/picache-storage.service 644 root:root
 grep -q '^enable --now picache-storage.path' /tmp/systemctl.log || fail "path unit not enabled"
+
+echo "== update helper: custom data directory, --without-updater"
+mkdir -p /srv/pdata && touch /srv/pdata/picache.db
+echo "PICACHE_DATA_DIR=/srv/pdata" >>/etc/picache/picache.env
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+grep -qx "PathExists=/srv/pdata/update-requests/request" /etc/systemd/system/picache-update.path.d/50-picache-paths.conf ||
+	fail "update path drop-in missing"
+grep -qx "PathExists=" /etc/systemd/system/picache-update.path.d/50-picache-paths.conf || fail "default update paths not dropped"
+grep -qx "ReadWritePaths=-/srv/pdata" /etc/systemd/system/picache-update.service.d/50-picache-paths.conf ||
+	fail "update service drop-in missing"
+sed -i "/^PICACHE_DATA_DIR=/d" /etc/picache/picache.env
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+[ ! -e /etc/systemd/system/picache-update.path.d ] || fail "update drop-ins kept for the default data directory"
+sh /src/deploy/install.sh --binary /tmp/picache --without-updater >/dev/null
+for f in /etc/picache/updater.enabled /usr/local/lib/systemd/system/picache-update.path /usr/local/lib/systemd/system/picache-update.service; do
+	[ ! -e "$f" ] || fail "--without-updater left $f"
+done
+grep -q "^disable --now picache-update.path" /tmp/systemctl.log || fail "update path unit not disabled"
+[ -e /etc/picache/host-apply.enabled ] || fail "--without-updater removed host-apply"
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+[ -e /etc/picache/updater.enabled ] || fail "update helper not installed again"
 
 echo "== rejects a binary that is not PiCache"
 printf '#!/bin/sh\necho hello\n' >/tmp/other
@@ -103,12 +130,15 @@ sh /src/deploy/install.sh --binary /tmp/picache >/dev/null 2>&1 || fail "install
 kill "$udp_pid" "$tcp_pid"
 
 echo "== uninstall"
+touch /usr/local/bin/picache.prev # left by `picache update`
 sh /src/deploy/install.sh --uninstall
 [ ! -e /usr/local/bin/picache ] || fail "binary left behind"
-for u in picache.service picache-storage.service picache-storage.path; do
+for u in picache.service picache-storage.service picache-storage.path picache-update.service picache-update.path; do
 	[ ! -e "/usr/local/lib/systemd/system/$u" ] || fail "$u left behind"
 done
 [ ! -e /etc/picache/host-apply.enabled ] || fail "host-apply marker left behind"
+[ ! -e /etc/picache/updater.enabled ] || fail "update helper marker left behind"
+[ ! -e /usr/local/bin/picache.prev ] || fail "picache.prev left behind"
 [ ! -e /usr/share/doc/picache ] || fail "license texts left behind"
 [ -e /etc/picache/picache.env ] || fail "configuration was removed"
 echo "PASS"

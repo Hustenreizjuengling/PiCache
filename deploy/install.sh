@@ -1,8 +1,8 @@
 #!/bin/sh
 # PiCache installer for Debian 12/13 (bare metal, VM, Proxmox LXC).
 #
-#   sudo sh deploy/install.sh --binary ./picache-linux-amd64 [--with-host-apply]
-#   sudo sh deploy/install.sh --uninstall
+#   sudo sh deploy/install.sh --binary ./picache-linux-amd64 [--with-host-apply] [--without-updater]
+#   sudo sh deploy/install.sh --uninstall [--purge [--yes]]
 #
 # Idempotent: run it again with a newer binary to upgrade. It installs only
 # the local files you give it (it never downloads anything) and never changes
@@ -16,7 +16,9 @@ CONF_DIR=/etc/picache
 ENV_FILE=$CONF_DIR/picache.env
 CRED_DIR=$CONF_DIR/credentials
 HOST_APPLY_MARKER=$CONF_DIR/host-apply.enabled
+UPDATER_MARKER=$CONF_DIR/updater.enabled
 DEFAULT_DATA_DIR=/var/lib/picache
+DEFAULT_CACHE_DIR=/var/cache/picache
 DEFAULT_MOUNT_ROOT=/srv/picache
 # PICACHE_DATA_DIR / PICACHE_MOUNT_ROOT from the env file (read_paths).
 DATA_DIR=$DEFAULT_DATA_DIR
@@ -40,14 +42,23 @@ die() {
 
 usage() {
 	cat <<'EOF'
-usage: install.sh --binary PATH [--with-host-apply]
-       install.sh --uninstall
+usage: install.sh --binary PATH [--with-host-apply] [--without-updater]
+       install.sh --uninstall [--purge [--yes]]
 
   --binary PATH       the picache binary to install (for example the
                       picache-linux-arm64 file from `make build-all`)
   --with-host-apply   also install the root helper that lets the web UI
                       mount SMB/NFS shares (bare metal, VMs, privileged LXC)
+  --without-updater   do not install (or remove) the root helper that installs
+                      updates queued in the web UI; `sudo picache update`
+                      keeps working
   --uninstall         stop and remove PiCache; configuration and data are kept
+  --purge             with --uninstall: also unmount the NAS shares of the
+                      web UI and delete the configuration, the data, the
+                      local cache and the picache user (default paths only)
+  --yes               do not ask before --purge
+
+The update helper (picache-update.path) is installed by default.
 EOF
 }
 
@@ -347,6 +358,59 @@ the Proxmox host and bind-mount it below $MOUNT_ROOT (deploy/lxc/README.md)."
 	say "host-apply helper installed (picache-storage.path)"
 }
 
+# write_update_dropins points the update helper at a custom data directory
+# (the shipped units use the default), or removes the drop-ins.
+write_update_dropins() {
+	path_dir=/etc/systemd/system/picache-update.path.d
+	svc_dir=/etc/systemd/system/picache-update.service.d
+	if [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ]; then
+		rm -f "$path_dir/$PATHS_DROPIN" "$svc_dir/$PATHS_DROPIN"
+		rmdir "$path_dir" "$svc_dir" 2>/dev/null || true
+		return
+	fi
+	install -d -m 0755 "$path_dir" "$svc_dir"
+	cat >"$path_dir/$PATHS_DROPIN" <<EOF
+# Written by install.sh for PICACHE_DATA_DIR=$DATA_DIR and rewritten on every
+# run. The empty assignment drops the default paths.
+[Path]
+PathExists=
+PathExists=$DATA_DIR/update-requests/request
+PathExists=$DATA_DIR/update-requests/.claim
+EOF
+	cat >"$svc_dir/$PATHS_DROPIN" <<EOF
+# Written by install.sh for PICACHE_DATA_DIR=$DATA_DIR; rewritten on every run.
+[Service]
+ReadWritePaths=-$DATA_DIR
+EOF
+	say "updater: wrote drop-ins for PICACHE_DATA_DIR=$DATA_DIR"
+}
+
+# setup_updater installs the root helper that installs updates queued in
+# the web UI: picache-update.path starts picache-update.service, which
+# verifies and installs exactly the requested signed release.
+setup_updater() {
+	install_unit picache-update.service
+	install_unit picache-update.path
+	install -m 0644 -o root -g root /dev/null "$UPDATER_MARKER"
+	write_update_dropins
+	updater_active=1
+	say "update helper installed (picache-update.path): updates can be installed from the web UI"
+}
+
+# remove_updater disables and deletes the update helper, its drop-ins and
+# its marker (--without-updater, --uninstall).
+remove_updater() {
+	for unit in picache-update.path picache-update.service; do
+		systemctl disable --now "$unit" >/dev/null 2>&1 || true
+		rm -f "$UNIT_DIR/$unit"
+	done
+	for d in picache-update.path.d picache-update.service.d; do
+		rm -f "/etc/systemd/system/$d/$PATHS_DROPIN"
+		rmdir "/etc/systemd/system/$d" 2>/dev/null || true
+	done
+	rm -f "$UPDATER_MARKER"
+}
+
 # listeners_on u|t PORT prints sockets on PORT that do not belong to PiCache.
 listeners_on() {
 	ss -H -ln"$1"p "sport = :$2" 2>/dev/null | grep -v '"picache"' || true
@@ -454,6 +518,11 @@ print_summary() {
 		say "                 (PICACHE_WEB_LISTEN=$web_listen is set; adjust the address)"
 	fi
 	say "  Setup token:   sudo picache setup-token  (first start only)"
+	if [ "$updater_active" -eq 1 ]; then
+		say "  Updates:       in the web UI (System), or: sudo picache update"
+	else
+		say "  Updates:       sudo picache update"
+	fi
 	say "  Logs:          journalctl -u picache -f"
 	say "  Configuration: $ENV_FILE (then: systemctl restart picache)"
 	say ""
@@ -463,6 +532,7 @@ print_summary() {
 
 do_uninstall() {
 	read_paths
+	remove_updater
 	for unit in picache-storage.path picache-storage.service picache.service "$SHARED_MOUNTS_UNIT"; do
 		systemctl disable --now "$unit" >/dev/null 2>&1 || true
 	done
@@ -473,12 +543,17 @@ do_uninstall() {
 		rm -f "/etc/systemd/system/$d/$PATHS_DROPIN"
 		rmdir "/etc/systemd/system/$d" 2>/dev/null || true
 	done
-	rm -f "$HOST_APPLY_MARKER" "$BIN"
+	# picache.prev and a staged download are left by `picache update`.
+	rm -f "$HOST_APPLY_MARKER" "$BIN" "$BIN.prev" "$(dirname "$BIN")/.picache.update"
 	for f in $DOC_FILES; do
 		rm -f "$DOC_DIR/$f"
 	done
 	rmdir "$DOC_DIR" 2>/dev/null || true
 	systemctl daemon-reload
+	if [ "$purge" -eq 1 ]; then
+		say "PiCache was stopped and removed."
+		return
+	fi
 	say "PiCache was stopped and removed. Kept, delete them yourself if no longer needed:"
 	say "  configuration   $CONF_DIR  (NAS credentials in $CRED_DIR)"
 	say "  data            $DATA_DIR  (configuration database, logs, keys)"
@@ -497,11 +572,105 @@ do_uninstall() {
 	done
 }
 
+# is_mountpoint DIR succeeds when DIR itself is a mount point.
+is_mountpoint() {
+	findmnt -rn -o TARGET 2>/dev/null | awk -v d="$1" '$0 == d { found = 1 } END { exit !found }'
+}
+
+# mounted_below DIR succeeds when something is mounted below DIR.
+mounted_below() {
+	findmnt -rn -o TARGET 2>/dev/null | awk -v p="$1/" 'index($0, p) == 1 { found = 1 } END { exit !found }'
+}
+
+# confirm_purge asks before --purge deletes anything. It reads the answer
+# from the terminal, because the script itself may arrive through a pipe
+# (curl ... | sudo sh); --yes skips the question.
+confirm_purge() {
+	read_paths
+	[ "$assume_yes" -eq 0 ] || return 0
+	# In a subshell: a failed redirection of the special built-in `:` would
+	# end the whole script at once (POSIX), without the message below.
+	if ! (: </dev/tty) 2>/dev/null; then
+		die "--purge deletes the configuration and all data; run it in a terminal or add --yes"
+	fi
+	cat >/dev/tty <<EOF
+--purge stops PiCache, unmounts the NAS shares it mounted and deletes
+$CONF_DIR, $DATA_DIR (database, logs, keys and backups), the local cache
+and the picache user. Directories outside the default paths are kept.
+EOF
+	printf 'Type "purge" to continue: ' >/dev/tty
+	answer=""
+	read -r answer </dev/tty || true
+	[ "$answer" = purge ] || die "cancelled; nothing was changed"
+}
+
+# do_purge deletes what --uninstall keeps. Only the default paths are
+# deleted: a custom PICACHE_DATA_DIR, PICACHE_CACHE_DIR or PICACHE_MOUNT_ROOT
+# may point to a directory with other data, and a mount point may be a
+# volume or a NAS share, so those are listed instead.
+do_purge() {
+	cache_dir=$(env_path PICACHE_CACHE_DIR "$DEFAULT_CACHE_DIR")
+	# NAS mount units written by the host-apply helper.
+	prefix=$(systemd-escape --path "$MOUNT_ROOT" 2>/dev/null) || prefix=srv-picache
+	for f in /etc/systemd/system/"$prefix"-*.mount; do
+		[ -e "$f" ] || continue
+		systemctl disable --now "$(basename "$f")" >/dev/null 2>&1 || true
+		rm -f "$f"
+	done
+	systemctl daemon-reload
+	if mounted_below "$MOUNT_ROOT" || mounted_below "$cache_dir" || mounted_below "$DATA_DIR"; then
+		die "something is still mounted below $MOUNT_ROOT, $cache_dir or $DATA_DIR (see findmnt);
+unmount it and run --uninstall --purge again. Nothing else was deleted."
+	fi
+	kept=""
+	for pair in "$DATA_DIR:$DEFAULT_DATA_DIR" "$cache_dir:$DEFAULT_CACHE_DIR"; do
+		dir=${pair%%:*}
+		default=${pair#*:}
+		[ -e "$dir" ] || continue
+		if [ "$dir" != "$default" ] || is_mountpoint "$dir"; then
+			kept="$kept
+  $dir"
+			continue
+		fi
+		rm -rf -- "$dir"
+	done
+	rm -rf -- "$CONF_DIR"
+	if [ -d "$MOUNT_ROOT" ]; then
+		# Empty mount points only: never delete files below the mount root.
+		for d in "$MOUNT_ROOT"/*; do
+			if [ -d "$d" ]; then rmdir -- "$d" 2>/dev/null || true; fi
+		done
+		if [ "$MOUNT_ROOT" != "$DEFAULT_MOUNT_ROOT" ] || ! rmdir -- "$MOUNT_ROOT" 2>/dev/null; then
+			kept="$kept
+  $MOUNT_ROOT"
+		fi
+	fi
+	if entry=$(getent passwd picache); then
+		uid=$(printf '%s' "$entry" | cut -d: -f3)
+		if [ "$uid" -gt 0 ] && [ "$uid" -le "$(sys_id_max UID)" ]; then
+			userdel picache
+		else
+			warn "the account picache is not a system account (uid $uid); it was kept"
+		fi
+	fi
+	gid=$(getent group picache | cut -d: -f3)
+	if [ -n "$gid" ] && [ "$gid" -gt 0 ] && [ "$gid" -le "$(sys_id_max GID)" ]; then
+		groupdel picache 2>/dev/null || true
+	fi
+	say "Deleted: the configuration, the data and cache in their default paths, and the picache user."
+	if [ -n "$kept" ]; then
+		say "Kept (custom paths or mount points; delete them yourself if no longer needed):$kept"
+	fi
+}
+
 # --- main ------------------------------------------------------------------
 
 binary=""
 with_host_apply=0
+without_updater=0
 uninstall=0
+purge=0
+assume_yes=0
 while [ $# -gt 0 ]; do
 	case $1 in
 	--binary)
@@ -517,8 +686,20 @@ while [ $# -gt 0 ]; do
 		with_host_apply=1
 		shift
 		;;
+	--without-updater)
+		without_updater=1
+		shift
+		;;
 	--uninstall)
 		uninstall=1
+		shift
+		;;
+	--purge)
+		purge=1
+		shift
+		;;
+	--yes)
+		assume_yes=1
 		shift
 		;;
 	-h | --help)
@@ -536,8 +717,17 @@ done
 [ -d /run/systemd/system ] || die "systemd is not running; use the Docker image instead (docs/DEPLOYMENT.md)"
 umask 022
 
+if [ "$purge" -eq 1 ] && [ "$uninstall" -eq 0 ]; then
+	die "--purge only goes with --uninstall"
+fi
 if [ "$uninstall" -eq 1 ]; then
+	if [ "$purge" -eq 1 ]; then
+		confirm_purge
+	fi
 	do_uninstall
+	if [ "$purge" -eq 1 ]; then
+		do_purge
+	fi
 	exit 0
 fi
 
@@ -570,6 +760,13 @@ shared_mounts=0
 if [ "$with_host_apply" -eq 1 ] || [ -e "$HOST_APPLY_MARKER" ]; then
 	setup_host_apply
 fi
+updater_active=0
+if [ "$without_updater" -eq 0 ]; then
+	setup_updater
+elif [ -e "$UPDATER_MARKER" ] || [ -e "$UNIT_DIR/picache-update.path" ]; then
+	remove_updater
+	say "update helper removed (--without-updater); update with: sudo picache update"
+fi
 
 systemctl daemon-reload
 systemctl enable picache.service >/dev/null
@@ -582,6 +779,11 @@ if [ "$host_apply_active" -eq 1 ]; then
 	systemctl reset-failed picache-storage.path picache-storage.service >/dev/null 2>&1 || true
 	systemctl enable --now picache-storage.path >/dev/null
 	systemctl restart picache-storage.path
+fi
+if [ "$updater_active" -eq 1 ]; then
+	systemctl reset-failed picache-update.path picache-update.service >/dev/null 2>&1 || true
+	systemctl enable --now picache-update.path >/dev/null
+	systemctl restart picache-update.path
 fi
 
 host_ip=$(primary_ip)

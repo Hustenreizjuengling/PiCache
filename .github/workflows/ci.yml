@@ -124,7 +124,9 @@ jobs:
         run: |
           sh -n deploy/install.sh
           sh -n scripts/test-install.sh
-          shellcheck -s sh deploy/install.sh scripts/test-install.sh
+          sh -n scripts/release-notes.sh
+          sh -n scripts/get-picache.sh
+          shellcheck -s sh deploy/install.sh scripts/test-install.sh scripts/release-notes.sh scripts/get-picache.sh
       - name: Validate compose files
         run: |
           docker compose -f deploy/docker/docker-compose.yml config -q
@@ -135,6 +137,41 @@ jobs:
           path: bin/
       - name: Installer smoke test
         run: sh scripts/test-install.sh bin/picache-linux-amd64
+
+  dist:
+    name: Release assets (make dist)
+    needs: [web, go]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: make dist refuses versions that are not SemVer with a v prefix
+        run: |
+          for v in "" 1.2.3 v1.2 v01.2.3 v1.2.3-rc.01 v1.2.3+build "v1.2.3 x"; do
+            if make dist VERSION="$v" >/dev/null 2>&1; then
+              echo "make dist accepted VERSION=\"$v\""; exit 1
+            fi
+          done
+      - name: make dist
+        run: make dist VERSION=v0.0.0-ci
+      - name: Check the assets
+        run: |
+          cd dist
+          sha256sum --check --strict SHA256SUMS
+          ./picache-linux-amd64 version | grep -q '^picache v0\.0\.0-ci '
+          tar -tzf picache-deploy.tar.gz | grep -qx deploy/install.sh
+          cmp get-picache.sh ../scripts/get-picache.sh
+      - name: Release notes script
+        run: |
+          latest=$(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md | head -n 1)
+          sh scripts/release-notes.sh "v$latest" > /dev/null
 
   docker:
     name: Docker image

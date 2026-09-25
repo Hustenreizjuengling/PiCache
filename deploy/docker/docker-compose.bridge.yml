@@ -1,7 +1,7 @@
 # PiCache with published ports (Docker bridge networking).
 #
 #   cd deploy/docker
-#   docker compose -f docker-compose.bridge.yml up -d --build
+#   docker compose -f docker-compose.bridge.yml up -d   # add --build to build from source
 #   docker exec -u 65532:65532 picache /picache setup-token
 #
 # Prefer docker-compose.yml (host networking). In bridge mode:
@@ -31,9 +31,9 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    image: picache:latest
-    # Always built from this source tree, never pulled from a registry.
-    pull_policy: build
+    # Release images from GitHub: `docker compose pull && docker compose up -d`
+    # updates. `docker compose up -d --build` builds this source tree instead.
+    image: ghcr.io/hustenreizjuengling/picache:latest
     container_name: picache
     restart: unless-stopped
     ports:
