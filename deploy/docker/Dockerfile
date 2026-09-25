@@ -16,7 +16,7 @@
 # Use deploy/docker/docker-compose.yml, which drops all other capabilities.
 
 # ---- web UI (built once on the build host, architecture independent) ----
-FROM --platform=$BUILDPLATFORM node:22-alpine AS web
+FROM --platform=$BUILDPLATFORM node:25-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
