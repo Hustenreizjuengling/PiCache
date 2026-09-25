@@ -34,6 +34,8 @@ export const routes: RouteDef[] = [
   { path: '/dns/queries', section: 'dns', title: 'common.nav.queryLog', icon: 'list', load: () => import('./pages/dns/QueryLog.svelte') },
   { path: '/dns/filtering', section: 'dns', title: 'common.nav.filtering', icon: 'shield', load: () => import('./pages/dns/Filtering.svelte') },
   { path: '/dns/clients', section: 'dns', title: 'common.nav.clients', icon: 'users', load: () => import('./pages/dns/Clients.svelte') },
+  { path: '/dns/parental', section: 'dns', title: 'common.nav.parental', icon: 'family', load: () => import('./pages/dns/Parental.svelte') },
+  { path: '/dns/network', section: 'dns', title: 'common.nav.network', icon: 'network', load: () => import('./pages/dns/Network.svelte') },
   { path: '/dns/local', section: 'dns', title: 'common.nav.localDns', icon: 'home', load: () => import('./pages/dns/LocalDns.svelte') },
   { path: '/dns/settings', section: 'dns', title: 'common.nav.dnsSettings', icon: 'sliders', load: () => import('./pages/dns/DnsSettings.svelte') },
 

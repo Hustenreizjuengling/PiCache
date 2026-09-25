@@ -29,6 +29,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/dlcache/sni"
 	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
+	"github.com/hustenreizjuengling/picache/internal/dns/parental"
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/logs"
@@ -66,6 +67,7 @@ type App struct {
 	up       *upstream.Resolver
 	clients  *clients.Registry
 	filter   *filter.Engine
+	parental *parental.Engine
 	services *services.Registry
 	auth     *auth.Service
 	storage  *storage.Manager
@@ -75,6 +77,7 @@ type App struct {
 	updates  *updater
 	notify   *notify.Service // nil in tests that build parts of the App (Emit is nil-safe)
 	backups  *backupScheduler
+	network  *netChecker
 	api      *api.Server
 
 	ln listeners
@@ -236,6 +239,16 @@ func (a *App) build(ctx context.Context) error {
 			log.Warn("reload filter groups", slog.Any("err", err))
 		}
 	})
+	if a.parental, err = parental.New(ctx, a.cdb, a.clients, log); err != nil {
+		return fmt.Errorf("parental: %w", err)
+	}
+	// Group renames and deletions reach the parental controls' snapshot
+	// (the reasons in the query log name the group).
+	a.clients.OnChange(func() {
+		if err := a.parental.Reload(context.Background()); err != nil {
+			log.Warn("reload parental controls", slog.Any("err", err))
+		}
+	})
 	if a.services, err = services.New(ctx, a.cdb, a.set, fetch, a.paths.CacheDomainsDir, log); err != nil {
 		return fmt.Errorf("services: %w", err)
 	}
@@ -290,7 +303,7 @@ func (a *App) build(ctx context.Context) error {
 
 	if a.dns, err = dnsserver.New(ctx, dnsserver.Deps{
 		DB: a.cdb, Settings: a.set, Upstream: a.up, Filter: a.filter, Clients: a.clients,
-		Services: a.services, Logs: a.logs, ACL: a.acl, DownloadCacheReady: a.downloadCacheReady,
+		Services: a.services, Parental: a.parental, Logs: a.logs, ACL: a.acl, DownloadCacheReady: a.downloadCacheReady,
 		Container: a.storage.Capabilities().Container, Log: log,
 	}); err != nil {
 		return fmt.Errorf("dns: %w", err)
@@ -304,10 +317,12 @@ func (a *App) build(ctx context.Context) error {
 	}
 	a.sni = sni.New(sni.Deps{Settings: a.set, Services: a.services, Lookup: lookup4, Clients: a.clients,
 		Logs: a.logs, ACL: a.acl, Log: log})
+	a.network = newNetChecker(a.netSources(), log)
 	a.api = api.New(api.Deps{
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
-		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups, UI: webui.Handler(), Log: log,
+		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
+		Parental: a.parental, Network: a.network, UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil
@@ -406,7 +421,7 @@ func (a *App) serve(ctx context.Context) error {
 	for _, fn := range []func(context.Context){
 		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
 		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop, a.updates.run,
-		a.notify.Start, a.backups.Start,
+		a.notify.Start, a.backups.Start, a.network.Start,
 		func(ctx context.Context) { a.acl.Run(ctx.Done(), 5*time.Minute) },
 	} {
 		bg.Go(func() { fn(ctx) })

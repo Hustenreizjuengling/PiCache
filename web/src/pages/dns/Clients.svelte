@@ -2,7 +2,7 @@
   @component
   Clients & groups: configured clients, recently seen addresses (add them as
   clients) and groups, with per-client traffic over a time range.
-  Query: ?tab=clients|seen|groups&range=24h|7d|30d&within=…&sel=<id>&ip=<address>
+  Query: ?tab=clients|seen|groups&range=24h|7d|30d&within=…&sel=<id>&ip=<address>&group=<id>
   (without ?range= the range shown last in this browser). Incoming
   ?ip=<address> (global search, query log) opens the client that address
   belongs to, or the address on the "Seen recently" tab.
@@ -79,7 +79,7 @@
   ])
 
   function selectTab(id: string) {
-    router.setQuery({ tab: id === 'clients' ? null : id, sel: null, ip: null })
+    router.setQuery({ tab: id === 'clients' ? null : id, sel: null, ip: null, group: null })
   }
 
   function changed() {

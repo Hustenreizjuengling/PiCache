@@ -63,7 +63,7 @@ Everything persistent lives in exactly two places plus optional NAS mounts.
 
 | Path (bare metal / LXC) | Docker | Contents | Backup? |
 |---|---|---|---|
-| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, local records, services, storage targets with sealed NAS passwords, notification channels with sealed secrets, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3; a failed update puts back the one made during its run); `backups/scheduled/` (scheduled backups, 15.2); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and `status.json` of the root update helper, 14.4); `picache.db.before-restore` (after a restore) | `picache.db` (UI download, scheduled backups (15.2) or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords and notification secrets should survive a move to another machine. |
+| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, parental controls, local records, services, storage targets with sealed NAS passwords, notification channels with sealed secrets, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3; a failed update puts back the one made during its run); `backups/scheduled/` (scheduled backups, 15.2); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and `status.json` of the root update helper, 14.4); `picache.db.before-restore` (after a restore) | `picache.db` (UI download, scheduled backups (15.2) or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords and notification secrets should survive a move to another machine. |
 | `/var/cache/picache` (`PICACHE_CACHE_DIR`) | `/cache` | The built-in **local** cache store (slice files). Large. | No |
 | `/srv/picache/<id>` (`PICACHE_MOUNT_ROOT`) | `/srv/picache` (bind, `rslave`) | NAS cache stores. The only place outside the cache dir where stores may live (the only NAS path writable inside the sandbox). | No |
 | `/etc/picache/picache.env` | environment | Bootstrap settings only. Read by systemd **and by every CLI command**. | Yes |
@@ -89,11 +89,12 @@ internal/apperr/             typed user-facing errors (NotFound, Invalid, Confli
 internal/listing/            generic page type
 internal/settings/           typed runtime settings (one JSON document in picache.db), validation, pub/sub
 internal/secrets/            master key + AEAD seal/open for stored secrets
-internal/netutil/            ACL, IP classification, SSRF-safe dialer, rate limiter, LimitListener, host normalisation, gateway/resolv.conf detection
+internal/netutil/            ACL, IP classification, SSRF-safe dialer, rate limiter, LimitListener, host normalisation, gateway (IPv4/IPv6)/resolv.conf detection
 internal/auth/               users, argon2id, sessions, API tokens, TOTP, login throttling, setup token, audit log
 internal/clients/            clients, groups, identity resolution (IP/CIDR/MAC), kernel neighbour table (netlink, IPv4 + IPv6; /proc/net/arp fallback), client names
 internal/dns/upstream/       upstream transports (UDP/TCP/DoT/DoH), modes, response cache, serve-stale, bypass LookupIP, clock guard
 internal/dns/filter/         blocklists (fetch, parse, compile), custom rules, matcher, explain
+internal/dns/parental/       parental controls: service catalogue, schedules, overrides, hot-path check
 internal/dns/server/         DNS listeners + request pipeline, local records, conditional forwarders, router resolver, pause
 internal/dlcache/services/   cache-domains source, service registry & matcher, custom services, content grouping, labels
 internal/dlcache/store/      slice store + index DB + eviction + verify/rebuild + store marker   (package cachestore)
@@ -105,7 +106,7 @@ internal/notify/             notification channels (webhook, ntfy, Gotify), seal
 internal/logs/               logs.db: query log, cache events, sessions, rollups, evictions, live subscriptions
 internal/api/                REST API + SSE, middleware, one routes_<domain>.go file per domain
 internal/webui/              go:embed of the built frontend (internal/webui/dist)
-internal/app/                wiring, lifecycle, privilege drop, store switching, health, backup/restore, scheduled backups, notification events
+internal/app/                wiring, lifecycle, privilege drop, store switching, health, backup/restore, scheduled backups, notification events, network check
 web/                         Svelte 5 + Vite SPA (builds into internal/webui/dist)
 deploy/                      docker/, systemd/, lxc/, install.sh
 docs/                        this file, API.md, DESIGN.md, DEPLOYMENT.md, SECURITY.md
@@ -113,7 +114,7 @@ docs/                        this file, API.md, DESIGN.md, DEPLOYMENT.md, SECURI
 
 Dependency rules:
 - Foundation packages (`version`, `config`, `db`, `apperr`, `listing`, `settings`, `secrets`, `netutil`) import only each other (`settings` → `db`, `apperr`; `netutil` → `settings`).
-- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker; slice sampling and page-cache dropping for the speed test). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore`, `update`, `notify` import no other domain package (`update` imports only `version`). Events reach `notify` from `app`: `auth` reports lockouts through a callback (`OnLockout`), health, store, update and backup events are raised by `app` itself.
+- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `parental`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `parental` → {`clients`} (the group type; group names through a consumer-side interface); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker; slice sampling and page-cache dropping for the speed test). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore`, `update`, `notify` import no other domain package (`update` imports only `version`). Events reach `notify` from `app`: `auth` reports lockouts through a callback (`OnLockout`), health, store, update and backup events are raised by `app` itself.
 - `dnsserver`, `proxy` and `sni` declare **consumer-side interfaces** for their collaborators (see their `Deps`) so they can be tested with fakes.
 - `api` imports domain packages; domain packages never import `api`. `app` imports everything and is imported only by `cmd`.
 
@@ -177,7 +178,7 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
 ### 7.1 Request pipeline (exact order)
 
 1. **Parse/validate**: exactly one question (else FORMERR); class IN (CHAOS → REFUSED); opcode QUERY (else NOTIMP).
-2. **ACL**: not allowed → UDP drop (TCP already refused at accept).
+2. **ACL**: not allowed → UDP drop (TCP already refused at accept). The source address is counted in memory for the network check (17).
 3. **Rate limit** per client key. Exceeded → UDP drop, TCP REFUSED. First drop per client per hour logged at WARN with a hint; top limited clients are exposed in stats and health.
 4. **Hardening**: qtype ANY → NOTIMP (if `refuseAny`).
 5. **Identify client** (`Clients.Identify`) → identity with enabled group IDs; `Clients.Seen`.
@@ -189,6 +190,8 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
    - `test`, `invalid`, `onion`, `home.arpa`, `internal`, `local`, the local domain and resolv.conf search domains: local records and forwarders first, then (for the local domain, `home.arpa` and search domains) the router resolver; otherwise NXDOMAIN. The most specific matching zone wins, so a local domain below `internal`/`local` (e.g. `home.internal`) still goes to the router resolver; names below `onion` and `invalid` are never resolved.
    - **Router resolver** (`dns.routerResolver`): `auto` = the IPv4 default gateway (`/proc/net/route`, re-read every 5 min) if it answers a DNS probe; an explicit IP; or off. Loop guard: a query from the router's own address for a name PiCache would forward back to it gets SERVFAIL.
 7. **Local records** (A, AAAA, CNAME, TXT; auto-PTR): exact name beats `*.` wildcard (subdomains only). If any enabled record matches the name: a CNAME record → answer the CNAME plus the resolved target (max 8 hops, visited set) for every qtype (qtype CNAME → the CNAME only); otherwise, if no record has the requested type → authoritative NOERROR/NODATA with the synthetic SOA. Never forwarded. A CNAME whose target is `localhost`, a server name or `resolver.arpa` is answered locally. A CNAME may not share a name with other records. Exempt from blocking.
+
+   **7a. Parental controls** (16; `Parental.Check` with the identity's groups), also while blocking is disabled or paused: a block override or an active block-all schedule of one of the client's groups → blocking reply (7.3, blocking mode, `blockedTtl`, EDE 15 with the reason) with status `blocked-schedule`; a blocked service (always, or by an active service schedule) → status `blocked-service`. Reasons name the group and the schedule or service: `Kids: Bedtime`, `Kids: blocked by hand`, `Kids: YouTube`, `Kids: YouTube (Homework time)`. A user allow rule that applies to the client (`Filter.CheckRules` → allow) lifts the block. The step runs before steps 8–9, so a bedtime or a blocked Steam also stops the download cache answers; special-use names, this server's names and local records (steps 6–7) stay reachable. `Lookup` traces it (`parental: blocked by …`, `parental: no restriction`).
 8. **User block rules before overrides** — evaluated **only for override candidates** (the name matches an enabled download service, the download cache answers are ready and the client does not bypass them; every other name gets its verdict in step 11): if a *user* block rule (`Filter.CheckRules`) applies to the client for the qname and blocking is active, answer the blocking reply (status `blocked-rule`) — this lets a group block Steam even though the download cache answers the name. List entries never block download service names.
 9. **Download cache answer** (status `override`; `Services.MatchDNS`) if `downloadCache.enabled`, `DownloadCacheReady()` is true (cache listener bound), a valid cache IPv4 is known, and the identity has no `downloadCacheBypass`:
    - A → cache IPv4 address(es), TTL `downloadCache.dnsTtl` (default 60), rotated. Configured addresses must be RFC 1918; auto-detection uses `PrimaryIPv4` only if it is RFC 1918 (else the first RFC 1918 local address; in Docker bridge mode no auto address — the admin must configure the host's LAN IP). Recomputed every 5 min.
@@ -205,7 +208,7 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
 
 **Health probes** (`picache healthcheck`, run every 30 s by the Docker `HEALTHCHECK`): a class IN query for `healthcheck.picache.invalid` from a loopback address or one of this machine's own addresses (a listener bound to a specific address) that the ACL allows is answered before step 2 like `localhost` (A 127.0.0.1 / AAAA ::1, other types NODATA; shaped as in step 15) and is never counted, rate limited, recorded as client activity (`Clients.Seen`) or logged, so it never appears in the query log, statistics or client lists. From any other source the name takes the normal path (step 6: NXDOMAIN, logged). The name is answered locally and carries no information, so no client can hide a real query this way.
 
-Query statuses: `forwarded`, `cached`, `stale`, `local`, `special`, `override` (download cache answer, step 9), `blocked-list`, `blocked-rule`, `blocked-regex`, `blocked-cname`, `blocked-special`, `refused`, `error`.
+Query statuses: `forwarded`, `cached`, `stale`, `local`, `special`, `override` (download cache answer, step 9), `blocked-list`, `blocked-rule`, `blocked-regex`, `blocked-cname`, `blocked-special`, `blocked-schedule` (parental controls: a block-all schedule or a block override, step 7a), `blocked-service` (parental controls: a blocked service, step 7a), `refused`, `error`. Every `blocked-*` status counts as blocked in the statistics (series class `blocked`).
 
 ### 7.2 Filtering semantics
 
@@ -414,7 +417,7 @@ Budgets: the whole run 120 s; write 50 s, read 40 s, cached content 20 s, file o
 
 Svelte 5 (runes) + Vite 8 + TypeScript 6, plain SPA with a hash router, uPlot for charts, no other runtime dependencies. English and German. Design system: `docs/DESIGN.md`.
 
-Information architecture: **Overview** · **DNS** (Query log, Filtering, Clients & groups, Local DNS, DNS settings) · **Cache** (Downloads, Library, Services, Storage, Cache settings) · **System** (Account & security, API tokens, Audit log, Notifications, Backup & restore, Health & about).
+Information architecture: **Overview** · **DNS** (Query log, Filtering, Clients & groups, Parental controls, Network check, Local DNS, DNS settings) · **Cache** (Downloads, Library, Services, Storage, Cache settings) · **System** (Account & security, API tokens, Audit log, Notifications, Backup & restore, Health & about).
 
 ---
 
@@ -439,6 +442,7 @@ Information architecture: **Overview** · **DNS** (Query log, Filtering, Clients
 | Updates | daily check on (stable releases only); installing always needs an admin action |
 | Notifications | no channels; a new channel gets minimum severity `warning` and all events |
 | Scheduled backups | off; daily at 03:30 local time, keep 7, in the data directory, without secrets |
+| Parental controls | none (no group has restrictions); schedules use the host's time zone |
 
 ---
 
@@ -555,3 +559,65 @@ Only the binary is replaced. Unit files and the installer change rarely; release
 **Timing.** The scheduler checks every minute. For each local date (weekly: each date with the weekday) the run time is `time.Date(date, HH:MM, time.Local)`; a run starts when a run time lies between the previous check and now, so every run time is due exactly once, also when the clock is set back. When the clocks go forward and the time does not exist, it is moved forward by the gap (02:30 → 03:30); when they go back and it exists twice, `time.Date` picks one of the two. Catch-up: when scheduled backups are enabled at start and the last successful run is older than the interval (24 h or 7 days) + 1 h, or there was none, a run is made 5 minutes after the start (so the mount guard has checked the NAS), unless a run succeeded meanwhile. At shutdown a run is cancelled and waited for at most 3 s.
 
 **Files.** The overview lists this installation's backups in the current destination (newest first, ≤ 10 000 directory entries read, 5 s; one listing at a time, a hung NAS is reported in `filesError`). Download and delete accept only names that match the pattern of this installation, regular files in the current destination; downloads are opened with `O_NOFOLLOW`.
+
+---
+
+## 16. Parental controls (`internal/dns/parental`)
+
+**Model** (table `parental_groups`, component `parental`; at most one row per client group, deleted with the group through `ON DELETE CASCADE`; a group without a row has no restrictions). Per group:
+
+- `blockedServices`: ids of the service catalogue that are always blocked (≤ 64).
+- `schedules` (≤ 10): `id` (8 hex, assigned by the server, kept on update), `name` (1–40 characters, no control characters), `enabled`, `days` (0 = Sunday … 6, sorted, unique), `start` and `end` (`HH:MM`, `settings.ParseClock`; `end` ≠ `start`, `end` before `start` = until `end` the next day), `block` `all` (all internet) or `services` (1–64 catalogue ids).
+- One override (`override_mode`, `override_until`): `block` = all internet blocked until the time, `allow` = the group's blocked services and schedules lifted until the time; at most 7 days ahead. An expired override is ignored and removed with the next write.
+
+Only enabled groups apply (identities list enabled groups only). A stored configuration is sanitised when it is read (catalogue ids that left the catalogue and malformed schedules of an edited database are dropped), never rejected.
+
+**Service catalogue** (`services.go`): a plain Go literal `{id, name, category, domains}`, sorted by category (`video`, `social`, `messaging`, `gaming`, `music`, `ai`) and then by name, updated with releases and never downloaded. Domains are subtree matches (the domain and its subdomains). Only well-known, service-specific domains are listed, never shared infrastructure (`googleapis.com`, `akamaihd.net`, `cloudfront.net`, `fastly.net`, `media-amazon.com`, …), so blocking one service does not break others; a specific name below such a domain is fine (`youtubei.googleapis.com`). A test checks slugs, categories, the order, valid A-labels, public suffixes, duplicates and overlaps across services.
+
+**Evaluation** (`Engine.Check(qname, groupIDs, now)`, 7.1 step 7a). The groups are taken in the identity's order and the first group that blocks decides (deterministic); within a group:
+
+1. an active `allow` override → the group contributes nothing;
+2. an active `block` override → blocked, kind `override` (status `blocked-schedule`);
+3. an enabled block-all schedule active now → kind `schedule` (status `blocked-schedule`);
+4. the qname's service is always blocked, or listed in an enabled service schedule active now → kind `service` (status `blocked-service`).
+
+The service of a name is found by walking the name and its parent suffixes (at most 127 labels) through a map of all catalogue domains. A client in several groups gets the union of their restrictions; an `allow` override lifts only its own group. Parental controls do not depend on `filter.enabled` or the pause: they end only with the group's `allow` override, by disabling the schedule or the group, or by removing the client from the group. A user allow rule that applies to the client lifts a block (7.1 step 7a). Reasons (query log, EDE 15): `Kids: Bedtime`, `Kids: blocked by hand`, `Kids: YouTube`, `Kids: YouTube (Homework time)`.
+
+**Time.** Schedules follow the host's wall clock (`time.Local`, as scheduled backups; a Docker container uses UTC unless `TZ` is set). A window starts on each listed day at `start` and ends at `end` the same day, or the next day when `end` is before `start` (Friday 21:00–07:00 ends Saturday 07:00). Activity is decided on the wall clock (weekday, minute of the day): when the clocks go forward, a window that starts in the skipped hour starts at the first valid instant (02:30 → 03:00); when they go back, the repeated hour counts as the clock shows it. Reported instants (`until`, `next`) are `time.Date` in the location with the same rule for the skipped hour.
+
+**Hot path.** `Check` reads an immutable snapshot (`atomic.Pointer`) of the groups that have a restriction (blocked services, an enabled schedule or a block override), rebuilt on every write and on `clients.Registry.OnChange` (renames, deletions). If none of the client's groups is in it, `Check` returns without reading the time zone; it never allocates. Cost: O(groups of the client × schedules) plus one suffix walk. The `now` of a query is its start time.
+
+**State** (API, computed per request): `blockAll` with `reason` (`override`/`schedule`), the active block-all `schedule` and `until` (block-all windows that follow each other, and a block override that ends inside one, count as one block, at most 7 days); `blockedServices` blocked now (always blocked plus active service schedules; empty while lifted); `lifted`/`liftedUntil` for an `allow` override; `next` = the next start or end of an enabled schedule within 7 days (an end before a start at the same time); `timeZone`/`utcOffsetMinutes` of the host.
+
+**Limits.** Parental controls are DNS-based. A device that asks another resolver (hard-coded DNS servers, encrypted DNS in apps or browsers, VPN apps, mobile data) bypasses them; the catalogue list "HaGeZi DoH/VPN/TOR/Proxy Bypass" for the group and blocking outgoing DNS (53, 853) to other servers on the router reduce that. Blocking starts when an app looks a name up again (clients cache answers), and open connections continue until they reconnect. Devices must be identified as clients (IP or MAC; phones use a private MAC per Wi-Fi network, which stays fixed for that network when it is set to "fixed").
+
+---
+
+## 17. Network check (`internal/app/netcheck.go`)
+
+Answers "do all devices use PiCache?" and explains the two router set-ups that bypass it: the router hands out itself as DNS server and forwards to PiCache (every query comes from the router), and the router announces itself as IPv6 DNS server (devices ask the router over IPv6).
+
+**Sources** (read-only, unprivileged; nothing leaves the host):
+
+- The kernel's neighbour table, read fresh for every check (`clients.Registry.Neighbours`: netlink `RTM_GETNEIGH`, IPv4 and IPv6; `/proc/net/arp` if netlink fails): entries with a link-layer address in state REACHABLE, STALE, DELAY, PROBE or PERMANENT (never INCOMPLETE or FAILED), without all-zero, broadcast and multicast MACs, at most 65 536.
+- Queries per address in the last 24 h: `logs.ClientStats` (the statistics behind `GET /stats/clients?range=24h`); the last activity per address and MAC from `clients.Known` (30 days). While logs.db is unavailable or client addresses are anonymised, only `Known` is used (queries of addresses seen within 24 h) and the response says `statsAvailable: false`. Loopback and this machine's addresses are not counted.
+- The router: the IPv4 default gateway (`/proc/net/route`) and the IPv6 default gateway (`/proc/net/ipv6_route`, the default route with the lowest metric), the IPv4 gateway's MAC from the neighbour table (else the IPv6 gateway's) and every neighbour address with that MAC; a gateway that is this machine is ignored. Kind: `fritzbox` if the gateway's PTR name (router resolver or local PTR upstreams, cached 10 minutes, 2 s timeout) or the effective local domain is `fritz.box` or below it, `generic` otherwise, `unknown` without a gateway.
+- This machine's interface addresses (`dnsserver.Server.HostNetwork`: no loopback, no virtual bridges or tunnels as in 7.1 step 9), classified IPv4, ULA, global, link-local; whether a DNS listener serves IPv6 (bound to `::` or an IPv6 address).
+- Refused sources (`dnsserver.Server.RefusedSources`): the ACL drop path (7.1 step 2: the UDP reader decorator and the handler) counts each source address in memory, at most 256 (least recently refused evicted), full IPv6 addresses, loopback excluded, since the start; nothing is persisted or logged per packet.
+- Mode `bridge` when PiCache runs in a container bridge network (as detected for the cache IP): the neighbour data then shows only the bridge, the router is not visible (`kind` `unknown`, or `fritzbox` by the local domain) and the bridge gateway takes the router's place in the forwarding check.
+
+**Checks** (the server computes status and numbers, the UI writes the texts):
+
+| id | ok / info / warn | data |
+|---|---|---|
+| `router-forwarding` (`container-nat` in bridge mode, with the bridge gateway as router) | with at least 200 queries in 24 h: warn if ≥ 80 % come from router addresses, info from 20 %; ok otherwise | `routerQueries, totalQueries, share (0–1), routerAddresses[]` (most queries first) |
+| `ipv6-dns` | ok if the LAN has no IPv6 (no non-link-local IPv6 neighbour and no ULA/global address of this machine) or LAN devices (not the router) asked over IPv6 in 24 h; warn otherwise | `lanHasIPv6, ipv6Queries, ipv6Clients, ula[], global[]` |
+| `ipv6-address` | ok without IPv6 in the LAN or with a ULA of this machine; info with global addresses only (they change with the prefix); warn without any | `ula[], global[]` |
+| `refused` | warn if the ACL refused sources since the start (e.g. global IPv6 addresses outside `dns.allowedNetworks`), else ok | `sources[]{address, count, last}` (newest first, ≤ 20), `since` |
+| `devices` (not in bridge mode) | info if devices of the neighbour table (router and this machine excluded) did not query in 24 h, ok otherwise | `total, active, inactive, never` |
+
+**Devices**: neighbour entries grouped by MAC (the router's and this machine's MACs excluded), addresses in the order IPv4, ULA, global, link-local; `name` = the configured client (by MAC or IP), else the PTR name (each check queues PTR lookups, through the same de-duplicated, bounded queue as for querying clients, for neighbour addresses without a name younger than an hour, link-local excluded; names appear with a later check); `lastQuery` = the latest activity of its addresses and its MAC; `queries24h` = the sum over its addresses; `status` `active` (a query within 24 h), `inactive` (older) or `never`. Sorted never, inactive, active, then by address; at most 1024. None in bridge mode.
+
+**Caching.** A check is computed at most every 30 s (every 2 s while a scan runs), one computation at a time; starting or finishing a scan invalidates it. The health check `network` (every 60 s) uses the same cache: `warn` while `router-forwarding` or `container-nat` warns ("Most DNS queries come from the router (<ip>): PiCache cannot tell devices apart"), else `ok`.
+
+**Discovery scan** (`POST /network/scan`, admin, audited `network.scan`): one empty UDP datagram to port 9 (discard) of every host address of this machine's private (RFC 1918) IPv4 subnets, not of virtual bridges: subnets of /24 or smaller in full, larger ones only the /24 containing this machine's address; network, broadcast and own addresses skipped; at most 512 addresses; from one unconnected, unprivileged UDP socket, paced at ≤ 200 packets/s. The kernel resolves each address with ARP before sending, so devices that answer ARP appear in the neighbour table; nothing is read back. The scan counts as done 3 s after the last packet. One scan at a time (409), at most one start per 60 s (429); 503 in bridge mode, on systems other than Linux and without a private IPv4 subnet. No IPv6 scan. A running scan ends with the process.

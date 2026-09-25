@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -49,6 +50,57 @@ func parseProcRoute(r io.Reader) (netip.Addr, error) {
 		return ip, nil
 	}
 	return netip.Addr{}, errors.New("no IPv4 default route")
+}
+
+// DefaultGatewayIPv6 returns the IPv6 default gateway from
+// /proc/net/ipv6_route (Linux): the next hop of the default route (::/0)
+// with the lowest metric, usually the router's link-local address
+// (returned without zone).
+func DefaultGatewayIPv6() (netip.Addr, error) {
+	f, err := os.Open("/proc/net/ipv6_route")
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	defer f.Close()
+	return parseIPv6Route(f)
+}
+
+// Route flags (linux/route.h).
+const (
+	rtfUp     = 0x0001
+	rtfReject = 0x0200
+)
+
+// parseIPv6Route parses /proc/net/ipv6_route: destination, prefix length,
+// source, source prefix length, next hop, metric, refcount, use, flags and
+// device per line, addresses as 32 hex digits.
+func parseIPv6Route(r io.Reader) (netip.Addr, error) {
+	sc := bufio.NewScanner(io.LimitReader(r, 1<<20))
+	var best netip.Addr
+	var bestMetric uint64
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) < 10 || f[0] != strings.Repeat("0", 32) || f[1] != "00" {
+			continue
+		}
+		b, err := hex.DecodeString(f[4])
+		if err != nil || len(b) != 16 {
+			continue
+		}
+		gw := netip.AddrFrom16([16]byte(b))
+		metric, err1 := strconv.ParseUint(f[5], 16, 32)
+		flags, err2 := strconv.ParseUint(f[8], 16, 32)
+		if err1 != nil || err2 != nil || gw.IsUnspecified() || flags&rtfUp == 0 || flags&rtfReject != 0 {
+			continue
+		}
+		if !best.IsValid() || metric < bestMetric {
+			best, bestMetric = gw, metric
+		}
+	}
+	if !best.IsValid() {
+		return netip.Addr{}, errors.New("no IPv6 default route")
+	}
+	return best, nil
 }
 
 // ResolvConfSearch returns the search/domain entries of /etc/resolv.conf

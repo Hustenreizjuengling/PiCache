@@ -49,3 +49,21 @@ func TestReadARPLinux(t *testing.T) {
 	}
 	t.Logf("neighbours: %d IPv4, %d IPv6 (netlink: %d entries, /proc/net/arp: %d)", v4, v6, len(nl), len(proc))
 }
+
+// TestReadNeighbourTableLinux reads the real neighbour table for
+// Neighbours: every entry is canonical and has a unicast MAC.
+func TestReadNeighbourTableLinux(t *testing.T) {
+	ns, err := readNeighbourTable()
+	if err != nil {
+		t.Skipf("neighbour table unavailable: %v", err)
+	}
+	for _, n := range ns {
+		if !n.IP.IsValid() || n.IP.Zone() != "" || n.IP.Is4In6() {
+			t.Errorf("address %v is not canonical", n.IP)
+		}
+		if m, ok := normalizeMAC(n.MAC); !ok || m != n.MAC || groupMAC(n.MAC) {
+			t.Errorf("%s: MAC %q", n.IP, n.MAC)
+		}
+	}
+	t.Logf("%d neighbours", len(ns))
+}

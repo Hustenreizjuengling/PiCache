@@ -1,11 +1,11 @@
 // Package dnsserver serves DNS over UDP and TCP and implements the request
 // pipeline of docs/ARCHITECTURE.md 7.1: ACL, rate limit, hardening, client
-// identity, special-use names, local records, download cache answers, special
-// domains, filtering, conditional forwarding / router resolver, upstream
-// resolution, CNAME inspection, reply shaping and logging. It also owns local
-// DNS records and conditional forwarders. Health probes from this machine
-// (HealthProbeName) are answered before the pipeline and never counted or
-// logged.
+// identity, special-use names, local records, parental controls, download
+// cache answers, special domains, filtering, conditional forwarding / router
+// resolver, upstream resolution, CNAME inspection, reply shaping and
+// logging. It also owns local DNS records and conditional forwarders.
+// Health probes from this machine (HealthProbeName) are answered before the
+// pipeline and never counted or logged.
 //
 // Serving: UDP with (&dns.Server{PacketConn: pc, Handler: h}).ActivateAndServe()
 // (miekg replies from the query's destination address via IP_PKTINFO) and TCP
@@ -18,6 +18,9 @@
 // Bounds: CNAME chains (local and upstream) are followed at most 8 hops with
 // a visited set (else SERVFAIL, status "error"); records that reference
 // themselves are rejected. At most 4096 queries are processed concurrently.
+// The sources of queries dropped by the ACL are counted per address in
+// memory for the network check (at most 256, the least recently refused is
+// evicted; loopback excluded; nothing is logged per packet).
 package dnsserver
 
 import (
@@ -38,6 +41,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
+	"github.com/hustenreizjuengling/picache/internal/dns/parental"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
@@ -57,6 +61,12 @@ const (
 	StatusBlockedRegex   = "blocked-regex"
 	StatusBlockedCNAME   = "blocked-cname"
 	StatusBlockedSpecial = "blocked-special"
+	// StatusBlockedSchedule: parental controls, a block-all schedule or a
+	// block override (step 7a).
+	StatusBlockedSchedule = "blocked-schedule"
+	// StatusBlockedService: parental controls, a blocked service (always or
+	// by a schedule).
+	StatusBlockedService = "blocked-service"
 	StatusRefused        = "refused"
 	StatusError          = "error"
 )
@@ -100,6 +110,11 @@ type Upstream interface {
 	Probe(ctx context.Context, server netip.Addr) bool
 }
 
+// Parental is the part of *parental.Engine the server uses.
+type Parental interface {
+	Check(qname string, groups []int64, now time.Time) parental.Decision
+}
+
 // QueryLogger is the part of *logs.Store the server uses.
 type QueryLogger interface {
 	LogQuery(e logs.QueryEvent)
@@ -113,6 +128,7 @@ type Deps struct {
 	Filter   Filter
 	Clients  Clients
 	Services Services
+	Parental Parental // nil: no parental controls
 	Logs     QueryLogger
 	ACL      *netutil.ACLWatcher
 	// DownloadCacheReady reports whether the download cache DNS answers may
@@ -255,6 +271,7 @@ type Server struct {
 
 	routerKick chan struct{}
 	rotate     atomic.Uint32
+	refusedSrc refusedTable // sources dropped by the ACL
 
 	queries, refused, rateLimited, inFlight, overloaded atomic.Int64
 

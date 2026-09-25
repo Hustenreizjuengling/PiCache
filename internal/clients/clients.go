@@ -132,6 +132,8 @@ type Registry struct {
 	snap    atomic.Pointer[snapshot]
 	arp     atomic.Pointer[map[netip.Addr]string] // neighbour IPv4/IPv6 → MAC
 	readARP func() map[netip.Addr]string          // neighbour table source (replaced in tests)
+	// readNeighbours reads the neighbour table for Neighbours (replaced in tests).
+	readNeighbours func() ([]Neighbour, error)
 
 	cacheMu  sync.Mutex
 	cacheGen uint64
@@ -166,6 +168,8 @@ func New(ctx context.Context, cdb, ldb *db.DB, log *slog.Logger) (*Registry, err
 		queued:  make(map[netip.Addr]struct{}),
 		queue:   make(chan netip.Addr, maxPTRQueue),
 		readARP: readARP,
+
+		readNeighbours: readNeighbourTable,
 	}
 	empty := map[netip.Addr]string{}
 	r.arp.Store(&empty)
@@ -234,6 +238,18 @@ func (r *Registry) Identify(ip netip.Addr) *Identity {
 
 // DisplayName returns the best display name for ip ("" if none).
 func (r *Registry) DisplayName(ip netip.Addr) string { return r.Identify(ip).Name }
+
+// Describe returns the configured client that ip or mac identifies (0 and
+// "" if none) and the resolved host name of ip ("" if unknown). Unlike
+// Identify it takes the MAC from the caller (a fresh neighbour table read)
+// and caches nothing.
+func (r *Registry) Describe(ip netip.Addr, mac string) (clientID int64, name, hostname string) {
+	ip = netutil.Canon(ip)
+	if c := r.snap.Load().match(ip, mac); c != nil {
+		clientID, name = c.id, c.name
+	}
+	return clientID, name, r.hostname(ip)
+}
 
 // resolve computes an identity from the current snapshot, ARP table and
 // hostname cache.

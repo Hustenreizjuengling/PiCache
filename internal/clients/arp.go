@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,9 +30,40 @@ const (
 	ndaDst        = 1
 	ndaLLAddr     = 2
 	nudIncomplete = 0x01
+	nudReachable  = 0x02
+	nudStale      = 0x04
+	nudDelay      = 0x08
+	nudProbe      = 0x10
 	nudFailed     = 0x20
 	nudNoARP      = 0x40
+	nudPermanent  = 0x80
+	// nudUsable are the states in which a neighbour has answered recently
+	// enough to be listed by Neighbours.
+	nudUsable = nudReachable | nudStale | nudDelay | nudProbe | nudPermanent
 )
+
+// Neighbour is an entry of the kernel's neighbour table (IPv4 ARP or IPv6
+// NDP).
+type Neighbour struct {
+	IP    netip.Addr
+	MAC   string // lower-case, colon-separated
+	Iface string // interface name ("" if unknown)
+}
+
+// Neighbours reads the kernel's neighbour table now: entries with a
+// link-layer address in state REACHABLE, STALE, DELAY, PROBE or PERMANENT
+// (never INCOMPLETE or FAILED), without all-zero, broadcast and multicast
+// MACs, at most 65 536. Empty on systems other than Linux.
+func (r *Registry) Neighbours(ctx context.Context) ([]Neighbour, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out, err := r.readNeighbours()
+	if out == nil {
+		out = []Neighbour{}
+	}
+	return out, err
+}
 
 // arpLoop refreshes the neighbour table now and every 30 s.
 func (r *Registry) arpLoop(ctx context.Context) {
@@ -113,40 +145,122 @@ func parseARP(rd io.Reader) map[netip.Addr]string {
 // malformed data ends the parse.
 func parseNeighDump(b []byte) map[netip.Addr]string {
 	out := map[netip.Addr]string{}
-	for len(b) >= nlmsgHdrLen && len(out) < maxARPEntries {
-		l := int(binary.NativeEndian.Uint32(b[0:4]))
-		typ := binary.NativeEndian.Uint16(b[4:6])
-		if l < nlmsgHdrLen || l > len(b) || typ == nlmsgDone {
-			break
+	walkNeighDump(b, func(n neighMsg) bool {
+		if n.state&(nudIncomplete|nudFailed|nudNoARP) == 0 {
+			out[n.ip] = n.mac
 		}
-		if typ == rtmNewNeigh {
-			if ip, mac, ok := parseNeighMsg(b[nlmsgHdrLen:l]); ok {
-				out[ip] = mac
-			}
+		return len(out) < maxARPEntries
+	})
+	return out
+}
+
+// parseNeighbours parses a netlink neighbour dump for Neighbours: entries
+// in a usable state with a unicast MAC, each address once. ifname names an
+// interface index ("" if unknown).
+func parseNeighbours(b []byte, ifname func(int) string) []Neighbour {
+	var out []Neighbour
+	seen := map[netip.Addr]bool{}
+	walkNeighDump(b, func(n neighMsg) bool {
+		if n.state&nudUsable != 0 && !groupMAC(n.mac) && !seen[n.ip] {
+			seen[n.ip] = true
+			out = append(out, Neighbour{IP: n.ip, MAC: n.mac, Iface: ifname(int(n.ifindex))})
 		}
-		n := align4(l)
-		if n >= len(b) {
-			break
+		return len(out) < maxARPEntries
+	})
+	return out
+}
+
+// parseARPNeighbours parses /proc/net/arp for Neighbours (the fallback when
+// netlink is unavailable; IPv4 only): complete or permanent entries
+// (flags ATF_COM 0x2, ATF_PERM 0x4) with a unicast MAC.
+func parseARPNeighbours(rd io.Reader) []Neighbour {
+	var out []Neighbour
+	seen := map[netip.Addr]bool{}
+	sc := bufio.NewScanner(io.LimitReader(rd, maxARPBytes))
+	first := true
+	for sc.Scan() && len(out) < maxARPEntries {
+		if first {
+			first = false
+			continue
 		}
-		b = b[n:]
+		f := strings.Fields(sc.Text())
+		if len(f) < 6 {
+			continue
+		}
+		flags, err := strconv.ParseUint(strings.TrimPrefix(f[2], "0x"), 16, 32)
+		if err != nil || flags&0x6 == 0 {
+			continue
+		}
+		ip, err := netip.ParseAddr(f[0])
+		if err != nil {
+			continue
+		}
+		ip = netutil.Canon(ip)
+		mac, ok := normalizeMAC(f[3])
+		if !ok || groupMAC(mac) || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		out = append(out, Neighbour{IP: ip, MAC: mac, Iface: f[5]})
 	}
 	return out
 }
 
-// parseNeighMsg parses one ndmsg with its attributes.
-func parseNeighMsg(m []byte) (netip.Addr, string, bool) {
-	if len(m) < ndMsgLen {
-		return netip.Addr{}, "", false
+// groupMAC reports whether a normalised MAC is a multicast or broadcast
+// address (the group bit of the first octet).
+func groupMAC(mac string) bool {
+	b, err := strconv.ParseUint(mac[:2], 16, 8)
+	return err != nil || b&1 != 0
+}
+
+// neighMsg is one neighbour of a netlink dump.
+type neighMsg struct {
+	ifindex int32
+	state   uint16
+	ip      netip.Addr
+	mac     string
+}
+
+// walkNeighDump calls fn for every well-formed RTM_NEWNEIGH message with an
+// address and an Ethernet MAC until fn returns false; malformed data ends
+// the walk.
+func walkNeighDump(b []byte, fn func(neighMsg) bool) {
+	for len(b) >= nlmsgHdrLen {
+		l := int(binary.NativeEndian.Uint32(b[0:4]))
+		typ := binary.NativeEndian.Uint16(b[4:6])
+		if l < nlmsgHdrLen || l > len(b) || typ == nlmsgDone {
+			return
+		}
+		if typ == rtmNewNeigh {
+			if n, ok := parseNeighMsg(b[nlmsgHdrLen:l]); ok && !fn(n) {
+				return
+			}
+		}
+		n := align4(l)
+		if n >= len(b) {
+			return
+		}
+		b = b[n:]
 	}
-	if state := binary.NativeEndian.Uint16(m[8:10]); state&(nudIncomplete|nudFailed|nudNoARP) != 0 {
-		return netip.Addr{}, "", false
+}
+
+// parseNeighMsg parses one ndmsg with its attributes. It fails for
+// entries without a usable address (unspecified, multicast) or without an
+// Ethernet MAC.
+func parseNeighMsg(m []byte) (neighMsg, bool) {
+	if len(m) < ndMsgLen {
+		return neighMsg{}, false
+	}
+	msg := neighMsg{
+		ifindex: int32(binary.NativeEndian.Uint32(m[4:8])),
+		state:   binary.NativeEndian.Uint16(m[8:10]),
 	}
 	var ip netip.Addr
 	var mac string
 	for a := m[ndMsgLen:]; len(a) >= 4; {
 		l := int(binary.NativeEndian.Uint16(a[0:2]))
 		if l < 4 || l > len(a) {
-			return netip.Addr{}, "", false
+			return neighMsg{}, false
 		}
 		v := a[4:l]
 		switch binary.NativeEndian.Uint16(a[2:4]) & 0x3fff { // without NLA_F_NESTED / NLA_F_NET_BYTEORDER
@@ -165,9 +279,10 @@ func parseNeighMsg(m []byte) (netip.Addr, string, bool) {
 	}
 	ip = netutil.Canon(ip)
 	if !ip.IsValid() || ip.IsUnspecified() || ip.IsMulticast() || mac == "" {
-		return netip.Addr{}, "", false
+		return neighMsg{}, false
 	}
-	return ip, mac, true
+	msg.ip, msg.mac = ip, mac
+	return msg, true
 }
 
 func align4(n int) int { return (n + 3) &^ 3 }

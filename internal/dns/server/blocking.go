@@ -11,6 +11,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
+	"github.com/hustenreizjuengling/picache/internal/dns/parental"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -56,6 +57,43 @@ func (s *Server) blocked(qc *qctx, d filter.Decision, status string) result {
 		ruleID:  d.RuleID,
 		blocked: true,
 	}
+}
+
+// parentalBlock applies the parental controls of the client's groups
+// (step 7a). It runs whether or not blocking is active (pausing the lists
+// and rules does not lift a bedtime) and before the download cache answer
+// (a blocked Steam or a bedtime also stops cached downloads). A user allow
+// rule that applies to the client lifts the block.
+func (s *Server) parentalBlock(qc *qctx) (result, bool) {
+	if s.d.Parental == nil {
+		return result{}, false
+	}
+	d := s.d.Parental.Check(qc.qname, qc.id.GroupIDs, qc.start)
+	if !d.Blocked {
+		qc.note("parental: no restriction")
+		return result{}, false
+	}
+	reason := d.Reason()
+	if s.d.Filter != nil {
+		if a := s.d.Filter.CheckRules(qc.qname, qc.id.GroupIDs); a.Action == filter.ActionAllow {
+			if qc.tracing() {
+				qc.note(fmt.Sprintf("parental block lifted by allow rule %q (%s)", a.Name, reason))
+			}
+			return result{}, false
+		}
+	}
+	status := StatusBlockedSchedule
+	if d.Kind == parental.KindService {
+		status = StatusBlockedService
+	}
+	if qc.tracing() {
+		until := ""
+		if !d.Until.IsZero() {
+			until = " until " + d.Until.UTC().Format(time.RFC3339)
+		}
+		qc.note(fmt.Sprintf("parental: blocked by %s%s: %s reply", reason, until, qc.set.Filter.BlockingMode))
+	}
+	return result{msg: blockReply(qc.req, &qc.set.Filter), status: status, reason: reason, blocked: true}, true
 }
 
 // blockReply answers req according to the blocking mode.

@@ -33,6 +33,15 @@ unprivileged Proxmox LXC container.
   over the lists. The UI explains which rule or list decided.
 - Groups: clients (by IP, CIDR or MAC) get the lists and rules of their
   groups.
+- Parental controls per group: block apps and sites such as YouTube,
+  TikTok or Roblox from a built-in list, weekly schedules (a bedtime that
+  blocks all internet, or selected apps during homework time), and "block
+  internet now" or "lift restrictions" for a while. Pausing the blocklists
+  does not lift them.
+- Network check: shows whether all devices in your network use PiCache,
+  detects a router that forwards every query or announces itself as IPv6
+  DNS server, and gives the steps to fix it (including the FRITZ!Box
+  settings). An optional scan finds devices that are switched on.
 - Blocking modes (null IP, NXDOMAIN, NODATA, REFUSED, custom IP), a timed
   pause, CNAME inspection, and blocking of the Firefox DoH canary and iCloud
   Private Relay.
@@ -457,6 +466,11 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
 - **DNS-Filter** für das ganze Netz: Blocklisten, eigene Regeln,
   Gruppen pro Client, lokale DNS-Einträge, verschlüsselte Upstreams
   (DoH/DoT), Abfrageprotokoll und Statistiken.
+- **Jugendschutz** pro Gruppe: Dienste wie YouTube, TikTok oder Roblox
+  sperren, Zeitpläne (Schlafenszeit, Hausaufgabenzeit) und „Internet jetzt
+  sperren“ oder „Einschränkungen aufheben“ auf Zeit. Der **Netzwerk-Check**
+  zeigt, ob alle Geräte PiCache nutzen, und erklärt die Einstellungen im
+  Router (auch für die FRITZ!Box).
 - **Download-Cache** für Spiele und Updates (Steam, Epic, Battle.net, Riot,
   Xbox, Windows Update, PlayStation, Nintendo, …): Downloads, die über
   unverschlüsseltes HTTP laufen, werden nach dem ersten Mal aus dem lokalen

@@ -174,6 +174,34 @@ const groups = {
   remove: (id: number, o?: ReqOpts) => http.del(`/groups/${seg(id)}`, o),
 }
 
+// ---------------------------------------------------------------- parental controls & network check
+
+const parental = {
+  /** The built-in service catalogue. */
+  services: (o?: ReqOpts) => http.get<T.ParentalService[]>('/parental/services', o),
+  /** Every group (id order) with its restrictions and current state. */
+  groups: (o?: ReqOpts) => http.get<T.GroupControls[]>('/parental/groups', o),
+  group: (id: number, o?: ReqOpts) => http.get<T.GroupControls>(`/parental/groups/${seg(id)}`, o),
+  /**
+   * Replaces blocked services and schedules. 400 with field blockedServices,
+   * schedules or schedules[<i>].name|days|start|end|block|services.
+   */
+  update: (id: number, c: T.GroupControlsInput, o?: ReqOpts) =>
+    http.put<T.GroupControls>(`/parental/groups/${seg(id)}`, c, o),
+  /** Blocks all internet or lifts the restrictions for a while (400 with field override.mode|override.until|minutes). */
+  setOverride: (id: number, body: T.OverrideInput, o?: ReqOpts) =>
+    http.put<T.GroupControls>(`/parental/groups/${seg(id)}/override`, body, o),
+  /** Ends the override: the plan applies again. */
+  clearOverride: (id: number, o?: ReqOpts) => http.del<T.GroupControls>(`/parental/groups/${seg(id)}/override`, o),
+}
+
+const network = {
+  /** Router set-up checks and the devices of the neighbour table (computed at most every 30 s). */
+  check: (o?: ReqOpts) => http.get<T.NetworkCheck>('/network/check', o),
+  /** 202; 409 while a scan runs, 429 within 60 s of the last one, 503 where scanning is not possible. */
+  scan: (o?: ReqOpts) => http.post<T.NetworkScanStarted>('/network/scan', undefined, o),
+}
+
 // ---------------------------------------------------------------- filtering
 
 const filter = {
@@ -348,6 +376,8 @@ export const api = {
   upstreams,
   clients,
   groups,
+  parental,
+  network,
   filter,
   downloadCache,
   cache,

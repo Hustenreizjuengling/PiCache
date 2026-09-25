@@ -2,7 +2,7 @@
   @component
   Configured clients: name, identifiers, groups, options and their traffic
   over the selected range. Rows open the client panel.
-  Query: ?sel=<client id>
+  Query: ?sel=<client id>&group=<group id> (only the clients of that group)
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte'
@@ -12,7 +12,7 @@
   import { formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { Badge, Button, EmptyState, Panel, Table, type Column } from '$lib/ui'
+  import { Badge, Button, Chip, EmptyState, IconButton, Panel, Table, type Column } from '$lib/ui'
   import { groupNames } from '../shared/groups'
   import ClientPanel from './ClientPanel.svelte'
   import { clientTotals, type Totals } from './clientStats'
@@ -34,7 +34,14 @@
 
   let addOpen = $state(false)
 
-  const rows = $derived<Row[] | undefined>(clients.data?.map((c) => ({ ...c, totals: clientTotals(c, stats, known) })))
+  // ?group=<id> (from the parental controls page): only the clients of that group.
+  const groupId = $derived(Number(router.param('group')) || 0)
+  const groupFilter = $derived(groupId ? groups?.find((g) => g.id === groupId) : undefined)
+  const rows = $derived<Row[] | undefined>(
+    clients.data
+      ?.filter((c) => !groupId || c.groupIds.includes(groupId))
+      .map((c) => ({ ...c, totals: clientTotals(c, stats, known) })),
+  )
   const selId = $derived(Number(router.param('sel')) || 0)
   const selected = $derived(rows?.find((c) => c.id === selId))
 
@@ -91,6 +98,12 @@
 
 <Panel flush title={t('dns.clients.title')} description={t('dns.clients.description')}>
   {#snippet actions()}
+    {#if groupId}
+      <span class="filter">
+        <Chip size="sm" label={t('dns.clients.groupFilter', { name: groupFilter?.name ?? `#${groupId}` })} />
+        <IconButton icon="close" size="sm" label={t('dns.clients.groupFilterClear')} onclick={() => router.setQuery({ group: null })} />
+      </span>
+    {/if}
     {@render rangePicker()}
     <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.clients.add')}</Button>
   {/snippet}
@@ -106,12 +119,18 @@
     caption={t('dns.clients.title')}
   >
     {#snippet empty()}
-      <EmptyState compact icon="users" title={t('dns.clients.empty')} text={t('dns.clients.emptyText')}>
-        <Button size="sm" variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>
-          {t('dns.clients.add')}
-        </Button>
-        <Button size="sm" onclick={() => router.setQuery({ tab: 'seen', sel: null })}>{t('dns.clients.showSeen')}</Button>
-      </EmptyState>
+      {#if groupId && clients.data?.length}
+        <EmptyState compact icon="users" title={t('dns.clients.emptyGroup')} text={t('dns.clients.emptyGroupText')}>
+          <Button size="sm" onclick={() => router.setQuery({ group: null })}>{t('dns.clients.groupFilterClear')}</Button>
+        </EmptyState>
+      {:else}
+        <EmptyState compact icon="users" title={t('dns.clients.empty')} text={t('dns.clients.emptyText')}>
+          <Button size="sm" variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>
+            {t('dns.clients.add')}
+          </Button>
+          <Button size="sm" onclick={() => router.setQuery({ tab: 'seen', sel: null })}>{t('dns.clients.showSeen')}</Button>
+        </EmptyState>
+      {/if}
     {/snippet}
   </Table>
 </Panel>
@@ -128,6 +147,11 @@
 />
 
 <style>
+  .filter {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+  }
   .name {
     display: flex;
     flex-direction: column;

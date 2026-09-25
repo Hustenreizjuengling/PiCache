@@ -387,6 +387,25 @@ func TestPTRQueueBounded(t *testing.T) {
 	}
 }
 
+// LookupNames queues addresses without a recent name only, never link-local
+// ones.
+func TestLookupNames(t *testing.T) {
+	r := newTestRegistry(t, false)
+	fresh, stale, unknown := ip("192.168.1.30"), ip("192.168.1.31"), ip("192.168.1.32")
+	r.namesMu.Lock()
+	r.names.put(fresh, hostName{name: "tv", at: time.Now()})
+	r.names.put(stale, hostName{name: "", at: time.Now().Add(-2 * nameRefreshEvery)})
+	r.namesMu.Unlock()
+	r.LookupNames([]netip.Addr{fresh, stale, unknown, ip("fe80::1"), unknown})
+	got := map[netip.Addr]bool{}
+	for len(r.queue) > 0 {
+		got[<-r.queue] = true
+	}
+	if len(got) != 2 || !got[stale] || !got[unknown] {
+		t.Errorf("queued %v", got)
+	}
+}
+
 func TestParseARP(t *testing.T) {
 	const table = `IP address       HW type     Flags       HW address            Mask     Device
 192.168.1.1      0x1         0x2         AA:BB:CC:DD:EE:01     *        eth0

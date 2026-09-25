@@ -90,6 +90,9 @@ func (s *Server) process(qc *qctx) result {
 	if r, ok := s.localAnswer(qc); ok { // 7
 		return r
 	}
+	if r, ok := s.parentalBlock(qc); ok { // 7a
+		return r
+	}
 	if r, ok := s.downloadCacheOverride(qc); ok { // 8 (user rules) + 9
 		return r
 	}

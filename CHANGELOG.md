@@ -5,6 +5,29 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Parental controls: **DNS → Parental controls** restricts the devices of a
+  client group. Services from a built-in catalogue (YouTube, TikTok,
+  Instagram, WhatsApp, Discord, Roblox, Fortnite, Steam, Netflix, ChatGPT and
+  more) can be blocked always; up to 10 weekly schedules per group block all
+  internet (a bedtime, also overnight) or selected services (homework time);
+  "Block internet now" and "Lift restrictions" work for a set time. The
+  page shows each group's state and weekly plan and tests a domain for a
+  device. Parental controls apply even while blocking is paused, a user
+  allow rule lets a name through, and blocked queries appear in the query
+  log with the new statuses `blocked-schedule` and `blocked-service` and the
+  group as reason. API: `/parental/services`, `/parental/groups`.
+- Network check: **DNS → Network check** compares the devices in the
+  network (the kernel's neighbour table) with PiCache's DNS queries and
+  finds a router that forwards all queries or announces itself as IPv6 DNS
+  server, missing IPv6 addresses of PiCache, sources refused by the access
+  list, and devices that do not use PiCache (named as the router knows
+  them), with the steps to fix it for a
+  FRITZ!Box and other routers. An optional scan (admins) makes switched-on
+  devices show up. The new health check `network` warns while most queries
+  come from the router. API: `/network/check`, `/network/scan`.
+
 ## [0.4.0] - 2026-09-25
 
 ### Added

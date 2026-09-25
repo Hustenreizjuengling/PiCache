@@ -23,15 +23,18 @@ const (
 	statusOverride  = "override"
 	statusRefused   = "refused"
 	statusError     = "error"
-	blockedPrefix   = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special
+	blockedPrefix   = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service
 )
 
-// knownStatuses are the statuses accepted by query-log filters.
-var knownStatuses = []string{
-	statusForwarded, statusCached, statusStale, statusLocal, statusSpecial, statusOverride,
-	"blocked-list", "blocked-rule", "blocked-regex", "blocked-cname", "blocked-special",
-	statusRefused, statusError,
+// blockedStatuses are the blocked statuses (7.1 steps 7a, 8, 10, 11, 14).
+var blockedStatuses = []string{
+	"blocked-list", "blocked-rule", "blocked-regex", "blocked-cname", "blocked-special", "blocked-schedule", "blocked-service",
 }
+
+// knownStatuses are the statuses accepted by query-log filters.
+var knownStatuses = append(append([]string{
+	statusForwarded, statusCached, statusStale, statusLocal, statusSpecial, statusOverride},
+	blockedStatuses...), statusRefused, statusError)
 
 // statusClasses are the disjoint series classes; filters accept them as
 // aliases for their statuses.
@@ -39,7 +42,7 @@ var statusClasses = map[string][]string{
 	"allowed":  {statusForwarded, statusStale, statusLocal, statusSpecial},
 	"cached":   {statusCached},
 	"override": {statusOverride},
-	"blocked":  {"blocked-list", "blocked-rule", "blocked-regex", "blocked-cname", "blocked-special"},
+	"blocked":  blockedStatuses,
 	"other":    {statusRefused, statusError},
 }
 

@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 )
 
 // hostName is a cached PTR result ("" = no name).
@@ -37,6 +39,26 @@ func (r *Registry) enqueueName(ip netip.Addr) {
 	case r.queue <- ip:
 		r.queued[ip] = struct{}{}
 	default:
+	}
+}
+
+// LookupNames schedules PTR lookups for addresses whose name is unknown or
+// older than nameRefreshEvery, so the network check can name devices that
+// never asked PiCache. Link-local addresses are skipped; the bounded queue
+// limits the work.
+func (r *Registry) LookupNames(ips []netip.Addr) {
+	cutoff := time.Now().Add(-nameRefreshEvery)
+	for _, ip := range ips {
+		ip = netutil.Canon(ip)
+		if ip.IsLinkLocalUnicast() {
+			continue
+		}
+		r.namesMu.Lock()
+		h, ok := r.names.peek(ip)
+		r.namesMu.Unlock()
+		if !ok || h.at.Before(cutoff) {
+			r.enqueueName(ip)
+		}
 	}
 }
 

@@ -176,5 +176,11 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	if free, ok := diskFree(a.cfg.DataDir); ok && free < 1<<30 {
 		add("data-disk", "fail", fmt.Sprintf("only %d MiB free in %s", free>>20, a.cfg.DataDir), "free space on the data disk")
 	}
+
+	// Network check (the cached check of DNS → Network check)
+	if a.network != nil {
+		st, msg, hint := networkHealth(a.network.Check(ctx))
+		add("network", st, msg, hint)
+	}
 	return h
 }

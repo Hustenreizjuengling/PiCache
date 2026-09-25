@@ -430,6 +430,8 @@ export type QueryStatus =
   | 'blocked-regex'
   | 'blocked-cname'
   | 'blocked-special'
+  | 'blocked-schedule'
+  | 'blocked-service'
   | 'refused'
   | 'error'
 
@@ -440,6 +442,8 @@ export const BLOCKED_STATUSES: readonly QueryStatus[] = [
   'blocked-regex',
   'blocked-cname',
   'blocked-special',
+  'blocked-schedule',
+  'blocked-service',
 ]
 
 /** dnsserver.BlockingStatus */
@@ -648,6 +652,209 @@ export interface KnownClient {
 
 /** ID of the built-in "Default" group (cannot be deleted). */
 export const DEFAULT_GROUP_ID = 1
+
+// ---------------------------------------------------------------- parental controls
+
+export type ServiceCategory = 'video' | 'social' | 'messaging' | 'gaming' | 'music' | 'ai'
+
+/** parental.Service: a service of the built-in catalogue (domains match with subdomains). */
+export interface ParentalService {
+  id: string
+  name: string
+  category: ServiceCategory
+  domains: string[]
+}
+
+/** What a schedule blocks while it is active. */
+export type ScheduleBlock = 'all' | 'services'
+
+/** parental.Schedule. Times are "HH:MM" host local time; end < start ends the next day. */
+export interface ParentalSchedule {
+  /** 8 hex digits; "" for a new schedule (the server assigns one). */
+  id: string
+  name: string
+  enabled: boolean
+  /** 0 = Sunday … 6 = Saturday, sorted ascending. */
+  days: number[]
+  start: string
+  end: string
+  block: ScheduleBlock
+  /** Service ids (block = services); empty for block = all. */
+  services: string[]
+}
+
+/** block = block all internet now; allow = lift the group's restrictions. */
+export type OverrideMode = 'block' | 'allow'
+
+export interface ParentalOverride {
+  mode: OverrideMode
+  until: Timestamp
+}
+
+/** The next start or end of a schedule within 7 days. */
+export interface ParentalNext {
+  time: Timestamp
+  scheduleId: string
+  name: string
+  /** true: the schedule starts then; false: it ends. */
+  starts: boolean
+}
+
+/** parental.GroupState: what applies right now (computed at request time). */
+export interface ParentalGroupState {
+  blockAll: boolean
+  reason?: 'override' | 'schedule'
+  /** Name of the active block-all schedule. */
+  schedule?: string
+  /** When the current block-all ends. */
+  until?: Timestamp
+  /** Services blocked right now (always blocked + active service schedules). */
+  blockedServices: string[]
+  /** An allow override is active. */
+  lifted: boolean
+  liftedUntil?: Timestamp
+  next?: ParentalNext
+  /** Host time zone that schedule times refer to ("CEST", "UTC"). */
+  timeZone: string
+  /** Its current offset from UTC in minutes (120 for CEST). */
+  utcOffsetMinutes: number
+}
+
+/** parental.GroupControls (GET/PUT /parental/groups/{id}). */
+export interface GroupControls {
+  groupId: number
+  groupName: string
+  groupEnabled: boolean
+  clientCount: number
+  blockedServices: string[]
+  schedules: ParentalSchedule[]
+  override?: ParentalOverride
+  state: ParentalGroupState
+  updatedAt?: Timestamp
+}
+
+/** PUT /parental/groups/{id} */
+export interface GroupControlsInput {
+  blockedServices: string[]
+  schedules: ParentalSchedule[]
+}
+
+/** PUT /parental/groups/{id}/override: either minutes (1..10080) or until (≤ 7 days ahead). */
+export type OverrideInput = { mode: OverrideMode; minutes: number } | { mode: OverrideMode; until: Timestamp }
+
+// ---------------------------------------------------------------- network check
+
+export type NetworkCheckStatus = 'ok' | 'info' | 'warn'
+
+/** router-forwarding / container-nat */
+export interface RouterShareData {
+  routerQueries: number
+  totalQueries: number
+  share: number
+  routerAddresses: string[]
+}
+
+export interface Ipv6DnsData {
+  lanHasIPv6: boolean
+  ipv6Queries: number
+  ipv6Clients: number
+  ula: string[]
+  global: string[]
+}
+
+export interface Ipv6AddressData {
+  ula: string[]
+  global: string[]
+}
+
+export interface RefusedSource {
+  address: string
+  count: number
+  last: Timestamp
+}
+
+export interface RefusedData {
+  /** Newest first, at most 20. */
+  sources: RefusedSource[]
+  since: Timestamp
+}
+
+export interface DevicesData {
+  total: number
+  active: number
+  inactive: number
+  never: number
+}
+
+/** One check of GET /network/check; the server computes status and numbers, the UI writes the texts. */
+export type NetworkCheckItem =
+  | { id: 'router-forwarding' | 'container-nat'; status: NetworkCheckStatus; data: RouterShareData }
+  | { id: 'ipv6-dns'; status: NetworkCheckStatus; data: Ipv6DnsData }
+  | { id: 'ipv6-address'; status: NetworkCheckStatus; data: Ipv6AddressData }
+  | { id: 'refused'; status: NetworkCheckStatus; data: RefusedData }
+  | { id: 'devices'; status: NetworkCheckStatus; data: DevicesData }
+
+export type NetworkCheckId = NetworkCheckItem['id']
+
+export type DeviceStatus = 'active' | 'inactive' | 'never'
+
+/** A device of the neighbour table (grouped by MAC; router and this machine left out). */
+export interface NetworkDevice {
+  mac: string
+  /** IPv4 first, then ULA, global and link-local. */
+  ips: string[]
+  /** Configured client name, else PTR or seen host name. */
+  name?: string
+  clientId?: number
+  lastQuery?: Timestamp
+  queries24h: number
+  status: DeviceStatus
+}
+
+export type RouterKind = 'fritzbox' | 'generic' | 'unknown'
+
+export interface NetworkRouter {
+  ipv4?: string
+  ipv6: string[]
+  mac?: string
+  name?: string
+  kind: RouterKind
+}
+
+export interface NetworkSelf {
+  ipv4: string[]
+  ula: string[]
+  global: string[]
+  /** The DNS listener serves IPv6. */
+  dnsIpv6: boolean
+}
+
+export interface NetworkScanState {
+  running: boolean
+  startedAt?: Timestamp
+  finishedAt?: Timestamp
+  addresses?: number
+}
+
+/** GET /network/check (cached for up to 30 s). */
+export interface NetworkCheck {
+  checkedAt: Timestamp
+  mode: 'host' | 'bridge'
+  /** false: the query log is off, only recently seen addresses count. */
+  statsAvailable: boolean
+  router?: NetworkRouter
+  self: NetworkSelf
+  queries24h: { total: number; ipv4: number; ipv6: number; fromRouter: number }
+  checks: NetworkCheckItem[]
+  devices: NetworkDevice[]
+  scan: NetworkScanState
+}
+
+/** 202 of POST /network/scan */
+export interface NetworkScanStarted {
+  started: boolean
+  addresses: number
+}
 
 // ---------------------------------------------------------------- filter
 

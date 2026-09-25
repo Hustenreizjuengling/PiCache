@@ -55,6 +55,7 @@ fixes; please test against it or a current build of `main`.
 | Secret leakage | NAS passwords, notification secrets and TOTP secrets are sealed (XChaCha20-Poly1305) with a master key that is never part of a backup. Secrets are write-only in the API and redacted in logs, snippets, notifications and the audit log. Only the root helper decrypts NAS passwords. CDN query strings are never logged or stored. |
 | Outbound notifications | Only admins configure channels. PiCache sends only to the URLs they entered (http or https, no redirects, no proxy, verified TLS, 10 s), and never to link-local (cloud metadata), multicast or unspecified addresses. Private and loopback addresses are allowed on purpose. A stored secret is never sent to a changed server. Messages carry no secrets, passwords, tokens, session data or user names. Details in [Notifications](#notifications). |
 | Scheduled backups | Same content as downloaded backups (no accounts; sealed secrets only on request), written only to the data directory or to a storage target's store, without following symbolic links. Details in [Scheduled backups](#scheduled-backups). |
+| Network discovery scan | Admins only, audited, at most one per minute: one empty UDP datagram per address of this machine's private IPv4 subnets (at most 512, at most 200 per second) from an unprivileged socket; no raw sockets or capabilities. Details in [Parental controls and the network check](#parental-controls-and-the-network-check). |
 | Privilege escalation | The service runs unprivileged and never holds `CAP_SYS_ADMIN`. NAS mounts are done by systemd on request of a separate root helper that re-validates every request and never trusts the database: it opens it read-only as a regular file (no links, FIFOs or devices) with an untrusted schema, touches only names derived from the target id, never follows links in the service-owned request directory, and runs sandboxed with a memory limit. |
 | Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total. |
 | Malicious or tampered update | A release is installed only if its `SHA256SUMS` carries an Ed25519 signature by a key compiled into the running binary, the binary matches its checksum and reports the expected version. The web UI can only queue a version number; the root helper installs exactly that release from the fixed GitHub repository and never an older one. Starting an update needs a browser session and the password. Details in [Updates](#updates). |
@@ -300,6 +301,43 @@ master key, which is never part of a backup). The binding rules are in
 - Changing the schedule, running a backup, downloading and deleting
   backups need admin rights and are audited; read-only users see the status
   and the file names.
+
+## Parental controls and the network check
+
+The binding rules are in
+[ARCHITECTURE.md §16](ARCHITECTURE.md#16-parental-controls-internaldnsparental)
+and [§17](ARCHITECTURE.md#17-network-check-internalappnetcheckgo).
+
+- **Parental controls are DNS-based and can be bypassed.** They block the
+  names a device looks up through PiCache. A device that uses another
+  resolver (a DNS server set by hand, encrypted DNS in an app or browser, a
+  VPN app, mobile data or another network) is not restricted, and answers
+  the device cached before a block, as well as connections that are already
+  open, keep working until they expire or reconnect. The catalogue list
+  "HaGeZi DoH/VPN/TOR/Proxy Bypass" and blocking outgoing DNS (ports 53 and
+  853) to other servers on the router make bypassing harder; neither is
+  complete. Treat parental controls as a help for a household, not as a
+  security boundary against a determined user of the device.
+- **Changes need admin rights and are audited** (`parental.update`,
+  `parental.override`, `parental.override_clear`); read-only users and read
+  tokens see the configuration and the state. Pausing the blocklists does
+  not lift parental controls; only an admin action does. Service domains
+  come from a catalogue compiled into the binary; nothing is downloaded.
+- **The network check only reads.** It uses the kernel's neighbour table,
+  the routing tables, the query statistics PiCache keeps anyway and a PTR
+  lookup of the gateway through the router resolver; nothing leaves the
+  host. The addresses refused by the DNS ACL are counted in memory only (at
+  most 256), never logged per packet or stored.
+- **The discovery scan** (admins only, audited as `network.scan`) sends one
+  empty UDP datagram to the discard port (9) of each address of this
+  machine's private IPv4 subnets: /24 or smaller subnets in full, larger
+  ones only the /24 around this machine's address, at most 512 addresses,
+  at most 200 packets per second, at most one scan per minute. It uses an
+  ordinary unprivileged UDP socket: no raw sockets, no capabilities,
+  nothing is read back; devices show up because the kernel resolves their
+  addresses with ARP. It is not available in a container bridge network, on
+  systems other than Linux, or for IPv6. A scan can wake devices that sleep
+  and may appear in the logs of intrusion detection on the LAN.
 
 ## Hardening checklist
 

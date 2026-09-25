@@ -24,6 +24,8 @@ const queryStyles: Record<QueryStatus, ChipStyle> = {
   'blocked-regex': { pair: 'orange' },
   'blocked-cname': { pair: 'orange', striped: true },
   'blocked-special': { pair: 'orange', striped: true },
+  'blocked-schedule': { pair: 'orange' },
+  'blocked-service': { pair: 'orange' },
   refused: { tone: 'warn' },
   error: { tone: 'fail' },
 }

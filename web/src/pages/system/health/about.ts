@@ -61,7 +61,8 @@ export function masterKeyKind(source: string): KeyKind {
   return 'file'
 }
 
-const REPO = 'https://github.com/hustenreizjuengling/picache'
+/** The project repository (documentation links). */
+export const REPO = 'https://github.com/hustenreizjuengling/picache'
 
 /** Project documentation (opened in a new tab). */
 export const DOCS: { label: MessageKey; url: string }[] = [

@@ -54,7 +54,7 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 | Method & path | P | Request | Response |
 |---|---|---|---|
 | GET `/system/info` | R | – | `{version:version.Info, startedAt, uptimeSec, instanceId, listeners:api.ListenerInfo, dataDir, cacheDir, mountRoot, masterKeySource, memory:{allocBytes,sysBytes,limitBytes,numGC}, goroutines}` |
-| GET `/system/health` | R | – | `api.Health` (check names: `listeners`, `upstreams`, `blocklists`, `dns-rate-limit`, `cache-domains`, `download_cache`, `sni`, `cache-store`, `logs`, `data-disk`) |
+| GET `/system/health` | R | – | `api.Health` (check names: `listeners`, `upstreams`, `blocklists`, `dns-rate-limit`, `cache-domains`, `download_cache`, `sni`, `cache-store`, `logs`, `data-disk`, `network`; `network` warns while most DNS queries come from the router or the container network's gateway, see `GET /network/check`) |
 | GET `/system/overview` | R | – | Top-bar/overview status in one call: `{blocking:dnsserver.BlockingStatus, dns:dnsserver.Stats, cacheIps:dnsserver.CacheIPStatus, router:dnsserver.RouterStatus, downloadCacheEnabled:bool, servicesReady:bool, store:api.StoreState, proxy:proxy.Stats, sni:sni.Stats, filter:filter.Stats, upstreams:[]upstream.UpstreamStat, clockGuard:bool, health:{ok:bool, warnings:int, failures:int}}` |
 | GET `/system/audit` | A | `?search&limit&offset` | `listing.Page[auth.AuditEntry]` |
 | GET `/system/backup` | A | `?includeSecrets=true` (sealed NAS passwords and notification secrets; useless without the master key) | `application/octet-stream` download `picache-backup-<date>.db`. Never contains accounts: users (password hashes, TOTP secrets), sessions and API tokens are removed; the audit log stays |
@@ -136,6 +136,37 @@ Section `backups` = `settings.Backups` `{enabled:bool, schedule:"daily"|"weekly"
 | POST `/groups` | A | `clients.GroupInput` | 201 |
 | PUT `/groups/{id}` | A | `clients.GroupInput` | 200 |
 | DELETE `/groups/{id}` | A | – | 204 (403 for group 1) |
+
+## Parental controls — `routes_parental.go`
+
+Blocked services, schedules and a manual override per client group (ARCHITECTURE 16). They apply in the DNS pipeline at step 7a, also while blocking is paused. 503 if the process has no parental engine (except `/parental/services`).
+
+| Method & path | P | Request | Response |
+|---|---|---|---|
+| GET `/parental/services` | R | – | `[]parental.Service` `[{id, name, category, domains:[string]}]`: the built-in catalogue, sorted by category (`video`, `social`, `messaging`, `gaming`, `music`, `ai`), then by name; `domains` are subtree matches |
+| GET `/parental/groups` | R | – | `[]parental.GroupControls` for all groups (id order), each with its `state` now |
+| GET `/parental/groups/{id}` | R | – | `parental.GroupControls`; 400 `field:"id"` for a malformed id, 404 for an unknown group |
+| PUT `/parental/groups/{id}` | A | `parental.Config` `{blockedServices:[id], schedules:[parental.Schedule]}` (exactly these two members; the override is kept) | `parental.GroupControls`. 400 with `field` `blockedServices` (unknown id, more than 64), `schedules` (more than 10), `schedules[<i>].name` (empty, more than 40 characters, control characters), `schedules[<i>].days` (none, outside 0–6), `schedules[<i>].start`, `schedules[<i>].end` (not `HH:MM`; `end` equal to `start`), `schedules[<i>].block` (not `all`/`services`), `schedules[<i>].services` (unknown id; none or more than 64 for `services`; any for `all`); 404 for an unknown group. Audited as `parental.update` (target: the group id, details: the stored configuration) |
+| PUT `/parental/groups/{id}/override` | A | `{mode:"block"|"allow", minutes:int}` (1–10080) or `{mode, until:time}` (in the future, at most 7 days ahead) | `parental.GroupControls`. `block` blocks all internet for the group until then, `allow` lifts its blocked services and schedules (not those of the client's other groups); replaces an existing override. 400 with `field` `override.mode`, `minutes` (missing, out of range, or both `minutes` and `until`) or `override.until`; 404 for an unknown group. Audited as `parental.override` (details `{mode, until}`) |
+| DELETE `/parental/groups/{id}/override` | A | – | `parental.GroupControls` (also without an override); 404 for an unknown group. Audited as `parental.override_clear` |
+
+- `parental.GroupControls` = `{groupId, groupName, groupEnabled:bool, clientCount:int, blockedServices:[id], schedules:[parental.Schedule], override?:{mode, until}, state:parental.GroupState, updatedAt?}`. `override` is present only while it is active (an expired one is ignored and removed with the next write); `updatedAt` is absent for a group that was never configured. A disabled group never applies (`groupEnabled`).
+- `parental.Schedule` = `{id, name, enabled:bool, days:[int], start:"HH:MM", end:"HH:MM", block:"all"|"services", services:[id]}`: `id` is 8 hex characters, assigned by the server for new schedules (absent or `""`) and kept on update (a malformed or duplicate id gets a new one); `days` 0 = Sunday … 6 = Saturday, stored sorted and unique; `end` before `start` means until `end` the next day (Friday 21:00–07:00 ends Saturday 07:00); times are the host's local time (a Docker container uses UTC unless `TZ` is set). Service lists are stored sorted and unique.
+- `parental.GroupState` = `{blockAll:bool, reason?:"override"|"schedule", schedule?:string, until?, blockedServices:[id], lifted:bool, liftedUntil?, next?:{time, scheduleId, name, starts:bool}, timeZone:string, utcOffsetMinutes:int}`: `blockAll` = all internet is blocked now, by the override or by the enabled block-all schedule named in `schedule`; `until` = when that ends (windows that follow each other count as one block); `blockedServices` = the services blocked now (always blocked plus active service schedules; empty while `lifted`); `lifted`/`liftedUntil` = an `allow` override is active; `next` = the next start (`starts:true`) or end of an enabled schedule within 7 days; `timeZone`/`utcOffsetMinutes` = the host time zone that schedule times refer to (`CEST`, `120`), so the UI can show the plan on the host's clock.
+- In the query log, parental blocks have the status `blocked-schedule` (a block-all schedule or a block override) or `blocked-service`, and the reason names the group: `Kids: Bedtime`, `Kids: blocked by hand`, `Kids: YouTube`, `Kids: YouTube (Homework time)`. `POST /dns/lookup` shows the step (`parental: blocked by …` or `parental: no restriction`).
+
+## Network check — `routes_network.go`
+
+Whether the devices of the LAN use PiCache (ARCHITECTURE 17). 503 if the process has no network check.
+
+| Method & path | P | Request | Response |
+|---|---|---|---|
+| GET `/network/check` | R | – | `api.NetworkCheck` (below); computed at most every 30 s (every 2 s while a scan runs); starting or finishing a scan invalidates the cached check |
+| POST `/network/scan` | A | – | 202 `{started:true, addresses:int}`: sends one empty UDP datagram to port 9 of each host address of this machine's private IPv4 subnets (/24 or smaller in full, larger ones only the /24 around this machine; at most 512; ≤ 200 per second) so that devices appear in the neighbour table; done 3 s after the last packet (follow `scan` in GET). 409 while a scan runs, 429 within 60 s after the previous start, 503 in a container bridge network, on systems other than Linux or without a private IPv4 subnet. Audited as `network.scan` (details `{addresses}`) |
+
+- `api.NetworkCheck` = `{checkedAt, mode:"host"|"bridge", statsAvailable:bool, router?:{ipv4?, ipv6:[addr], mac?, name?, kind:"fritzbox"|"generic"|"unknown"}, self:{ipv4:[addr], ula:[addr], global:[addr], dnsIpv6:bool}, queries24h:{total, ipv4, ipv6, fromRouter}, checks:[{id, status:"ok"|"info"|"warn", data}], devices:[api.NetworkDevice], scan:{running:bool, startedAt?, finishedAt?, addresses?}}`. `mode` `bridge`: PiCache runs in a container bridge network (the router is not visible, `devices` is empty). `statsAvailable` false: the query counts come from the in-memory client activity (logs.db unavailable or client addresses anonymised). `router.ipv6`: the IPv6 default gateway and every neighbour address with the router's MAC; `router.name`: the gateway's PTR name. `self`: this machine's addresses without loopback, link-local and virtual bridges; `dnsIpv6`: a DNS listener serves IPv6. `queries24h` leaves out loopback and this machine's addresses. The response always has `router` (kind `unknown` without a gateway).
+- `checks`, in this order: `router-forwarding` (in bridge mode `container-nat`, the bridge gateway being the router) `{routerQueries, totalQueries, share (0–1), routerAddresses:[addr] (most queries first)}`: with at least 200 queries, warn from 80 % from the router, info from 20 %; `ipv6-dns` `{lanHasIPv6:bool, ipv6Queries, ipv6Clients, ula:[addr], global:[addr]}`: warn when the LAN has IPv6 but no LAN device (the router not counted) asked over IPv6 in 24 h; `ipv6-address` `{ula, global}`: warn when the LAN has IPv6 and PiCache has no IPv6 address, info with global addresses only, ok with a ULA; `refused` `{sources:[{address, count, last}] (newest first, ≤ 20), since}`: warn when the DNS ACL dropped queries since the start; `devices` `{total, active, inactive, never}` (not in bridge mode): info when devices did not query in 24 h.
+- `api.NetworkDevice` = `{mac, ips:[addr] (IPv4, then ULA, global, link-local), name?:string (configured client name, else the PTR name), clientId?:int, lastQuery?, queries24h:int, status:"active"|"inactive"|"never"}`: the neighbour table grouped by MAC without the router and this machine, sorted never, inactive, active, then by address; at most 1024.
 
 ## Upstreams — `routes_upstream.go`
 
@@ -241,7 +272,7 @@ Speed test (one run at a time, in the background, not tied to the request; docs/
 
 | Method & path | P | Request | Response |
 |---|---|---|---|
-| GET `/logs/queries` | R | `?from&to&range&client&domain&status(multi)&qtype&upstream&cursor&limit` (default range 1h; `status`: `forwarded`, `cached`, `stale`, `local`, `special`, `override`, `blocked-list`, `blocked-rule`, `blocked-regex`, `blocked-cname`, `blocked-special`, `refused`, `error`, or a series class) | `logs.QueryPage` |
+| GET `/logs/queries` | R | `?from&to&range&client&domain&status(multi)&qtype&upstream&cursor&limit` (default range 1h; `status`: `forwarded`, `cached`, `stale`, `local`, `special`, `override`, `blocked-list`, `blocked-rule`, `blocked-regex`, `blocked-cname`, `blocked-special`, `blocked-schedule`, `blocked-service`, `refused`, `error`, or a series class; the class `blocked` covers every `blocked-*` status) | `logs.QueryPage` |
 | GET `/stats/summary` | R | `?range` (default 24h) | `logs.Summary` (`topFrom`: the hour-aligned start that top lists and `activeClients` actually cover) |
 | GET `/stats/dns` | R | `?range&step` (step in seconds; default so there are ≤ 300 points, never finer than the rollup: 60 s for ranges ≤ 48 h, 3600 s beyond; > 1500 points → 400) | `logs.Series` (keys `allowed`, `cached`, `override`, `blocked`, `other`) |
 | GET `/stats/cache` | R | `?range&step&service` | `logs.Series` |

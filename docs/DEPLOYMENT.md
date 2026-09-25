@@ -326,7 +326,8 @@ propagation does not work.
    DHCP server to PiCache's address. If the router instead forwards DNS to
    PiCache, all queries appear to come from the router. Also make sure the
    router does not advertise its own IPv6 DNS server, or clients will bypass
-   PiCache over IPv6.
+   PiCache over IPv6. **DNS → Network check** shows whether it worked
+   ([Network check](#network-check), with the steps for a FRITZ!Box).
 5. The download cache is **off** by default. When you enable it, the UI
    shows the cache IP it will answer with, the store path, its filesystem and
    free space, and warnings (SD card, Docker bridge mode). Check them first,
@@ -337,6 +338,120 @@ If you open the UI through a host name that is not this machine's host name,
 local domain or a configured server name, PiCache answers `421 Misdirected
 Request` (DNS-rebinding protection). Add the name to `PICACHE_WEB_HOSTS` or
 to the allowed hosts in the web settings.
+
+---
+
+## Network check
+
+**DNS → Network check** shows whether the devices in your network use
+PiCache. It compares the devices your PiCache machine can see (the kernel's
+neighbour table: every device that talked on the local network recently)
+with the DNS queries of the last 24 hours, and looks for the two router
+set-ups that hide devices from PiCache:
+
+- **The router forwards DNS to PiCache.** The router hands out itself as DNS
+  server and passes the queries on to PiCache. Everything works, but every
+  query comes from the router, so PiCache cannot tell devices apart: no
+  per-device statistics, and groups and parental controls cannot work. The
+  check warns when at least 80 % of at least 200 queries a day come from the
+  router, and the health check `network` warns too.
+- **The router announces itself as IPv6 DNS server.** Devices that have IPv6
+  then ask the router over IPv6 and bypass PiCache. The check warns when your
+  network has IPv6 but no device asked PiCache over IPv6 for a day.
+
+The page shows the steps for your router with PiCache's addresses filled
+in. **Scan network** (admins) sends one small, empty UDP packet to each
+address of the local network (at most 512 addresses, the /24 around
+PiCache's address for larger networks) so that devices that are switched on
+show up; it is not needed for normal operation. Devices only appear after
+they talked on the network recently, and devices with hard-coded DNS servers
+or encrypted DNS never ask PiCache.
+
+### Router set-up: FRITZ!Box
+
+In the FRITZ!Box interface (labels of the English interface in brackets):
+
+1. **IPv4**: *Heimnetz → Netzwerk → Netzwerkeinstellungen →
+   IPv4-Einstellungen* (*Home Network → Network → Network Settings → IPv4
+   settings*; in newer FRITZ!OS versions under *IP-Adressen*): set
+   **Lokaler DNS-Server** (*Local DNS server*) to PiCache's IPv4 address.
+   The FRITZ!Box then hands out PiCache as DNS server over DHCP.
+2. **IPv6**: *… → IPv6-Einstellungen* (*IPv6 settings*): turn on
+   **Unique Local Addresses (ULA) immer zuweisen** (*Always assign unique
+   local addresses (ULA)*), so PiCache gets a stable IPv6 address; under
+   **DNSv6-Server im Heimnetz** set **Lokaler DNSv6-Server** (*Local DNSv6
+   server*) to PiCache's ULA (the `fd…` address the network check shows) and
+   turn on **DNSv6-Server auch über Router Advertisement bekanntgeben
+   (RFC 5006)** (*Also announce DNSv6 server via router advertisement
+   (RFC 5006)*).
+3. **Do not** enter PiCache under *Internet → Zugangsdaten → DNS-Server*
+   (*Internet → Account Information → DNS Server*): the FRITZ!Box then
+   forwards everything and PiCache sees only the box.
+
+Devices pick up the new settings when they renew their lease or reconnect
+to the network (switching Wi-Fi off and on is enough).
+
+### Router set-up: other routers
+
+- Set the **DNS server of the DHCP server** to PiCache's IPv4 address
+  instead of the router's own address. Do not set PiCache as the router's
+  upstream DNS server, that is forwarding.
+- **IPv6**: announce PiCache's ULA (an `fd…` address; give PiCache one if it
+  has none) as DNS server through router advertisements (RDNSS) or DHCPv6,
+  or turn off the router's own IPv6 DNS announcement.
+- **Docker in bridge mode**: every query appears to come from the container
+  network's gateway. Use host networking (the provided compose file does).
+- **Refused sources**: if the check lists addresses whose queries PiCache
+  refused, they are not in an allowed network, typically devices with a
+  public (global) IPv6 address. Add their prefix (the network check offers
+  the /64) under **DNS settings → Access → Additional networks**
+  (`dns.allowedNetworks`).
+
+---
+
+## Parental controls
+
+**DNS → Parental controls** restricts the devices of a client group (for
+example a group "Kids" with the children's phones, tablets and consoles):
+
+- **Blocked services**: apps and sites from a built-in list (YouTube,
+  TikTok, Instagram, Snapchat, WhatsApp, Discord, Roblox, Fortnite,
+  Minecraft, Steam, Netflix, ChatGPT, …) that are always blocked for the
+  group.
+- **Schedules** (up to 10 per group): on selected days between two times,
+  block all internet (a bedtime, for example school nights Sunday to
+  Thursday, 21:00 until 07:00 the next day) or selected services (for
+  example YouTube and TikTok during homework time).
+- **Block internet now** and **Lift restrictions** for 30 minutes, 1 or
+  2 hours or until a time (at most 7 days), and **End** for either.
+- **Test**: a domain and a device show whether and why PiCache blocks it.
+
+A device in several groups gets the restrictions of all its groups; lifting
+restrictions affects only the group it is done for. Parental controls stay
+on while the blocklists are paused (the pause in the header), so a pause
+never ends a bedtime. The Default group applies to every device that is in
+no other group. Blocked queries appear in the query log as *Blocked by
+schedule* or *Blocked service*, with the group and the schedule or service
+as reason. A user allow rule for the group (**Filtering → Rules**) lets a
+name through, for example a school website during bedtime.
+
+Things to know:
+
+- Devices must be identified: add them as clients by IP or MAC address
+  (**DNS → Clients & groups**, or **Add as client** in the network check).
+  Phones and tablets use a private MAC address per Wi-Fi network; keep it
+  fixed for your Wi-Fi (the usual default) so that the device keeps its
+  identity.
+- Schedules use the time of the PiCache host. A Docker container uses UTC
+  unless you set `TZ` (for example `TZ: "Europe/Berlin"` in the compose
+  file).
+- DNS blocking starts when an app looks a name up again, usually within
+  minutes; open connections (a running video, a game session) can continue
+  until they reconnect.
+- Encrypted DNS and VPN apps bypass PiCache, and so do mobile data and other
+  networks. Add the catalogue list **HaGeZi DoH/VPN/TOR/Proxy Bypass** to
+  the group (**Filtering → Blocklists**), and on the router, if it can,
+  block outgoing DNS (ports 53 and 853) to servers other than PiCache.
 
 ---
 
@@ -403,7 +518,7 @@ Everything persistent lives in exactly two places plus optional NAS mounts.
 
 | Path (bare metal / LXC) | Docker | Contents | Backup? |
 |---|---|---|---|
-| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and progress of the update helper); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
+| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, parental controls, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and progress of the update helper); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
 | `/var/cache/picache` (`PICACHE_CACHE_DIR`) | `/cache` | The built-in **local** cache store (slice files). Large. | No |
 | `/srv/picache/<id>` (`PICACHE_MOUNT_ROOT`) | `/srv/picache` (bind, `rslave`) | NAS cache stores. The only place outside the cache dir where stores may live (the only NAS path writable inside the sandbox). | No |
 | `/etc/picache/picache.env` | environment | Bootstrap settings only. Read by systemd **and by every CLI command**. | Yes |

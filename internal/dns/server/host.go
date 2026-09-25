@@ -201,3 +201,30 @@ func (h *hostInfo) addrsFor(client netip.Addr, v6 bool) []netip.Addr {
 	}
 	return nil
 }
+
+// HostNetwork describes this machine's network for the network check.
+type HostNetwork struct {
+	// Bridge: PiCache runs in a container bridge network; its interfaces
+	// and neighbours are those of the bridge, not of the LAN.
+	Bridge bool
+	// Prefixes are the unicast addresses of the interfaces that are up,
+	// with their on-link prefix lengths. Loopback addresses and virtual
+	// bridges (docker0, veth…, virbr…, VPN tunnels) are left out.
+	Prefixes []netip.Prefix
+}
+
+// HostNetwork reads the interface addresses now.
+func (s *Server) HostNetwork() HostNetwork {
+	out := HostNetwork{Bridge: s.cacheIPs.Load().bridge}
+	for _, ifc := range s.env.host().ifaces {
+		if virtualIface(ifc.name) {
+			continue
+		}
+		for _, p := range ifc.prefixes {
+			if !p.Addr().IsLoopback() {
+				out.Prefixes = append(out.Prefixes, p)
+			}
+		}
+	}
+	return out
+}

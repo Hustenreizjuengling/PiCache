@@ -62,6 +62,7 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// additionally filtered before parsing, TCP at accept).
 	if !s.allowed(ip) {
 		s.refused.Add(1)
+		s.refusedSrc.add(ip, time.Now())
 		if isTCP {
 			_ = w.Close()
 		}
@@ -361,20 +362,30 @@ func (a *aclReader) ReadTCP(conn net.Conn, timeout time.Duration) ([]byte, error
 func (a *aclReader) ReadUDP(conn *net.UDPConn, timeout time.Duration) ([]byte, *dns.SessionUDP, error) {
 	for {
 		m, sess, err := a.next.ReadUDP(conn, timeout)
-		if err != nil || a.s.allowed(netutil.AddrFromNet(sess.RemoteAddr())) {
+		if err != nil {
 			return m, sess, err
 		}
+		ip := netutil.AddrFromNet(sess.RemoteAddr())
+		if a.s.allowed(ip) {
+			return m, sess, nil
+		}
 		a.s.refused.Add(1)
+		a.s.refusedSrc.add(ip, time.Now())
 	}
 }
 
 func (a *aclReader) ReadPacketConn(conn net.PacketConn, timeout time.Duration) ([]byte, net.Addr, error) {
 	for {
 		m, addr, err := a.next.ReadPacketConn(conn, timeout)
-		if err != nil || a.s.allowed(netutil.AddrFromNet(addr)) {
+		if err != nil {
 			return m, addr, err
 		}
+		ip := netutil.AddrFromNet(addr)
+		if a.s.allowed(ip) {
+			return m, addr, nil
+		}
 		a.s.refused.Add(1)
+		a.s.refusedSrc.add(ip, time.Now())
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/dlcache/sni"
 	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
+	"github.com/hustenreizjuengling/picache/internal/dns/parental"
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/logs"
@@ -142,6 +143,8 @@ type Deps struct {
 	Updates  Updater          // nil: the update endpoints answer 503
 	Notify   *notify.Service  // nil: the notification endpoints answer 503
 	Backups  ScheduledBackups // nil: the scheduled backup endpoints answer 503
+	Parental *parental.Engine // nil: the parental group endpoints answer 503
+	Network  Network          // nil: the network check endpoints answer 503
 	UI       http.Handler     // embedded web UI
 	Log      *slog.Logger
 }
@@ -180,6 +183,8 @@ func New(d Deps) *Server {
 	s.registerLogsRoutes()
 	s.registerNotifyRoutes()
 	s.registerBackupRoutes()
+	s.registerParentalRoutes()
+	s.registerNetworkRoutes()
 
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, s.log, errNotFoundRoute)
