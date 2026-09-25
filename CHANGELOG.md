@@ -5,6 +5,13 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-25
+
+Update from v0.1.0 on **System → Updates** or with `sudo picache update`
+(Docker: `docker compose pull && docker compose up -d`). Settings, query
+log and statistics are migrated automatically at the first start; only
+API clients and scripts need the new names below.
+
 ### Changed
 
 - **Breaking:** the download cache has new technical names. Update API
@@ -106,5 +113,6 @@ First release.
   Docker installations update with
   `docker compose pull && docker compose up -d`.
 
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Hustenreizjuengling/PiCache/releases/tag/v0.1.0
