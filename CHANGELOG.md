@@ -5,6 +5,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-25
+
 ### Added
 
 - Parental controls: **DNS → Parental controls** restricts the devices of a
@@ -179,7 +181,8 @@ First release.
   Docker installations update with
   `docker compose pull && docker compose up -d`.
 
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.2.0...v0.3.0
