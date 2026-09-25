@@ -114,7 +114,7 @@ func (h *ObjectHead) Has(idx int64) bool {
 	if idx < 0 || idx/64 >= int64(len(h.Present)) {
 		return false
 	}
-	return h.Present[idx/64]&(1<<(uint(idx)%64)) != 0
+	return h.Present[idx/64]&(1<<uint(idx%64)) != 0
 }
 
 // Object is a full index entry (listings, UI).

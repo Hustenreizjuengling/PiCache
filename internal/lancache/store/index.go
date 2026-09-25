@@ -391,7 +391,7 @@ func (s *Store) loadEntry(ctx context.Context, id string) (*entry, error) {
 			return nil, err
 		}
 		if idx >= 0 && idx < n {
-			e.present[idx/64] |= 1 << (uint(idx) % 64)
+			e.present[idx/64] |= 1 << uint(idx%64)
 		}
 	}
 	if err := rows.Err(); err != nil {

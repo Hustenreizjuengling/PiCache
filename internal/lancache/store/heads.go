@@ -34,7 +34,7 @@ func (e *entry) has(idx int64) bool {
 	if idx < 0 || idx/64 >= int64(len(e.present)) {
 		return false
 	}
-	return e.present[idx/64]&(1<<(uint(idx)%64)) != 0
+	return e.present[idx/64]&(1<<uint(idx%64)) != 0
 }
 
 // indexes returns the indexes of all cached slices.
@@ -66,9 +66,9 @@ func (e *entry) withSlice(idx int64, present bool) *entry {
 	c := e.clone()
 	c.present = append([]uint64(nil), e.present...)
 	if present {
-		c.present[idx/64] |= 1 << (uint(idx) % 64)
+		c.present[idx/64] |= 1 << uint(idx%64)
 	} else {
-		c.present[idx/64] &^= 1 << (uint(idx) % 64)
+		c.present[idx/64] &^= 1 << uint(idx%64)
 	}
 	return c
 }

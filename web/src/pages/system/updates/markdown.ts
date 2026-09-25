@@ -442,14 +442,24 @@ function normalizeLabel(label: string): string {
 
 // ---------------------------------------------------------------- entry points
 
+/**
+ * Removes HTML comments (template comments are not meant to be read),
+ * repeatedly, so that nested markers cannot leave a new comment behind.
+ */
+function stripComments(s: string): string {
+  let prev: string
+  do {
+    prev = s
+    s = s.replace(/<!--[\s\S]*?-->/g, '')
+  } while (s !== prev)
+  return s
+}
+
 /** Parses release notes into blocks. */
 export function parseMarkdown(source: string): Block[] {
   const refs: Refs = new Map()
   const lines: string[] = []
-  const text = source
-    .replace(/\r\n?/g, '\n')
-    .replace(/<!--[\s\S]*?-->/g, '') // template comments are not meant to be read
-    .replace(/\t/g, '    ')
+  const text = stripComments(source.replace(/\r\n?/g, '\n')).replace(/\t/g, '    ')
   let inFence = false
   for (const line of text.split('\n')) {
     if (FENCE.test(line)) inFence = !inFence

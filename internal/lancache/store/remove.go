@@ -184,7 +184,7 @@ type removalQueue struct {
 }
 
 func (q *removalQueue) has(idx int64) bool {
-	return idx >= 0 && idx/64 < int64(len(q.bm)) && q.bm[idx/64]&(1<<(uint(idx)%64)) != 0
+	return idx >= 0 && idx/64 < int64(len(q.bm)) && q.bm[idx/64]&(1<<uint(idx%64)) != 0
 }
 
 func (q *removalQueue) set(idx int64) {
@@ -192,7 +192,7 @@ func (q *removalQueue) set(idx int64) {
 		q.bm = append(q.bm, make([]uint64, w-len(q.bm))...)
 	}
 	if !q.has(idx) {
-		q.bm[idx/64] |= 1 << (uint(idx) % 64)
+		q.bm[idx/64] |= 1 << uint(idx%64)
 		q.n++
 	}
 }
@@ -351,7 +351,7 @@ func (s *Store) unqueueRemoval(id string, idx int64) {
 	if q == nil || !q.has(idx) {
 		return
 	}
-	q.bm[idx/64] &^= 1 << (uint(idx) % 64)
+	q.bm[idx/64] &^= 1 << uint(idx%64)
 	if q.n--; q.n == 0 {
 		delete(s.rem, id)
 	}
