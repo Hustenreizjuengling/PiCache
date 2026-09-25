@@ -104,7 +104,7 @@ type QueryEvent struct {
 	Reason     string    `json:"reason,omitempty"` // list name, rule pattern or special-domain name
 	ListID     int64     `json:"listId,omitempty"`
 	RuleID     int64     `json:"ruleId,omitempty"`
-	Service    string    `json:"service,omitempty"` // LanCache service for status "lancache"
+	Service    string    `json:"service,omitempty"` // download service for status "override"
 	Upstream   string    `json:"upstream,omitempty"`
 	DurationUs int64     `json:"durationUs"`
 	Answer     string    `json:"answer,omitempty"` // compact summary, max 256 chars
@@ -184,7 +184,7 @@ type Summary struct {
 	DNSQueries       int64     `json:"dnsQueries"`
 	DNSBlocked       int64     `json:"dnsBlocked"`
 	DNSCached        int64     `json:"dnsCached"`
-	DNSLanCache      int64     `json:"dnsLancache"`
+	DNSDownloadCache int64     `json:"dnsDownloadCache"`
 	DNSForwarded     int64     `json:"dnsForwarded"`
 	BlockedPercent   float64   `json:"blockedPercent"`
 	AvgDNSDurationUs int64     `json:"avgDnsDurationUs"`
@@ -211,7 +211,7 @@ type Summary struct {
 
 // Series is a time series set aligned on Timestamps (unix seconds, bucket
 // start). DNS keys are disjoint and sum to all queries: "allowed"
-// (forwarded, stale, local, special), "cached", "lancache", "blocked" (all
+// (forwarded, stale, local, special), "cached", "override", "blocked" (all
 // blocked-*), "other" (refused, error). Cache keys (bytes): "hit", "wan", "sni".
 type Series struct {
 	Step       int64                `json:"step"` // seconds

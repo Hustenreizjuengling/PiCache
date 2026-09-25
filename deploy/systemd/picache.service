@@ -1,4 +1,4 @@
-# PiCache: filtering DNS server + LanCache download cache.
+# PiCache: filtering DNS server + download cache.
 # Installed by deploy/install.sh to /usr/local/lib/systemd/system/picache.service.
 # Local changes belong in a drop-in (`systemctl edit picache`), not in this file.
 [Unit]

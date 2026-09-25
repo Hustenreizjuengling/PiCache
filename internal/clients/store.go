@@ -25,7 +25,10 @@ const (
 	defaultGroupComment = "Clients without another group"
 )
 
+// migrations of component "clients". Append only: a released step is never
+// edited (v1 keeps the column name of 0.1.x, v2 renames it).
 var migrations = []string{
+	// v1
 	`CREATE TABLE client_groups (
 		id         INTEGER PRIMARY KEY,
 		name       TEXT    NOT NULL UNIQUE COLLATE NOCASE,
@@ -57,6 +60,10 @@ var migrations = []string{
 		PRIMARY KEY (client_id, group_id)
 	) WITHOUT ROWID;
 	CREATE INDEX client_memberships_group ON client_memberships(group_id);`,
+	// v2 (0.2.0): the per-client bypass flag is named after the download
+	// cache. No index uses the column, so restored backups of older versions
+	// keep matching the live index definitions (app.checkPlainSchema).
+	`ALTER TABLE client_clients RENAME COLUMN lancache_bypass TO download_cache_bypass;`,
 }
 
 // reload rebuilds the identification snapshot from the database.
@@ -262,7 +269,7 @@ func (r *Registry) queryClients(ctx context.Context, id int64) ([]Client, error)
 	if id != 0 {
 		where, args = " WHERE id = ?", []any{id}
 	}
-	rows, err := r.db.R.QueryContext(ctx, `SELECT id, name, comment, lancache_bypass, ignore_logs, created_at, updated_at
+	rows, err := r.db.R.QueryContext(ctx, `SELECT id, name, comment, download_cache_bypass, ignore_logs, created_at, updated_at
 		FROM client_clients`+where+` ORDER BY name COLLATE NOCASE, id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("clients: list clients: %w", err)
@@ -272,7 +279,7 @@ func (r *Registry) queryClients(ctx context.Context, id int64) ([]Client, error)
 	for rows.Next() {
 		var c Client
 		var created, updated int64
-		if err := rows.Scan(&c.ID, &c.Name, &c.Comment, &c.LanCacheBypass, &c.IgnoreLogs, &created, &updated); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Comment, &c.DownloadCacheBypass, &c.IgnoreLogs, &created, &updated); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("clients: scan client: %w", err)
 		}
@@ -440,8 +447,8 @@ func (r *Registry) CreateClient(ctx context.Context, in ClientInput) (Client, er
 			return apperr.Conflict("at most %d clients are allowed", maxClients)
 		}
 		now := db.NowMs()
-		res, err := tx.ExecContext(ctx, `INSERT INTO client_clients (name, comment, lancache_bypass, ignore_logs, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`, in.Name, in.Comment, in.LanCacheBypass, in.IgnoreLogs, now, now)
+		res, err := tx.ExecContext(ctx, `INSERT INTO client_clients (name, comment, download_cache_bypass, ignore_logs, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, in.Name, in.Comment, in.DownloadCacheBypass, in.IgnoreLogs, now, now)
 		if err != nil {
 			return err
 		}
@@ -463,8 +470,8 @@ func (r *Registry) UpdateClient(ctx context.Context, id int64, in ClientInput) (
 		return Client{}, err
 	}
 	err = r.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE client_clients SET name = ?, comment = ?, lancache_bypass = ?, ignore_logs = ?, updated_at = ?
-			WHERE id = ?`, in.Name, in.Comment, in.LanCacheBypass, in.IgnoreLogs, db.NowMs(), id)
+		res, err := tx.ExecContext(ctx, `UPDATE client_clients SET name = ?, comment = ?, download_cache_bypass = ?, ignore_logs = ?, updated_at = ?
+			WHERE id = ?`, in.Name, in.Comment, in.DownloadCacheBypass, in.IgnoreLogs, db.NowMs(), id)
 		if err != nil {
 			return err
 		}

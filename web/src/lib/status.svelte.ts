@@ -5,7 +5,7 @@
 //   appStatus.update.data    – GET /system/update once per page load, then
 //                              hourly (the server checks GitHub daily); drives
 //                              the "update available" dot in the navigation
-// Call appStatus.overview.refresh() after changing blocking, LanCache or storage.
+// Call appStatus.overview.refresh() after changing blocking, the download cache or storage.
 // The updates page puts its fresher results into appStatus.update (set()).
 
 import { api, Resource } from './api'

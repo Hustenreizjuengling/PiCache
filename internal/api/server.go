@@ -17,13 +17,13 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/config"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/proxy"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/services"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/sni"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
-	"github.com/hustenreizjuengling/picache/internal/lancache/proxy"
-	"github.com/hustenreizjuengling/picache/internal/lancache/services"
-	"github.com/hustenreizjuengling/picache/internal/lancache/sni"
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
@@ -170,7 +170,7 @@ func New(d Deps) *Server {
 	s.registerDNSRoutes()
 	s.registerUpstreamRoutes()
 	s.registerFilterRoutes()
-	s.registerLanCacheRoutes()
+	s.registerDownloadCacheRoutes()
 	s.registerCacheRoutes()
 	s.registerProxyRoutes()
 	s.registerStorageRoutes()

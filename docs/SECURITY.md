@@ -42,7 +42,7 @@ fixes; please test against it or a current build of `main`.
 | Open resolver, DNS amplification | Answers only loopback, private (RFC 1918, ULA, CGNAT, link-local) and directly connected private networks, plus CIDRs you add. Other UDP queries are dropped; TCP connections are closed at accept. Per-client rate limit (default 50 qps, burst 200), `ANY` refused, CHAOS/`version.bind` refused, EDNS capped at 1232 bytes. `allowAllNetworks` is an explicit, dangerous switch. |
 | DNS cache poisoning | Encrypted upstreams by default (DNS-over-HTTPS; DNS-over-TLS is also supported), random IDs and ports, the question is verified on every reply, in-flight deduplication, no client EDNS options forwarded. |
 | Private reverse-DNS leaks | PTR/SOA/NS queries for private and special-use reverse zones never reach public upstreams. |
-| Open HTTP proxy / SSRF via :80 | Only hosts of known LanCache services are served; unknown hosts get 403. Upstream addresses must be public unicast and not this machine; link-local (cloud metadata) is always refused, and redirects are re-checked. Non-canonical paths are never stored. Per-client fill limits and at most 16 ranges per request prevent WAN amplification. |
+| Open HTTP proxy / SSRF via :80 | Only hosts of known cache services are served; unknown hosts get 403. Upstream addresses must be public unicast and not this machine; link-local (cloud metadata) is always refused, and redirects are re-checked. Non-canonical paths are never stored. Per-client fill limits and at most 16 ranges per request prevent WAN amplification. |
 | Open TLS relay via :443 | TLS is never terminated. The SNI must match an enabled service, the same SSRF rules apply, and connections are capped and time out. |
 | Hostile blocklists, cache-domains data or NAS content | Sizes, counts, names and patterns are validated; public-suffix patterns are rejected. Files are accessed through `os.Root`. Slice files carry validated, CRC-checked headers. |
 | Web UI takeover on first start | One-time setup token (logged and stored with mode 0600, compared in constant time, first user created atomically), or provisioning from `PICACHE_ADMIN_PASSWORD_FILE`. After setup, `/auth/setup` answers 403 at once, uses no share of the global attempt limit and counts as a failed attempt of the caller. |
@@ -60,9 +60,9 @@ fixes; please test against it or a current build of `main`.
 Known residual risks:
 
 - A LAN client can place content from a host it controls under Steam depot
-  cache keys, because Steam requests are recognised by their User-Agent (as
-  in the original LanCache). Steam verifies chunk checksums, so the effect is
-  failed downloads for other clients (denial of service), not code execution.
+  cache keys, because Steam requests are recognised by their User-Agent.
+  Steam verifies chunk checksums, so the effect is failed downloads for other
+  clients (denial of service), not code execution.
 - NFS with `AUTH_SYS` is unauthenticated and unencrypted. Restrict the export
   to PiCache's host, or use SMB 3.1.1 (optionally sealed).
 - Plain DNS between clients and PiCache is unencrypted, as with any LAN
@@ -305,7 +305,7 @@ the release.
       to PiCache's host.
 - [ ] The query-log retention and client anonymisation settings match your
       privacy requirements.
-- [ ] `lancache.nocacheClients` and `allowPrivateUpstreams` stay at their
+- [ ] `downloadCache.nocacheClients` and `allowPrivateUpstreams` stay at their
       defaults (empty / off) unless you know you need them.
 
 **Maintenance**

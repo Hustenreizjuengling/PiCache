@@ -20,6 +20,14 @@ All state-changing requests are protected by Go's `CrossOriginProtection` and au
 
 Ownership column = the `internal/api/routes_*.go` file that implements the endpoint.
 
+**Breaking changes in v0.2.0 (download cache names).** API clients written for v0.1.x have to switch to the new names; the old ones are not accepted as aliases.
+- Settings: the download cache section of `settings.All` is `downloadCache` (`GET`/`PUT /settings`, `GET /settings/defaults`, `PATCH /settings/downloadCache`), and validation errors name the field `downloadCache.<member>` (e.g. `downloadCache.cacheIpv4[0]`).
+- Routes: the download cache routes are under `/download-cache/…` with the same sub-paths as before (11 routes, see below).
+- The DNS query status of answers with the cache address is `override` (query log, `status` filters, live stream); the DNS series key of `/stats/dns` is `override`, and the summary field is `logs.Summary.dnsDownloadCache`.
+- JSON members: `/system/overview` `downloadCacheEnabled`; `clients.Client`/`clients.ClientInput` `downloadCacheBypass`.
+- The health check is `download_cache`, and the audit actions of the download cache are `download_cache.*` (entries written before the upgrade keep their old action).
+- Stored data is migrated automatically at the first start of v0.2.0, and a restored backup of v0.1.x at the start that applies it: the settings section (settings schema v2; an existing `downloadCache` section wins), the client bypass column (clients schema v2) and the query log and DNS rollups in logs.db (logs schema v2). Backups made by v0.2.0 are refused by v0.1.x (newer schema).
+
 ---
 
 ## Auth & account — `routes_auth.go`
@@ -46,8 +54,8 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 | Method & path | P | Request | Response |
 |---|---|---|---|
 | GET `/system/info` | R | – | `{version:version.Info, startedAt, uptimeSec, instanceId, listeners:api.ListenerInfo, dataDir, cacheDir, mountRoot, masterKeySource, memory:{allocBytes,sysBytes,limitBytes,numGC}, goroutines}` |
-| GET `/system/health` | R | – | `api.Health` |
-| GET `/system/overview` | R | – | Top-bar/overview status in one call: `{blocking:dnsserver.BlockingStatus, dns:dnsserver.Stats, cacheIps:dnsserver.CacheIPStatus, router:dnsserver.RouterStatus, lancacheEnabled:bool, servicesReady:bool, store:api.StoreState, proxy:proxy.Stats, sni:sni.Stats, filter:filter.Stats, upstreams:[]upstream.UpstreamStat, clockGuard:bool, health:{ok:bool, warnings:int, failures:int}}` |
+| GET `/system/health` | R | – | `api.Health` (check names: `listeners`, `upstreams`, `blocklists`, `dns-rate-limit`, `cache-domains`, `download_cache`, `sni`, `cache-store`, `logs`, `data-disk`) |
+| GET `/system/overview` | R | – | Top-bar/overview status in one call: `{blocking:dnsserver.BlockingStatus, dns:dnsserver.Stats, cacheIps:dnsserver.CacheIPStatus, router:dnsserver.RouterStatus, downloadCacheEnabled:bool, servicesReady:bool, store:api.StoreState, proxy:proxy.Stats, sni:sni.Stats, filter:filter.Stats, upstreams:[]upstream.UpstreamStat, clockGuard:bool, health:{ok:bool, warnings:int, failures:int}}` |
 | GET `/system/audit` | A | `?search&limit&offset` | `listing.Page[auth.AuditEntry]` |
 | GET `/system/backup` | A | `?includeSecrets=true` (sealed NAS passwords; useless without the master key) | `application/octet-stream` download `picache-backup-<date>.db`. Never contains accounts: users (password hashes, TOTP secrets), sessions and API tokens are removed; the audit log stays |
 | POST `/system/restore` | S | raw body (`application/octet-stream`, ≤ 512 MiB); header `X-PiCache-Password`: the current password, percent-encoded as UTF-8 (JavaScript `encodeURIComponent`; ASCII passwords without `%` can be sent as they are) | 202 `{staged:true, message:"Restart PiCache to apply"}`; 401 with `field:"password"` for a missing or wrong password (nothing is staged; the session stays valid); 429 throttled; 400 for invalid or newer-version backups and for uploads with triggers, views, virtual tables, generated columns, tables or indexes the running PiCache does not have, indexes defined differently, or changed account tables. On the next start the restore keeps the running instance's accounts, API tokens and audit log and ends all sessions |
@@ -63,7 +71,7 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 |---|---|---|---|
 | GET `/settings` | R | – | `settings.All` |
 | PUT `/settings` | A | `settings.All` (full document) | `settings.All`; 400 with `field` on validation errors |
-| PATCH `/settings/{section}` | A | one section object (`dns`, `filter`, `lancache`, `cache`, `logs`, `web`, `updates`) | `settings.All` |
+| PATCH `/settings/{section}` | A | one section object (`dns`, `filter`, `downloadCache`, `cache`, `logs`, `web`, `updates`) | `settings.All` |
 | GET `/settings/defaults` | R | – | `settings.All` (defaults, for "reset" buttons) |
 
 Changes to `cache.activeStoreId` via these endpoints are rejected (use `POST /storage/targets/{id}/activate`).
@@ -78,7 +86,7 @@ Section `updates` = `settings.Updates` `{checkEnabled:bool, includePrereleases:b
 | POST `/dns/blocking` | A | `{enabled:bool, pauseSeconds?:int}` (enabled=false + pauseSeconds>0 = timed pause) | `dnsserver.BlockingStatus` |
 | POST `/dns/lookup` | R | `dnsserver.LookupRequest` | `dnsserver.LookupResult` |
 | GET `/dns/stats` | R | – | `dnsserver.Stats` |
-| GET `/dns/cache-ips` | R | – | `dnsserver.CacheIPStatus` (`warning` carries the address-detection warning and the would-be addresses are filled even while LanCache is disabled) |
+| GET `/dns/cache-ips` | R | – | `dnsserver.CacheIPStatus` (`warning` carries the address-detection warning and the would-be addresses are filled even while the download cache is disabled) |
 | GET `/dns/router` | R | – | `dnsserver.RouterStatus` |
 | GET `/dns/records` | R | – | `[]dnsserver.Record` |
 | POST `/dns/records` | A | `dnsserver.RecordInput` | 201 `dnsserver.Record` |
@@ -124,21 +132,23 @@ Section `updates` = `settings.Updates` `{checkEnabled:bool, includePrereleases:b
 | GET `/filter/stats` | R | – | `filter.Stats` |
 | POST `/filter/explain` | R | `{domain, clientIp?}` | `{domain, groupIds:[int], matches:[]filter.Match, decision:{action, name, source, kind}}` |
 
-## LanCache services & SNI — `routes_lancache.go`
+## Download cache services & SNI — `routes_downloadcache.go`
+
+The download services come from the cache-domains lists (uklans/cache-domains) plus custom services; the download cache answers their names in DNS with the cache address (status `override`).
 
 | Method & path | P | Request | Response |
 |---|---|---|---|
-| GET `/lancache/services` | R | – | `[]services.Service` (`domains` trimmed to the first 50 in the list view) |
-| GET `/lancache/services/{id}` | R | – | `services.Service` (full domains) |
-| PUT `/lancache/services/{id}/enabled` | A | `{enabled:bool}` | `services.Service` |
-| PUT `/lancache/services/{id}/domains` | A | `{extraDomains:[string]}` | `services.Service` (400 with the offending pattern) |
-| POST `/lancache/services` | A | `services.ServiceInput` | 201 (custom service) |
-| PUT `/lancache/services/{id}` | A | `services.ServiceInput` | 200 (custom only) |
-| DELETE `/lancache/services/{id}` | A | – | 204 (custom only) |
-| GET `/lancache/source` | R | – | `services.SourceStatus` |
-| POST `/lancache/source/refresh` | A | – | `services.SourceStatus` (waits up to 5 min; `extendDeadlines`) |
-| PUT `/lancache/labels` | A | `{groupKey, label}` ("" removes) | 204 |
-| GET `/lancache/sni` | R | – | `sni.Stats` |
+| GET `/download-cache/services` | R | – | `[]services.Service` (`domains` trimmed to the first 50 in the list view) |
+| GET `/download-cache/services/{id}` | R | – | `services.Service` (full domains) |
+| PUT `/download-cache/services/{id}/enabled` | A | `{enabled:bool}` | `services.Service` |
+| PUT `/download-cache/services/{id}/domains` | A | `{extraDomains:[string]}` | `services.Service` (400 with the offending pattern) |
+| POST `/download-cache/services` | A | `services.ServiceInput` | 201 (custom service) |
+| PUT `/download-cache/services/{id}` | A | `services.ServiceInput` | 200 (custom only) |
+| DELETE `/download-cache/services/{id}` | A | – | 204 (custom only) |
+| GET `/download-cache/source` | R | – | `services.SourceStatus` |
+| POST `/download-cache/source/refresh` | A | – | `services.SourceStatus` (waits up to 5 min; `extendDeadlines`) |
+| PUT `/download-cache/labels` | A | `{groupKey, label}` ("" removes) | 204 |
+| GET `/download-cache/sni` | R | – | `sni.Stats` |
 
 ## Cache store (library, maintenance) — `routes_cache.go`
 
@@ -192,9 +202,9 @@ All return 503 `unavailable` when no store is online (except `/cache/state`).
 
 | Method & path | P | Request | Response |
 |---|---|---|---|
-| GET `/logs/queries` | R | `?from&to&range&client&domain&status(multi)&qtype&upstream&cursor&limit` (default range 1h) | `logs.QueryPage` |
+| GET `/logs/queries` | R | `?from&to&range&client&domain&status(multi)&qtype&upstream&cursor&limit` (default range 1h; `status`: `forwarded`, `cached`, `stale`, `local`, `special`, `override`, `blocked-list`, `blocked-rule`, `blocked-regex`, `blocked-cname`, `blocked-special`, `refused`, `error`, or a series class) | `logs.QueryPage` |
 | GET `/stats/summary` | R | `?range` (default 24h) | `logs.Summary` (`topFrom`: the hour-aligned start that top lists and `activeClients` actually cover) |
-| GET `/stats/dns` | R | `?range&step` (step in seconds; default so there are ≤ 300 points, never finer than the rollup: 60 s for ranges ≤ 48 h, 3600 s beyond; > 1500 points → 400) | `logs.Series` |
+| GET `/stats/dns` | R | `?range&step` (step in seconds; default so there are ≤ 300 points, never finer than the rollup: 60 s for ranges ≤ 48 h, 3600 s beyond; > 1500 points → 400) | `logs.Series` (keys `allowed`, `cached`, `override`, `blocked`, `other`) |
 | GET `/stats/cache` | R | `?range&step&service` | `logs.Series` |
 | GET `/stats/top` | R | `?kind=domains|blocked|clients|cache-clients|content|upstreams&range&limit` | `[]logs.TopItem` |
 | GET `/stats/services` | R | `?range` | `[]logs.ServiceStat` |

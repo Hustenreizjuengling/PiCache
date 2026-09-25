@@ -71,9 +71,9 @@ export default {
   'filters.windowValue': '{from} – {to}',
   'filters.windowClear': 'Show the whole time range',
 
-  // LanCache off (downloads page)
-  'off.title': 'LanCache is off',
-  'off.text': 'Downloads only go through PiCache while LanCache is on. Until then this page stays empty.',
+  // download cache off (downloads page)
+  'off.title': 'The download cache is off',
+  'off.text': 'Downloads only go through PiCache while the download cache is on. Until then this page stays empty.',
   'off.open': 'Open cache settings',
 
   // Downloads
@@ -140,7 +140,7 @@ export default {
   'library.searchPlaceholder': 'Name or content ID',
   'library.caption': 'Cached content',
   'library.empty': 'Nothing is cached yet',
-  'library.emptyText': 'Content appears here after the first download through PiCache. Turn on LanCache in the cache settings if you have not yet.',
+  'library.emptyText': 'Content appears here after the first download through PiCache. Turn on the download cache in the cache settings if you have not yet.',
   'library.noMatch': 'No cached content matches',
   'library.noMatchText': 'Try another name or clear the search.',
   'library.completeOf': '{cached} of {total} cached',
@@ -532,18 +532,18 @@ export default {
 
   // Cache settings
   'settings.loadError': 'The settings could not be loaded',
-  'settings.lancacheTitle': 'LanCache',
+  'settings.downloadCacheTitle': 'Download cache',
   'settings.isOn': 'On',
   'settings.isOff': 'Off',
   'settings.onText': 'Devices that use PiCache as their DNS server download games and updates through the cache.',
   'settings.offText': 'Turn it on to cache game downloads and updates (Steam, Epic, Battle.net, Xbox, PlayStation and more) for your network.',
-  'settings.turnOn': 'Turn on LanCache',
-  'settings.turnOff': 'Turn off LanCache',
-  'settings.turnOffTitle': 'Turn off LanCache?',
-  'settings.turnOffText': 'Devices download from the Internet directly again. Cached content is kept and used when you turn LanCache on again.',
-  'settings.turnedOn': 'LanCache turned on',
-  'settings.turnedOff': 'LanCache turned off',
-  'settings.notReady': 'LanCache is on, but download hosts are not redirected',
+  'settings.turnOn': 'Turn on the download cache',
+  'settings.turnOff': 'Turn off the download cache',
+  'settings.turnOffTitle': 'Turn off the download cache?',
+  'settings.turnOffText': 'Devices download from the Internet directly again. Cached content is kept and used when you turn the download cache on again.',
+  'settings.turnedOn': 'Download cache turned on',
+  'settings.turnedOff': 'Download cache turned off',
+  'settings.notReady': 'The download cache is on, but download hosts are not redirected',
   'settings.answering': 'Download hosts are answered with',
   'settings.saveFirst': 'Save or discard your changes first.',
   'settings.addressTitle': 'Cache address',
@@ -604,8 +604,8 @@ export default {
   'settings.unsaved': 'You have unsaved changes',
   'settings.discard': 'Discard changes',
 
-  // enabling LanCache
-  'enable.title': 'Turn on LanCache',
+  // turning on the download cache
+  'enable.title': 'Turn on the download cache',
   'enable.intro': 'PiCache will answer the host names of download services with its own address and cache what clients download.',
   'enable.addressTitle': 'Cache address',
   'enable.addressText': 'Download hosts will be answered with',

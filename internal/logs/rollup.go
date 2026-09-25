@@ -20,7 +20,7 @@ const (
 	statusStale     = "stale"
 	statusLocal     = "local"
 	statusSpecial   = "special"
-	statusLanCache  = "lancache"
+	statusOverride  = "override"
 	statusRefused   = "refused"
 	statusError     = "error"
 	blockedPrefix   = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special
@@ -28,7 +28,7 @@ const (
 
 // knownStatuses are the statuses accepted by query-log filters.
 var knownStatuses = []string{
-	statusForwarded, statusCached, statusStale, statusLocal, statusSpecial, statusLanCache,
+	statusForwarded, statusCached, statusStale, statusLocal, statusSpecial, statusOverride,
 	"blocked-list", "blocked-rule", "blocked-regex", "blocked-cname", "blocked-special",
 	statusRefused, statusError,
 }
@@ -38,7 +38,7 @@ var knownStatuses = []string{
 var statusClasses = map[string][]string{
 	"allowed":  {statusForwarded, statusStale, statusLocal, statusSpecial},
 	"cached":   {statusCached},
-	"lancache": {statusLanCache},
+	"override": {statusOverride},
 	"blocked":  {"blocked-list", "blocked-rule", "blocked-regex", "blocked-cname", "blocked-special"},
 	"other":    {statusRefused, statusError},
 }
@@ -58,7 +58,7 @@ func hourStart(ms int64) int64 { return floorTo(ms, hourMs) }
 
 // dnsCounts are the per-bucket DNS counters (columns of logs_dns_minute/hourly).
 type dnsCounts struct {
-	total, forwarded, cached, stale, local, special, lancache, blocked, other, durationUs int64
+	total, forwarded, cached, stale, local, special, override, blocked, other, durationUs int64
 }
 
 func (c *dnsCounts) add(status string, durationUs int64) {
@@ -75,8 +75,8 @@ func (c *dnsCounts) add(status string, durationUs int64) {
 		c.local++
 	case status == statusSpecial:
 		c.special++
-	case status == statusLanCache:
-		c.lancache++
+	case status == statusOverride:
+		c.override++
 	case isBlocked(status):
 		c.blocked++
 	default:
@@ -233,20 +233,20 @@ func writeRollups(ctx context.Context, tx *sql.Tx, r *rollups) error {
 			continue
 		}
 		stmt, err := tx.PrepareContext(ctx, `INSERT INTO `+table+`
-			(bucket, total, forwarded, cached, stale, local, special, lancache, blocked, other, duration_us)
+			(bucket, total, forwarded, cached, stale, local, special, override, blocked, other, duration_us)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (bucket) DO UPDATE SET
 				total = total + excluded.total, forwarded = forwarded + excluded.forwarded,
 				cached = cached + excluded.cached, stale = stale + excluded.stale,
 				local = local + excluded.local, special = special + excluded.special,
-				lancache = lancache + excluded.lancache, blocked = blocked + excluded.blocked,
+				override = override + excluded.override, blocked = blocked + excluded.blocked,
 				other = other + excluded.other, duration_us = duration_us + excluded.duration_us`)
 		if err != nil {
 			return err
 		}
 		for b, c := range m {
 			if _, err := stmt.ExecContext(ctx, b, c.total, c.forwarded, c.cached, c.stale, c.local,
-				c.special, c.lancache, c.blocked, c.other, c.durationUs); err != nil {
+				c.special, c.override, c.blocked, c.other, c.durationUs); err != nil {
 				stmt.Close()
 				return err
 			}

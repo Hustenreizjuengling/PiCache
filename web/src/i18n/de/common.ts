@@ -205,7 +205,7 @@ const de: Messages<typeof en> = {
   'queryStatus.stale': 'Aus dem Cache (veraltet)',
   'queryStatus.local': 'Lokaler Eintrag',
   'queryStatus.special': 'Lokal beantwortet',
-  'queryStatus.lancache': 'LanCache',
+  'queryStatus.override': 'Download-Cache',
   'queryStatus.blocked-list': 'Blockiert durch Liste',
   'queryStatus.blocked-rule': 'Blockiert durch Regel',
   'queryStatus.blocked-regex': 'Blockiert durch Muster',

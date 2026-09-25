@@ -47,12 +47,12 @@ var catalog = []CatalogEntry{
 	},
 	{
 		Key: "stevenblack", Name: "StevenBlack Unified hosts", Category: "general", PlainDomains: "exact",
-		Description: "Classic hosts file (Pi-hole default): adware and malware.",
+		Description: "Classic hosts file: adware and malware.",
 		URL:         "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
 	},
 	{
 		Key: "adguard-dns", Name: "AdGuard DNS filter", Category: "general", PlainDomains: "exact",
-		Description: "AdGuard's DNS filter (AdGuard Home default): ads and tracking.",
+		Description: "DNS filter list against ads and tracking.",
 		URL:         "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",
 	},
 	{

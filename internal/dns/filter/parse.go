@@ -250,7 +250,8 @@ func (p *lineParser) parseRegex(s string) ([]entry, lineStatus) {
 }
 
 // parseOptions applies "$important,badfilter"; any other option makes the
-// rule unsupported (AdGuard Home semantics).
+// rule unsupported (it would restrict the rule to requests a DNS filter
+// never sees, so applying it to every query would over-block).
 func (e *entry) parseOptions(opts string) lineStatus {
 	if opts == "" {
 		return lineInvalid

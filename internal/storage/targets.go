@@ -14,7 +14,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 )
 
 // Create adds a target (ValidateTarget).

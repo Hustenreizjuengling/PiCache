@@ -17,9 +17,9 @@ import (
 )
 
 // pipelineEnv is a served environment with local records, a forwarder,
-// filter decisions and LanCache services.
+// filter decisions and download services.
 func pipelineEnv(t *testing.T) *testEnv {
-	e := newEnv(t, func(a *settings.All) { a.LanCache.Enabled = true })
+	e := newEnv(t, func(a *settings.All) { a.DownloadCache.Enabled = true })
 	e.addRecord("nas.example.org", "A", "192.168.1.5")
 	e.addRecord("*.dev.example.org", "A", "192.168.1.6")
 	e.addRecord("exact.dev.example.org", "A", "192.168.1.7")
@@ -136,10 +136,10 @@ func TestPipeline(t *testing.T) {
 		{"blocked A null mode", "ads.example.com", dns.TypeA, StatusBlockedList, []check{rcode(0), ips("0.0.0.0"), ttl(10), noUpstream("ads.example.com")}},
 		{"blocked AAAA null mode", "ads.example.com", dns.TypeAAAA, StatusBlockedList, []check{ips("::")}},
 		{"blocked MX null mode", "ads.example.com", dns.TypeMX, StatusBlockedList, []check{rcode(0), answerTypes()}},
-		{"lancache A", "lancache.steamcontent.com", dns.TypeA, StatusLanCache, []check{ips("192.168.1.10"), ttl(60), noUpstream("lancache.steamcontent.com")}},
-		{"lancache AAAA nodata", "lancache.steamcontent.com", dns.TypeAAAA, StatusLanCache, []check{rcode(0), nodataSOA(60)}},
-		{"lancache HTTPS nodata", "lancache.steamcontent.com", dns.TypeHTTPS, StatusLanCache, []check{rcode(0), nodataSOA(60)}},
-		{"user rule beats lancache", "blocked.steamcontent.com", dns.TypeA, StatusBlockedRule, []check{ips("0.0.0.0")}},
+		{"override A", "lancache.steamcontent.com", dns.TypeA, StatusOverride, []check{ips("192.168.1.10"), ttl(60), noUpstream("lancache.steamcontent.com")}},
+		{"override AAAA nodata", "lancache.steamcontent.com", dns.TypeAAAA, StatusOverride, []check{rcode(0), nodataSOA(60)}},
+		{"override HTTPS nodata", "lancache.steamcontent.com", dns.TypeHTTPS, StatusOverride, []check{rcode(0), nodataSOA(60)}},
+		{"user rule beats override", "blocked.steamcontent.com", dns.TypeA, StatusBlockedRule, []check{ips("0.0.0.0")}},
 		{"local exact", "nas.example.org", dns.TypeA, StatusLocal, []check{ips("192.168.1.5"), ttl(300), noUpstream("nas.example.org")}},
 		{"local wildcard", "a.b.dev.example.org", dns.TypeA, StatusLocal, []check{ips("192.168.1.6")}},
 		{"exact beats wildcard", "exact.dev.example.org", dns.TypeA, StatusLocal, []check{ips("192.168.1.7")}},
@@ -303,7 +303,7 @@ func TestPause(t *testing.T) {
 		t.Errorf("paused: special domains are not blocked, got %s", dns.RcodeToString[r.Rcode])
 	}
 	if r := e.query("udp", "blocked.steamcontent.com", dns.TypeA); !slices.Equal(answerIPs(r.Answer), []string{"192.168.1.10"}) {
-		t.Errorf("paused: user rules do not apply, LanCache answers: %v", r.Answer)
+		t.Errorf("paused: user rules do not apply, the download cache answers: %v", r.Answer)
 	}
 	// An elapsed pause is cleared from the settings.
 	e.srv.expirePause(ctx, time.Now().Add(2*time.Minute))
@@ -329,29 +329,29 @@ func TestPause(t *testing.T) {
 	}
 }
 
-func TestLanCacheGating(t *testing.T) {
+func TestDownloadCacheGating(t *testing.T) {
 	e := pipelineEnv(t)
 	name := "lancache.steamcontent.com"
 
-	e.lcReady.Store(false)
+	e.dcReady.Store(false)
 	if r := e.query("udp", name, dns.TypeA); answerIPs(r.Answer)[0] != "198.51.100.7" {
 		t.Errorf("not ready: must be forwarded, got %v", r.Answer)
 	}
 	if st := e.srv.CacheIPs(); st.Ready || st.Reason != "cache listener not bound" {
 		t.Errorf("status %+v", st)
 	}
-	e.lcReady.Store(true)
+	e.dcReady.Store(true)
 
 	client := netip.MustParseAddr("127.0.0.1")
-	e.cl.set(&clients.Identity{IP: client, ClientID: 4, Name: "console", GroupIDs: []int64{1}, LanCacheBypass: true})
+	e.cl.set(&clients.Identity{IP: client, ClientID: 4, Name: "console", GroupIDs: []int64{1}, DownloadCacheBypass: true})
 	if r := e.query("udp", name, dns.TypeA); answerIPs(r.Answer)[0] != "198.51.100.7" {
 		t.Errorf("bypass client: must be forwarded, got %v", r.Answer)
 	}
 	e.cl.set(&clients.Identity{IP: client, GroupIDs: []int64{1}})
 
 	e.update(func(a *settings.All) {
-		a.LanCache.CacheIPv4 = []string{"10.0.0.2", "10.0.0.3"}
-		a.LanCache.CacheIPv6 = []string{"fd00::2"}
+		a.DownloadCache.CacheIPv4 = []string{"10.0.0.2", "10.0.0.3"}
+		a.DownloadCache.CacheIPv6 = []string{"fd00::2"}
 	})
 	first := answerIPs(e.query("udp", name, dns.TypeA).Answer)
 	second := answerIPs(e.query("udp", name, dns.TypeA).Answer)
@@ -365,7 +365,7 @@ func TestLanCacheGating(t *testing.T) {
 		t.Errorf("status %+v", st)
 	}
 
-	e.update(func(a *settings.All) { a.LanCache.Enabled = false })
+	e.update(func(a *settings.All) { a.DownloadCache.Enabled = false })
 	if r := e.query("udp", name, dns.TypeA); answerIPs(r.Answer)[0] != "198.51.100.7" {
 		t.Errorf("disabled: must be forwarded, got %v", r.Answer)
 	}

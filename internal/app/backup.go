@@ -228,8 +228,11 @@ var sqliteInternalTables = []string{"sqlite_sequence", "sqlite_stat1", "sqlite_s
 // triggers, views, virtual tables, generated columns, tables or indexes
 // whose names the live database does not have, and indexes that differ
 // from the live index of the same name. Index definitions never change once
-// created (migrations are append-only and rename nothing), so a PiCache
-// backup of any version has the live definition. This includes the
+// created (migrations are append-only, and the only rename, a column of
+// client_clients in clients v2, touches no index), so a PiCache backup of
+// any version has the live definition.
+// Tables are matched by name only: an older backup is migrated like any
+// older database at the start that applies it. This includes the
 // automatic indexes of UNIQUE and PRIMARY KEY constraints
 // (sqlite_autoindex_*, no SQL): a named index renamed to look like one
 // (writable_schema) has SQL or a name the live database lacks and is
@@ -288,6 +291,12 @@ func normalizeSQL(stmt string) string { return strings.Join(strings.Fields(stmt)
 // users, their passwords and TOTP, the API tokens or the audit log, and it
 // ends all sessions. A staged file that fails is set aside as
 // picache.db.failed-restore-<timestamp> and the live database stays.
+//
+// A backup of an older version needs no conversion here: it keeps its
+// schema versions, and the component migrations that run when build opens
+// the swapped-in database bring it up to date (e.g. settings v2 moves the
+// download cache section to "downloadCache", clients v2 renames the
+// bypass column).
 func (a *App) applyStagedRestore() (bool, error) {
 	staged := a.paths.ConfigDB + ".restore"
 	if _, err := os.Stat(staged); err != nil {

@@ -14,7 +14,7 @@ const de: Messages<typeof en> = {
   'sentence.blocked': '{share} in den letzten 24 Stunden blockiert',
   'sentence.cache': 'der Cache hat in den letzten 24 Stunden {bytes} ausgeliefert, {ratio} davon von der Platte',
   'sentence.cacheIdle': 'der Cache hat in den letzten 24 Stunden nichts ausgeliefert',
-  'sentence.cacheOff': 'LanCache ist aus',
+  'sentence.cacheOff': 'der Download-Cache ist aus',
   'sentence.paused': 'Blockieren ist bis {time} pausiert',
   'sentence.blockingOff': 'Blockieren ist aus',
 
@@ -45,7 +45,7 @@ const de: Messages<typeof en> = {
   'cache.chartLabel': 'Download-Durchsatz aus dem Cache und aus dem Internet',
   'cache.hit': 'Aus dem Cache',
   'cache.wan': 'Aus dem Internet',
-  'cache.notReady': 'LanCache ist an, aber Download-Hosts werden nicht umgeleitet',
+  'cache.notReady': 'Der Download-Cache ist an, aber Download-Hosts werden nicht umgeleitet',
   'cache.notReadyText': 'PiCache hat keine nutzbare Cache-IP-Adresse. Lege sie in den Cache-Einstellungen fest.',
   'cache.openSettings': 'Cache-Einstellungen öffnen',
   'cache.servicesNotReady': 'Die Liste der Download-Dienste ist noch nicht geladen',
@@ -80,12 +80,12 @@ const de: Messages<typeof en> = {
   'storage.offline': 'Der Cache-Speicher ist offline',
   'storage.open': 'Speicher öffnen',
 
-  'off.title': 'LanCache ist aus',
+  'off.title': 'Der Download-Cache ist aus',
   'off.text':
     'PiCache kann Spiele-Downloads und Updates (Steam, Epic, Battle.net, Xbox, PlayStation und mehr) für dein ganzes Netzwerk cachen, sodass jeder Download nur einmal aus dem Internet kommt.',
   'off.step1': 'Prüfe den Speicher: Der Cache braucht eine Platte mit viel freiem Platz, am besten keine SD-Karte.',
   'off.step2':
-    'Schalte LanCache in den Cache-Einstellungen ein. PiCache beantwortet dann die Download-Hosts mit seiner eigenen Adresse.',
+    'Schalte den Download-Cache in den Cache-Einstellungen ein. PiCache beantwortet dann die Download-Hosts mit seiner eigenen Adresse.',
   'off.step3': 'Starte einen Download auf einem Gerät, das PiCache als DNS-Server nutzt.',
   'off.enable': 'Cache-Einstellungen öffnen',
   'off.storage': 'Speicher prüfen',

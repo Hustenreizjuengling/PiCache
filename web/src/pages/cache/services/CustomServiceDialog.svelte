@@ -6,7 +6,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { t } from '$i18n/index.svelte'
-  import { api, type LanCacheService } from '$lib/api'
+  import { api, type DownloadCacheService } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { Button, Dialog, Field, Input, Notice, Textarea, toast } from '$lib/ui'
   import { parseList } from '../shared/util'
@@ -14,8 +14,8 @@
   interface Props {
     open?: boolean
     /** The service to edit (with all domains); undefined adds a new one. */
-    service?: LanCacheService
-    onsaved: (s: LanCacheService) => void
+    service?: DownloadCacheService
+    onsaved: (s: DownloadCacheService) => void
   }
 
   let { open = $bindable(false), service, onsaved }: Props = $props()
@@ -60,7 +60,7 @@
     error = undefined
     try {
       const input = { name: name.trim(), description: description.trim(), domains: list }
-      const saved = service ? await api.lancache.updateService(service.id, input) : await api.lancache.createService(input)
+      const saved = service ? await api.downloadCache.updateService(service.id, input) : await api.downloadCache.createService(input)
       toast.success(service ? t('cache.services.customSaved', { name: saved.name }) : t('cache.services.customAdded', { name: saved.name }))
       open = false
       onsaved(saved)

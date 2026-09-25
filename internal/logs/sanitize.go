@@ -21,8 +21,7 @@ const (
 	maxClockSkew = time.Minute    // tolerated lead of an event timestamp over the writer's clock
 )
 
-// anonymizeIP zeroes the host part of ip: IPv4 is kept to /16, IPv6 to /48
-// (as AdGuard Home's anonymize_client_ip).
+// anonymizeIP zeroes the host part of ip: IPv4 is kept to /16, IPv6 to /48.
 func anonymizeIP(ip netip.Addr) netip.Addr {
 	ip = netutil.Canon(ip)
 	if ip.Is4() {

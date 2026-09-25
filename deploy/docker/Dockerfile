@@ -66,7 +66,7 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
 LABEL org.opencontainers.image.title="PiCache" \
-      org.opencontainers.image.description="Filtering DNS server and LanCache-compatible download cache with a web UI" \
+      org.opencontainers.image.description="Filtering DNS server and download cache with a web UI" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="https://github.com/hustenreizjuengling/picache" \
       org.opencontainers.image.documentation="https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md" \
@@ -82,7 +82,7 @@ ENV PICACHE_DATA_DIR=/data \
     PICACHE_RUN_AS=65532:65532 \
     PICACHE_MOUNT_ROOT=/srv/picache
 VOLUME ["/data", "/cache"]
-# DNS, LanCache HTTP, SNI pass-through, web UI (HTTP, HTTPS).
+# DNS, download cache (HTTP, SNI pass-through), web UI (HTTP, HTTPS).
 EXPOSE 53/udp 53/tcp 80/tcp 443/tcp 8080/tcp 8443/tcp
 # Root only until the listeners are bound; see the header.
 USER 0:0

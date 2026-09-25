@@ -14,7 +14,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/db"
-	"github.com/hustenreizjuengling/picache/internal/lancache/proxy"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/proxy"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )

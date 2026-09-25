@@ -81,7 +81,7 @@ func TestRollupsMatchRawEvents(t *testing.T) {
 			raw["blocked"] += n
 		case st == "forwarded" || st == "stale" || st == "local" || st == "special":
 			raw["allowed"] += n
-		case st == "cached" || st == "lancache":
+		case st == "cached" || st == "override":
 			raw[st] += n
 		default:
 			raw["other"] += n
@@ -101,7 +101,7 @@ func TestRollupsMatchRawEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 		if sum.DNSQueries != raw["total"] || sum.DNSBlocked != raw["blocked"] || sum.DNSCached != raw["cached"] ||
-			sum.DNSLanCache != raw["lancache"] || sum.DNSForwarded != raw["forwarded"] || sum.AvgDNSDurationUs != 1000 {
+			sum.DNSDownloadCache != raw["override"] || sum.DNSForwarded != raw["forwarded"] || sum.AvgDNSDurationUs != 1000 {
 			t.Fatalf("from %v: summary %+v, raw %v", now.Sub(from), sum, raw)
 		}
 		if sum.CacheRequests != 1000 || sum.CacheBytesSent != sent || sum.CacheBytesHit != hit ||

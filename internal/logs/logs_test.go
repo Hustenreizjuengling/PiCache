@@ -2,7 +2,10 @@ package logs
 
 import (
 	"context"
+	"maps"
 	"net/netip"
+	"slices"
+	"strconv"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -337,5 +340,78 @@ func TestCleanEvents(t *testing.T) {
 	}
 	if got := clean("äöü", 3); got != "ä" {
 		t.Fatalf("clean cut inside a rune: %q", got)
+	}
+}
+
+// logs.db of 0.1.x (logs schema v1) names the status of the download cache
+// DNS answers and its rollup column by the old name. Logs v2 renames the
+// column and rewrites the logged queries once, so status filters, the DNS
+// series and the totals report them as "override".
+func TestMigrateOverrideStatus(t *testing.T) {
+	const oldName = "lancache" // status and rollup column of 0.1.x
+	ctx := context.Background()
+	ldb, cdb, set := openTestDBs(t, t.TempDir())
+	defer cdb.Close()
+	defer ldb.Close()
+	if err := ldb.Migrate(ctx, "logs", migrations[:1]); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	ts := now.Add(-10 * time.Minute).UnixMilli()
+	for _, q := range []string{
+		`INSERT INTO logs_queries (ts, client_ip, qname, qtype, status, service) VALUES
+			(` + strconv.FormatInt(ts, 10) + `, '10.0.0.2', 'cdn.steamcontent.com', 'A', '` + oldName + `', 'steam'),
+			(` + strconv.FormatInt(ts, 10) + `, '10.0.0.2', 'example.com', 'A', 'cached', '')`,
+		`INSERT INTO logs_dns_minute (bucket, total, cached, ` + oldName + `) VALUES (` + strconv.FormatInt(floorTo(ts, minuteMs), 10) + `, 5, 2, 3)`,
+		`INSERT INTO logs_dns_hourly (bucket, total, cached, ` + oldName + `) VALUES (` + strconv.FormatInt(floorTo(ts, hourMs), 10) + `, 5, 2, 3)`,
+	} {
+		if _, err := ldb.W.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 { // the second start finds the migrated database
+		s, err := New(ctx, ldb, set, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var old, cols int
+		if err := ldb.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM logs_queries WHERE status = ?`, oldName).Scan(&old); err != nil {
+			t.Fatal(err)
+		}
+		if err := ldb.R.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM pragma_table_info('logs_dns_minute') WHERE name = 'override')
+			+ (SELECT COUNT(*) FROM pragma_table_info('logs_dns_hourly') WHERE name = 'override')`).Scan(&cols); err != nil {
+			t.Fatal(err)
+		}
+		if old != 0 || cols != 2 {
+			t.Fatalf("%d rows with the old status, %d renamed rollup columns", old, cols)
+		}
+		page, err := s.QueryLog(ctx, QueryFilter{From: now.Add(-time.Hour), To: now, Status: []string{"override"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 1 || page.Items[0].QName != "cdn.steamcontent.com" || page.Items[0].Service != "steam" {
+			t.Fatalf("status filter override: %+v", page.Items)
+		}
+		sum, err := s.Summary(ctx, now.Add(-time.Hour), now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sum.DNSQueries != 5 || sum.DNSCached != 2 || sum.DNSDownloadCache != 3 {
+			t.Fatalf("summary %+v", sum)
+		}
+		for _, from := range []time.Time{now.Add(-time.Hour), now.Add(-72 * time.Hour)} { // minute and hourly rollups
+			series, err := s.DNSSeries(ctx, from, now, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var n float64
+			for _, v := range series.Values["override"] {
+				n += v
+			}
+			if _, ok := series.Values[oldName]; ok || n != 3 {
+				t.Fatalf("series from %v: override total %v, keys %v", now.Sub(from), n, slices.Collect(maps.Keys(series.Values)))
+			}
+		}
+		s.Close()
 	}
 }

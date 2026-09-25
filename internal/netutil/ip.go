@@ -120,7 +120,7 @@ func IsRFC1918(ip netip.Addr) bool { return inAny(ip, rfc1918) }
 func IsULA(ip netip.Addr) bool { return inAny(ip, ula) }
 
 // IsValidCacheIP reports whether clients (Steam, Riot, Origin) will accept ip
-// as a LanCache address in a DNS answer: RFC 1918 IPv4 or ULA IPv6.
+// as a download cache address in a DNS answer: RFC 1918 IPv4 or ULA IPv6.
 // (Valve also accepts 127/8 and fe80::/10, which are useless in DNS answers.)
 func IsValidCacheIP(ip netip.Addr) bool { return IsRFC1918(ip) || IsULA(ip) }
 

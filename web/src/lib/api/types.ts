@@ -131,7 +131,7 @@ export interface SystemOverview {
   dns: DnsStats
   cacheIps: CacheIPStatus
   router: RouterStatus
-  lancacheEnabled: boolean
+  downloadCacheEnabled: boolean
   servicesReady: boolean
   store: StoreState
   proxy: ProxyStats
@@ -327,8 +327,8 @@ export interface FilterSettings {
   blockIcloudPrivateRelay: boolean
 }
 
-/** settings.LanCache */
-export interface LanCacheSettings {
+/** settings.DownloadCache */
+export interface DownloadCacheSettings {
   enabled: boolean
   cacheIpv4: string[]
   cacheIpv6: string[]
@@ -385,7 +385,7 @@ export interface UpdatesSettings {
 export interface Settings {
   dns: DnsSettings
   filter: FilterSettings
-  lancache: LanCacheSettings
+  downloadCache: DownloadCacheSettings
   cache: CacheSettings
   logs: LogsSettings
   web: WebSettings
@@ -404,7 +404,7 @@ export type QueryStatus =
   | 'stale'
   | 'local'
   | 'special'
-  | 'lancache'
+  | 'override'
   | 'blocked-list'
   | 'blocked-rule'
   | 'blocked-regex'
@@ -456,7 +456,7 @@ export interface CacheIPStatus {
   auto: boolean
   ready: boolean
   reason?: string
-  /** Address-detection warning (public or Docker-bridge address, …), also while LanCache is off. Absent from older servers. */
+  /** Address-detection warning (public or Docker-bridge address, …), also while the download cache is off. Absent from older servers. */
   warning?: string
 }
 
@@ -598,7 +598,7 @@ export interface Client {
   identifiers: string[]
   groupIds: number[]
   comment: string
-  lanCacheBypass: boolean
+  downloadCacheBypass: boolean
   ignoreLogs: boolean
   createdAt: Timestamp
   updatedAt: Timestamp
@@ -610,7 +610,7 @@ export interface ClientInput {
   identifiers: string[]
   groupIds: number[]
   comment: string
-  lanCacheBypass: boolean
+  downloadCacheBypass: boolean
   ignoreLogs: boolean
 }
 
@@ -749,10 +749,10 @@ export interface ExplainResult {
   decision: { action: string; name: string; source: string; kind: string }
 }
 
-// ---------------------------------------------------------------- lancache services / sni
+// ---------------------------------------------------------------- download cache services / sni
 
 /** services.Service */
-export interface LanCacheService {
+export interface DownloadCacheService {
   id: string
   name: string
   description: string
@@ -766,7 +766,7 @@ export interface LanCacheService {
 }
 
 /** services.ServiceInput (custom services) */
-export interface LanCacheServiceInput {
+export interface DownloadCacheServiceInput {
   name: string
   description: string
   domains: string[]
@@ -1179,7 +1179,7 @@ export interface Summary {
   dnsQueries: number
   dnsBlocked: number
   dnsCached: number
-  dnsLancache: number
+  dnsDownloadCache: number
   dnsForwarded: number
   blockedPercent: number
   avgDnsDurationUs: number
@@ -1197,7 +1197,7 @@ export interface Summary {
 }
 
 /** DNS series keys (disjoint, sum to all queries). */
-export type DnsSeriesKey = 'allowed' | 'cached' | 'lancache' | 'blocked' | 'other'
+export type DnsSeriesKey = 'allowed' | 'cached' | 'override' | 'blocked' | 'other'
 /** Cache series keys (bytes per step). */
 export type CacheSeriesKey = 'hit' | 'wan' | 'sni'
 

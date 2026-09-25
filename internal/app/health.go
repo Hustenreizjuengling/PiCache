@@ -118,8 +118,8 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 			"if it is a router forwarding DNS, add it to the rate-limit exemptions")
 	}
 
-	// LanCache
-	if set.LanCache.Enabled {
+	// Download cache
+	if set.DownloadCache.Enabled {
 		st := a.services.Status()
 		switch {
 		case !st.Ready:
@@ -131,11 +131,11 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 		}
 		ci := a.dns.CacheIPs()
 		if !ci.Ready {
-			add("lancache", "fail", "LanCache overrides are not answered: "+ci.Reason, "set the cache IP in the LanCache settings")
+			add("download_cache", "fail", "download cache DNS answers are inactive: "+ci.Reason, "set the cache IP in the download cache settings")
 		} else if ci.Reason != "" {
-			add("lancache", "warn", ci.Reason, "")
+			add("download_cache", "warn", ci.Reason, "")
 		} else {
-			add("lancache", "ok", "", "")
+			add("download_cache", "ok", "", "")
 		}
 		if len(li.Bound["sni"]) == 0 {
 			add("sni", "warn", "HTTPS pass-through (:443) is not running; HTTPS to overridden hosts (Windows Update metadata, Battle.net, Epic) fails",

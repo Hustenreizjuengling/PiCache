@@ -86,9 +86,9 @@ func writeMetrics(w io.Writer, m metricsSnapshot) {
 	family("picache_dns_rate_limited_total", "counter", "DNS queries dropped or refused by the per-client rate limit since start.")
 	fmt.Fprintf(w, "picache_dns_rate_limited_total %d\n", m.DNSRateLimited)
 
-	family("picache_cache_bytes_hit_total", "counter", "Bytes served from the LanCache store since start.")
+	family("picache_cache_bytes_hit_total", "counter", "Bytes served from the download cache store since start.")
 	fmt.Fprintf(w, "picache_cache_bytes_hit_total %d\n", m.CacheBytesHit)
-	family("picache_cache_bytes_wan_total", "counter", "Bytes fetched from upstream CDNs by the LanCache proxy since start.")
+	family("picache_cache_bytes_wan_total", "counter", "Bytes fetched from upstream CDNs by the download cache proxy since start.")
 	fmt.Fprintf(w, "picache_cache_bytes_wan_total %d\n", m.CacheBytesWAN)
 	if m.StoreOnline {
 		family("picache_cache_store_bytes", "gauge", "Bytes of cached content in the active store.")

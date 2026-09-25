@@ -24,7 +24,7 @@ export const CHECKS: Record<string, CheckInfo> = {
     page: 'common.nav.dnsSettings',
   },
   'cache-domains': { label: 'system.health.check.cache-domains', path: '/cache/services', page: 'common.nav.services' },
-  lancache: { label: 'system.health.check.lancache', path: '/cache/settings', page: 'common.nav.cacheSettings' },
+  download_cache: { label: 'system.health.check.download_cache', path: '/cache/settings', page: 'common.nav.cacheSettings' },
   sni: { label: 'system.health.check.sni' },
   'cache-store': { label: 'system.health.check.cache-store', path: '/cache/storage', page: 'common.nav.storage' },
   logs: { label: 'system.health.check.logs', path: '/system/backup', page: 'common.nav.backup' },

@@ -60,8 +60,8 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 		dst, apply = &cur.DNS, func(a *settings.All) error { a.DNS = cur.DNS; return nil }
 	case "filter":
 		dst, apply = &cur.Filter, func(a *settings.All) error { a.Filter = cur.Filter; return nil }
-	case "lancache":
-		dst, apply = &cur.LanCache, func(a *settings.All) error { a.LanCache = cur.LanCache; return nil }
+	case "downloadCache":
+		dst, apply = &cur.DownloadCache, func(a *settings.All) error { a.DownloadCache = cur.DownloadCache; return nil }
 	case "cache":
 		dst, apply = &cur.Cache, func(a *settings.All) error {
 			if cur.Cache.ActiveStoreID != a.Cache.ActiveStoreID {
@@ -77,7 +77,7 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 	case "updates":
 		dst, apply = &cur.Updates, func(a *settings.All) error { a.Updates = cur.Updates; return nil }
 	default:
-		return apperr.Invalid("section", "unknown settings section (dns, filter, lancache, cache, logs, web, updates)")
+		return apperr.Invalid("section", "unknown settings section (dns, filter, downloadCache, cache, logs, web, updates)")
 	}
 	if err := decode(w, r, dst); err != nil {
 		return err

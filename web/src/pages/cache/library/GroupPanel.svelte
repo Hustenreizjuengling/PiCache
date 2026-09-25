@@ -85,7 +85,7 @@
     labelSaving = true
     labelError = undefined
     try {
-      await api.lancache.setLabel(groupKey, value)
+      await api.downloadCache.setLabel(groupKey, value)
       toast.success(value ? t('cache.library.labelSaved') : t('cache.library.labelReset'))
       labelLoaded = false
       await detail.refresh()

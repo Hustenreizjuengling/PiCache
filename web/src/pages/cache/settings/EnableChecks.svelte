@@ -1,6 +1,6 @@
 <!--
   @component
-  What turning on LanCache will do, checked right before: the address
+  What turning on the download cache will do, checked right before: the address
   download hosts will be answered with, the storage (path, file system, free
   space), the download service list and the cache port, with warnings.
   Mounted inside the enable dialog, so it loads when the dialog opens.
@@ -17,15 +17,13 @@
   const store = resource((signal) => api.cache.state({ signal }))
   const targets = resource((signal) => api.storage.targets({ signal }))
   const caps = resource((signal) => api.storage.capabilities({ signal }))
-  const source = resource((signal) => api.lancache.source({ signal }))
+  const source = resource((signal) => api.downloadCache.source({ signal }))
   const info = resource((signal) => api.system.info({ signal }))
 
-  // While LanCache is off, reason only says "LanCache is disabled"; the
-  // address warning (public or Docker-bridge address, …) comes in warning.
-  // Older servers have no warning field: then other reasons are warnings.
-  const DISABLED_REASON = 'LanCache is disabled'
-  const reason = $derived(ips.data?.reason && ips.data.reason !== DISABLED_REASON ? ips.data.reason : undefined)
-  const addressWarning = $derived(ips.data?.warning ?? reason)
+  // This dialog only opens while the download cache is off, so reason only
+  // says that it is disabled; the address warning (public or Docker-bridge
+  // address, no private address, …) comes in warning.
+  const addressWarning = $derived(ips.data?.warning)
 
   const target = $derived(targets.data?.find((x) => x.active))
   const cacheBound = $derived(info.data?.listeners.bound?.cache ?? [])

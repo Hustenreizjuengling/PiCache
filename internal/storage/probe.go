@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 )
 
 // statfs(2) f_type magics (compared as uint32: the field is int32 on 32-bit targets).

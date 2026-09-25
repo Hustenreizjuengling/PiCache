@@ -1,10 +1,10 @@
 <!--
   @component
-  Cache › Cache settings: turning LanCache on (after a check of address,
+  Cache › Cache settings: turning the download cache on (after a check of address,
   storage, services and port) and off; the cache address and DNS answer
   lifetime; clients allowed to force a refresh; retention and free space;
   slices and parallel downloads; the download service list. Edits of both
-  sections (lancache, cache) are saved together from the bar at the bottom.
+  sections (downloadCache, cache) are saved together from the bar at the bottom.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -34,16 +34,16 @@
   import ListField from './settings/ListField.svelte'
   import { formatBinary, isIPOrCIDR, isRFC1918, isULA } from './shared/util'
 
-  const lan = settingsForm('lancache')
+  const dl = settingsForm('downloadCache')
   const cache = settingsForm('cache')
   const ips = resource((signal) => api.dns.cacheIps({ signal }), { interval: 30_000 })
 
   const readOnly = $derived(!session.isAdmin)
-  const loaded = $derived(!!lan.draft && !!cache.draft)
-  const loadError = $derived(lan.loadError ?? cache.loadError)
-  const dirty = $derived(lan.dirty || cache.dirty)
-  const saving = $derived(lan.saving || cache.saving)
-  const enabled = $derived(!!lan.saved?.enabled)
+  const loaded = $derived(!!dl.draft && !!cache.draft)
+  const loadError = $derived(dl.loadError ?? cache.loadError)
+  const dirty = $derived(dl.dirty || cache.dirty)
+  const saving = $derived(dl.saving || cache.saving)
+  const enabled = $derived(!!dl.saved?.enabled)
   const activeSliceSize = $derived(appStatus.overview.data?.store.sliceSize ?? 0)
 
   const GB = 1e9
@@ -73,7 +73,7 @@
 
   const problems = $derived.by(() => {
     const p: Record<string, string | undefined> = {}
-    const l = lan.draft
+    const l = dl.draft
     const c = cache.draft
     if (l) {
       const bad4 = l.cacheIpv4.filter((x) => !isRFC1918(x))
@@ -100,8 +100,8 @@
   })
   const valid = $derived(Object.values(problems).every((v) => !v))
 
-  function lanErr(key: string): string | undefined {
-    return problems[key] ?? lan.error(key)
+  function dlErr(key: string): string | undefined {
+    return problems[key] ?? dl.error(key)
   }
   function cacheErr(key: string): string | undefined {
     return problems[key] ?? cache.error(key)
@@ -110,34 +110,34 @@
   // ---- save bar
 
   async function save() {
-    const okLan = await lan.save()
-    const okCache = okLan && (await cache.save())
-    if (okLan && okCache) {
+    const okDl = await dl.save()
+    const okCache = okDl && (await cache.save())
+    if (okDl && okCache) {
       toast.success(t('common.state.saved'))
       void ips.refresh()
     }
   }
 
   function discard() {
-    lan.revert()
+    dl.revert()
     cache.revert()
   }
 
-  const saveError = $derived(lan.errorMessage ?? cache.errorMessage)
+  const saveError = $derived(dl.errorMessage ?? cache.errorMessage)
 
-  // ---- turning LanCache on and off
+  // ---- turning the download cache on and off
 
   let enableOpen = $state(false)
   let switching = $state(false)
 
   async function setEnabled(on: boolean): Promise<boolean> {
-    if (!lan.draft || lan.dirty) return false
+    if (!dl.draft || dl.dirty) return false
     switching = true
     try {
-      lan.draft.enabled = on
-      if (!(await lan.save())) {
-        const message = lan.errorMessage ?? t('common.error.generic')
-        lan.revert() // nothing else was edited (the switch is disabled while there are changes)
+      dl.draft.enabled = on
+      if (!(await dl.save())) {
+        const message = dl.errorMessage ?? t('common.error.generic')
+        dl.revert() // nothing else was edited (the switch is disabled while there are changes)
         toast.error(message)
         return false
       }
@@ -178,25 +178,25 @@
           size="sm"
           icon="refresh"
           onclick={() => {
-            void lan.load()
+            void dl.load()
             void cache.load()
           }}>{t('common.action.retry')}</Button
         >
       {/snippet}
     </Notice>
-  {:else if !lan.draft || !cache.draft}
+  {:else if !dl.draft || !cache.draft}
     <Skeleton height="120px" />
     <Skeleton height="200px" />
   {:else}
-    {@const l = lan.draft}
+    {@const l = dl.draft}
     {@const c = cache.draft}
 
-    <Panel title={t('cache.settings.lancacheTitle')}>
+    <Panel title={t('cache.settings.downloadCacheTitle')}>
       {#snippet actions()}
         {#if enabled}
-          <Button icon="power" loading={switching} disabled={readOnly || lan.dirty} onclick={turnOff}>{t('cache.settings.turnOff')}</Button>
+          <Button icon="power" loading={switching} disabled={readOnly || dl.dirty} onclick={turnOff}>{t('cache.settings.turnOff')}</Button>
         {:else}
-          <Button variant="primary" icon="power" disabled={readOnly || lan.dirty} onclick={() => (enableOpen = true)}>
+          <Button variant="primary" icon="power" disabled={readOnly || dl.dirty} onclick={() => (enableOpen = true)}>
             {t('cache.settings.turnOn')}
           </Button>
         {/if}
@@ -219,7 +219,7 @@
             {#if ips.data.warning ?? ips.data.reason}<span class="warn"> · {ips.data.warning ?? ips.data.reason}</span>{/if}
           </p>
         {/if}
-        {#if lan.dirty}<p class="subtle small">{t('cache.settings.saveFirst')}</p>{/if}
+        {#if dl.dirty}<p class="subtle small">{t('cache.settings.saveFirst')}</p>{/if}
       </div>
     </Panel>
 
@@ -229,7 +229,7 @@
           bind:values={l.cacheIpv4}
           label={t('cache.settings.ipv4')}
           help={autoAddress ? t('cache.settings.ipv4HelpAuto', { ip: autoAddress }) : t('cache.settings.ipv4Help')}
-          error={lanErr('cacheIpv4')}
+          error={dlErr('cacheIpv4')}
           placeholder="192.168.1.10"
           rows={2}
           disabled={readOnly}
@@ -238,12 +238,12 @@
           bind:values={l.cacheIpv6}
           label={t('cache.settings.ipv6')}
           help={t('cache.settings.ipv6Help')}
-          error={lanErr('cacheIpv6')}
+          error={dlErr('cacheIpv6')}
           placeholder="fd00::10"
           rows={2}
           disabled={readOnly}
         />
-        <Field label={t('cache.settings.dnsTtl')} help={t('cache.settings.dnsTtlHelp')} error={lanErr('dnsTtl')}>
+        <Field label={t('cache.settings.dnsTtl')} help={t('cache.settings.dnsTtlHelp')} error={dlErr('dnsTtl')}>
           <div class="num-field">
             <Input type="number" min={1} max={86400} disabled={readOnly} bind:value={() => l.dnsTtl, (v) => (l.dnsTtl = toNumber(v))} />
             <span class="unit">{t('cache.settings.seconds')}</span>
@@ -258,7 +258,7 @@
           bind:values={l.nocacheClients}
           label={t('cache.settings.nocache')}
           help={t('cache.settings.nocacheHelp')}
-          error={lanErr('nocacheClients')}
+          error={dlErr('nocacheClients')}
           placeholder="192.168.1.50"
           disabled={readOnly}
         />
@@ -372,10 +372,10 @@
 
     <Panel title={t('cache.settings.sourceTitle')} description={t('cache.settings.sourceText')}>
       <div class="form">
-        <Field label={t('cache.source.url')} help={t('cache.settings.sourceUrlHelp')} error={lanErr('domainsSource')}>
+        <Field label={t('cache.source.url')} help={t('cache.settings.sourceUrlHelp')} error={dlErr('domainsSource')}>
           <Input type="url" mono disabled={readOnly} bind:value={l.domainsSource} />
         </Field>
-        <Field label={t('cache.settings.updateInterval')} help={t('cache.settings.updateIntervalHelp')} error={lanErr('updateIntervalHours')}>
+        <Field label={t('cache.settings.updateInterval')} help={t('cache.settings.updateIntervalHelp')} error={dlErr('updateIntervalHours')}>
           <div class="num-field">
             <Input
               type="number"

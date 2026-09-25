@@ -15,9 +15,10 @@ import (
 
 // A user regex deny must not beat a list allow entry for ordinary names
 // (ARCHITECTURE 7.2: list allow is tier 8, user regex deny tier 10). The
-// step-8 user-rule check applies only to LanCache override candidates.
-func TestUserRulesBeforeOverridesOnlyForLanCacheNames(t *testing.T) {
-	e := newEnv(t, func(a *settings.All) { a.LanCache.Enabled = true }).serve()
+// step-8 user-rule check applies only to download service names (override
+// candidates).
+func TestUserRulesBeforeOverridesOnlyForDownloadCacheNames(t *testing.T) {
+	e := newEnv(t, func(a *settings.All) { a.DownloadCache.Enabled = true }).serve()
 	regexDeny := filter.Decision{Action: filter.ActionBlock, Source: "rule", Kind: "regex", RuleID: 4, Name: `^cdn\.`}
 	listAllow := filter.Decision{Action: filter.ActionAllow, Source: "list", Kind: "subtree", ListID: 2, Name: "Allowlist"}
 
@@ -32,22 +33,24 @@ func TestUserRulesBeforeOverridesOnlyForLanCacheNames(t *testing.T) {
 		t.Errorf("status %q, want %q", ev.Status, StatusForwarded)
 	}
 
-	// LanCache name: user rules are checked before the override is answered.
+	// Download service name: user rules are checked before the override is
+	// answered.
 	e.svc["cdn.steamcontent.com"] = "steam"
 	e.flt.rules["cdn.steamcontent.com"] = regexDeny
 	r = e.query("udp", "cdn.steamcontent.com", dns.TypeA)
 	if got := answerIPs(r.Answer); !slices.Equal(got, []string{"0.0.0.0"}) {
-		t.Errorf("a user rule must still block a LanCache name: answer %v", got)
+		t.Errorf("a user rule must still block a download service name: answer %v", got)
 	}
 	if ev := e.logs.waitEvent(t, "cdn.steamcontent.com", 0); ev.Status != StatusBlockedRegex {
 		t.Errorf("status %q, want %q", ev.Status, StatusBlockedRegex)
 	}
 
-	// Override inactive (client bypasses LanCache): the normal verdict applies.
+	// Override inactive (the download cache is not ready): the normal verdict
+	// applies.
 	e.svc["dl.steamcontent.com"] = "steam"
 	e.flt.rules["dl.steamcontent.com"] = regexDeny
 	e.flt.check["dl.steamcontent.com"] = listAllow
-	e.lcReady.Store(false)
+	e.dcReady.Store(false)
 	r = e.query("udp", "dl.steamcontent.com", dns.TypeA)
 	if got := answerIPs(r.Answer); !slices.Equal(got, []string{"198.51.100.7"}) {
 		t.Errorf("without an override the full precedence applies: answer %v", got)
@@ -191,16 +194,16 @@ func TestServerNameAddrsFor(t *testing.T) {
 }
 
 // The cache-IP status reports the would-be addresses and detection warnings
-// while LanCache is disabled.
+// while the download cache is disabled.
 func TestCacheIPsWhileDisabled(t *testing.T) {
-	e := newEnv(t, nil) // LanCache is disabled by default
+	e := newEnv(t, nil) // the download cache is disabled by default
 	e.srv.env.primary = func() (netip.Addr, error) { return netip.MustParseAddr("100.64.1.2"), nil }
 	e.srv.env.ifaces = func() ([]interfaceIPv4, bool) {
 		return []interfaceIPv4{{iface: "eth0", ip: netip.MustParseAddr("192.168.1.5")}}, false
 	}
 	e.srv.updateCacheIPs(e.set.Get())
 	st := e.srv.CacheIPs()
-	if st.Ready || st.Reason != "LanCache is disabled" {
+	if st.Ready || st.Reason != "the download cache is disabled" {
 		t.Errorf("ready %v reason %q", st.Ready, st.Reason)
 	}
 	if !slices.Equal(st.IPv4, []string{"192.168.1.5"}) || !st.Auto {
@@ -216,10 +219,10 @@ func TestCacheIPsWhileDisabled(t *testing.T) {
 	e.srv.env.ifaces = func() ([]interfaceIPv4, bool) { return nil, false }
 	e.srv.updateCacheIPs(e.set.Get())
 	st = e.srv.CacheIPs()
-	if len(st.IPv4) != 0 || !strings.Contains(st.Warning, "container bridge") || st.Reason != "LanCache is disabled" {
+	if len(st.IPv4) != 0 || !strings.Contains(st.Warning, "container bridge") || st.Reason != "the download cache is disabled" {
 		t.Errorf("bridge while disabled: %+v", st)
 	}
-	e.update(func(a *settings.All) { a.LanCache.Enabled = true })
+	e.update(func(a *settings.All) { a.DownloadCache.Enabled = true })
 	st = e.srv.CacheIPs()
 	if st.Ready || st.Reason != st.Warning || st.Warning == "" {
 		t.Errorf("bridge while enabled: %+v", st)
@@ -297,7 +300,7 @@ func TestServerNameInBridge(t *testing.T) {
 	if got := answer("172.18.0.1"); len(got) != 0 {
 		t.Errorf("without a cache IP the bridge address must not be answered: %v", got)
 	}
-	e.update(func(a *settings.All) { a.LanCache.CacheIPv4 = []string{"192.168.1.248"} })
+	e.update(func(a *settings.All) { a.DownloadCache.CacheIPv4 = []string{"192.168.1.248"} })
 	if got := answer("172.18.0.1"); !slices.Equal(got, []string{"192.168.1.248"}) {
 		t.Errorf("bridge client got %v, want the configured host address", got)
 	}

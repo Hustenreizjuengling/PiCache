@@ -1,7 +1,7 @@
 <!--
   @component
   On/off switch (role="switch") for settings that apply immediately.
-  <Toggle bind:checked={enabled} label="Enable LanCache" description="…" onchange={save} />
+  <Toggle bind:checked={enabled} label="Enable the download cache" description="…" onchange={save} />
 -->
 <script lang="ts">
   interface Props {

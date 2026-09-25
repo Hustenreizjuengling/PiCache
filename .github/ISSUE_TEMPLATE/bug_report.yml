@@ -60,7 +60,7 @@ body:
       options:
         - DNS filtering
         - DNS resolution and upstreams
-        - LanCache download cache
+        - Download cache
         - Storage and NAS
         - Web UI
         - API

@@ -2,9 +2,15 @@ package settings
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"io"
 	"log/slog"
+	"maps"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,5 +143,110 @@ func TestUpdatesDefaultsForOlderDocuments(t *testing.T) {
 	}
 	if u := s.Get().Updates; u.CheckEnabled || !u.IncludePrereleases {
 		t.Fatalf("after update: %+v", u)
+	}
+}
+
+// A document of 0.1.x (settings schema v1) has the download cache section
+// under its old name. Settings v2 moves it to "downloadCache" once, at the
+// first Open; a restored older backup has schema v1 as well and is moved at
+// the start that applies it. An existing "downloadCache" section wins, and
+// a document that is not JSON is left to the decoder's error.
+func TestMigrateDownloadCacheSection(t *testing.T) {
+	const oldKey = "lancache" // section name of 0.1.x
+	ctx := context.Background()
+	log := slog.New(slog.DiscardHandler)
+	section := func(fn func(*DownloadCache)) jsontext.Value {
+		c := Defaults().DownloadCache
+		fn(&c)
+		b, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	doc := func(members map[string]jsontext.Value) string {
+		b, err := json.Marshal(Defaults())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]jsontext.Value
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		delete(m, "downloadCache")
+		maps.Copy(m, members)
+		if b, err = json.Marshal(m); err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	old := section(func(c *DownloadCache) {
+		c.Enabled, c.CacheIPv4, c.DisabledServices = true, []string{"192.168.1.2"}, []string{"blizzard"}
+	})
+	cur := section(func(c *DownloadCache) { c.CacheIPv4 = []string{"10.0.0.9"} })
+	tests := []struct {
+		name     string
+		doc      string
+		want     DownloadCache // compared: Enabled, CacheIPv4, DisabledServices
+		stored   bool          // "downloadCache" is in the stored document afterwards
+		openFail string        // Open error substring
+	}{
+		{name: "old section", doc: doc(map[string]jsontext.Value{oldKey: old}), stored: true,
+			want: DownloadCache{Enabled: true, CacheIPv4: []string{"192.168.1.2"}, DisabledServices: []string{"blizzard"}}},
+		{name: "new section wins", doc: doc(map[string]jsontext.Value{oldKey: old, "downloadCache": cur}), stored: true,
+			want: DownloadCache{CacheIPv4: []string{"10.0.0.9"}, DisabledServices: []string{"test"}}},
+		{name: "old section null", doc: doc(map[string]jsontext.Value{oldKey: jsontext.Value("null")}),
+			want: DownloadCache{CacheIPv4: []string{}, DisabledServices: []string{"test"}}},
+		{name: "no section", doc: doc(nil),
+			want: DownloadCache{CacheIPv4: []string{}, DisabledServices: []string{"test"}}},
+		{name: "not JSON", doc: `{"` + oldKey + `": {`, openFail: "decode stored document"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if err := d.Migrate(ctx, "settings", migrations[:1]); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.W.ExecContext(ctx, `INSERT INTO settings (id, doc, updated_at) VALUES (1, ?, 0)`, tt.doc); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 { // the second Open finds the migrated document
+				s, err := Open(ctx, d, log)
+				if tt.openFail != "" {
+					if err == nil || !strings.Contains(err.Error(), tt.openFail) {
+						t.Fatalf("Open = %v, want an error with %q", err, tt.openFail)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := s.Get().DownloadCache
+				if got.Enabled != tt.want.Enabled || !slices.Equal(got.CacheIPv4, tt.want.CacheIPv4) ||
+					!slices.Equal(got.DisabledServices, tt.want.DisabledServices) {
+					t.Fatalf("download cache settings %+v, want %+v", got, tt.want)
+				}
+				if got.DNSTTL != 60 || got.DomainsSource == "" {
+					t.Fatalf("members not in the stored section must keep their defaults: %+v", got)
+				}
+				var oldType, newType sql.NullString
+				if err := d.R.QueryRowContext(ctx, `SELECT json_type(doc, '$.`+oldKey+`'), json_type(doc, '$.downloadCache')
+					FROM settings`).Scan(&oldType, &newType); err != nil {
+					t.Fatal(err)
+				}
+				if oldType.Valid || newType.Valid != tt.stored {
+					t.Fatalf("stored document: old section %v, downloadCache %v (want %v)", oldType, newType, tt.stored)
+				}
+			}
+			var v int
+			if err := d.R.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations WHERE component = 'settings'`).
+				Scan(&v); err != nil || v != len(migrations) {
+				t.Fatalf("settings schema version %d (%v), want %d", v, err, len(migrations))
+			}
+		})
 	}
 }

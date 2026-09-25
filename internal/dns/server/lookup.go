@@ -118,8 +118,8 @@ func (s *Server) traceClient(qc *qctx) {
 	if !s.allowed(qc.client) {
 		qc.note("note: this address is not allowed by the DNS ACL; its real queries are dropped")
 	}
-	if id.LanCacheBypass {
-		qc.note("this client bypasses LanCache overrides")
+	if id.DownloadCacheBypass {
+		qc.note("this client bypasses the download cache DNS answers")
 	}
 	f := qc.set.Filter
 	switch {

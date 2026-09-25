@@ -6,8 +6,10 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/db"
 )
 
-// migrations of component "logs". Append only. All timestamps and buckets
-// are unix milliseconds; buckets are the start of the minute/hour.
+// migrations of component "logs". Append only: a released step is never
+// edited (v1 keeps the column names of 0.1.x, later steps rename them). All
+// timestamps and buckets are unix milliseconds; buckets are the start of the
+// minute/hour.
 var migrations = []string{
 	// v1
 	`CREATE TABLE logs_queries (
@@ -179,6 +181,12 @@ var migrations = []string{
 		last_seen  INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (bucket, kind, service, key)
 	) WITHOUT ROWID;`,
+	// v2 (0.2.0): the status of the download cache DNS answers is "override"
+	// (0.1.x wrote the old name): rename the rollup column and rewrite the
+	// logged queries. The top lists and sessions store no status.
+	`ALTER TABLE logs_dns_minute RENAME COLUMN lancache TO override;
+	ALTER TABLE logs_dns_hourly RENAME COLUMN lancache TO override;
+	UPDATE logs_queries SET status = 'override' WHERE status = 'lancache';`,
 }
 
 // enableAutoVacuum switches a brand-new logs.db to incremental auto-vacuum so

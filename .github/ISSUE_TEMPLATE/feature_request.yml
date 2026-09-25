@@ -24,7 +24,7 @@ body:
     id: alternatives
     attributes:
       label: Alternatives
-      description: Workarounds you use now, or how Pi-hole, AdGuard Home or LanCache handle it.
+      description: Workarounds you use now, or how other tools handle it.
   - type: dropdown
     id: area
     attributes:
@@ -33,7 +33,7 @@ body:
       options:
         - DNS filtering
         - DNS resolution and upstreams
-        - LanCache download cache
+        - Download cache
         - Storage and NAS
         - Web UI
         - API

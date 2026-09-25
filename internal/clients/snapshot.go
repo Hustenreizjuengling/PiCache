@@ -16,11 +16,11 @@ type snapshot struct {
 }
 
 type clientEntry struct {
-	id             int64
-	name           string
-	groups         []int64 // all memberships (sorted)
-	lanCacheBypass bool
-	ignoreLogs     bool
+	id                  int64
+	name                string
+	groups              []int64 // all memberships (sorted)
+	downloadCacheBypass bool
+	ignoreLogs          bool
 }
 
 type cidrEntry struct {
@@ -43,7 +43,7 @@ func newSnapshot(groups []Group, clients []Client) *snapshot {
 	}
 	for _, c := range clients {
 		e := &clientEntry{id: c.ID, name: c.Name, groups: c.GroupIDs,
-			lanCacheBypass: c.LanCacheBypass, ignoreLogs: c.IgnoreLogs}
+			downloadCacheBypass: c.DownloadCacheBypass, ignoreLogs: c.IgnoreLogs}
 		for _, raw := range c.Identifiers {
 			id, ok := parseIdentifier(raw)
 			if !ok {

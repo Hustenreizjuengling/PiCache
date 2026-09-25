@@ -69,7 +69,7 @@ func TestQueryLogFilters(t *testing.T) {
 		{ClientIP: "10.0.0.1", ClientName: "laptop", QName: "www.example.com", QType: "A", Status: "forwarded", Upstream: "u1"},
 		{ClientIP: "10.0.0.2", ClientName: "phone", QName: "example.com", QType: "AAAA", Status: "blocked-list"},
 		{ClientIP: "10.0.0.2", ClientName: "phone", QName: "ads.example.net", QType: "A", Status: "blocked-cname"},
-		{ClientIP: "10.0.0.3", QName: "steam.example", QType: "A", Status: "lancache"},
+		{ClientIP: "10.0.0.3", QName: "steam.example", QType: "A", Status: "override"},
 	} {
 		q.Time = now.Add(-time.Minute)
 		s.w.addQuery(q)
@@ -88,7 +88,7 @@ func TestQueryLogFilters(t *testing.T) {
 		{"domain substring", QueryFilter{Domain: "example.com"}, 2},
 		{"domain exact", QueryFilter{Domain: `"example.com"`}, 1},
 		{"status class", QueryFilter{Status: []string{"blocked"}}, 2},
-		{"status list", QueryFilter{Status: []string{"blocked-cname", "lancache"}}, 2},
+		{"status list", QueryFilter{Status: []string{"blocked-cname", "override"}}, 2},
 		{"qtype", QueryFilter{QType: "aaaa"}, 1},
 		{"upstream", QueryFilter{Upstream: "u1"}, 1},
 		{"explicit range", QueryFilter{From: now.Add(-3 * time.Hour), To: now}, 5},

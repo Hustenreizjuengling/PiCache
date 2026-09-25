@@ -18,7 +18,7 @@ const queryStyles: Record<QueryStatus, ChipStyle> = {
   stale: { pair: 'blue', striped: true },
   local: { pair: 'blue' },
   special: { pair: 'blue' },
-  lancache: { pair: 'green' },
+  override: { pair: 'green' },
   'blocked-list': { pair: 'orange' },
   'blocked-rule': { pair: 'orange' },
   'blocked-regex': { pair: 'orange' },

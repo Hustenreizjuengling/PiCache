@@ -53,7 +53,7 @@
     {/if}
     <span class="sep" aria-hidden="true">·</span>
     <span class="clause">
-      {#if !overview.lancacheEnabled}
+      {#if !overview.downloadCacheEnabled}
         <a href={links.cacheSettings()}>{t('overview.sentence.cacheOff')}</a>
       {:else if summary && summary.cacheBytesSent > 0}
         <Trans key="overview.sentence.cache">

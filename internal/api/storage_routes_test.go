@@ -16,7 +16,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/db"
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"

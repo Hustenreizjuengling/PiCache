@@ -13,9 +13,9 @@ Whichever you choose:
 
 - Give the machine a **static IP address** (or a DHCP reservation). It becomes
   your network's DNS server.
-- PiCache needs these ports: **53/udp+tcp** (DNS), **80/tcp** (LanCache HTTP
-  cache), **443/tcp** (LanCache HTTPS pass-through), **8080/tcp** and
-  **8443/tcp** (web UI over HTTP and HTTPS). See [Port conflicts](#port-conflicts).
+- PiCache needs these ports: **53/udp+tcp** (DNS), **80/tcp** (download
+  cache over HTTP), **443/tcp** (HTTPS pass-through of the download cache),
+  **8080/tcp** and **8443/tcp** (web UI over HTTP and HTTPS). See [Port conflicts](#port-conflicts).
 - Never expose these ports to the Internet (no port forwarding). PiCache
   answers only private networks by default.
 
@@ -208,8 +208,8 @@ process exits with code 75).
 database is opened: listeners, paths, logging and the optional admin
 provisioning ([Environment variables](#environment-variables)). systemd reads
 it, and so does every `picache` CLI command. Everything else (upstreams,
-blocklists, clients, LanCache, retention, …) is configured in the web UI and
-stored in the database. After editing the file run
+blocklists, clients, download cache, retention, …) is configured in the web
+UI and stored in the database. After editing the file run
 `sudo systemctl restart picache`.
 
 ---
@@ -244,10 +244,11 @@ reports the version `dev` ([Updates](#updates)).
 
 `deploy/docker/docker-compose.yml` uses **host networking**, so PiCache sees
 real client addresses (IPv4 and IPv6) and MAC addresses and can detect the
-host's LAN IP for LanCache answers. The image (`deploy/docker/Dockerfile`) is
-distroless (no shell) and contains only `/picache` and its license texts
-`LICENSE` and `THIRD_PARTY_NOTICES.md` in `/usr/share/doc/picache/` (copy
-them out with `docker cp picache:/usr/share/doc/picache/ .`). The container:
+host's LAN IP for the download cache's DNS answers. The image
+(`deploy/docker/Dockerfile`) is distroless (no shell) and contains only
+`/picache` and its license texts `LICENSE` and `THIRD_PARTY_NOTICES.md` in
+`/usr/share/doc/picache/` (copy them out with
+`docker cp picache:/usr/share/doc/picache/ .`). The container:
 
 - starts as root only to bind ports 53, 80 and 443 (Docker gives non-root
   users no ambient capabilities), then drops to `PICACHE_RUN_AS=65532:65532`
@@ -285,11 +286,12 @@ Remove the secret and the variable after the first start. CLI commands run as
 `docker inspect`.
 
 **Bridge networking** (`docker-compose.bridge.yml`, published ports) works but
-has limits: you **must** set the cache IPv4 address (`lancache.cacheIpv4`) to
-the host's LAN IP, because PiCache cannot detect it; traffic that passes
-docker-proxy (IPv6, loopback, hairpin) appears to come from the Docker
-gateway; clients cannot be identified by MAC; and the router resolver must be
-set explicitly. Use host networking whenever you can.
+has limits: you **must** set the cache IPv4 address
+(`downloadCache.cacheIpv4`) to the host's LAN IP, because PiCache cannot
+detect it; traffic that passes docker-proxy (IPv6, loopback, hairpin)
+appears to come from the Docker gateway; clients cannot be identified by
+MAC; and the router resolver must be set explicitly. Use host networking
+whenever you can.
 
 Docker Desktop (macOS/Windows) is not a deployment target: containers run in
 a VM, so PiCache cannot see real client addresses, and bind-mount
@@ -325,10 +327,11 @@ propagation does not work.
    PiCache, all queries appear to come from the router. Also make sure the
    router does not advertise its own IPv6 DNS server, or clients will bypass
    PiCache over IPv6.
-5. LanCache is **off** by default. When you enable it, the UI shows the cache
-   IP it will answer with, the store path, its filesystem and free space, and
-   warnings (SD card, Docker bridge mode). Check them first, and move the
-   cache to a suitable disk ([Cache storage](#cache-storage)) if needed.
+5. The download cache is **off** by default. When you enable it, the UI
+   shows the cache IP it will answer with, the store path, its filesystem and
+   free space, and warnings (SD card, Docker bridge mode). Check them first,
+   and move the cache to a suitable disk ([Cache storage](#cache-storage)) if
+   needed.
 
 If you open the UI through a host name that is not this machine's host name,
 local domain or a configured server name, PiCache answers `421 Misdirected
@@ -374,8 +377,8 @@ listens on `127.0.0.53` and `127.0.0.54`. Choose one fix:
   `127.0.0.53`, which no longer answers. PiCache does not depend on the
   host's resolver: it reaches its upstreams through their bootstrap IPs.
 
-**Other DNS servers** (dnsmasq, bind9, unbound, Pi-hole, AdGuard Home,
-libvirt's dnsmasq on `virbr0`): stop and disable them, or use fix A with
+**Other DNS servers** (dnsmasq, bind9, unbound or another DNS filter; libvirt
+also runs a dnsmasq on `virbr0`): stop and disable them, or use fix A with
 addresses they do not use.
 
 **Docker:** with host networking the same fixes apply. In bridge mode, publish
@@ -386,11 +389,11 @@ DNS on the host's LAN address instead of all addresses:
 
 A clash on 80, 443, 8080 or 8443 does not stop PiCache. The listener is
 skipped, the error is logged and **System → Health & about** shows it.
-Without the :80 listener, LanCache DNS overrides stay off. At least one of
-the two web listeners must work. Free the port, or move the listener, for
-example `PICACHE_WEB_LISTEN=:8081`, or `PICACHE_WEB_LISTEN=off` to serve the
-UI over HTTPS only. The LanCache ports cannot be moved in practice, because
-game clients always connect to 80 and 443.
+Without the :80 listener, the download cache's DNS answers stay off. At
+least one of the two web listeners must work. Free the port, or move the
+listener, for example `PICACHE_WEB_LISTEN=:8081`, or `PICACHE_WEB_LISTEN=off`
+to serve the UI over HTTPS only. The download cache ports cannot be moved in
+practice, because game clients always connect to 80 and 443.
 
 ---
 
@@ -896,8 +899,8 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_CACHE_DIR` | `/var/cache/picache` · `/cache` | The built-in local cache store (target `local`). |
 | `PICACHE_MOUNT_ROOT` | `/srv/picache` | The only directory below which other storage targets may live. With host-apply, run the installer again after changing it. |
 | `PICACHE_DNS_LISTEN` | `:53` | DNS over UDP and TCP. Required; a bind failure stops PiCache. |
-| `PICACHE_CACHE_LISTEN` | `:80` | LanCache HTTP cache. If it is off or cannot bind, LanCache DNS overrides stay inactive. |
-| `PICACHE_SNI_LISTEN` | `:443` | LanCache HTTPS (SNI) pass-through. |
+| `PICACHE_CACHE_LISTEN` | `:80` | Download cache over HTTP. If it is off or cannot bind, the download cache's DNS answers stay inactive. |
+| `PICACHE_SNI_LISTEN` | `:443` | HTTPS (SNI) pass-through of the download cache. |
 | `PICACHE_WEB_LISTEN` | `:8080` | Web UI and API over HTTP. |
 | `PICACHE_WEB_TLS_LISTEN` | `:8443` | Web UI and API over HTTPS. At least one web listener is required. |
 | `PICACHE_WEB_TLS_CERT` | – | PEM certificate for the HTTPS listener. Without it, PiCache creates and renews a self-signed certificate in `<data>/tls/`. |
@@ -949,7 +952,7 @@ process).
 
 - **Health:** **System → Health & about** lists every check with a hint:
   listeners, upstreams (including the clock guard), blocklists, rate limiting, cache-domains,
-  LanCache IP, SNI, cache storage, logs and free space on the data disk.
+  download cache (cache IP), SNI, cache storage, logs and free space on the data disk.
 - **Logs:** `journalctl -u picache -f` (bare metal/LXC),
   `docker compose logs -f picache` (Docker). Set `PICACHE_LOG_LEVEL=debug`
   for more detail.
@@ -968,8 +971,8 @@ process).
   on **System → Updates** shows the error. An update that failed or was
   rolled back is logged in `journalctl -u picache-update` (web UI) or printed
   by `sudo picache update`; see [Updates](#updates).
-- **No LanCache answers:** LanCache must be enabled, the cache-domains list
-  loaded, the :80 listener bound and a private cache IPv4 address known, and
-  the client must not be in a group that bypasses LanCache. The health page
-  names the missing piece.
+- **No download cache answers:** the download cache must be enabled, the
+  cache-domains list loaded, the :80 listener bound and a private cache IPv4
+  address known, and the client must not be in a group that bypasses the
+  download cache. The health page names the missing piece.
 - **Forgotten password:** `sudo picache reset-password <user>` with the user name chosen at setup (`admin` by default; an unknown name is refused and the existing names are shown). It also signs out every session and revokes all API tokens, so it is the recovery step after a suspected compromise too.

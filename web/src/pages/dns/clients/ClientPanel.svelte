@@ -1,7 +1,7 @@
 <!--
   @component
   Adds or edits a client: name, identifiers (IP, CIDR or MAC, one per line),
-  groups, LanCache bypass and "don't log". In edit mode it also shows the
+  groups, download cache bypass and "don't log". In edit mode it also shows the
   client's statistics and links to its queries and downloads.
 -->
 <script lang="ts">
@@ -45,7 +45,7 @@
   let { open = $bindable(false), client, preset, groups, totals, range, onsaved, ondeleted }: Props = $props()
 
   function blank(): ClientInput {
-    return { name: '', identifiers: [], groupIds: [DEFAULT_GROUP_ID], comment: '', lanCacheBypass: false, ignoreLogs: false }
+    return { name: '', identifiers: [], groupIds: [DEFAULT_GROUP_ID], comment: '', downloadCacheBypass: false, ignoreLogs: false }
   }
 
   let draft = $state<ClientInput>(blank())
@@ -66,7 +66,7 @@
             identifiers: [...c.identifiers],
             groupIds: [...c.groupIds],
             comment: c.comment,
-            lanCacheBypass: c.lanCacheBypass,
+            downloadCacheBypass: c.downloadCacheBypass,
             ignoreLogs: c.ignoreLogs,
           }
         : { ...blank(), ...p, identifiers: [...(p?.identifiers ?? [])], groupIds: [...(p?.groupIds ?? [DEFAULT_GROUP_ID])] }
@@ -178,7 +178,7 @@
     help={t('dns.clients.groupsHelp')}
     emptyWarning={t('dns.clients.noGroupWarning')}
   />
-  <Checkbox bind:checked={draft.lanCacheBypass} label={t('dns.clients.bypass')} description={t('dns.clients.bypassHelp')} />
+  <Checkbox bind:checked={draft.downloadCacheBypass} label={t('dns.clients.bypass')} description={t('dns.clients.bypassHelp')} />
   <Checkbox bind:checked={draft.ignoreLogs} label={t('dns.clients.ignoreLogs')} description={t('dns.clients.ignoreLogsHelp')} />
   <Field label={t('common.label.comment')} optional error={fieldError(err, 'comment')}>
     <Input bind:value={draft.comment} maxlength={512} />

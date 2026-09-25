@@ -33,7 +33,7 @@
 
   const cache = $derived.by((): { tone: Tone; text: string; link: string } => {
     if (!ov) return { tone: 'neutral', text: t('common.status.cache'), link: href('/cache/storage') }
-    if (!ov.lancacheEnabled) return { tone: 'neutral', text: t('common.status.cacheOff'), link: href('/cache/settings') }
+    if (!ov.downloadCacheEnabled) return { tone: 'neutral', text: t('common.status.cacheOff'), link: href('/cache/settings') }
     const s = ov.store
     if (!s.online || s.passThrough) return { tone: 'fail', text: t('common.status.cacheOffline'), link: href('/cache/storage') }
     if (s.full) return { tone: 'warn', text: t('common.status.cacheFull'), link: href('/cache/storage') }

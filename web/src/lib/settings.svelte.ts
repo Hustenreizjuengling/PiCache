@@ -97,7 +97,7 @@ export class SettingsForm<S extends SettingsSection> {
     try {
       const all = await api.settings.patch(this.section, changes)
       this.#apply(all[this.section])
-      void appStatus.overview.refresh() // LanCache, blocking and store state in the top bar
+      void appStatus.overview.refresh() // download cache, blocking and store state in the top bar
       return true
     } catch (err) {
       this.saveError = toApiError(err)

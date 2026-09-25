@@ -7,7 +7,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { t, tn } from '$i18n/index.svelte'
-  import { api, resource, type LanCacheService, type ServiceStat } from '$lib/api'
+  import { api, resource, type DownloadCacheService, type ServiceStat } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { formatBytes, formatNumber } from '$lib/format'
   import { href } from '$lib/router.svelte'
@@ -29,9 +29,9 @@
 
   interface Props {
     /** The row from the list (domains trimmed) until the full service is loaded. */
-    row: LanCacheService
+    row: DownloadCacheService
     stat: ServiceStat | undefined
-    onchanged: (s: LanCacheService) => void
+    onchanged: (s: DownloadCacheService) => void
     ondeleted: (id: string) => void
     onclose: () => void
   }
@@ -42,7 +42,7 @@
 
   // The parent re-creates this panel for another service ({#key}), so the id is fixed.
   const id = untrack(() => row.id)
-  const full = resource((signal) => api.lancache.service(id, { signal }))
+  const full = resource((signal) => api.downloadCache.service(id, { signal }))
   const s = $derived(full.data ?? row)
 
   // ---- on/off
@@ -51,7 +51,7 @@
   async function setEnabled(on: boolean) {
     toggling = true
     try {
-      const updated = await api.lancache.setEnabled(s.id, on)
+      const updated = await api.downloadCache.setEnabled(s.id, on)
       full.set(updated)
       onchanged(updated)
       toast.success(on ? t('cache.services.enabled', { name: s.name }) : t('cache.services.disabled', { name: s.name }))
@@ -91,7 +91,7 @@
     extraSaving = true
     extraError = undefined
     try {
-      const updated = await api.lancache.setExtraDomains(s.id, extraList)
+      const updated = await api.downloadCache.setExtraDomains(s.id, extraList)
       full.set(updated)
       extraText = updated.extraDomains.join('\n')
       onchanged(updated)
@@ -112,7 +112,7 @@
       title: t('cache.services.deleteTitle', { name: s.name }),
       message: t('cache.services.deleteText'),
       confirmLabel: t('cache.services.delete'),
-      action: () => api.lancache.deleteService(s.id),
+      action: () => api.downloadCache.deleteService(s.id),
     })
     if (!ok) return
     toast.success(t('cache.services.deleted', { name: s.name }))

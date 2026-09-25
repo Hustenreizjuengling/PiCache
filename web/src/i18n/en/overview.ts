@@ -11,7 +11,7 @@ export default {
   'sentence.blocked': '{share} blocked in the last 24 hours',
   'sentence.cache': 'the cache served {bytes} in the last 24 hours, {ratio} from disk',
   'sentence.cacheIdle': 'the cache served nothing in the last 24 hours',
-  'sentence.cacheOff': 'LanCache is off',
+  'sentence.cacheOff': 'the download cache is off',
   'sentence.paused': 'blocking is paused until {time}',
   'sentence.blockingOff': 'blocking is off',
 
@@ -41,7 +41,7 @@ export default {
   'cache.chartLabel': 'Download throughput from the cache and from the Internet',
   'cache.hit': 'From the cache',
   'cache.wan': 'From the Internet',
-  'cache.notReady': 'LanCache is on, but download hosts are not redirected',
+  'cache.notReady': 'The download cache is on, but download hosts are not redirected',
   'cache.notReadyText': 'PiCache has no usable cache IP address. Set it in the cache settings.',
   'cache.openSettings': 'Open cache settings',
   'cache.servicesNotReady': 'The list of download services is not loaded yet',
@@ -76,11 +76,11 @@ export default {
   'storage.offline': 'The cache storage is offline',
   'storage.open': 'Open storage',
 
-  'off.title': 'LanCache is off',
+  'off.title': 'The download cache is off',
   'off.text':
     'PiCache can cache game downloads and updates (Steam, Epic, Battle.net, Xbox, PlayStation and more) for your whole network, so each download comes from the Internet only once.',
   'off.step1': 'Check the storage: the cache needs a disk with plenty of free space, ideally not an SD card.',
-  'off.step2': 'Turn on LanCache in the cache settings. PiCache then answers the download hosts with its own address.',
+  'off.step2': 'Turn on the download cache in the cache settings. PiCache then answers the download hosts with its own address.',
   'off.step3': 'Start a download on a device that uses PiCache as its DNS server.',
   'off.enable': 'Open cache settings',
   'off.storage': 'Check storage',

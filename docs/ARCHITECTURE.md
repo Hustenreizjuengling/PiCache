@@ -2,11 +2,11 @@
 
 PiCache is a single Go binary with an embedded web UI. It combines:
 
-- a **filtering DNS server**, the central DNS for a home or lab network, with parity to the Pi-hole and AdGuard Home features that matter;
-- a **LanCache-compatible download cache**: DNS overrides, an HTTP slice cache on :80, and SNI pass-through on :443;
+- a **filtering DNS server**, the central DNS for a home or lab network: blocklists, custom rules, per-client groups, local records, conditional forwarding and encrypted upstreams;
+- a **download cache** for game and OS downloads: DNS answers that point the CDN names of download services at the cache, an HTTP slice cache on :80, and SNI pass-through on :443; it works with the cache-domains lists, Steam's cache discovery and prefill tools;
 - one **web UI and REST API** to operate both, including NAS-backed cache storage.
 
-This document is the binding specification for the implementation. Where it says MUST, the code must do exactly that. The numbers and behaviours below were verified against upstream source (lancachenet/monolithic, uklans/cache-domains, pi-hole/FTL, AdGuardHome, Linux kernel, systemd, moby) in September 2026 and then hardened by an adversarial design review.
+This document is the binding specification for the implementation. Where it says MUST, the code must do exactly that. The numbers and behaviours below were verified against upstream source (uklans/cache-domains, other open-source DNS filters and download caches, Linux kernel, systemd, moby) in September 2026 and then hardened by an adversarial design review.
 
 Priorities, in this order: **security, simplicity, correctness, performance, features.**
 
@@ -18,7 +18,7 @@ Priorities, in this order: **security, simplicity, correctness, performance, fea
 - One process, one config database, one UI. No nginx, BIND, dnsmasq or cron underneath.
 - Deployable on Debian 12/13 bare metal, Proxmox LXC (unprivileged) and Docker, with clearly identified persistent data.
 - Secure defaults: no open resolver, no open proxy, no open TLS relay, unprivileged runtime, authenticated UI, strict CSP.
-- LanCache-compatible behaviour (Steam, Epic, Battle.net, Riot, Xbox/WSUS, PlayStation, Nintendo, …) including the lancache heartbeat and prefill-tool compatibility.
+- Download caching for Steam, Epic, Battle.net, Riot, Xbox/WSUS, PlayStation, Nintendo, … that works with the cache-domains lists, Steam's cache discovery and prefill tools (the heartbeat path they probe and the response header they check).
 - First-class observability: who requested what, what is cached, how long it stays, how much bandwidth was saved.
 - Runs well on a Raspberry Pi 4 or a 1–2 GB LXC.
 
@@ -32,7 +32,7 @@ Priorities, in this order: **security, simplicity, correctness, performance, fea
                     ┌──────────────────────── picache (one process) ─────────────────────────┐
  clients ──:53/udp,tcp──▶ dnsserver ──▶ filter ──▶ upstream (DoH/DoT/UDP, cache) ──▶ Internet DNS
                     │        │  ▲ clients (identity, groups)      └─▶ router resolver (LAN names)│
-                    │        └─ lancache overrides (services) → answers with cache IP         │
+                    │        └─ download cache answers (services) → cache IP                  │
  clients ──:80/http─────▶ proxy ──▶ cachestore (slices on local disk / NAS) ──▶ CDN over HTTP │
  clients ──:443/tls─────▶ sni (pass-through, allowlisted SNI only) ────────────▶ CDN :443     │
  admin ──:8080/:8443────▶ api + web UI (auth, CSRF, CSP) ──▶ all components                   │
@@ -48,7 +48,7 @@ The proxy and SNI server resolve CDN hostnames through `upstream.Resolver.Lookup
 | Env | Default | Purpose | Bind failure |
 |---|---|---|---|
 | `PICACHE_DNS_LISTEN` | `:53` | DNS over UDP and TCP (comma-separated list) | fatal |
-| `PICACHE_CACHE_LISTEN` | `:80` | LanCache HTTP cache | logged, health warning, LanCache overrides disabled |
+| `PICACHE_CACHE_LISTEN` | `:80` | download cache (HTTP) | logged, health warning, download cache DNS answers disabled |
 | `PICACHE_SNI_LISTEN` | `:443` | SNI pass-through (`off` disables) | logged, health warning |
 | `PICACHE_WEB_LISTEN` | `:8080` | Web UI + API over HTTP | fatal only if no web listener at all |
 | `PICACHE_WEB_TLS_LISTEN` | `:8443` | Web UI + API over HTTPS (self-signed unless a cert is given; `off` disables) | as above |
@@ -74,6 +74,7 @@ Rules:
 - Only slice files may live on a NAS.
 - A broken `logs.db` is moved aside (`logs.db.broken-<ts>`) and recreated; if that fails, logging is disabled but DNS keeps running. A broken cache index is moved aside and rebuilt from the self-describing slice headers.
 - UI backups never contain accounts (users with password hashes and TOTP secrets, sessions, API tokens); sealed NAS passwords only on explicit opt-in. A restore (browser session + current password) replaces the configuration, never the accounts: on the next start the running instance's users, API tokens and audit log are copied into the restored database and all sessions end. Uploads with triggers, views, virtual tables, generated columns, tables or indexes the live database does not have, indexes defined differently, or altered account tables are refused (at upload and again at start). PiCache creates no triggers or views; any found in `picache.db` are dropped at start (WARN), by `picache reset-password` and in every backup copy.
+- Schema changes are append-only component migrations (5), run at start after the pre-upgrade copy (14.4); a restored backup of an older version is migrated at the start that applies it. v0.2.0 renamed the download cache identifiers: settings v2 moves the old download cache section to `downloadCache` (a `downloadCache` section that is already there wins), clients v2 renames the bypass column of `client_clients` to `download_cache_bypass`, and logs v2 renames the matching rollup column of `logs_dns_minute`/`logs_dns_hourly` to `override` and rewrites the status of logged queries to `override` (the old names are in the migration code only). Backups made by v0.2.0 are refused by v0.1.x (newer schema); audit entries keep the action they were written with.
 
 ---
 
@@ -94,10 +95,10 @@ internal/clients/            clients, groups, identity resolution (IP/CIDR/MAC),
 internal/dns/upstream/       upstream transports (UDP/TCP/DoT/DoH), modes, response cache, serve-stale, bypass LookupIP, clock guard
 internal/dns/filter/         blocklists (fetch, parse, compile), custom rules, matcher, explain
 internal/dns/server/         DNS listeners + request pipeline, local records, conditional forwarders, router resolver, pause
-internal/lancache/services/  cache-domains source, service registry & matcher, custom services, content grouping, labels
-internal/lancache/store/     slice store + index DB + eviction + verify/rebuild + store marker   (package cachestore)
-internal/lancache/proxy/     HTTP cache proxy (:80)
-internal/lancache/sni/       TLS SNI pass-through (:443)
+internal/dlcache/services/   cache-domains source, service registry & matcher, custom services, content grouping, labels
+internal/dlcache/store/      slice store + index DB + eviction + verify/rebuild + store marker   (package cachestore)
+internal/dlcache/proxy/      HTTP cache proxy (:80)
+internal/dlcache/sni/        TLS SNI pass-through (:443)
 internal/storage/            storage targets, capability detection, mount guard, store init/adopt, host-apply root helper, snippets
 internal/update/             releases: check (GitHub API), SemVer, signature check (compiled-in keys), install + rollback, update requests of the root helper
 internal/logs/               logs.db: query log, cache events, sessions, rollups, evictions, live subscriptions
@@ -146,7 +147,7 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
 | Open DNS resolver / amplification | ACL: loopback, RFC 1918, ULA, link-local, CGNAT and **private** directly connected subnets plus user CIDRs (each at least /8 IPv4, /32 IPv6; `allowAllNetworks` is the explicit dangerous switch). UDP from others is dropped; TCP is closed at accept. `ANY` → NOTIMP; CHAOS class and `version.bind`/`id.server`/`hostname.bind` → REFUSED. Rate limit per client key (`netutil.ClientKey`), default 50 qps burst 200; loopback, the router resolver, local PTR upstreams and forwarder targets are exempt automatically. Every limiter operation is O(1): buckets are kept in least-recently-seen order and the oldest is evicted when the table (100 000) is full; limits change in place (`Reconfigure`). Only **private** connected subnets are trusted automatically (a public IPv6 LAN prefix must be added to `dns.allowedNetworks`). EDNS capped at 1232. |
 | Cache poisoning (DNS) | Random IDs and ports, question verified on every upstream reply, in-flight dedup, DoH/DoT upstreams by default, no client EDNS options forwarded. |
 | Private reverse-DNS leak | PTR/SOA/NS for RFC 6303 zones and RFC 7793 (100.64/10) never reach public upstreams (7.1 step 6). |
-| Open HTTP proxy / SSRF via :80 | Only hosts of known LanCache services are served; the Steam User-Agent only classifies Steam-shaped paths (`/depot/<n>/…`, `/server-status`) with GET/HEAD. Unknown → 403. Upstream addresses must be public unicast and not this machine (NAT64, 6to4 and IPv4-compatible IPv6 addresses are judged by their embedded IPv4 address); link-local (incl. cloud metadata) is always refused; redirect hops are re-checked. Non-canonical paths are never stored (cache key == fetched resource). Per-client fill caps and at most 16 ranges per request prevent WAN amplification; `?nocache` is honoured only from `lancache.nocacheClients`. |
+| Open HTTP proxy / SSRF via :80 | Only hosts of known download services are served; the Steam User-Agent only classifies Steam-shaped paths (`/depot/<n>/…`, `/server-status`) with GET/HEAD. Unknown → 403. Upstream addresses must be public unicast and not this machine (NAT64, 6to4 and IPv4-compatible IPv6 addresses are judged by their embedded IPv4 address); link-local (incl. cloud metadata) is always refused; redirect hops are re-checked. Non-canonical paths are never stored (cache key == fetched resource). Per-client fill caps and at most 16 ranges per request prevent WAN amplification; `?nocache` is honoured only from `downloadCache.nocacheClients`. |
 | Open TLS relay via :443 | SNI must match an enabled service; no SNI → close; SSRF rules; ACL at accept; connection caps; idle timeout 5 min, lifetime 24 h. |
 | Hostile cache-domains source or NAS content | File names, sizes, counts, service IDs and host patterns validated (8.1); snapshots written through `os.Root`; public-suffix patterns rejected. Slice headers validated and CRC-checked; everything accessed through `os.Root`. |
 | Web UI takeover on first start | One-time setup token (log + `<data>/setup-token`, 0600, constant-time compare, atomic first-user creation) or provisioning via `PICACHE_ADMIN_PASSWORD_FILE`. |
@@ -179,15 +180,15 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
 5. **Identify client** (`Clients.Identify`) → identity with enabled group IDs; `Clients.Seen`.
 6. **Special-use names** (answered locally, never forwarded to the default upstreams, exempt from blocking):
    - `localhost` and `*.localhost` → A 127.0.0.1 / AAAA ::1.
-   - Server names (`serverNames` + `.<localDomain>`) → this server's addresses **on the client's connected subnet** (both families of that interface); if none matches, the primary IPv4/IPv6 address; loopback addresses only for loopback clients; never IPv6 link-local. In Docker/Podman bridge mode (detected as for the cache IP, step 9) non-loopback clients get the configured `lancache.cacheIpv4`/`cacheIpv6` addresses instead (NODATA until set), never the unreachable bridge address.
+   - Server names (`serverNames` + `.<localDomain>`) → this server's addresses **on the client's connected subnet** (both families of that interface); if none matches, the primary IPv4/IPv6 address; loopback addresses only for loopback clients; never IPv6 link-local. In Docker/Podman bridge mode (detected as for the cache IP, step 9) non-loopback clients get the configured `downloadCache.cacheIpv4`/`cacheIpv6` addresses instead (NODATA until set), never the unreachable bridge address.
    - `resolver.arpa` and subdomains → NODATA.
    - **Locally served reverse zones** (RFC 6303 §4 incl. ULA/link-local `ip6.arpa`, plus RFC 7793 `64–127.100.in-addr.arpa`) for PTR/SOA/NS, in this order: (1) auto-PTR of enabled local A/AAAA records; (2) PTR for this server's own addresses (`serverNames[0]`); (3) the most specific enabled conditional forwarder; (4) `localPtrUpstreams`; (5) the **router resolver**; (6) NXDOMAIN with the synthetic SOA.
    - `test`, `invalid`, `onion`, `home.arpa`, `internal`, `local`, the local domain and resolv.conf search domains: local records and forwarders first, then (for the local domain, `home.arpa` and search domains) the router resolver; otherwise NXDOMAIN. The most specific matching zone wins, so a local domain below `internal`/`local` (e.g. `home.internal`) still goes to the router resolver; names below `onion` and `invalid` are never resolved.
    - **Router resolver** (`dns.routerResolver`): `auto` = the IPv4 default gateway (`/proc/net/route`, re-read every 5 min) if it answers a DNS probe; an explicit IP; or off. Loop guard: a query from the router's own address for a name PiCache would forward back to it gets SERVFAIL.
 7. **Local records** (A, AAAA, CNAME, TXT; auto-PTR): exact name beats `*.` wildcard (subdomains only). If any enabled record matches the name: a CNAME record → answer the CNAME plus the resolved target (max 8 hops, visited set) for every qtype (qtype CNAME → the CNAME only); otherwise, if no record has the requested type → authoritative NOERROR/NODATA with the synthetic SOA. Never forwarded. A CNAME whose target is `localhost`, a server name or `resolver.arpa` is answered locally. A CNAME may not share a name with other records. Exempt from blocking.
-8. **User block rules before overrides** — evaluated **only for LanCache override candidates** (the name matches an enabled service, overrides are ready and the client does not bypass them; every other name gets its verdict in step 11): if a *user* block rule (`Filter.CheckRules`) applies to the client for the qname and blocking is active, answer the blocking reply (status `blocked-rule`) — this lets a group block Steam even though the name is a LanCache override. List entries never block LanCache names.
-9. **LanCache override** (`Services.MatchDNS`) if `lancache.enabled`, `LanCacheReady()` is true (cache listener bound), a valid cache IPv4 is known, and the identity has no `lanCacheBypass`:
-   - A → cache IPv4 address(es), TTL `lancache.dnsTtl` (default 60), rotated. Configured addresses must be RFC 1918; auto-detection uses `PrimaryIPv4` only if it is RFC 1918 (else the first RFC 1918 local address; in Docker bridge mode no auto address — the admin must configure the host's LAN IP). Recomputed every 5 min.
+8. **User block rules before overrides** — evaluated **only for override candidates** (the name matches an enabled download service, the download cache answers are ready and the client does not bypass them; every other name gets its verdict in step 11): if a *user* block rule (`Filter.CheckRules`) applies to the client for the qname and blocking is active, answer the blocking reply (status `blocked-rule`) — this lets a group block Steam even though the download cache answers the name. List entries never block download service names.
+9. **Download cache answer** (status `override`; `Services.MatchDNS`) if `downloadCache.enabled`, `DownloadCacheReady()` is true (cache listener bound), a valid cache IPv4 is known, and the identity has no `downloadCacheBypass`:
+   - A → cache IPv4 address(es), TTL `downloadCache.dnsTtl` (default 60), rotated. Configured addresses must be RFC 1918; auto-detection uses `PrimaryIPv4` only if it is RFC 1918 (else the first RFC 1918 local address; in Docker bridge mode no auto address — the admin must configure the host's LAN IP). Recomputed every 5 min.
    - AAAA → configured ULA address(es), else NOERROR/NODATA with the synthetic SOA (minimum = dnsTtl).
    - HTTPS (65), SVCB (64) and every other type → NODATA.
    - Otherwise (not ready) the query continues normally and the UI/health explain why.
@@ -201,7 +202,7 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
 
 **Health probes** (`picache healthcheck`, run every 30 s by the Docker `HEALTHCHECK`): a class IN query for `healthcheck.picache.invalid` from a loopback address or one of this machine's own addresses (a listener bound to a specific address) that the ACL allows is answered before step 2 like `localhost` (A 127.0.0.1 / AAAA ::1, other types NODATA; shaped as in step 15) and is never counted, rate limited, recorded as client activity (`Clients.Seen`) or logged, so it never appears in the query log, statistics or client lists. From any other source the name takes the normal path (step 6: NXDOMAIN, logged). The name is answered locally and carries no information, so no client can hide a real query this way.
 
-Query statuses: `forwarded`, `cached`, `stale`, `local`, `special`, `lancache`, `blocked-list`, `blocked-rule`, `blocked-regex`, `blocked-cname`, `blocked-special`, `refused`, `error`.
+Query statuses: `forwarded`, `cached`, `stale`, `local`, `special`, `override` (download cache answer, step 9), `blocked-list`, `blocked-rule`, `blocked-regex`, `blocked-cname`, `blocked-special`, `refused`, `error`.
 
 ### 7.2 Filtering semantics
 
@@ -222,7 +223,7 @@ Query statuses: `forwarded`, `cached`, `stale`, `local`, `special`, `lancache`, 
 **Precedence** (first decisive wins; user allow rules and user exact/subtree deny rules beat every list entry, user regex deny rules beat only list regex/pattern blocks):
 1. user exact allow · 2. user subtree allow · 3. user regex allow · 4. user exact deny · 5. user subtree deny · 6. list `@@…$important` · 7. list `…$important` · 8. list allow (`@@` entries, allow-type lists, `@@/re/`) · 9. list block (exact, subtree, hosts, plain, wildcard) · 10. user regex deny · 11. list regex/pattern block.
 
-**Groups** (Pi-hole semantics): lists and rules belong to 0..n groups; clients to 1..n groups; a list/rule applies iff it shares at least one **enabled** group with the client. Group 1 "Default" always exists and cannot be deleted; unknown clients are in Default. Entries with no group apply to nobody. New lists/rules default to Default. Client/group changes never recompile the matcher (group IDs are passed per query); editing a list's/rule's groups swaps only the source→groups table.
+**Groups** (clients get the lists and rules of their groups): lists and rules belong to 0..n groups; clients to 1..n groups; a list/rule applies iff it shares at least one **enabled** group with the client. Group 1 "Default" always exists and cannot be deleted; unknown clients are in Default. Entries with no group apply to nobody. New lists/rules default to Default. Client/group changes never recompile the matcher (group IDs are passed per query); editing a list's/rule's groups swaps only the source→groups table.
 
 **Lists**: `https` URLs (or `http`/`file://` only for private IP literal hosts / `<data>/lists/local/`), kind `block`/`allow`, `plainDomains`, groups, comment. Update every `filter.updateIntervalHours` (default 24; 0 = manual) with ±10 % jitter, conditional GET, last good copy kept; status `ok | unchanged | failed-cached | failed-empty` (a changed download that parses to no entries while a good copy exists is treated as `failed-cached` and the old copy stays active). Downloads use the bypass resolver, never follow redirects to private addresses, and are parsed only when the content changed. Recompiles are coalesced.
 
@@ -254,42 +255,42 @@ TTL `filter.blockedTtl` (default 10 s). Synthetic SOA: `picache.invalid. hostmas
 
 ---
 
-## 8. LanCache
+## 8. Download cache
 
 ### 8.1 Services and domain lists
 
-- Source: `uklans/cache-domains` (`cache_domains.json` + every file in `domain_files`), fetched over verified HTTPS through the bypass resolver, refreshed every `lancache.updateIntervalHours` (default 24), snapshot in `<data>/cache-domains/` (written through `os.Root`, temp + rename). Offline start uses the last snapshot; without a snapshot, overrides stay inactive and health says why.
+- Source: `uklans/cache-domains` (`cache_domains.json` + every file in `domain_files`), fetched over verified HTTPS through the bypass resolver, refreshed every `downloadCache.updateIntervalHours` (default 24), snapshot in `<data>/cache-domains/` (written through `os.Root`, temp + rename). Offline start uses the last snapshot; without a snapshot, overrides stay inactive and health says why.
 - **Untrusted input rules**: `domain_files` names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.txt$` and are joined with `url.JoinPath`; `cache_domains.json` ≤ 1 MiB and ≤ 128 services; each `.txt` ≤ 4 MiB and ≤ 50 000 lines; service IDs `^[a-z0-9][a-z0-9_-]{0,31}$`; no redirects to other hosts, never private destinations.
 - `.txt` parsing: trim, lowercase, skip empty and `#` lines, accept CRLF, strip trailing dot. `*.example.com` = any depth below, **not** the apex; plain = exact. Every pattern (source, custom, extra) passes `ValidatePattern`: valid A-labels, ≥ 2 labels, not `*`, base not a public suffix. Rejected patterns are listed in the source status.
-- LanCache is **off by default**. Enabling it in the UI shows the effective cache IP, the store path, its filesystem, free space and warnings (SD card, Docker bridge). All services are enabled by default except `test`. Users can disable services, add custom services and extra hosts.
-- `lancache.steamcontent.com` is answered whenever `steam` is enabled.
+- The download cache is **off by default**. Enabling it in the UI shows the effective cache IP, the store path, its filesystem, free space and warnings (SD card, Docker bridge). All services are enabled by default except `test`. Users can disable services, add custom services and extra hosts.
+- `lancache.steamcontent.com`, the hostname Steam uses to discover a download cache, is answered whenever `steam` is enabled.
 - Matching is anchored and case-insensitive (exact map + suffix walk).
 
 ### 8.2 HTTP cache proxy (:80)
 
 Order per request:
-1. **Client ACL** (also enforced at accept) → 403. While `lancache.enabled` is false every request except the heartbeat (step 2) gets 403.
-2. **Heartbeat**: `GET|HEAD|OPTIONS /lancache-heartbeat` for any Host (incl. IP literals) → `204` with `X-LanCache-Processed-By: <instanceID>`, `Access-Control-Allow-Origin: *`, `Access-Control-Expose-Headers: *` (+ `Access-Control-Allow-Private-Network: true` on OPTIONS). Not logged as a download.
-3. **Loop detection**: incoming `X-LanCache-Processed-By` containing our instance ID → 508.
+1. **Client ACL** (also enforced at accept) → 403. While `downloadCache.enabled` is false every request except the heartbeat (step 2) gets 403.
+2. **Heartbeat** (the path prefill tools and monitoring probe): `GET|HEAD|OPTIONS /lancache-heartbeat` for any Host (incl. IP literals) → `204` with `X-LanCache-Processed-By: <instanceID>` (the response header prefill tools check), `Access-Control-Allow-Origin: *`, `Access-Control-Expose-Headers: *` (+ `Access-Control-Allow-Private-Network: true` on OPTIONS). Not logged as a download.
+3. **Loop detection**: an incoming processed-by header containing our instance ID → 508.
 4. **Host**: lowercase, strip port and trailing dot. IP-literal Host → 400.
-5. **Classify** (`Classify(host, ua, path)`): User-Agent ending in `Valve/Steam HTTP Client 1.0` **and** path `^/depot/[0-9]+/` or `/server-status` **and** GET/HEAD → `steam` (Steam sends the real CDN host). Otherwise by host. Unknown → 403 (Steam-UA refusals are counted and shown so the admin can add the host). Known host of a disabled service → pass-through uncached. Residual risk (as in monolithic): a client can poison `/depot/…` keys from its own public host; Steam verifies chunk SHA-1, so the effect is a denial of service, not code execution.
+5. **Classify** (`Classify(host, ua, path)`): User-Agent ending in `Valve/Steam HTTP Client 1.0` **and** path `^/depot/[0-9]+/` or `/server-status` **and** GET/HEAD → `steam` (Steam sends the real CDN host). Otherwise by host. Unknown → 403 (Steam-UA refusals are counted and shown so the admin can add the host). Known host of a disabled service → pass-through uncached. Residual risk: a client can poison `/depot/…` keys from its own public host; Steam verifies chunk SHA-1, so the effect is a denial of service, not code execution.
 6. **Special paths** (pass-through uncached): `/server-status`; `^.+(releaselisting_.*|.version$)`; prefix `/latest64`; `(?i)(authrootstl|pinrulesstl|disallowedcertstl)\.cab$`.
 7. **Method**: `GET`/`HEAD` → cache path. Others → pass-through uncached (bounded bodies, no Range injection, client's Accept-Encoding kept).
 8. **Canonical path and key**: if `r.URL.EscapedPath()` contains `//`, a `.`/`..` segment, `%2F`/`%2f`, `%5C`, `%00`, `\`, or percent-encodes an unreserved character, the request is passed through and never stored. Otherwise key = `service + "\x00" + keyPath` (no query), where keyPath is the decoded path except that percent-encoded reserved characters (`!$&'()*+,;=:@[]`) and `%` itself stay encoded (upper-case hex), so two different upstream resources never share a key, object ID = first 32 hex chars of SHA-256(key). The upstream request target is the client's escaped form byte for byte (`u := *r.URL; u.Scheme = "http"; u.Host = host`), including the query.
-9. **Bypass**: `?nocache=<non-empty, not "0">` from a client in `lancache.nocacheClients` → skip cache reads, refetch and overwrite (logged BYPASS). From others it is ignored.
+9. **Bypass**: `?nocache=<non-empty, not "0">` from a client in `downloadCache.nocacheClients` → skip cache reads, refetch and overwrite (logged BYPASS). From others it is ignored.
 10. **Slicing** (slice size S from the store marker, default 1 MiB): slice `i` covers `[i·S, min((i+1)·S, total))`; fills request `Range: bytes=i·S-(i·S+S-1)` with `Accept-Encoding: identity` (never the client's).
     - Valid slice response: `206` with `Content-Range: bytes a-b/total`, `a == i·S`, `b+1 == min(a+S, total)`, total known and ≤ 1 TiB (larger objects are passed through), no Content-Encoding other than identity.
     - (a) A `200` with Content-Length ≤ S is the complete object: stored as slice 0, not a range failure. (b) A `200` with Content-Length > S, or a mismatching `206`, is a **range failure**: stream it from its actual start, store complete slices only when total is known and the encoding is identity, count one failure for the host. (c) A `200` without Content-Length is served, never stored. (d) A host is marked `noSlice` after 3 range failures on distinct objects within 24 h (persisted, resettable); a later valid 206 resets it.
     - A response with a non-identity Content-Encoding is streamed uncached (PASS).
     - Upstream `416` for slice i>0 of a recorded object → invalidate and abort; for slice 0 → retry once without Range and pass through uncached; never send 416 to a client that sent no Range.
     - A different total than recorded → the store increments the object generation (old slices discarded); a response whose headers were sent with the old length is aborted.
-    - **Stored headers**: every upstream header except Content-Length, Content-Range, Content-Encoding, Transfer-Encoding, Accept-Ranges, ETag, Set-Cookie, Age, Date, Expires, Cache-Control, Pragma, Vary, Alt-Svc, Strict-Transport-Security, Connection, Keep-Alive, Trailer, Upgrade, Via, Server-Timing and names starting with X-Cache, CF-, X-Amz-Cf-, X-LanCache-, X-Upstream-; values with CR/LF/NUL dropped; ≤ 4 KiB.
-11. **Serving**: the handler parses Range itself. With an unknown total and an If-Range, suffix or multi-range request it fetches slice 0 first. It writes 200, 206 or 416 (`Content-Range: bytes */total`); multi-range (≤ 16 ascending, non-overlapping ranges, else 200 full) as `206 multipart/byteranges` with a precomputed Content-Length; If-Range (dates vs stored Last-Modified; any ETag form → 200 full); If-Modified-Since → 304; HEAD without body. Cached slices are written with `SliceReader.WriteRange` to the unwrapped `ResponseWriter` so net/http uses sendfile(2). WriteRange never holds a store I/O slot while writing to the client: it uses sendfile while one of a separate pool of stream slots is free, otherwise it copies 32 KiB chunks, holding the I/O slot only for each file read. Each slice open has a time limit; a slow store makes the request fetch upstream instead. The object is marked in use for the whole request (`Store.Use`), so eviction never removes data being served. Response headers: stored headers, `Accept-Ranges: bytes`, `X-LanCache-Processed-By`, `X-Upstream-Cache-Status: HIT|MISS|PARTIAL|BYPASS`; never ETag or Set-Cookie. A 60 s write deadline is set before each client write.
+    - **Stored headers**: every upstream header except Content-Length, Content-Range, Content-Encoding, Transfer-Encoding, Accept-Ranges, ETag, Set-Cookie, Age, Date, Expires, Cache-Control, Pragma, Vary, Alt-Svc, Strict-Transport-Security, Connection, Keep-Alive, Trailer, Upgrade, Via, Server-Timing and names starting with X-Cache, CF-, X-Amz-Cf-, X-LanCache- (the processed-by header family), X-Upstream-; values with CR/LF/NUL dropped; ≤ 4 KiB.
+11. **Serving**: the handler parses Range itself. With an unknown total and an If-Range, suffix or multi-range request it fetches slice 0 first. It writes 200, 206 or 416 (`Content-Range: bytes */total`); multi-range (≤ 16 ascending, non-overlapping ranges, else 200 full) as `206 multipart/byteranges` with a precomputed Content-Length; If-Range (dates vs stored Last-Modified; any ETag form → 200 full); If-Modified-Since → 304; HEAD without body. Cached slices are written with `SliceReader.WriteRange` to the unwrapped `ResponseWriter` so net/http uses sendfile(2). WriteRange never holds a store I/O slot while writing to the client: it uses sendfile while one of a separate pool of stream slots is free, otherwise it copies 32 KiB chunks, holding the I/O slot only for each file read. Each slice open has a time limit; a slow store makes the request fetch upstream instead. The object is marked in use for the whole request (`Store.Use`), so eviction never removes data being served. Response headers: stored headers, `Accept-Ranges: bytes`, the processed-by header, `X-Upstream-Cache-Status: HIT|MISS|PARTIAL|BYPASS`; never ETag or Set-Cookie. A 60 s write deadline is set before each client write.
 12. **Mid-stream failure** of a later slice: retry once, then fetch the remaining bytes of the current range directly (uncached) and keep streaming; abort only if that fails too.
 13. **Status handling**: only 200/206 are stored. `301/302/307/308` followed server-side (≤ 5 hops, Range kept, SSRF re-check, `https` with verified TLS); content stored under the original key. `426` → retry once as `https://<host><RequestURI>` (verified TLS, SSRF-guarded), host remembered as https-only for 24 h. `4xx/5xx` passed through unmodified and never stored (403 must pass through for prefill tools). On `404` from one IP, retry once on the next A record.
 14. **Fills and collapsing**: in-flight fills live in a `map[sliceKey]*fill` with a sync.Cond-signalled growing buffer; concurrent readers stream from it as it grows (not x/sync/singleflight). Buffers come from a free list of size S. Global slots `min(maxConcurrentFills, 1 GiB / S)`; per client key `maxFillsPerClient` (incl. read-ahead). A demand fill waits ≤ 2 s for a slot, then streams its slice directly uncached (PASS). A slot is released after the buffer was renamed into the store or discarded; store writes wait ≤ 10 s for the NAS I/O semaphore, then the buffer is discarded. Stalled fill (no bytes for 15 s) → a waiting reader may fetch directly. Fills continue after the client disconnects; no new slices are started for a gone client. While the store is full (`StoreFull`), no new fills are stored. Hosts without range support are collapsed too: one request leads and stores each complete slice as a fill that other requests stream from (within 8 slices of the leader; they fetch on their own if the leader stalls for 15 s or stops capturing).
 15. **Read-ahead**: `readAheadSlices` (default 2) following uncached slices, started only after the client consumed one full slice of the current range, `TryAcquire` only.
-16. **Upstream transport**: HTTP/1.1 keep-alive (`MaxIdleConnsPerHost` 32, `IdleConnTimeout` 90 s, no env proxy, `DisableCompression`), `netutil.SafeDialer` over `LookupIP` (IPv4), connect 10 s, response header 15 s, idle read 60 s. Forward end-to-end client headers except hop-by-hop, `Range`/`If-*`, `Cookie`, `Accept-Encoding` (fills); add `X-LanCache-Processed-By`. No `X-Forwarded-For`.
+16. **Upstream transport**: HTTP/1.1 keep-alive (`MaxIdleConnsPerHost` 32, `IdleConnTimeout` 90 s, no env proxy, `DisableCompression`), `netutil.SafeDialer` over `LookupIP` (IPv4), connect 10 s, response header 15 s, idle read 60 s. Forward end-to-end client headers except hop-by-hop, `Range`/`If-*`, `Cookie`, `Accept-Encoding` (fills); add the processed-by header. No `X-Forwarded-For`.
 17. **Accounting**: bytes served from cache vs fetched upstream per slice, bytes stored; one cache event per client request; live transfers and aggregated active downloads (per client + content, 10 s rate window).
 
 ### 8.3 SNI pass-through (:443)
@@ -413,7 +414,7 @@ Information architecture: **Overview** · **DNS** (Query log, Filtering, Clients
 | Blocking | on, mode `null`, blocked TTL 10 s, CNAME inspection on |
 | Lists | HaGeZi Multi NORMAL, update every 24 h |
 | Special domains | Mozilla canary blocked, iCloud Private Relay blocked |
-| LanCache | **off** until enabled in the UI; all services except `test`; DNS TTL 60 s; `nocache` honoured from nobody |
+| Download cache | **off** until enabled in the UI; all services except `test`; DNS TTL 60 s; `nocache` honoured from nobody |
 | Slice size | 1 MiB |
 | Retention | inactive 365 days; min free `min(10 GiB, 10 %)`; no max size |
 | Fills | 64 global (× slice ≤ 1 GiB), 32 per client, read-ahead 2 |

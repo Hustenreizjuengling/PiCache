@@ -75,9 +75,9 @@
 
 {#snippet optionsCell(c: Row)}
   <span class="row">
-    {#if c.lanCacheBypass}<Badge title={t('dns.clients.bypassHelp')}>{t('dns.clients.bypassShort')}</Badge>{/if}
+    {#if c.downloadCacheBypass}<Badge title={t('dns.clients.bypassHelp')}>{t('dns.clients.bypassShort')}</Badge>{/if}
     {#if c.ignoreLogs}<Badge title={t('dns.clients.ignoreLogsHelp')}>{t('dns.clients.ignoreLogsShort')}</Badge>{/if}
-    {#if !c.lanCacheBypass && !c.ignoreLogs}<span class="subtle">–</span>{/if}
+    {#if !c.downloadCacheBypass && !c.ignoreLogs}<span class="subtle">–</span>{/if}
   </span>
 {/snippet}
 

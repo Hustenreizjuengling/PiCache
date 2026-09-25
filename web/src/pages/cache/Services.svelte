@@ -7,7 +7,7 @@
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
-  import { api, resource, type LanCacheService, type ServiceStat } from '$lib/api'
+  import { api, resource, type DownloadCacheService, type ServiceStat } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatNumber } from '$lib/format'
   import { router } from '$lib/router.svelte'
@@ -32,9 +32,9 @@
   import FilterInput from './shared/FilterInput.svelte'
   import { formatHitRatio, hitRatio, mostlyHttps } from './shared/util'
 
-  const services = resource((signal) => api.lancache.services({ signal }), { interval: 60_000 })
+  const services = resource((signal) => api.downloadCache.services({ signal }), { interval: 60_000 })
   const stats = resource((signal) => api.stats.services('24h', { signal }), { interval: 60_000 })
-  const source = resource((signal) => api.lancache.source({ signal }), { interval: 60_000 })
+  const source = resource((signal) => api.downloadCache.source({ signal }), { interval: 60_000 })
   const proxy = resource((signal) => api.cache.proxyStats({ signal }), { interval: 60_000 })
 
   const statMap = $derived(new Map((stats.data ?? []).map((s): [string, ServiceStat] => [s.service, s])))
@@ -52,11 +52,11 @@
   const selectedId = $derived(router.param('service'))
   const selected = $derived(services.data?.find((s) => s.id === selectedId))
 
-  function open(s: LanCacheService) {
+  function open(s: DownloadCacheService) {
     router.setQuery({ service: s.id }, { push: true })
   }
 
-  function replace(updated: LanCacheService) {
+  function replace(updated: DownloadCacheService) {
     if (services.data) services.set(services.data.map((s) => (s.id === updated.id ? { ...updated, domains: s.domains } : s)))
     void services.refresh()
   }
@@ -64,10 +64,10 @@
   // ---- on/off from the table
 
   let toggling = $state('')
-  async function setEnabled(s: LanCacheService, on: boolean) {
+  async function setEnabled(s: DownloadCacheService, on: boolean) {
     toggling = s.id
     try {
-      replace(await api.lancache.setEnabled(s.id, on))
+      replace(await api.downloadCache.setEnabled(s.id, on))
       toast.success(on ? t('cache.services.enabled', { name: s.name }) : t('cache.services.disabled', { name: s.name }))
     } catch (err) {
       toast.error(err)
@@ -85,7 +85,7 @@
   async function refreshSource() {
     refreshing = true
     try {
-      source.set(await api.lancache.refreshSource())
+      source.set(await api.downloadCache.refreshSource())
       toast.success(t('cache.source.refreshed'))
       void services.refresh()
     } catch (err) {
@@ -98,7 +98,7 @@
 
   const refusedSteam = $derived(proxy.data?.steamHostsRefused ?? [])
 
-  const columns: Column<LanCacheService>[] = $derived([
+  const columns: Column<DownloadCacheService>[] = $derived([
     { key: 'enabled', label: t('cache.col.cached'), width: '72px', cell: enabledCell },
     { key: 'name', label: t('common.label.service'), sortable: true, value: (s) => s.name, cell: nameCell },
     { key: 'domains', label: t('cache.services.hostNames'), align: 'right', sortable: true, value: (s) => s.domainCount, cell: domainsCell },
@@ -136,7 +136,7 @@
   ])
 </script>
 
-{#snippet enabledCell(s: LanCacheService)}
+{#snippet enabledCell(s: DownloadCacheService)}
   <Toggle
     checked={s.enabled}
     ariaLabel={t('cache.services.toggleLabel', { name: s.name })}
@@ -145,7 +145,7 @@
   />
 {/snippet}
 
-{#snippet nameCell(s: LanCacheService)}
+{#snippet nameCell(s: DownloadCacheService)}
   <span class="name">
     <span class="row-inline">
       <span class="strong">{s.name}</span>
@@ -155,13 +155,13 @@
   </span>
 {/snippet}
 
-{#snippet domainsCell(s: LanCacheService)}
+{#snippet domainsCell(s: DownloadCacheService)}
   <span title={tn('cache.services.extraCount', s.extraDomains.length)}>
     {formatNumber(s.domainCount)}{#if s.extraDomains.length > 0 && !s.custom}<span class="subtle"> (+{formatNumber(s.extraDomains.length)})</span>{/if}
   </span>
 {/snippet}
 
-{#snippet notesCell(s: LanCacheService)}
+{#snippet notesCell(s: DownloadCacheService)}
   {@const st = statMap.get(s.id)}
   <span class="chips">
     {#if st && mostlyHttps(st.bytesSent, st.sniBytes)}

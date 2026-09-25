@@ -562,3 +562,53 @@ func TestSeenTransientNotPersisted(t *testing.T) {
 		t.Fatalf("Seen must persist again: %d rows (%v)", n, err)
 	}
 }
+
+// Clients of 0.1.x (clients schema v1) keep the bypass flag in a column of
+// the old name. Clients v2 renames it once and keeps the values; the rename
+// also runs on a restored older backup at the start that applies it.
+func TestMigrateBypassColumn(t *testing.T) {
+	const oldColumn = "lancache_bypass" // column name of 0.1.x
+	ctx := context.Background()
+	cdb, err := db.Open(filepath.Join(t.TempDir(), "picache.db"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cdb.Close()
+	if err := cdb.Migrate(ctx, "clients", migrations[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cdb.W.ExecContext(ctx, `INSERT INTO client_clients (name, comment, `+oldColumn+`, ignore_logs, created_at, updated_at)
+		VALUES ('Console', '', 1, 0, 1, 1), ('Laptop', '', 0, 1, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // the second start finds the renamed column
+		r, err := New(ctx, cdb, nil, quiet())
+		if err != nil {
+			t.Fatal(err)
+		}
+		list, err := r.Clients(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 2 || list[0].Name != "Console" || !list[0].DownloadCacheBypass || list[0].IgnoreLogs ||
+			list[1].DownloadCacheBypass || !list[1].IgnoreLogs {
+			t.Fatalf("clients after the migration: %+v", list)
+		}
+		var cols []string
+		rows, err := cdb.R.QueryContext(ctx, `SELECT name FROM pragma_table_info('client_clients')`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				t.Fatal(err)
+			}
+			cols = append(cols, c)
+		}
+		rows.Close()
+		if !slices.Contains(cols, "download_cache_bypass") || slices.Contains(cols, oldColumn) {
+			t.Fatalf("columns %v", cols)
+		}
+	}
+}

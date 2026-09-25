@@ -1,5 +1,5 @@
-// Group helpers shared by the filtering and client pages (Pi-hole semantics:
-// a list or rule applies to a client when they share an enabled group).
+// Group helpers shared by the filtering and client pages. A list or rule
+// applies to a client when they share an enabled group.
 
 import { t } from '$i18n/index.svelte'
 import type { ClientGroup } from '$lib/api'

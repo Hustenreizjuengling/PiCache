@@ -126,7 +126,7 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.clients` | `list() create(c) update(id,c) remove(id) known(within?)` |
 | `api.groups` | `list() create(g) update(id,g) remove(id)` (403 for group 1, `DEFAULT_GROUP_ID`) |
 | `api.filter` | `lists.{list,create,update,remove,refresh(id),refreshAll}`, `catalog()`, `rules.{list(query),create,update,remove}`, `stats()`, `explain(domain, clientIp?)` |
-| `api.lancache` | `services() service(id) setEnabled(id,on) setExtraDomains(id,list) createService(s) updateService(id,s) deleteService(id) source() refreshSource() setLabel(groupKey,label) sni()` |
+| `api.downloadCache` | `services() service(id) setEnabled(id,on) setExtraDomains(id,list) createService(s) updateService(id,s) deleteService(id) source() refreshSource() setLabel(groupKey,label) sni()` |
 | `api.cache` | `state() services() groups(q) groupDetail(service,key) objects(q) deleteObject(id) pinObject(id,pinned) deleteGroup(service,key) pinGroup(service,key,pinned) purgeService(service) evict() verify(repair) verifyState() live() active() proxyStats() noSlice() resetNoSlice(host) downloads(q) requests(q) sniEvents(q) evictions(q)` |
 | `api.storage` | `capabilities() targets() target(id) create(t) update(id,t) remove(id) test(id) apply(id) init(id,adopt) activate(id) snippets(id)` |
 | `api.logs` | `queries(q)` (cursor page) |
@@ -162,7 +162,7 @@ const top = resource((signal) => api.stats.top('blocked', range, 10, { signal })
 `poll(fn, ms)` returns a stop function. App-wide status is already polled every
 10 s: `appStatus.overview.data` (`/system/overview`) and `appStatus.strip.data`
 (`/stats/summary?range=15m`) from `$lib/status.svelte`; call
-`appStatus.overview.refresh()` after changing blocking, LanCache or storage.
+`appStatus.overview.refresh()` after changing blocking, the download cache or storage.
 `appStatus.update.data` (`/system/update`) is loaded once per page load and
 then hourly; it drives the "update available" dot on Updates in the
 navigation. The updates page puts its fresher answers into it (`set()`).

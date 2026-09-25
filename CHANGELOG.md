@@ -5,17 +5,39 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the download cache has new technical names. Update API
+  clients and scripts that use the old ones.
+  - Its API routes are now under `/api/v1/download-cache/...` (the
+    sub-paths are unchanged).
+  - Its settings section is now `downloadCache`, for example
+    `downloadCache.cacheIpv4` and `PATCH /api/v1/settings/downloadCache`.
+    Stored settings and restored backups are migrated automatically.
+  - DNS queries answered with the cache address have the status
+    `override`, also in the statistics series. The query log and the
+    statistics are migrated automatically.
+  - The related JSON fields are `downloadCacheEnabled`,
+    `downloadCacheBypass` and `dnsDownloadCache`.
+  - Its health check is `download_cache`, and new audit log entries use
+    `download_cache.*` (existing entries keep their names).
+  - Its Go package is `internal/dlcache`.
+- Unchanged: the names that Steam and prefill tools rely on, that is the
+  hostname Steam uses to discover a download cache, the heartbeat path that
+  prefill tools probe and the response header they check.
+
 ## [0.1.0] - 2026-09-25
 
 First release.
 
 ### Added
 
-- Filtering DNS server: blocklists in hosts, domain, AdGuard/ABP and regex
+- Filtering DNS server: blocklists in hosts, domain, adblock (ABP) and regex
   formats with a built-in catalogue (HaGeZi Multi NORMAL by default), your
-  own allow and block rules, Pi-hole-style groups for clients by IP, CIDR or
-  MAC, five blocking modes, a timed pause, CNAME inspection, and blocking of
-  the Firefox DoH canary and iCloud Private Relay.
+  own allow and block rules, groups for clients by IP, CIDR or MAC (clients
+  get the lists and rules of their groups), five blocking modes, a timed
+  pause, CNAME inspection, and blocking of the Firefox DoH canary and iCloud
+  Private Relay.
 - Local DNS records (A, AAAA, CNAME, TXT, wildcards, automatic PTR),
   conditional forwarding, and the router as resolver for local names and
   reverse lookups.
@@ -25,11 +47,13 @@ First release.
 - Protection against open-resolver abuse: private networks only by default,
   per-client rate limits, `ANY` and CHAOS queries refused, private reverse
   zones never forwarded to public upstreams.
-- LanCache-compatible download cache: DNS overrides from
-  [uklans/cache-domains](https://github.com/uklans/cache-domains) plus custom
-  services and hosts, an HTTP slice cache on port 80 (range requests, merged
-  concurrent downloads, read-ahead), SNI pass-through on port 443, heartbeat
-  and prefill-tool compatibility.
+- Download cache: DNS answers that send downloads to the cache, from the
+  cache-domains lists
+  ([uklans/cache-domains](https://github.com/uklans/cache-domains)) plus
+  custom services and hosts, an HTTP slice cache on port 80 (range requests,
+  merged concurrent downloads, read-ahead), SNI pass-through on port 443,
+  Steam's cache discovery, and the heartbeat path and response header that
+  prefill tools use.
 - Content grouping of cached downloads (Steam depots, Blizzard products,
   Epic, Riot, Xbox packages, Windows KBs, PlayStation titles, …) with your
   own labels, pinning, retention by inactivity and size, background verify

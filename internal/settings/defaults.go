@@ -32,7 +32,7 @@ func Defaults() All {
 			BlockMozillaCanary:      true,
 			BlockICloudPrivateRelay: true,
 		},
-		LanCache: LanCache{
+		DownloadCache: DownloadCache{
 			Enabled:             false,
 			CacheIPv4:           []string{},
 			CacheIPv6:           []string{},

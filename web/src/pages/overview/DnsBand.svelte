@@ -37,11 +37,11 @@
 
   const chart = $derived.by(() => {
     if (!series.data) return { timestamps: [] as number[], allowed: [] as number[], blocked: [] as number[] }
-    const keys = ['allowed', 'cached', 'lancache', 'other', 'blocked'] as const
+    const keys = ['allowed', 'cached', 'override', 'other', 'blocked'] as const
     const { timestamps, values: v } = seriesRates(series.data.s, keys, 60, series.data.asOf)
     return {
       timestamps,
-      allowed: timestamps.map((_, i) => v.allowed[i] + v.cached[i] + v.lancache[i] + v.other[i]),
+      allowed: timestamps.map((_, i) => v.allowed[i] + v.cached[i] + v.override[i] + v.other[i]),
       blocked: v.blocked,
     }
   })

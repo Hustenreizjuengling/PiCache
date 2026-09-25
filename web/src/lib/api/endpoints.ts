@@ -170,26 +170,26 @@ const filter = {
     http.post<T.ExplainResult>('/filter/explain', clientIp ? { domain, clientIp } : { domain }, o),
 }
 
-// ---------------------------------------------------------------- lancache services & sni
+// ---------------------------------------------------------------- download cache services & sni
 
-const lancache = {
+const downloadCache = {
   /** Domains are trimmed to the first 50 per service; use service(id) for all. */
-  services: (o?: ReqOpts) => http.get<T.LanCacheService[]>('/lancache/services', o),
-  service: (id: string, o?: ReqOpts) => http.get<T.LanCacheService>(`/lancache/services/${seg(id)}`, o),
+  services: (o?: ReqOpts) => http.get<T.DownloadCacheService[]>('/download-cache/services', o),
+  service: (id: string, o?: ReqOpts) => http.get<T.DownloadCacheService>(`/download-cache/services/${seg(id)}`, o),
   setEnabled: (id: string, enabled: boolean, o?: ReqOpts) =>
-    http.put<T.LanCacheService>(`/lancache/services/${seg(id)}/enabled`, { enabled }, o),
+    http.put<T.DownloadCacheService>(`/download-cache/services/${seg(id)}/enabled`, { enabled }, o),
   setExtraDomains: (id: string, extraDomains: string[], o?: ReqOpts) =>
-    http.put<T.LanCacheService>(`/lancache/services/${seg(id)}/domains`, { extraDomains }, o),
-  createService: (s: T.LanCacheServiceInput, o?: ReqOpts) => http.post<T.LanCacheService>('/lancache/services', s, o),
-  updateService: (id: string, s: T.LanCacheServiceInput, o?: ReqOpts) =>
-    http.put<T.LanCacheService>(`/lancache/services/${seg(id)}`, s, o),
-  deleteService: (id: string, o?: ReqOpts) => http.del(`/lancache/services/${seg(id)}`, o),
-  source: (o?: ReqOpts) => http.get<T.SourceStatus>('/lancache/source', o),
+    http.put<T.DownloadCacheService>(`/download-cache/services/${seg(id)}/domains`, { extraDomains }, o),
+  createService: (s: T.DownloadCacheServiceInput, o?: ReqOpts) => http.post<T.DownloadCacheService>('/download-cache/services', s, o),
+  updateService: (id: string, s: T.DownloadCacheServiceInput, o?: ReqOpts) =>
+    http.put<T.DownloadCacheService>(`/download-cache/services/${seg(id)}`, s, o),
+  deleteService: (id: string, o?: ReqOpts) => http.del(`/download-cache/services/${seg(id)}`, o),
+  source: (o?: ReqOpts) => http.get<T.SourceStatus>('/download-cache/source', o),
   refreshSource: (o?: ReqOpts) =>
-    http.post<T.SourceStatus>('/lancache/source/refresh', undefined, { ...o, timeoutMs: LONG }),
+    http.post<T.SourceStatus>('/download-cache/source/refresh', undefined, { ...o, timeoutMs: LONG }),
   /** Sets a display label for a content group ("" removes it). */
-  setLabel: (groupKey: string, label: string, o?: ReqOpts) => http.put<void>('/lancache/labels', { groupKey, label }, o),
-  sni: (o?: ReqOpts) => http.get<T.SniStats>('/lancache/sni', o),
+  setLabel: (groupKey: string, label: string, o?: ReqOpts) => http.put<void>('/download-cache/labels', { groupKey, label }, o),
+  sni: (o?: ReqOpts) => http.get<T.SniStats>('/download-cache/sni', o),
 }
 
 // ---------------------------------------------------------------- cache store, proxy, downloads
@@ -300,7 +300,7 @@ export const api = {
   clients,
   groups,
   filter,
-  lancache,
+  downloadCache,
   cache,
   storage,
   logs,

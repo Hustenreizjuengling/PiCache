@@ -202,7 +202,7 @@ export default {
   'queryStatus.stale': 'Cached (stale)',
   'queryStatus.local': 'Local record',
   'queryStatus.special': 'Answered locally',
-  'queryStatus.lancache': 'LanCache',
+  'queryStatus.override': 'Download cache',
   'queryStatus.blocked-list': 'Blocked by list',
   'queryStatus.blocked-rule': 'Blocked by rule',
   'queryStatus.blocked-regex': 'Blocked by pattern',

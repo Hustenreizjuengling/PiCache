@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/config"
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 )
 
 // bareManager is a Manager without a database (the guard never uses it).

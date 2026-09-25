@@ -24,13 +24,13 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/proxy"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/services"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/sni"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
-	"github.com/hustenreizjuengling/picache/internal/lancache/proxy"
-	"github.com/hustenreizjuengling/picache/internal/lancache/services"
-	"github.com/hustenreizjuengling/picache/internal/lancache/sni"
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
@@ -278,7 +278,7 @@ func (a *App) build(ctx context.Context) error {
 
 	if a.dns, err = dnsserver.New(ctx, dnsserver.Deps{
 		DB: a.cdb, Settings: a.set, Upstream: a.up, Filter: a.filter, Clients: a.clients,
-		Services: a.services, Logs: a.logs, ACL: a.acl, LanCacheReady: a.lanCacheReady,
+		Services: a.services, Logs: a.logs, ACL: a.acl, DownloadCacheReady: a.downloadCacheReady,
 		Container: a.storage.Capabilities().Container, Log: log,
 	}); err != nil {
 		return fmt.Errorf("dns: %w", err)
@@ -341,9 +341,9 @@ func (a *App) proxyStore() proxy.SliceStore {
 	return nil
 }
 
-// lanCacheReady gates DNS overrides: the cache listener must be bound.
+// downloadCacheReady gates DNS overrides: the cache listener must be bound.
 // (dnsserver additionally checks that a valid cache IP is known.)
-func (a *App) lanCacheReady() (bool, string) {
+func (a *App) downloadCacheReady() (bool, string) {
 	if len(a.ln.cache) == 0 {
 		if msg, ok := a.ln.failed["cache"]; ok {
 			return false, "cache HTTP listener not bound: " + msg

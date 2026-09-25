@@ -15,6 +15,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
+	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
@@ -281,6 +282,81 @@ func TestRestoreKeepsLiveAccounts(t *testing.T) {
 	}
 	if n := strings.Count(joined, "test.owner"); n != 1 {
 		t.Fatalf("audit after restore = %v: the backup's audit log must not be imported", actions)
+	}
+}
+
+// A backup made by 0.1.x (settings and clients schema v1: the download cache
+// section and the client bypass column under their old names) is accepted
+// and brought up to date by the migrations of the start that applies it.
+func TestRestoreOlderBackupIsMigrated(t *testing.T) {
+	const oldName = "lancache" // settings section of 0.1.x; the column was <oldName>_bypass
+	ctx := context.Background()
+	log := slog.New(slog.DiscardHandler)
+	withClients := func(path string, fn func(*settings.Store, *clients.Registry)) {
+		t.Helper()
+		d, err := db.Open(path, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		set, err := settings.Open(ctx, d, log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg, err := clients.New(ctx, d, nil, log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fn != nil {
+			fn(set, reg)
+		}
+	}
+	a := newRestoreApp(t)
+	makeConfigDB(t, a.paths.ConfigDB, "owner", "owner password", "en")
+	withClients(a.paths.ConfigDB, nil)
+	openLive(t, a)
+
+	up := filepath.Join(t.TempDir(), "upload.db")
+	makeConfigDB(t, up, "owner", "owner password", "de")
+	withClients(up, func(set *settings.Store, reg *clients.Registry) {
+		if _, err := set.Update(ctx, func(s *settings.All) error {
+			s.DownloadCache.Enabled, s.DownloadCache.CacheIPv4 = true, []string{"192.168.1.2"}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reg.CreateClient(ctx, clients.ClientInput{Name: "Console", Identifiers: []string{"192.168.1.50"},
+			DownloadCacheBypass: true}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	execFile(t, up, // back to the 0.1.x format
+		`UPDATE settings SET doc = json_set(json_remove(doc, '$.downloadCache'), '$.`+oldName+`', json(json_extract(doc, '$.downloadCache')))`,
+		`ALTER TABLE client_clients RENAME COLUMN download_cache_bypass TO `+oldName+`_bypass`,
+		`DELETE FROM schema_migrations WHERE component IN ('settings', 'clients') AND version > 1`)
+
+	if err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
+		t.Fatalf("a backup of an older version must be accepted: %v", err)
+	}
+	closeLive(a)
+	if restored, err := a.applyStagedRestore(); err != nil || !restored {
+		t.Fatalf("applyStagedRestore = %v, %v", restored, err)
+	}
+	d, set, _ := openRestored(t, a)
+	if dc := set.Get().DownloadCache; set.Get().Web.Language != "de" || !dc.Enabled || !slices.Equal(dc.CacheIPv4, []string{"192.168.1.2"}) {
+		t.Fatalf("restored settings: language %q, download cache %+v", set.Get().Web.Language, dc)
+	}
+	var stale int
+	if err := d.R.QueryRow(`SELECT COUNT(*) FROM settings WHERE json_type(doc, '$.` + oldName + `') IS NOT NULL`).Scan(&stale); err != nil || stale != 0 {
+		t.Fatalf("the old settings section must be gone: %d, %v", stale, err)
+	}
+	reg, err := clients.New(ctx, d, nil, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := reg.Clients(ctx)
+	if err != nil || len(list) != 1 || !list[0].DownloadCacheBypass {
+		t.Fatalf("restored clients: %+v, %v", list, err)
 	}
 }
 

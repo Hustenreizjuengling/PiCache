@@ -195,7 +195,7 @@ env_template() {
 # PiCache bootstrap configuration.
 #
 # Read by systemd (EnvironmentFile=) and by every `picache` CLI command.
-# Everything else (DNS, filtering, LanCache, cache, logs, web) is configured
+# Everything else (DNS, filtering, download cache, logs, web) is configured
 # in the web UI. Apply changes with: systemctl restart picache
 # Format: KEY=value, one per line. Listener values are comma-separated
 # host:port lists; "off" disables a listener. All variables are described in
@@ -204,7 +204,7 @@ env_template() {
 # DNS (mandatory). If port 53 is shared with another service, bind specific
 # addresses, for example: PICACHE_DNS_LISTEN=192.168.1.5:53,127.0.0.1:53
 #PICACHE_DNS_LISTEN=:53
-# LanCache HTTP cache and HTTPS (SNI) pass-through.
+# Download cache over HTTP and HTTPS (SNI) pass-through.
 #PICACHE_CACHE_LISTEN=:80
 #PICACHE_SNI_LISTEN=:443
 # Web UI and API over HTTP and HTTPS (self-signed unless a certificate is set).
@@ -437,8 +437,8 @@ EOF
 
 print_generic_fix() {
 	cat >&2 <<EOF
-Another DNS server (for example dnsmasq, bind9, unbound, Pi-hole or AdGuard
-Home) listens on port 53. Stop and disable it, or bind PiCache to addresses
+Another DNS server (for example dnsmasq, bind9, unbound or another DNS
+filter) listens on port 53. Stop and disable it, or bind PiCache to addresses
 that server does not use by adding to $ENV_FILE, for example:
     PICACHE_DNS_LISTEN=$host_ip:53
 Then run: systemctl start picache

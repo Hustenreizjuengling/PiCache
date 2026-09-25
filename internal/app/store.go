@@ -12,8 +12,8 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/api"
 	"github.com/hustenreizjuengling/picache/internal/apperr"
-	"github.com/hustenreizjuengling/picache/internal/lancache/services"
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/services"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"

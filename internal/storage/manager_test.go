@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 )
 
 func TestNewInitialisesLocalStore(t *testing.T) {

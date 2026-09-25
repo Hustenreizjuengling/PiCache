@@ -29,7 +29,7 @@ var niceSteps = []time.Duration{
 
 // DNS and cache series keys.
 var (
-	dnsSeriesKeys   = []string{"allowed", "cached", "lancache", "blocked", "other"}
+	dnsSeriesKeys   = []string{"allowed", "cached", "override", "blocked", "other"}
 	cacheSeriesKeys = []string{"hit", "wan", "sni"}
 )
 
@@ -135,7 +135,7 @@ func (s *Store) series(ctx context.Context, from, to time.Time, step time.Durati
 	args := []any{start, stepMs, start, to.UnixMilli()}
 	if dns {
 		keys = dnsSeriesKeys
-		q = `SELECT (bucket - ?) / ?, SUM(forwarded + stale + local + special), SUM(cached), SUM(lancache),
+		q = `SELECT (bucket - ?) / ?, SUM(forwarded + stale + local + special), SUM(cached), SUM(override),
 			SUM(blocked), SUM(other) FROM logs_dns_` + suffix + ` WHERE bucket >= ? AND bucket < ?`
 	} else if service != "" {
 		q += ` AND service = ?`
@@ -196,9 +196,9 @@ func (s *Store) Summary(ctx context.Context, from, to time.Time) (Summary, error
 	defer release()
 	var durUs int64
 	if err := s.d.R.QueryRowContext(ctx, `SELECT COALESCE(SUM(total), 0), COALESCE(SUM(blocked), 0),
-		COALESCE(SUM(cached), 0), COALESCE(SUM(lancache), 0), COALESCE(SUM(forwarded), 0), COALESCE(SUM(duration_us), 0)
+		COALESCE(SUM(cached), 0), COALESCE(SUM(override), 0), COALESCE(SUM(forwarded), 0), COALESCE(SUM(duration_us), 0)
 		FROM logs_dns_`+suffix+` WHERE bucket >= ? AND bucket < ?`, lo, hi).
-		Scan(&sum.DNSQueries, &sum.DNSBlocked, &sum.DNSCached, &sum.DNSLanCache, &sum.DNSForwarded, &durUs); err != nil {
+		Scan(&sum.DNSQueries, &sum.DNSBlocked, &sum.DNSCached, &sum.DNSDownloadCache, &sum.DNSForwarded, &durUs); err != nil {
 		return Summary{}, queryErr(ctx, err)
 	}
 	if err := s.d.R.QueryRowContext(ctx, `SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(bytes_sent), 0),

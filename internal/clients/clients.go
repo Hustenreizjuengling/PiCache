@@ -73,38 +73,38 @@ type GroupInput struct {
 // Client is a configured client. Identifiers are IPs, CIDRs or MAC addresses
 // (normalised: IPs/CIDRs canonical, MACs lower-case colon-separated).
 type Client struct {
-	ID             int64     `json:"id"`
-	Name           string    `json:"name"`
-	Identifiers    []string  `json:"identifiers"`
-	GroupIDs       []int64   `json:"groupIds"`
-	Comment        string    `json:"comment"`
-	LanCacheBypass bool      `json:"lanCacheBypass"` // never answer LanCache overrides for this client
-	IgnoreLogs     bool      `json:"ignoreLogs"`     // exclude from query log and stats
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID                  int64     `json:"id"`
+	Name                string    `json:"name"`
+	Identifiers         []string  `json:"identifiers"`
+	GroupIDs            []int64   `json:"groupIds"`
+	Comment             string    `json:"comment"`
+	DownloadCacheBypass bool      `json:"downloadCacheBypass"` // never give this client the download cache DNS answers
+	IgnoreLogs          bool      `json:"ignoreLogs"`          // exclude from query log and stats
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
 // ClientInput creates or updates a client. An empty GroupIDs puts the client
 // into the Default group.
 type ClientInput struct {
-	Name           string   `json:"name"`
-	Identifiers    []string `json:"identifiers"`
-	GroupIDs       []int64  `json:"groupIds"`
-	Comment        string   `json:"comment"`
-	LanCacheBypass bool     `json:"lanCacheBypass"`
-	IgnoreLogs     bool     `json:"ignoreLogs"`
+	Name                string   `json:"name"`
+	Identifiers         []string `json:"identifiers"`
+	GroupIDs            []int64  `json:"groupIds"`
+	Comment             string   `json:"comment"`
+	DownloadCacheBypass bool     `json:"downloadCacheBypass"`
+	IgnoreLogs          bool     `json:"ignoreLogs"`
 }
 
 // Identity is the resolved identity of a querying address. Identities are
 // shared between callers and must be treated as read-only.
 type Identity struct {
-	IP             netip.Addr
-	ClientID       int64   // 0 if no configured client matched
-	Name           string  // configured name, else resolved hostname, else ""
-	MAC            string  // if known
-	GroupIDs       []int64 // enabled groups only (sorted); may be empty if all its groups are disabled
-	LanCacheBypass bool
-	IgnoreLogs     bool
+	IP                  netip.Addr
+	ClientID            int64   // 0 if no configured client matched
+	Name                string  // configured name, else resolved hostname, else ""
+	MAC                 string  // if known
+	GroupIDs            []int64 // enabled groups only (sorted); may be empty if all its groups are disabled
+	DownloadCacheBypass bool
+	IgnoreLogs          bool
 }
 
 // Known is a client address that has been seen recently.
@@ -246,7 +246,7 @@ func (r *Registry) resolve(ip netip.Addr) *Identity {
 		id.ClientID = c.id
 		id.Name = c.name
 		id.GroupIDs = snap.enabledGroups(c.groups)
-		id.LanCacheBypass = c.lanCacheBypass
+		id.DownloadCacheBypass = c.downloadCacheBypass
 		id.IgnoreLogs = c.ignoreLogs
 	} else {
 		id.GroupIDs = snap.defaultGroups

@@ -74,9 +74,9 @@ const de: Messages<typeof en> = {
   'filters.windowValue': '{from} – {to}',
   'filters.windowClear': 'Ganzen Zeitraum zeigen',
 
-  // LanCache aus (Downloads-Seite)
-  'off.title': 'LanCache ist aus',
-  'off.text': 'Downloads laufen nur über PiCache, wenn LanCache an ist. Bis dahin bleibt diese Seite leer.',
+  // Download-Cache aus (Downloads-Seite)
+  'off.title': 'Der Download-Cache ist aus',
+  'off.text': 'Downloads laufen nur über PiCache, wenn der Download-Cache an ist. Bis dahin bleibt diese Seite leer.',
   'off.open': 'Cache-Einstellungen öffnen',
 
   // Downloads
@@ -145,7 +145,7 @@ const de: Messages<typeof en> = {
   'library.caption': 'Inhalte im Cache',
   'library.empty': 'Noch ist nichts im Cache',
   'library.emptyText':
-    'Inhalte erscheinen hier nach dem ersten Download über PiCache. Schalte LanCache in den Cache-Einstellungen an, falls noch nicht geschehen.',
+    'Inhalte erscheinen hier nach dem ersten Download über PiCache. Schalte den Download-Cache in den Cache-Einstellungen an, falls noch nicht geschehen.',
   'library.noMatch': 'Keine passenden Inhalte im Cache',
   'library.noMatchText': 'Versuch einen anderen Namen oder leere die Suche.',
   'library.completeOf': '{cached} von {total} im Cache',
@@ -549,20 +549,20 @@ const de: Messages<typeof en> = {
 
   // Cache-Einstellungen
   'settings.loadError': 'Die Einstellungen konnten nicht geladen werden',
-  'settings.lancacheTitle': 'LanCache',
+  'settings.downloadCacheTitle': 'Download-Cache',
   'settings.isOn': 'An',
   'settings.isOff': 'Aus',
   'settings.onText': 'Geräte, die PiCache als DNS-Server nutzen, laden Spiele und Updates über den Cache.',
   'settings.offText':
     'Schalte es an, um Spiele-Downloads und Updates (Steam, Epic, Battle.net, Xbox, PlayStation und mehr) für dein Netzwerk zwischenzuspeichern.',
-  'settings.turnOn': 'LanCache anschalten',
-  'settings.turnOff': 'LanCache ausschalten',
-  'settings.turnOffTitle': 'LanCache ausschalten?',
+  'settings.turnOn': 'Download-Cache anschalten',
+  'settings.turnOff': 'Download-Cache ausschalten',
+  'settings.turnOffTitle': 'Download-Cache ausschalten?',
   'settings.turnOffText':
-    'Geräte laden wieder direkt aus dem Internet. Die Inhalte im Cache bleiben erhalten und werden genutzt, wenn du LanCache wieder anschaltest.',
-  'settings.turnedOn': 'LanCache angeschaltet',
-  'settings.turnedOff': 'LanCache ausgeschaltet',
-  'settings.notReady': 'LanCache ist an, aber Download-Hosts werden nicht umgeleitet',
+    'Geräte laden wieder direkt aus dem Internet. Die Inhalte im Cache bleiben erhalten und werden genutzt, wenn du den Download-Cache wieder anschaltest.',
+  'settings.turnedOn': 'Download-Cache angeschaltet',
+  'settings.turnedOff': 'Download-Cache ausgeschaltet',
+  'settings.notReady': 'Der Download-Cache ist an, aber Download-Hosts werden nicht umgeleitet',
   'settings.answering': 'Download-Hosts werden beantwortet mit',
   'settings.saveFirst': 'Speichere oder verwirf zuerst deine Änderungen.',
   'settings.addressTitle': 'Cache-Adresse',
@@ -623,8 +623,8 @@ const de: Messages<typeof en> = {
   'settings.unsaved': 'Du hast ungespeicherte Änderungen',
   'settings.discard': 'Änderungen verwerfen',
 
-  // LanCache anschalten
-  'enable.title': 'LanCache anschalten',
+  // Download-Cache anschalten
+  'enable.title': 'Download-Cache anschalten',
   'enable.intro':
     'PiCache beantwortet dann die Hostnamen von Download-Diensten mit seiner eigenen Adresse und speichert zwischen, was Clients herunterladen.',
   'enable.addressTitle': 'Cache-Adresse',

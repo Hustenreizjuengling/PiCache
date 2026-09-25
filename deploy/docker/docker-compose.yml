@@ -6,16 +6,18 @@
 #   # then open http://<this host's LAN IP>:8080/ and create the admin account
 #
 # Why host networking: PiCache sees real client addresses (IPv4 and IPv6),
-# can detect this host's LAN IP for LanCache answers and can identify clients
-# by MAC address. Use docker-compose.bridge.yml only if you cannot use it.
+# can detect this host's LAN IP for the download cache's DNS answers and can
+# identify clients by MAC address. Use docker-compose.bridge.yml only if you
+# cannot use it.
 #
-# Port conflicts: PiCache needs 53/udp+tcp (DNS), 80 and 443 (LanCache) and
-# 8080/8443 (web UI) on the host.
+# Port conflicts: PiCache needs 53/udp+tcp (DNS), 80 and 443 (download cache)
+# and 8080/8443 (web UI) on the host.
 #   - Port 53 is often taken by systemd-resolved's stub listener
-#     (127.0.0.53), dnsmasq, Pi-hole or AdGuard Home. DNS is mandatory, so the
-#     container then exits with "port 53 is in use". Fix: disable the other
-#     listener (docs/DEPLOYMENT.md, "Port 53 conflicts") or bind PiCache to
-#     specific addresses with PICACHE_DNS_LISTEN (see environment below).
+#     (127.0.0.53), dnsmasq, bind9, unbound or another DNS filter. DNS is
+#     mandatory, so the container then exits with "port 53 is in use". Fix:
+#     disable the other listener (docs/DEPLOYMENT.md, "Port 53 conflicts") or
+#     bind PiCache to specific addresses with PICACHE_DNS_LISTEN (see
+#     environment below).
 #   - A clash on 80/443/8080/8443 is logged and shown under
 #     System -> Health & about; DNS keeps running. Free the port or change
 #     PICACHE_*_LISTEN.

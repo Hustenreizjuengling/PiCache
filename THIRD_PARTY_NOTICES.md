@@ -103,10 +103,11 @@ listed so that it is clear where the data comes from.
 
 - **Build tools**: the Go toolchain, Node.js, Vite and its bundler, the Svelte
   compiler and plugin, TypeScript and svelte-check run only at build time.
-- **LanCache domain lists**:
+- **Download cache domain lists**:
   [uklans/cache-domains](https://github.com/uklans/cache-domains) (MIT,
   Copyright (c) 2017 UK LAN Techs). Each installation downloads it at runtime
-  when LanCache is used and keeps a snapshot in its data directory.
+  when the download cache is used and keeps a snapshot in its data
+  directory.
 - **Blocklists**: each installation downloads its blocklists at runtime. The
   built-in catalogue contains only names, URLs and descriptions. The lists
   are published under their own licenses and terms, for example the

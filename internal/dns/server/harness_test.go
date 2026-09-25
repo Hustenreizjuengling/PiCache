@@ -245,7 +245,7 @@ type testEnv struct {
 	cl      *fakeClients
 	svc     fakeServices
 	logs    *fakeLogger
-	lcReady atomic.Bool
+	dcReady atomic.Bool
 	udp     string
 	tcp     string
 }
@@ -291,11 +291,11 @@ func newEnv(t *testing.T, mutate func(*settings.All)) *testEnv {
 		svc:  fakeServices{},
 		logs: &fakeLogger{},
 	}
-	e.lcReady.Store(true)
+	e.dcReady.Store(true)
 	srv, err := New(ctx, Deps{
 		DB: d, Settings: set, Upstream: e.up, Filter: e.flt, Clients: e.cl, Services: e.svc, Logs: e.logs,
-		LanCacheReady: func() (bool, string) {
-			if e.lcReady.Load() {
+		DownloadCacheReady: func() (bool, string) {
+			if e.dcReady.Load() {
 				return true, ""
 			}
 			return false, "cache listener not bound"

@@ -5,11 +5,12 @@
 #   docker exec -u 65532:65532 picache /picache setup-token
 #
 # Prefer docker-compose.yml (host networking). In bridge mode:
-#   - REQUIRED for LanCache: set the cache IPv4 address (lancache.cacheIpv4,
-#     under Cache -> Cache settings) to this host's LAN IP. PiCache only sees
-#     the container's own address here, so it cannot auto-detect it and the
-#     LanCache DNS answers stay off until it is set. This server's own
-#     names (dns.serverNames) are answered with the same address.
+#   - REQUIRED for the download cache: set the cache IPv4 address
+#     (downloadCache.cacheIpv4, under Cache -> Cache settings) to this host's
+#     LAN IP. PiCache only sees the container's own address here, so it cannot
+#     auto-detect it and the download cache's DNS answers stay off until it is
+#     set. This server's own names (dns.serverNames) are answered with the
+#     same address.
 #   - IPv4 client addresses are preserved, but traffic that passes through
 #     docker-proxy (IPv6 to an IPv4-only bridge, loopback, hairpin) appears to
 #     come from the Docker gateway, so per-client statistics, groups and rate

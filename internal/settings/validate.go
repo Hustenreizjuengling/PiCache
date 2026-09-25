@@ -123,7 +123,7 @@ func (a *All) normalize() {
 	d.RateLimitExempt = clean(d.RateLimitExempt, true)
 	d.LocalDomain = strings.Trim(strings.ToLower(strings.TrimSpace(d.LocalDomain)), ".")
 	d.RouterResolver = strings.ToLower(strings.TrimSpace(d.RouterResolver))
-	l := &a.LanCache
+	l := &a.DownloadCache
 	l.CacheIPv4 = clean(l.CacheIPv4, true)
 	l.CacheIPv6 = clean(l.CacheIPv6, true)
 	l.DisabledServices = clean(l.DisabledServices, true)
@@ -145,8 +145,8 @@ func (a *All) Validate() error {
 		}
 	}
 	for field, n := range map[string]int{"dns.allowedNetworks": len(d.AllowedNetworks), "dns.rateLimitExempt": len(d.RateLimitExempt),
-		"lancache.cacheIpv4": len(a.LanCache.CacheIPv4), "lancache.cacheIpv6": len(a.LanCache.CacheIPv6),
-		"lancache.nocacheClients": len(a.LanCache.NocacheClients), "web.allowedHosts": len(a.Web.AllowedHosts)} {
+		"downloadCache.cacheIpv4": len(a.DownloadCache.CacheIPv4), "downloadCache.cacheIpv6": len(a.DownloadCache.CacheIPv6),
+		"downloadCache.nocacheClients": len(a.DownloadCache.NocacheClients), "web.allowedHosts": len(a.Web.AllowedHosts)} {
 		if n > 256 {
 			return apperr.Invalid(field, "at most 256 entries")
 		}
@@ -260,30 +260,30 @@ func (a *All) Validate() error {
 		return apperr.Invalid("filter.updateIntervalHours", "must be between 0 and 720")
 	}
 
-	l := a.LanCache
+	l := a.DownloadCache
 	for i, s := range l.CacheIPv4 {
 		ip, err := netip.ParseAddr(s)
 		if err != nil || !ip.Is4() || !inPrefixes(ip, "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16") {
-			return apperr.Invalid("lancache.cacheIpv4["+strconv.Itoa(i)+"]", "must be a private IPv4 address (10/8, 172.16/12, 192.168/16): Steam, Riot and Origin ignore other cache addresses")
+			return apperr.Invalid("downloadCache.cacheIpv4["+strconv.Itoa(i)+"]", "must be a private IPv4 address (10/8, 172.16/12, 192.168/16): Steam, Riot and Origin ignore other cache addresses")
 		}
 	}
 	for i, s := range l.CacheIPv6 {
 		ip, err := netip.ParseAddr(s)
 		if err != nil || !ip.Is6() || ip.Is4In6() || ip.Zone() != "" || !inPrefixes(ip, "fc00::/7") {
-			return apperr.Invalid("lancache.cacheIpv6["+strconv.Itoa(i)+"]", "must be a unique local IPv6 address (fc00::/7): clients ignore other IPv6 cache addresses")
+			return apperr.Invalid("downloadCache.cacheIpv6["+strconv.Itoa(i)+"]", "must be a unique local IPv6 address (fc00::/7): clients ignore other IPv6 cache addresses")
 		}
 	}
-	if err := validPrefixes("lancache.nocacheClients", l.NocacheClients); err != nil {
+	if err := validPrefixes("downloadCache.nocacheClients", l.NocacheClients); err != nil {
 		return err
 	}
 	if l.DNSTTL < 1 || l.DNSTTL > 86400 {
-		return apperr.Invalid("lancache.dnsTtl", "must be between 1 and 86400")
+		return apperr.Invalid("downloadCache.dnsTtl", "must be between 1 and 86400")
 	}
 	if u, err := url.Parse(l.DomainsSource); err != nil || u.Scheme != "https" || u.Host == "" {
-		return apperr.Invalid("lancache.domainsSource", "must be an https URL")
+		return apperr.Invalid("downloadCache.domainsSource", "must be an https URL")
 	}
 	if l.UpdateIntervalHours < 0 || l.UpdateIntervalHours > 24*30 {
-		return apperr.Invalid("lancache.updateIntervalHours", "must be between 0 and 720")
+		return apperr.Invalid("downloadCache.updateIntervalHours", "must be between 0 and 720")
 	}
 
 	c := a.Cache

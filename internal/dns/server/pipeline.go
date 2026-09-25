@@ -90,7 +90,7 @@ func (s *Server) process(qc *qctx) result {
 	if r, ok := s.localAnswer(qc); ok { // 7
 		return r
 	}
-	if r, ok := s.lanCacheOverride(qc); ok { // 8 (user rules) + 9
+	if r, ok := s.downloadCacheOverride(qc); ok { // 8 (user rules) + 9
 		return r
 	}
 	if qc.blocking && s.d.Filter != nil {

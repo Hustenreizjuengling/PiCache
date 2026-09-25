@@ -3,8 +3,8 @@
 // upstream modes load_balance/parallel/strict (docs/ARCHITECTURE.md 7.4).
 //
 // LookupIP resolves names for PiCache itself (cache proxy, SNI, list and
-// cache-domains downloads) and deliberately bypasses local records, LanCache
-// overrides and filtering.
+// cache-domains downloads) and deliberately bypasses local records, the
+// download cache DNS answers and filtering.
 //
 // Reply contract: the returned message's Question equals req.Question byte
 // for byte (original case) and its Id equals req.Id; every RR TTL in Answer,

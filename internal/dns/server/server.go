@@ -1,6 +1,6 @@
 // Package dnsserver serves DNS over UDP and TCP and implements the request
 // pipeline of docs/ARCHITECTURE.md 7.1: ACL, rate limit, hardening, client
-// identity, special-use names, local records, LanCache overrides, special
+// identity, special-use names, local records, download cache answers, special
 // domains, filtering, conditional forwarding / router resolver, upstream
 // resolution, CNAME inspection, reply shaping and logging. It also owns local
 // DNS records and conditional forwarders. Health probes from this machine
@@ -51,7 +51,7 @@ const (
 	StatusStale          = "stale"
 	StatusLocal          = "local"
 	StatusSpecial        = "special"
-	StatusLanCache       = "lancache"
+	StatusOverride       = "override"
 	StatusBlockedList    = "blocked-list"
 	StatusBlockedRule    = "blocked-rule"
 	StatusBlockedRegex   = "blocked-regex"
@@ -115,10 +115,11 @@ type Deps struct {
 	Services Services
 	Logs     QueryLogger
 	ACL      *netutil.ACLWatcher
-	// LanCacheReady reports whether overrides may be answered: the cache
-	// HTTP listener is bound and a valid cache IPv4 is known. When false,
-	// overrides are skipped (never answer with an unusable address).
-	LanCacheReady func() (ok bool, reason string)
+	// DownloadCacheReady reports whether the download cache DNS answers may
+	// be given: the cache HTTP listener is bound. (The server itself checks
+	// that a valid cache IPv4 is known.) When false, the answers are skipped
+	// (never answer with an unusable address).
+	DownloadCacheReady func() (ok bool, reason string)
 	// Container is the detected container type ("docker", "podman", "lxc",
 	// "") for cache-IP auto-detection (Docker bridge IPs are never used).
 	Container string
@@ -199,9 +200,9 @@ type BlockingStatus struct {
 	Permanent   bool       `json:"permanent"` // disabled until re-enabled
 }
 
-// CacheIPStatus describes the LanCache answer addresses. IPv4/IPv6 are the
-// addresses overrides are (or, while LanCache is disabled or not ready,
-// would be) answered with.
+// CacheIPStatus describes the addresses of the download cache DNS answers.
+// IPv4/IPv6 are the addresses download service names are (or, while the
+// download cache is disabled or not ready, would be) answered with.
 type CacheIPStatus struct {
 	IPv4   []string `json:"ipv4"`
 	IPv6   []string `json:"ipv6"`
@@ -209,8 +210,9 @@ type CacheIPStatus struct {
 	Ready  bool     `json:"ready"`            // overrides are being answered
 	Reason string   `json:"reason,omitempty"` // why not ready; while ready: the warning (compatibility)
 	// Warning is the address detection warning, reported whether or not
-	// LanCache is enabled: public or CGNAT primary address, container
-	// bridge network, no private address, no valid configured address.
+	// the download cache is enabled: public or CGNAT primary address,
+	// container bridge network, no private address, no valid configured
+	// address.
 	Warning string `json:"warning,omitempty"`
 }
 

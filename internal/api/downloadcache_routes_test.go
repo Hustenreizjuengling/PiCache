@@ -1,0 +1,279 @@
+package api
+
+import (
+	"context"
+	"encoding/json/v2"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/hustenreizjuengling/picache/internal/auth"
+	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/services"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/sni"
+	"github.com/hustenreizjuengling/picache/internal/secrets"
+	"github.com/hustenreizjuengling/picache/internal/settings"
+)
+
+// dcSource serves a cache-domains source from memory (no network).
+type dcSource struct {
+	files map[string]string
+	down  atomic.Bool
+}
+
+func (l *dcSource) RoundTrip(req *http.Request) (*http.Response, error) {
+	if l.down.Load() {
+		return nil, io.ErrUnexpectedEOF
+	}
+	body, ok := l.files[req.URL.Path]
+	status := http.StatusOK
+	if !ok {
+		status, body = http.StatusNotFound, ""
+	}
+	return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+}
+
+type downloadCacheEnv struct {
+	srv *Server
+	reg *services.Registry
+	src *dcSource
+}
+
+func newDownloadCacheEnv(t *testing.T) *downloadCacheEnv {
+	t.Helper()
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "picache.db"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	st, err := settings.Open(ctx, d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Update(ctx, func(a *settings.All) error {
+		a.DownloadCache.DomainsSource = "https://cdn.test/cd/"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var many strings.Builder
+	for i := range 60 {
+		fmt.Fprintf(&many, "host%d.bigcdn.example.com\n", i)
+	}
+	src := &dcSource{files: map[string]string{
+		"/cd/cache_domains.json": `{"cache_domains":[
+			{"name":"steam","description":"Steam","domain_files":["steam.txt"]},
+			{"name":"bigcdn","description":"Many hosts","domain_files":["big.txt"]}]}`,
+		"/cd/steam.txt": "lancache.steamcontent.com\n",
+		"/cd/big.txt":   many.String(),
+	}}
+	reg, err := services.New(ctx, d, st, &http.Client{Transport: src}, filepath.Join(dir, "cache-domains"), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	box, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	as, err := auth.New(ctx, d, st, box, filepath.Join(dir, "setup-token"), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{d: Deps{Settings: st, Services: reg, SNI: sni.New(sni.Deps{Settings: st, Log: log}), Auth: as, Log: log}, log: log}
+	return &downloadCacheEnv{srv: s, reg: reg, src: src}
+}
+
+// call runs h like s.route does after authentication (admin principal).
+func (e *downloadCacheEnv) call(h handlerFunc, method, id, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, "/api/v1/download-cache/x", strings.NewReader(body))
+	if body != "" {
+		r.Header.Set("Content-Type", "application/json")
+	}
+	if id != "" {
+		r.SetPathValue("id", id)
+	}
+	p := &auth.Principal{UserID: 1, Username: "admin", Scope: auth.ScopeAdmin}
+	r = r.WithContext(context.WithValue(r.Context(), principalKey, p))
+	w := httptest.NewRecorder()
+	if err := h(w, r); err != nil {
+		writeError(w, r, e.srv.log, err)
+	}
+	return w
+}
+
+func dcDecode[T any](t *testing.T, w *httptest.ResponseRecorder) T {
+	t.Helper()
+	var v T
+	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+		t.Fatalf("decode %q: %v", w.Body, err)
+	}
+	return v
+}
+
+func dcWantError(t *testing.T, w *httptest.ResponseRecorder, status int, field, msg string) {
+	t.Helper()
+	if w.Code != status {
+		t.Fatalf("status %d, want %d: %s", w.Code, status, w.Body)
+	}
+	b := dcDecode[errorBody](t, w)
+	if b.Error.Field != field || !strings.Contains(b.Error.Message, msg) {
+		t.Fatalf("error = %+v, want field %q containing %q", b.Error, field, msg)
+	}
+}
+
+func (e *downloadCacheEnv) audited(t *testing.T) []string {
+	t.Helper()
+	entries, _, err := e.srv.d.Auth.AuditLog(context.Background(), auth.AuditQuery{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, a := range entries {
+		out = append(out, a.Action+" "+a.Target)
+	}
+	return out
+}
+
+func TestDownloadCacheRoutesServiceList(t *testing.T) {
+	e := newDownloadCacheEnv(t)
+	w := e.call(e.srv.downloadCacheServices, "GET", "", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", w.Code, w.Body)
+	}
+	list := dcDecode[[]services.Service](t, w)
+	i := slices.IndexFunc(list, func(s services.Service) bool { return s.ID == "bigcdn" })
+	if i < 0 || len(list[i].Domains) != downloadCacheListDomains || list[i].DomainCount != 60 || list[i].ExtraDomains == nil {
+		t.Fatalf("list entry = %+v", list[i])
+	}
+	full := dcDecode[services.Service](t, e.call(e.srv.downloadCacheService, "GET", "bigcdn", ""))
+	if len(full.Domains) != 60 {
+		t.Fatalf("detail domains = %d", len(full.Domains))
+	}
+	// The trimmed list must not have modified the registry's data.
+	if sv, _ := e.reg.Service(context.Background(), "bigcdn"); len(sv.Domains) != 60 {
+		t.Fatal("list view trimmed the shared domains")
+	}
+	dcWantError(t, e.call(e.srv.downloadCacheService, "GET", "nope", ""), http.StatusNotFound, "", "not found")
+	dcWantError(t, e.call(e.srv.downloadCacheService, "GET", "../etc", ""), http.StatusBadRequest, "id", "invalid")
+}
+
+func TestDownloadCacheRoutesEnableAndDomains(t *testing.T) {
+	e := newDownloadCacheEnv(t)
+	w := e.call(e.srv.downloadCacheSetEnabled, "PUT", "bigcdn", `{"enabled":false}`)
+	if w.Code != http.StatusOK || dcDecode[services.Service](t, w).Enabled {
+		t.Fatalf("disable: %d %s", w.Code, w.Body)
+	}
+	if _, ok := e.reg.MatchDNS("host1.bigcdn.example.com"); ok {
+		t.Fatal("disabled service still matched")
+	}
+	dcWantError(t, e.call(e.srv.downloadCacheSetEnabled, "PUT", "bigcdn", `{}`), http.StatusBadRequest, "enabled", "required")
+	dcWantError(t, e.call(e.srv.downloadCacheSetEnabled, "PUT", "bigcdn", `{"enabled":true,"x":1}`), http.StatusBadRequest, "body", "")
+	dcWantError(t, e.call(e.srv.downloadCacheSetEnabled, "PUT", "nope", `{"enabled":true}`), http.StatusNotFound, "", "")
+
+	w = e.call(e.srv.downloadCacheSetDomains, "PUT", "steam", `{"extraDomains":["Cache1.Example-CDN.net"]}`)
+	if sv := dcDecode[services.Service](t, w); w.Code != http.StatusOK || !slices.Equal(sv.ExtraDomains, []string{"cache1.example-cdn.net"}) {
+		t.Fatalf("domains: %d %s", w.Code, w.Body)
+	}
+	dcWantError(t, e.call(e.srv.downloadCacheSetDomains, "PUT", "steam", `{"extraDomains":["ok.example.org","*.co.uk"]}`),
+		http.StatusBadRequest, "extraDomains[1]", `"*.co.uk"`)
+
+	got := e.audited(t)
+	for _, want := range []string{"download_cache.service.enable bigcdn", "download_cache.service.domains steam"} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("audit %q missing in %q", want, got)
+		}
+	}
+}
+
+func TestDownloadCacheRoutesCustomServices(t *testing.T) {
+	e := newDownloadCacheEnv(t)
+	w := e.call(e.srv.downloadCacheCreate, "POST", "", `{"name":"LAN Mirror","description":"d","domains":["mirror.example.org"]}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body)
+	}
+	sv := dcDecode[services.Service](t, w)
+	if sv.ID != "custom-lan-mirror" || !sv.Custom {
+		t.Fatalf("created = %+v", sv)
+	}
+	dcWantError(t, e.call(e.srv.downloadCacheCreate, "POST", "", `{"name":"x","domains":["*"]}`), http.StatusBadRequest, "domains[0]", "")
+
+	w = e.call(e.srv.downloadCacheUpdate, "PUT", sv.ID, `{"name":"Renamed","description":"","domains":["m2.example.org"]}`)
+	if up := dcDecode[services.Service](t, w); w.Code != http.StatusOK || up.Name != "Renamed" {
+		t.Fatalf("update: %d %s", w.Code, w.Body)
+	}
+	dcWantError(t, e.call(e.srv.downloadCacheUpdate, "PUT", "steam", `{"name":"x","domains":["a.example.org"]}`), http.StatusForbidden, "", "custom")
+	dcWantError(t, e.call(e.srv.downloadCacheDelete, "DELETE", "steam", ""), http.StatusForbidden, "", "custom")
+	if w := e.call(e.srv.downloadCacheDelete, "DELETE", sv.ID, ""); w.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", w.Code, w.Body)
+	}
+	dcWantError(t, e.call(e.srv.downloadCacheDelete, "DELETE", sv.ID, ""), http.StatusNotFound, "", "")
+	got := e.audited(t)
+	for _, want := range []string{"download_cache.service.create custom-lan-mirror", "download_cache.service.update custom-lan-mirror", "download_cache.service.delete custom-lan-mirror"} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("audit %q missing in %q", want, got)
+		}
+	}
+}
+
+func TestDownloadCacheRoutesSourceAndLabels(t *testing.T) {
+	e := newDownloadCacheEnv(t)
+	st := dcDecode[services.SourceStatus](t, e.call(e.srv.downloadCacheSource, "GET", "", ""))
+	if !st.Ready || st.ServiceCount != 2 || st.Source != "https://cdn.test/cd/" {
+		t.Fatalf("source = %+v", st)
+	}
+	w := e.call(e.srv.downloadCacheRefresh, "POST", "", "")
+	if w.Code != http.StatusOK || !dcDecode[services.SourceStatus](t, w).Ready {
+		t.Fatalf("refresh: %d %s", w.Code, w.Body)
+	}
+	e.src.down.Store(true)
+	w = e.call(e.srv.downloadCacheRefresh, "POST", "", "")
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "cache-domains update failed") {
+		t.Fatalf("failed refresh: %d %s", w.Code, w.Body)
+	}
+
+	if w := e.call(e.srv.downloadCacheSetLabel, "PUT", "", `{"groupKey":"steam:depot:228990","label":"Redistributables"}`); w.Code != http.StatusNoContent {
+		t.Fatalf("label: %d %s", w.Code, w.Body)
+	}
+	if got := e.reg.Label("steam:depot:228990"); got != "Redistributables" {
+		t.Fatalf("label = %q", got)
+	}
+	dcWantError(t, e.call(e.srv.downloadCacheSetLabel, "PUT", "", `{"groupKey":"nocolon","label":"x"}`), http.StatusBadRequest, "groupKey", "")
+
+	sn := dcDecode[sni.Stats](t, e.call(e.srv.downloadCacheSNI, "GET", "", ""))
+	if sn.Listening || sn.Total != 0 {
+		t.Fatalf("sni stats = %+v", sn)
+	}
+	if got := e.audited(t); !slices.Contains(got, "download_cache.label.set steam:depot:228990") || !slices.Contains(got, "download_cache.source.refresh ") {
+		t.Fatalf("audit = %q", got)
+	}
+}
+
+func TestDownloadCacheRoutesRegistered(t *testing.T) {
+	e := newDownloadCacheEnv(t)
+	s := &Server{d: e.srv.d, log: e.srv.log, mux: http.NewServeMux()}
+	s.registerDownloadCacheRoutes()
+	for _, pattern := range []string{
+		"GET /api/v1/download-cache/services", "GET /api/v1/download-cache/services/steam", "PUT /api/v1/download-cache/services/steam/enabled",
+		"PUT /api/v1/download-cache/services/steam/domains", "POST /api/v1/download-cache/services", "PUT /api/v1/download-cache/services/x",
+		"DELETE /api/v1/download-cache/services/x", "GET /api/v1/download-cache/source", "POST /api/v1/download-cache/source/refresh",
+		"PUT /api/v1/download-cache/labels", "GET /api/v1/download-cache/sni",
+	} {
+		method, path, _ := strings.Cut(pattern, " ")
+		if _, matched := s.mux.Handler(httptest.NewRequest(method, path, nil)); matched == "" {
+			t.Errorf("%s not registered", pattern)
+		}
+	}
+}

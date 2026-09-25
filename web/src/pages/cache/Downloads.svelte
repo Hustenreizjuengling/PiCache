@@ -51,11 +51,11 @@
     })
   }
 
-  const lancacheOff = $derived(appStatus.overview.data?.lancacheEnabled === false)
+  const cacheOff = $derived(appStatus.overview.data?.downloadCacheEnabled === false)
 </script>
 
 <div class="page">
-  {#if lancacheOff}
+  {#if cacheOff}
     <Notice tone="info" title={t('cache.off.title')}>
       {t('cache.off.text')}
       {#snippet actions()}

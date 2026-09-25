@@ -15,11 +15,11 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/proxy"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/sni"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
-	"github.com/hustenreizjuengling/picache/internal/lancache/proxy"
-	"github.com/hustenreizjuengling/picache/internal/lancache/sni"
 	"github.com/hustenreizjuengling/picache/internal/listing"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
@@ -119,19 +119,19 @@ type overviewHealth struct {
 }
 
 type systemOverviewResponse struct {
-	Blocking        dnsserver.BlockingStatus `json:"blocking"`
-	DNS             dnsserver.Stats          `json:"dns"`
-	CacheIPs        dnsserver.CacheIPStatus  `json:"cacheIps"`
-	Router          dnsserver.RouterStatus   `json:"router"`
-	LanCacheEnabled bool                     `json:"lancacheEnabled"`
-	ServicesReady   bool                     `json:"servicesReady"`
-	Store           StoreState               `json:"store"`
-	Proxy           proxy.Stats              `json:"proxy"`
-	SNI             sni.Stats                `json:"sni"`
-	Filter          filter.Stats             `json:"filter"`
-	Upstreams       []upstream.UpstreamStat  `json:"upstreams"`
-	ClockGuard      bool                     `json:"clockGuard"`
-	Health          overviewHealth           `json:"health"`
+	Blocking             dnsserver.BlockingStatus `json:"blocking"`
+	DNS                  dnsserver.Stats          `json:"dns"`
+	CacheIPs             dnsserver.CacheIPStatus  `json:"cacheIps"`
+	Router               dnsserver.RouterStatus   `json:"router"`
+	DownloadCacheEnabled bool                     `json:"downloadCacheEnabled"`
+	ServicesReady        bool                     `json:"servicesReady"`
+	Store                StoreState               `json:"store"`
+	Proxy                proxy.Stats              `json:"proxy"`
+	SNI                  sni.Stats                `json:"sni"`
+	Filter               filter.Stats             `json:"filter"`
+	Upstreams            []upstream.UpstreamStat  `json:"upstreams"`
+	ClockGuard           bool                     `json:"clockGuard"`
+	Health               overviewHealth           `json:"health"`
 }
 
 func (s *Server) systemOverview(w http.ResponseWriter, r *http.Request) error {
@@ -151,19 +151,19 @@ func (s *Server) systemOverview(w http.ResponseWriter, r *http.Request) error {
 		ups = []upstream.UpstreamStat{}
 	}
 	return ok(w, systemOverviewResponse{
-		Blocking:        d.DNS.Blocking(),
-		DNS:             d.DNS.Stats(),
-		CacheIPs:        d.DNS.CacheIPs(),
-		Router:          d.DNS.Router(),
-		LanCacheEnabled: d.Settings.Get().LanCache.Enabled,
-		ServicesReady:   d.Services.Status().Ready,
-		Store:           d.Runtime.StoreState(),
-		Proxy:           d.Proxy.Stats(),
-		SNI:             d.SNI.Stats(),
-		Filter:          d.Filter.Stats(),
-		Upstreams:       ups,
-		ClockGuard:      d.Upstream.ClockGuard(),
-		Health:          sum,
+		Blocking:             d.DNS.Blocking(),
+		DNS:                  d.DNS.Stats(),
+		CacheIPs:             d.DNS.CacheIPs(),
+		Router:               d.DNS.Router(),
+		DownloadCacheEnabled: d.Settings.Get().DownloadCache.Enabled,
+		ServicesReady:        d.Services.Status().Ready,
+		Store:                d.Runtime.StoreState(),
+		Proxy:                d.Proxy.Stats(),
+		SNI:                  d.SNI.Stats(),
+		Filter:               d.Filter.Stats(),
+		Upstreams:            ups,
+		ClockGuard:           d.Upstream.ClockGuard(),
+		Health:               sum,
 	})
 }
 

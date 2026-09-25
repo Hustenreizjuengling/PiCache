@@ -5,15 +5,16 @@
 [![Go 1.27](https://img.shields.io/badge/go-1.27-00ADD8.svg?logo=go&logoColor=white)](go.mod)
 
 **PiCache is the DNS server and download cache for your home lab or LAN
-party, in one binary.** It filters ads and trackers for the whole network,
-like Pi-hole or AdGuard Home. It is also a LanCache-compatible cache: game
-and OS downloads that the CDNs deliver over plain HTTP (Steam, Battle.net,
-Xbox, Windows Update and more) come from your local disk or NAS after the
-first download. One web UI shows who asked for what, what is cached and how
-much bandwidth was saved. It is written in Go with an embedded Svelte UI, and
-no nginx, BIND, dnsmasq or cron runs underneath: one process, one
-configuration database. It is designed for a Raspberry Pi 4 or 5, a small VM
-or an unprivileged Proxmox LXC container.
+party, in one binary.** It filters ads and trackers for the whole network.
+It also caches game and OS downloads that the CDNs deliver over plain HTTP
+(Steam, Battle.net, Xbox, Windows Update and more), so they come from your
+local disk or NAS after the first download. The cache uses the
+cache-domains lists and works with Steam's cache discovery and with prefill
+tools. One web UI shows who asked for what, what is cached and how much
+bandwidth was saved. It is written in Go with an embedded Svelte UI, and no
+nginx, BIND, dnsmasq or cron runs underneath: one process, one configuration
+database. It is designed for a Raspberry Pi 4 or 5, a small VM or an
+unprivileged Proxmox LXC container.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/overview-light.png">
@@ -24,14 +25,14 @@ or an unprivileged Proxmox LXC container.
 
 **DNS filtering**
 
-- Blocklists in hosts, domain, AdGuard/ABP and regex formats (HaGeZi Multi
-  NORMAL by default; OISD, StevenBlack, AdGuard DNS filter, 1Hosts and more
-  in the built-in catalogue), updated automatically.
+- Blocklists in hosts, domain, adblock (ABP) and regex formats (HaGeZi
+  Multi NORMAL by default; OISD, StevenBlack, 1Hosts and more in the
+  built-in catalogue), updated automatically.
 - Your own allow and block rules for exact names, subdomains or regular
   expressions. Allow rules and exact or subdomain block rules take precedence
   over the lists. The UI explains which rule or list decided.
-- Groups with Pi-hole semantics: clients (by IP, CIDR or MAC) get the lists
-  and rules of their groups.
+- Groups: clients (by IP, CIDR or MAC) get the lists and rules of their
+  groups.
 - Blocking modes (null IP, NXDOMAIN, NODATA, REFUSED, custom IP), a timed
   pause, CNAME inspection, and blocking of the Firefox DoH canary and iCloud
   Private Relay.
@@ -43,16 +44,20 @@ or an unprivileged Proxmox LXC container.
 - Safe by default: not an open resolver (private networks only), rate limits,
   private reverse zones never leak upstream.
 
-**Download cache (LanCache-compatible)**
+**Download cache**
 
-- DNS overrides for the game and OS CDNs from
-  [uklans/cache-domains](https://github.com/uklans/cache-domains), plus your
-  own services and hosts. LanCache is off until you enable it.
+- DNS answers that send the game and OS CDNs to the cache, from the
+  cache-domains lists
+  ([uklans/cache-domains](https://github.com/uklans/cache-domains)) plus
+  your own services and hosts. The download cache is off until you enable
+  it.
 - HTTP cache on port 80 that stores 1 MiB slices, handles range requests,
   merges concurrent downloads of the same content and reads ahead.
 - HTTPS pass-through on port 443: the connection is relayed by SNI and never
-  decrypted, so HTTPS downloads are not cached. Heartbeat and prefill-tool
-  compatibility.
+  decrypted, so HTTPS downloads are not cached.
+- Steam finds the cache by itself (it looks up a fixed hostname to discover
+  a download cache), and prefill tools work (the heartbeat path they probe
+  and the response header they check).
 - "What was downloaded": content grouped into games and updates (Steam
   depots, Blizzard products, Epic, Riot, Xbox packages, Windows KBs,
   PlayStation titles, …) with your own labels.
@@ -109,7 +114,7 @@ Select an image to see it at full size.
     </td>
     <td width="50%" valign="top">
       <a href="docs/screenshots/health.png"><img src="docs/screenshots/health.png" width="380" alt="The health page with passing checks, version details, data paths and memory use"></a><br>
-      <b>Health &amp; about:</b> self-checks for listeners, upstreams, blocklists, LanCache and storage, plus version, data paths and memory.
+      <b>Health &amp; about:</b> self-checks for listeners, upstreams, blocklists, the download cache and storage, plus version, data paths and memory.
     </td>
   </tr>
   <tr>
@@ -216,7 +221,7 @@ flowchart LR
 
     subgraph picache["picache: one process"]
         dns["DNS :53<br/>UDP and TCP"]
-        pipeline["Local records, LanCache overrides,<br/>rules and blocklists"]
+        pipeline["Local records, download cache answers,<br/>rules and blocklists"]
         resolver["Upstream resolver<br/>and response cache"]
         proxy["HTTP cache :80"]
         sni["SNI pass-through :443"]
@@ -238,7 +243,7 @@ flowchart LR
     admin --> web
 ```
 
-For names of enabled LanCache services, the DNS server answers with
+For names of enabled cache services, the DNS server answers with
 PiCache's own address, so the clients' downloads arrive at the HTTP cache on
 port 80 and the SNI pass-through on port 443. Both resolve the real CDN
 addresses through the upstream resolver, which bypasses the overrides,
@@ -395,7 +400,7 @@ Details, including backup and restore, are in
 - Strict Content-Security-Policy, `HttpOnly` and `SameSite=Strict` session
   cookies, cross-origin protection and a host allowlist against DNS
   rebinding.
-- The HTTP cache serves only hosts of known LanCache services and, by
+- The HTTP cache serves only hosts of known cache services and, by
   default, connects only to public upstream addresses (SSRF protection).
   HTTPS is relayed without being decrypted.
 - NAS passwords and TOTP secrets are sealed with XChaCha20-Poly1305. Backups
@@ -443,11 +448,10 @@ project follows its [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Kurzüberblick (Deutsch)
 
-PiCache ist ein filternder DNS-Server und ein LanCache-kompatibler
-Download-Cache in einem einzigen Programm mit Weboberfläche (Deutsch und
-Englisch).
+PiCache ist ein filternder DNS-Server und ein Download-Cache in einem
+einzigen Programm mit Weboberfläche (Deutsch und Englisch).
 
-- **DNS-Filter** wie Pi-hole/AdGuard Home: Blocklisten, eigene Regeln,
+- **DNS-Filter** für das ganze Netz: Blocklisten, eigene Regeln,
   Gruppen pro Client, lokale DNS-Einträge, verschlüsselte Upstreams
   (DoH/DoT), Abfrageprotokoll und Statistiken.
 - **Download-Cache** für Spiele und Updates (Steam, Epic, Battle.net, Riot,
@@ -456,7 +460,8 @@ Englisch).
   Netz geliefert, wahlweise von einer lokalen SSD oder einem NAS (SMB/NFS).
   HTTPS wird nur durchgereicht, nie entschlüsselt und nicht gecacht. Die
   Oberfläche zeigt, was heruntergeladen wurde und wie viel Bandbreite
-  gespart wurde.
+  gespart wurde. Der Cache nutzt die cache-domains-Listen und funktioniert
+  mit der Cache-Erkennung von Steam und mit Prefill-Tools.
 - **Sicher voreingestellt:** kein offener Resolver, unprivilegierter Dienst,
   Einrichtung per Einmal-Token, ein Admin-Konto mit optionaler
   Zwei-Faktor-Anmeldung, API-Tokens.

@@ -2,7 +2,7 @@
   @component
   Overview band "Cache": throughput from the cache (green) vs the Internet
   (brown), live downloads and storage with a "full in ~N days" estimate. When
-  LanCache is off it explains how to turn it on.
+  the download cache is off it explains how to turn it on.
 -->
 <script lang="ts">
   import { t } from '../../i18n/index.svelte'
@@ -12,7 +12,7 @@
   import { seriesRates } from '../../lib/series'
   import { Button, Chart, Notice } from '../../lib/ui'
   import Band from './Band.svelte'
-  import LanCacheOff from './LanCacheOff.svelte'
+  import DownloadCacheOff from './DownloadCacheOff.svelte'
   import { links } from './links'
   import LiveDownloads from './LiveDownloads.svelte'
   import StorageSummary from './StorageSummary.svelte'
@@ -20,7 +20,7 @@
   let { range, overview }: { range: RangePreset; overview: SystemOverview } = $props()
 
   // A derived boolean: the overview object changes every poll, the flag rarely.
-  const enabled = $derived(overview.lancacheEnabled)
+  const enabled = $derived(overview.downloadCacheEnabled)
   // asOf: the end of the range, for the rate of the bucket still in progress.
   const series = resource(
     async (signal) =>
@@ -48,7 +48,7 @@
   {/snippet}
 
   {#if !enabled}
-    <LanCacheOff />
+    <DownloadCacheOff />
   {:else}
     {#if !overview.cacheIps.ready}
       <div class="pad">

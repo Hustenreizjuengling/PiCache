@@ -21,13 +21,13 @@ import (
 // All is the complete settings document. Treat values returned by Get as
 // read-only: slices and maps are shared between snapshots.
 type All struct {
-	DNS      DNS      `json:"dns"`
-	Filter   Filter   `json:"filter"`
-	LanCache LanCache `json:"lancache"`
-	Cache    Cache    `json:"cache"`
-	Logs     Logs     `json:"logs"`
-	Web      Web      `json:"web"`
-	Updates  Updates  `json:"updates"`
+	DNS           DNS           `json:"dns"`
+	Filter        Filter        `json:"filter"`
+	DownloadCache DownloadCache `json:"downloadCache"`
+	Cache         Cache         `json:"cache"`
+	Logs          Logs          `json:"logs"`
+	Web           Web           `json:"web"`
+	Updates       Updates       `json:"updates"`
 }
 
 // DNS configures the resolver side.
@@ -77,8 +77,9 @@ type Filter struct {
 	BlockICloudPrivateRelay bool       `json:"blockIcloudPrivateRelay"`
 }
 
-// LanCache configures DNS overrides and the proxy front ends.
-type LanCache struct {
+// DownloadCache configures the download cache: its DNS answers and the proxy
+// front ends.
+type DownloadCache struct {
 	Enabled               bool     `json:"enabled"`   // off by default; enabled in the UI after checking IP and storage
 	CacheIPv4             []string `json:"cacheIpv4"` // RFC 1918 only; empty = auto-detect
 	CacheIPv6             []string `json:"cacheIpv6"` // ULA (fc00::/7) only; empty = AAAA answered with NODATA
@@ -172,12 +173,26 @@ type Store struct {
 	created   bool
 }
 
+// migrations of component "settings". Append only.
 var migrations = []string{
+	// v1
 	`CREATE TABLE settings (
 		id         INTEGER PRIMARY KEY CHECK (id = 1),
 		doc        TEXT    NOT NULL,
 		updated_at INTEGER NOT NULL
 	);`,
+	// v2 (0.2.0): the download cache section is stored as "downloadCache";
+	// 0.1.x stored it under its old name. Runs once per database at Open, so it
+	// also converts a document restored from an older backup (schema v1) at
+	// the start that applies the restore. An existing "downloadCache"
+	// section wins; the old member is removed either way. A document that is
+	// not valid JSON is left alone (Open reports it).
+	`UPDATE settings SET doc = CASE
+		WHEN COALESCE(json_type(doc, '$.downloadCache'), 'null') = 'null' AND json_type(doc, '$.lancache') = 'object'
+		THEN json_set(json_remove(doc, '$.lancache'), '$.downloadCache', json(json_extract(doc, '$.lancache')))
+		ELSE json_remove(doc, '$.lancache')
+	END
+	WHERE CASE WHEN json_valid(doc) THEN json_type(doc, '$.lancache') IS NOT NULL ELSE 0 END;`,
 }
 
 // Open loads the settings document, creating it from Defaults on first start.

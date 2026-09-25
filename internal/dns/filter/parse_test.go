@@ -80,7 +80,7 @@ func TestParseLine(t *testing.T) {
 		{line: "ads.example.com", subtree: true, status: lineOK, want: []entry{sub("ads.example.com")}},
 		{line: "localhost", status: lineSkip},
 		{line: "com", status: lineInvalid},
-		// AdGuard DNS filter
+		// adblock syntax (ABP): exceptions, anchors, wildcards, options, regexes
 		{line: "@@||example.org^", status: lineOK, want: []entry{{kind: kindSubtree, allow: true, domain: "example.org"}}},
 		{line: "@@||example.org^|", status: lineOK, want: []entry{{kind: kindSubtree, allow: true, domain: "example.org"}}},
 		{line: "|ads.example.com^", status: lineOK, want: []entry{ex("ads.example.com")}},

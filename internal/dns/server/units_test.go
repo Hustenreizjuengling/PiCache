@@ -241,23 +241,23 @@ func TestComputeCacheIPs(t *testing.T) {
 	}
 	tests := []struct {
 		name      string
-		l         settings.LanCache
+		l         settings.DownloadCache
 		env       hostEnv
 		v4        []string
 		auto      bool
 		hasReason bool
 	}{
-		{"configured", settings.LanCache{CacheIPv4: []string{"10.1.1.1"}}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, []string{"10.1.1.1"}, false, false},
-		{"primary private", settings.LanCache{}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, []string{"192.168.1.2"}, true, false},
-		{"primary public falls back", settings.LanCache{}, hostEnv{primary: ok("203.0.113.5"), ifaces: lan(false, "10.0.0.5")}, []string{"10.0.0.5"}, true, true},
-		{"primary CGNAT falls back", settings.LanCache{}, hostEnv{primary: ok("100.64.1.2"), ifaces: lan(false, "10.0.0.5")}, []string{"10.0.0.5"}, true, true},
-		{"configured invalid", settings.LanCache{CacheIPv4: []string{"8.8.8.8"}}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, nil, false, true},
-		{"no private address", settings.LanCache{}, hostEnv{primary: ok("203.0.113.5"), ifaces: lan(false)}, nil, true, true},
-		{"docker bridge", settings.LanCache{}, hostEnv{container: "docker", primary: ok("172.17.0.2"), ifaces: lan(false, "172.17.0.2")}, nil, true, true},
-		{"docker host network", settings.LanCache{}, hostEnv{container: "docker", primary: ok("172.20.0.2"), ifaces: lan(true, "172.20.0.2")}, []string{"172.20.0.2"}, true, false},
-		{"podman bridge", settings.LanCache{}, hostEnv{container: "podman", primary: ok("172.16.5.2"), ifaces: lan(false)}, nil, true, true},
-		{"lxc uses primary", settings.LanCache{}, hostEnv{container: "lxc", primary: ok("172.16.5.2"), ifaces: lan(false)}, []string{"172.16.5.2"}, true, false},
-		{"no route", settings.LanCache{}, hostEnv{primary: func() (netip.Addr, error) { return netip.Addr{}, errors.New("no route") }, ifaces: lan(false, "192.168.9.9")}, []string{"192.168.9.9"}, true, false},
+		{"configured", settings.DownloadCache{CacheIPv4: []string{"10.1.1.1"}}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, []string{"10.1.1.1"}, false, false},
+		{"primary private", settings.DownloadCache{}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, []string{"192.168.1.2"}, true, false},
+		{"primary public falls back", settings.DownloadCache{}, hostEnv{primary: ok("203.0.113.5"), ifaces: lan(false, "10.0.0.5")}, []string{"10.0.0.5"}, true, true},
+		{"primary CGNAT falls back", settings.DownloadCache{}, hostEnv{primary: ok("100.64.1.2"), ifaces: lan(false, "10.0.0.5")}, []string{"10.0.0.5"}, true, true},
+		{"configured invalid", settings.DownloadCache{CacheIPv4: []string{"8.8.8.8"}}, hostEnv{primary: ok("192.168.1.2"), ifaces: lan(false)}, nil, false, true},
+		{"no private address", settings.DownloadCache{}, hostEnv{primary: ok("203.0.113.5"), ifaces: lan(false)}, nil, true, true},
+		{"docker bridge", settings.DownloadCache{}, hostEnv{container: "docker", primary: ok("172.17.0.2"), ifaces: lan(false, "172.17.0.2")}, nil, true, true},
+		{"docker host network", settings.DownloadCache{}, hostEnv{container: "docker", primary: ok("172.20.0.2"), ifaces: lan(true, "172.20.0.2")}, []string{"172.20.0.2"}, true, false},
+		{"podman bridge", settings.DownloadCache{}, hostEnv{container: "podman", primary: ok("172.16.5.2"), ifaces: lan(false)}, nil, true, true},
+		{"lxc uses primary", settings.DownloadCache{}, hostEnv{container: "lxc", primary: ok("172.16.5.2"), ifaces: lan(false)}, []string{"172.16.5.2"}, true, false},
+		{"no route", settings.DownloadCache{}, hostEnv{primary: func() (netip.Addr, error) { return netip.Addr{}, errors.New("no route") }, ifaces: lan(false, "192.168.9.9")}, []string{"192.168.9.9"}, true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -375,7 +375,7 @@ func TestACLReaderDropsBeforeParsing(t *testing.T) {
 }
 
 func TestLookup(t *testing.T) {
-	e := newEnv(t, func(a *settings.All) { a.LanCache.Enabled = true })
+	e := newEnv(t, func(a *settings.All) { a.DownloadCache.Enabled = true })
 	e.flt.check["ads.example.com"] = listBlock("TestList")
 	e.flt.matches = []filter.Match{{Action: "block", Source: "list", Name: "TestList", Applies: true, Decisive: true}}
 	ctx := context.Background()

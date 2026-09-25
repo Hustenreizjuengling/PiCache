@@ -334,8 +334,8 @@ func (e *Engine) Check(qname string, groups []int64) Decision {
 	return e.snap.Load().check(qname, groups, false)
 }
 
-// CheckRules evaluates only user rules (used before LanCache overrides: a
-// user block rule for the client's groups wins over the override).
+// CheckRules evaluates only user rules (used before the download cache DNS
+// answers: a user block rule for the client's groups wins over them).
 func (e *Engine) CheckRules(qname string, groups []int64) Decision {
 	return e.snap.Load().check(qname, groups, true)
 }

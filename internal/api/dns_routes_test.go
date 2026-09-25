@@ -230,7 +230,7 @@ func TestDNSRoutesBlockingAndStatus(t *testing.T) {
 		t.Errorf("stats %s", rec.Body.String())
 	}
 	rec = e.call(t, s.dnsCacheIPs, "GET", "/api/v1/dns/cache-ips", "")
-	if st := dnsDecode[dnsserver.CacheIPStatus](t, rec); st.Ready || st.Reason != "LanCache is disabled" {
+	if st := dnsDecode[dnsserver.CacheIPStatus](t, rec); st.Ready || st.Reason != "the download cache is disabled" {
 		t.Errorf("cache IPs %+v", st)
 	}
 	rec = e.call(t, s.dnsRouter, "GET", "/api/v1/dns/router", "")
@@ -255,10 +255,10 @@ func TestDNSRoutesClientsAndGroups(t *testing.T) {
 	}
 	rec = e.call(t, s.clientCreate, "POST", "/api/v1/clients", `{"name":"Other","identifiers":["192.168.1.30"]}`)
 	dnsExpect(t, rec, http.StatusConflict)
-	rec = e.call(t, s.clientUpdate, "PUT", "/api/v1/clients/x", `{"name":"Tablet","identifiers":["192.168.1.31"],"lanCacheBypass":true}`, "id", dnsJSONInt(c.ID))
+	rec = e.call(t, s.clientUpdate, "PUT", "/api/v1/clients/x", `{"name":"Tablet","identifiers":["192.168.1.31"],"downloadCacheBypass":true}`, "id", dnsJSONInt(c.ID))
 	dnsExpect(t, rec, http.StatusOK)
 	rec = e.call(t, s.clientsList, "GET", "/api/v1/clients", "")
-	if list := dnsDecode[[]clients.Client](t, rec); len(list) != 1 || !list[0].LanCacheBypass {
+	if list := dnsDecode[[]clients.Client](t, rec); len(list) != 1 || !list[0].DownloadCacheBypass {
 		t.Errorf("clients %+v", list)
 	}
 

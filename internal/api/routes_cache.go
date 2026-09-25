@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
-	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
+	cachestore "github.com/hustenreizjuengling/picache/internal/dlcache/store"
 	"github.com/hustenreizjuengling/picache/internal/listing"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 )
