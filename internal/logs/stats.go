@@ -476,6 +476,7 @@ func (s *Store) ClientStats(ctx context.Context, from, to time.Time) ([]ClientSt
 	}
 	out := make([]ClientStat, 0, len(byIP))
 	for _, c := range byIP {
+		c.Addresses = []string{c.ClientIP}
 		out = append(out, *c)
 	}
 	slices.SortFunc(out, func(a, b ClientStat) int {

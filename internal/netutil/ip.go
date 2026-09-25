@@ -10,8 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -141,16 +139,13 @@ func ClientKey(ip netip.Addr) netip.Prefix {
 	return p
 }
 
-// onLinkTTL is how long the cached directly connected IPv6 subnets are used
+// onLinkTTL is how long the cached directly connected subnets are used
 // before they are re-read (interfaces can be renumbered).
 const onLinkTTL = time.Minute
 
-// onLink caches the directly connected IPv6 subnets for ClientKey (hot path).
-var onLink struct {
-	mu      sync.Mutex // one refresh at a time
-	v6      atomic.Pointer[[]netip.Prefix]
-	expires atomic.Int64 // unix nanoseconds
-}
+// onLinkV6Cache caches the directly connected IPv6 subnets for ClientKey
+// (hot path).
+var onLinkV6Cache = prefixCache{load: connectedV6Subnets}
 
 // interfaceAddrs lists interface addresses (replaced in tests).
 var interfaceAddrs = net.InterfaceAddrs
@@ -158,26 +153,7 @@ var interfaceAddrs = net.InterfaceAddrs
 // onLinkV6 reports whether ip is inside a directly connected IPv6 subnet.
 // The subnets are re-read at most once per onLinkTTL by one caller; other
 // callers keep using the previous list meanwhile.
-func onLinkV6(ip netip.Addr) bool {
-	ps := onLink.v6.Load()
-	if ps == nil || time.Now().UnixNano() >= onLink.expires.Load() {
-		if ps == nil {
-			onLink.mu.Lock()
-		} else if !onLink.mu.TryLock() {
-			return inAny(ip, *ps)
-		}
-		if cur := onLink.v6.Load(); cur != nil && time.Now().UnixNano() < onLink.expires.Load() {
-			ps = cur // refreshed while we waited
-		} else {
-			fresh := connectedV6Subnets()
-			onLink.v6.Store(&fresh)
-			onLink.expires.Store(time.Now().Add(onLinkTTL).UnixNano())
-			ps = &fresh
-		}
-		onLink.mu.Unlock()
-	}
-	return inAny(ip, *ps)
-}
+func onLinkV6(ip netip.Addr) bool { return inAny(ip, onLinkV6Cache.get()) }
 
 // connectedV6Subnets returns the global and unique-local IPv6 subnets
 // (at least /48) of this machine's interfaces.
@@ -271,7 +247,8 @@ func LocalAddrs() []netip.Addr {
 // PrivateLANPrefixes ranges) of at least /8 (IPv4) or /48 (IPv6). Public
 // subnets of either family are never trusted automatically: a cloud VM's
 // on-link /20 or a VPS's shared SLAAC /64 contains other tenants. A LAN's
-// public (GUA) IPv6 prefix must be added to dns.allowedNetworks explicitly.
+// public (GUA) IPv6 prefix is trusted only when it is added to
+// dns.allowedNetworks or dns.trustConnectedNetworks is on (ConnectedSubnets).
 func LocalSubnets() []netip.Prefix {
 	return privateSubnets(interfacePrefixes())
 }

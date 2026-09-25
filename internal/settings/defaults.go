@@ -6,7 +6,7 @@ func Defaults() All {
 	return All{
 		DNS: DNS{
 			Upstreams:           []string{"https://dns.quad9.net/dns-query", "https://cloudflare-dns.com/dns-query"},
-			Bootstrap:           []string{"9.9.9.9", "149.112.112.112", "1.1.1.1", "1.0.0.1"},
+			Bootstrap:           []string{"9.9.9.9", "149.112.112.112", "1.1.1.1", "1.0.0.1", "2620:fe::fe", "2606:4700:4700::1111"},
 			UpstreamMode:        "load_balance",
 			UpstreamTimeoutMs:   10000,
 			LocalPTRUpstreams:   []string{},
@@ -22,6 +22,7 @@ func Defaults() All {
 			CacheSize:           10000,
 			ServeStale:          true,
 			ServeStaleMaxAgeSec: 3600,
+			DNS64:               DNS64{Prefix: DefaultDNS64Prefix},
 		},
 		Filter: Filter{
 			Enabled:                 true,

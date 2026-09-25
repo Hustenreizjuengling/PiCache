@@ -1,10 +1,11 @@
 <!--
   @component
   DNS settings: upstreams (with tests and health), response cache, blocking
-  replies and special domains, rate limiting, access, local names and
-  DNSSEC. Edits the "dns" and "filter" settings sections; Save sends only
-  the changed members of each. Validation errors appear next to the field.
-  Query: ?section=upstreams|cache|blocking|ratelimit|access|names|dnssec (scrolls there)
+  replies and special domains, rate limiting, access, local names, IPv6
+  answers (no AAAA, DNS64) and DNSSEC. Edits the "dns" and "filter"
+  settings sections; Save sends only the changed members of each.
+  Validation errors appear next to the field.
+  Query: ?section=upstreams|cache|blocking|ratelimit|access|names|ipv6|dnssec (scrolls there)
 -->
 <script lang="ts">
   import { tick, untrack } from 'svelte'
@@ -20,6 +21,7 @@
   import BlockingSection from './settings/BlockingSection.svelte'
   import CacheSection from './settings/CacheSection.svelte'
   import DnssecSection from './settings/DnssecSection.svelte'
+  import Ipv6Section from './settings/Ipv6Section.svelte'
   import NamesSection from './settings/NamesSection.svelte'
   import RateLimitSection from './settings/RateLimitSection.svelte'
   import UpstreamsSection from './settings/UpstreamsSection.svelte'
@@ -29,7 +31,7 @@
   const upstreams = resource((signal) => api.upstreams.get({ signal }), { interval: 10_000 })
   const dnsStats = resource((signal) => api.dns.stats({ signal }), { interval: 10_000 })
 
-  const SECTIONS = ['upstreams', 'cache', 'blocking', 'ratelimit', 'access', 'names', 'dnssec'] as const
+  const SECTIONS = ['upstreams', 'cache', 'blocking', 'ratelimit', 'access', 'names', 'ipv6', 'dnssec'] as const
   type Section = (typeof SECTIONS)[number]
 
   const ready = $derived(!!dns.draft && !!filter.draft)
@@ -48,6 +50,7 @@
       ratelimit: t('dns.settings.rate.title'),
       access: t('dns.settings.access.title'),
       names: t('dns.settings.names.title'),
+      ipv6: t('dns.settings.ipv6.title'),
       dnssec: t('dns.settings.dnssec.title'),
     }[s]
   }
@@ -112,6 +115,7 @@
       <RateLimitSection form={dns} stats={dnsStats.data} />
       <AccessSection form={dns} />
       <NamesSection form={dns} status={appStatus.overview.data?.router} />
+      <Ipv6Section form={dns} />
       <DnssecSection form={dns} />
     </fieldset>
 

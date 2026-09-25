@@ -1,11 +1,14 @@
 <!--
   @component
   A small ranked list (top blocked domains, top clients) with inline bars.
+  Items grouped by device show the device's other addresses as "+N
+  addresses" (expandable, all of them in its tooltip).
 -->
 <script lang="ts">
   import type { TopItem } from '../../lib/api'
   import { formatNumber } from '../../lib/format'
   import { Table, type Column, type Pair } from '../../lib/ui'
+  import AddressList from '../dns/shared/AddressList.svelte'
 
   interface Props {
     title: string
@@ -52,8 +55,12 @@
 </script>
 
 {#snippet keyCell(it: TopItem)}
-  <a class={['key', mono && !it.label && 'mono']} href={link(it)} title={it.key}>{it.label || it.key}</a>
-  {#if it.label && it.label !== it.key}<span class="sub mono">{it.key}</span>{/if}
+  {@const labelled = !!it.label && it.label !== it.key}
+  {@const addresses = it.addresses?.length ? it.addresses : [it.key]}
+  <a class={['key', mono && !it.label && 'mono']} href={link(it)} title={addresses.join('\n')}>{it.label || it.key}</a>
+  {#if labelled || addresses.some((a) => a !== it.key)}
+    <span class="sub mono"><AddressList {addresses} first={it.key} hideFirst={!labelled} /></span>
+  {/if}
 {/snippet}
 
 {#snippet countCell(it: TopItem)}

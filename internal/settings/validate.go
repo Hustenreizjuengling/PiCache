@@ -38,6 +38,7 @@ func ParseUpstream(s string) (UpstreamSpec, error) {
 	if !strings.Contains(s, "://") {
 		s = "udp://" + s
 	}
+	s = escapeZone(s)
 	u, err := url.Parse(s)
 	if err != nil {
 		return spec, err
@@ -89,6 +90,21 @@ func ParseUpstream(s string) (UpstreamSpec, error) {
 	return spec, nil
 }
 
+// escapeZone percent-encodes the zone of a bracketed IPv6 literal
+// ("[fe80::1%eth0]:53", e.g. a router resolver on a link-local address) as
+// URLs require ("%25eth0").
+func escapeZone(s string) string {
+	i := strings.IndexByte(s, '[')
+	j := strings.IndexByte(s, ']')
+	if i < 0 || j < i {
+		return s
+	}
+	if k := strings.IndexByte(s[i:j], '%'); k >= 0 && !strings.HasPrefix(s[i+k:], "%25") {
+		return s[:i+k] + "%25" + s[i+k+1:]
+	}
+	return s
+}
+
 var hostnameRE = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func validHostname(h string) bool {
@@ -123,6 +139,13 @@ func (a *All) normalize() {
 	d.RateLimitExempt = clean(d.RateLimitExempt, true)
 	d.LocalDomain = strings.Trim(strings.ToLower(strings.TrimSpace(d.LocalDomain)), ".")
 	d.RouterResolver = strings.ToLower(strings.TrimSpace(d.RouterResolver))
+	d.DNS64.Prefix = strings.ToLower(strings.TrimSpace(d.DNS64.Prefix))
+	if d.DNS64.Prefix == "" {
+		d.DNS64.Prefix = DefaultDNS64Prefix
+	}
+	if p, err := netip.ParsePrefix(d.DNS64.Prefix); err == nil {
+		d.DNS64.Prefix = p.Masked().String()
+	}
 	l := &a.DownloadCache
 	l.CacheIPv4 = clean(l.CacheIPv4, true)
 	l.CacheIPv6 = clean(l.CacheIPv6, true)
@@ -228,6 +251,12 @@ func (a *All) Validate() error {
 	}
 	if d.ServeStaleMaxAgeSec < 0 || d.ServeStaleMaxAgeSec > 7*86400 {
 		return apperr.Invalid("dns.serveStaleMaxAgeSec", "must be between 0 and 604800")
+	}
+	if p, err := netip.ParsePrefix(d.DNS64.Prefix); err != nil || !validDNS64Prefix(p) {
+		return apperr.Invalid("dns.dns64.prefix", "must be an IPv6 /96 prefix such as %s", DefaultDNS64Prefix)
+	}
+	if d.DisableAAAA && d.DNS64.Enabled {
+		return apperr.Invalid("dns.disableAAAA", "cannot be on together with DNS64 (dns.dns64.enabled)")
 	}
 
 	f := a.Filter
@@ -394,6 +423,16 @@ func ParseClock(s string) (hour, minute int, ok bool) {
 	}
 	hour, minute = int(s[0]-'0')*10+int(s[1]-'0'), int(s[3]-'0')*10+int(s[4]-'0')
 	return hour, minute, hour <= 23 && minute <= 59
+}
+
+// validDNS64Prefix reports whether p can hold synthesised addresses: an
+// IPv6 /96 (RFC 6052 allows longer embeddings; PiCache uses the /96 form
+// only) outside IPv4-mapped, IPv4-compatible, link-local and multicast
+// space.
+func validDNS64Prefix(p netip.Prefix) bool {
+	a := p.Addr()
+	return p.Bits() == 96 && a.Is6() && !a.Is4In6() && !a.IsLinkLocalUnicast() && !a.IsMulticast() &&
+		!netip.MustParsePrefix("::/96").Contains(a)
 }
 
 func validPrefixes(field string, in []string) error {

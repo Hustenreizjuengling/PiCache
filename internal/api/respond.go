@@ -212,6 +212,18 @@ func qBool(r *http.Request, name string) bool {
 	return b
 }
 
+// qStrings returns the non-empty values of a repeated parameter (not split
+// at commas: names may contain them).
+func qStrings(r *http.Request, name string) []string {
+	var out []string
+	for _, v := range r.URL.Query()[name] {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func qList(r *http.Request, name string) []string {
 	var out []string
 	for _, v := range r.URL.Query()[name] {

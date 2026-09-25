@@ -4,7 +4,8 @@
   client, domain, status, record type and upstream (all in the URL), paged
   by cursor. "Live" follows new queries over SSE (pause/resume); a row opens
   the details panel.
-  Query: ?range&client&domain&status&qtype&upstream&live=true
+  Query: ?range&client&domain&status&qtype&upstream&live=true; client may be
+  repeated (every address of one device).
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -34,7 +35,7 @@
     Toggle,
     type Column,
   } from '$lib/ui'
-  import { apiQuery, hasFilters, matchesLocally, readFilters } from './querylog/filters'
+  import { apiQuery, hasFilters, matchesLocally, readFilters, streamClient } from './querylog/filters'
   import QueryFilters from './querylog/QueryFilters.svelte'
   import QueryPanel from './querylog/QueryPanel.svelte'
 
@@ -76,7 +77,8 @@
     if (!live) return
     const f = filters
     const s = streamQueries(
-      { client: f.client || undefined, status: f.status.length > 0 ? f.status : undefined },
+      // The stream takes one client; several (a device's addresses) are matched here.
+      { client: streamClient(f), status: f.status.length > 0 ? f.status : undefined },
       {
         onEvents: (batch) => {
           const cur = readFilters()

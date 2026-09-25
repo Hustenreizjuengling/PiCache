@@ -114,7 +114,7 @@ func (s *Server) downloadCacheReady(set *settings.All) (bool, string) {
 }
 
 // CacheIPs returns the addresses of the download cache DNS answers
-// (auto-detection is recomputed every 5 minutes). While the download cache
+// (auto-detection is recomputed every minute). While the download cache
 // is disabled it reports the addresses and warnings that would apply once it
 // is enabled.
 func (s *Server) CacheIPs() CacheIPStatus {

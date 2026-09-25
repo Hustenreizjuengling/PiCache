@@ -69,19 +69,29 @@ func newSnapshot(groups []Group, clients []Client) *snapshot {
 }
 
 // match finds the configured client for ip: exact IP, then the longest
-// matching CIDR (ties: highest client ID), then the MAC address.
+// matching CIDR (ties: highest client ID), then the MAC address (learned
+// MACs: Registry.match).
 func (s *snapshot) match(ip netip.Addr, mac string) *clientEntry {
+	if c := s.matchIP(ip); c != nil {
+		return c
+	}
+	if mac != "" {
+		if c, ok := s.byMAC[mac]; ok {
+			return c
+		}
+	}
+	return nil
+}
+
+// matchIP finds the configured client for ip by its address alone: exact
+// IP, then the longest matching CIDR (ties: highest client ID).
+func (s *snapshot) matchIP(ip netip.Addr) *clientEntry {
 	if c, ok := s.byIP[ip]; ok {
 		return c
 	}
 	for _, e := range s.cidrs {
 		if e.prefix.Contains(ip) {
 			return e.client
-		}
-	}
-	if mac != "" {
-		if c, ok := s.byMAC[mac]; ok {
-			return c
 		}
 	}
 	return nil

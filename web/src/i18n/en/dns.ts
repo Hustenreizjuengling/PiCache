@@ -9,6 +9,9 @@ export default {
   'shared.noGroupWarning': 'Without a group this applies to nobody.',
   'shared.groupDisabled': 'Disabled',
   'shared.lineError': 'Entry {line}: {message}',
+  'shared.moreAddresses.one': '+1 address',
+  'shared.moreAddresses.other': '+{count} addresses',
+  'shared.fewerAddresses': 'Show fewer',
   'shared.kind.exact': 'Exact',
   'shared.kind.subtree': 'With subdomains',
   'shared.kind.regex': 'Pattern',
@@ -70,6 +73,9 @@ export default {
   'queryLog.filter.domainPlaceholder': 'Part of a domain',
   'queryLog.filter.domainTitle': 'Part of a domain name, or the full name in double quotes for an exact match, e.g. "example.com"',
   'queryLog.filter.clientPlaceholder': 'IP address or name',
+  'queryLog.filter.device.one': 'Device with 1 address',
+  'queryLog.filter.device.other': 'Device with {count} addresses',
+  'queryLog.filter.deviceClear': 'Remove the device filter',
   'queryLog.filter.tooShort': 'Enter at least {min} characters or an IP address.',
   'queryLog.filter.toggle': 'Filters',
   'queryLog.filter.toggleCount': 'Filters ({count} set)',
@@ -246,7 +252,8 @@ export default {
   'clients.deleteTitle': 'Delete client {name}?',
   'clients.deleteText': 'Its devices are treated as unknown clients in the Default group again.',
   'clients.identifiers': 'Identifiers',
-  'clients.identifiersHelp': 'One per line: an IP address, a network such as 192.168.1.0/24, or a MAC address (only for devices in the same network as PiCache).',
+  'clients.identifiersHelp':
+    'One per line: an IP address, a network such as 192.168.1.0/24, or a MAC address (only for devices in the same network as PiCache). An IP address or network also covers the device’s other addresses in the same network, such as its changing IPv6 addresses. A MAC address recognises a device most reliably.',
   'clients.identifiersRequired': 'Enter at least one IP address, network or MAC address.',
   'clients.groupsHelp': 'Lists and rules of these groups apply to the client.',
   'clients.noGroupWarning': 'Without a group the client is put in the Default group.',
@@ -262,6 +269,7 @@ export default {
   'clients.cacheServed': 'Served by the cache',
   'clients.cacheHit': 'From the cache',
   'clients.statsTitle': 'Traffic',
+  'clients.addresses': 'Addresses',
   'clients.showQueries': 'Show queries',
   'clients.showDownloads': 'Show downloads',
   'clients.showSeen': 'Show recently seen devices',
@@ -274,11 +282,11 @@ export default {
 
   // recently seen addresses
   'seen.title': 'Seen recently',
-  'seen.description.24h': 'Addresses that sent queries. The traffic columns cover the last 24 hours.',
-  'seen.description.7d': 'Addresses that sent queries. The traffic columns cover the last 7 days.',
-  'seen.description.30d': 'Addresses that sent queries. The traffic columns cover the last 30 days.',
+  'seen.description.24h': 'Devices that sent queries, their addresses grouped by MAC address. The traffic columns cover the last 24 hours.',
+  'seen.description.7d': 'Devices that sent queries, their addresses grouped by MAC address. The traffic columns cover the last 7 days.',
+  'seen.description.30d': 'Devices that sent queries, their addresses grouped by MAC address. The traffic columns cover the last 30 days.',
   'seen.within': 'Seen within',
-  'seen.address': 'Address',
+  'seen.addresses': 'Addresses',
   'seen.hostname': 'Host name',
   'seen.mac': 'MAC address',
   'seen.firstSeen': 'First seen',
@@ -493,6 +501,8 @@ export default {
   'network.check.ipv6Dns.title': 'Devices probably ask the router over IPv6',
   'network.check.ipv6Dns.text': 'Your network uses IPv6, but no device asked PiCache over IPv6 in the last 24 hours. Devices then use the router as their IPv6 DNS server and bypass PiCache for part of their lookups.',
   'network.check.ipv6Dns.noListener': 'PiCache does not answer DNS over IPv6 right now. Until it does, turn off the router’s own IPv6 DNS announcement instead of announcing PiCache.',
+  'network.check.ipv6Dns.ignoresRA':
+    'This machine ignores IPv6 router advertisements (on Linux: accept_ra is 0), so it has no IPv6 address and PiCache cannot tell whether your network uses IPv6. If it does, let this machine accept router advertisements (accept_ra 1, or 2 when IP forwarding is on) or give it a fixed ULA.',
   'network.check.ipv6Address.warnTitle': 'PiCache has no IPv6 address',
   'network.check.ipv6Address.warnText': 'Your network uses IPv6, but PiCache has no IPv6 address that devices could use as DNS server. Let the router assign unique local addresses (ULA, starting with fd): a ULA stays the same when your provider changes the prefix, so it is the address to announce as DNS server.',
   'network.check.ipv6Address.infoTitle': 'PiCache has only changing IPv6 addresses',
@@ -503,6 +513,17 @@ export default {
   'network.check.refused.address': 'Address',
   'network.check.refused.count': 'Refused',
   'network.check.refused.last': 'Last',
+  'network.check.refused.onLinkBadge': 'Connected network',
+  'network.check.refused.onLinkHelp': 'In a network this machine is connected to',
+  'network.check.refused.onLinkText':
+    'Some of these addresses are in a network this machine is connected to, for example the public IPv6 addresses of your home network. PiCache refuses them because they are not private addresses.',
+  'network.check.refused.trust': 'Allow the networks this machine is connected to',
+  'network.check.refused.trustHelp':
+    'Saved in the DNS settings right away. PiCache then also answers public addresses in these networks and follows a new prefix from your provider by itself. Do not use it for a server in a data centre or cloud.',
+  'network.check.refused.trustReadOnly': 'An administrator can allow these networks under {link}.',
+  'network.check.refused.accessLink': 'DNS settings → Access',
+  'network.check.refused.trusted': 'The networks this machine is connected to are allowed now. The devices get answers to their next queries.',
+  'network.check.refused.trustedToast': 'Connected networks allowed',
   'network.check.refused.prefixes': 'These IPv6 addresses come from your provider’s prefix. To let these devices use PiCache, add the network under {link}:',
   'network.check.refused.link': 'DNS settings → Access → Additional networks',
   'network.check.refused.prefixNote': 'Your provider may change this prefix from time to time. A ULA (see the IPv6 checks) stays the same.',
@@ -519,6 +540,7 @@ export default {
   'network.ok.containerNat': 'PiCache sees the addresses of your devices',
   'network.ok.ipv6Dns': 'Devices use PiCache over IPv6 too',
   'network.ok.ipv6DnsNone': 'Your network does not use IPv6, so there is nothing to set up for it',
+  'network.ok.ipv6DnsUnknown': 'No IPv6 seen in your network',
   'network.ok.ipv6Address': 'PiCache has a stable IPv6 address ({address})',
   'network.ok.refused': 'No queries were refused since PiCache started',
   'network.ok.devices': 'Every device in the network asked PiCache in the last 24 hours',
@@ -690,7 +712,8 @@ export default {
   'settings.timeout': 'Timeout',
   'settings.timeoutHelp': 'How long a query may take in total before the client gets an error.',
   'settings.bootstrap': 'Bootstrap servers',
-  'settings.bootstrapHelp': 'Plain DNS servers (IP addresses) used only to look up the names of encrypted upstreams.',
+  'settings.bootstrapHelp':
+    'Plain DNS servers (IP addresses) used only to look up the names of encrypted upstreams. IPv4 servers are tried first; IPv6 ones help in IPv6-only networks.',
   'settings.localPtr': 'Private reverse lookups',
   'settings.localPtrHelp': 'DNS servers (IP addresses) that know the names of devices in your network, usually your router. They answer reverse lookups of private addresses.',
 
@@ -741,7 +764,8 @@ export default {
   'settings.special.relayHelp': 'Apple devices with Private Relay would otherwise bypass PiCache for Safari.',
 
   'settings.rate.title': 'Rate limit',
-  'settings.rate.description': 'Limits how many queries one device (one IPv4 address or IPv6 /64 network) may send. Protects against misbehaving devices and abuse.',
+  'settings.rate.description':
+    'Limits how many queries one device may send: per address, and per /64 network for public IPv6 addresses outside your networks. Protects against misbehaving devices and abuse.',
   'settings.rate.qps': 'Queries per second',
   'settings.rate.qpsHelp': '0 turns the limit off.',
   'settings.rate.burst': 'Burst',
@@ -760,7 +784,11 @@ export default {
   'settings.rate.none': 'No device was limited in the last hour.',
 
   'settings.access.title': 'Access',
-  'settings.access.description': 'Devices in private networks (192.168.x.x, 10.x.x.x, 172.16–31.x.x, IPv6 ULA and link-local, 100.64.0.0/10) and in networks this machine is connected to may always use PiCache.',
+  'settings.access.description':
+    'Devices in private networks (192.168.x.x, 10.x.x.x, 172.16–31.x.x, 100.64.0.0/10, IPv6 ULA and link-local) may always use PiCache. Queries from public addresses, such as the global IPv6 addresses of your devices, are refused unless you allow them here.',
+  'settings.access.trustConnected': 'Allow every network this machine is connected to',
+  'settings.access.trustConnectedHelp':
+    'Also answers devices with public addresses in these networks, such as the global IPv6 addresses in your home network. PiCache follows a new prefix from your provider within a minute. Do not use this on a server in a data centre or cloud, where other customers can share the network.',
   'settings.access.networks': 'Additional networks',
   'settings.access.networksHelp': 'One network per line, for example a VPN range. At most /8 for IPv4 and /32 for IPv6.',
   'settings.access.allowAll': 'Answer queries from any address',
@@ -785,6 +813,20 @@ export default {
   'settings.names.routerBad': 'The router at {address} does not answer DNS queries.',
   'settings.names.routerNone': 'No router (default gateway) was found, so no router is asked.',
   'settings.names.routerAddressHelp': 'Without an address the router resolver is off.',
+
+  'settings.ipv6.title': 'IPv6',
+  'settings.ipv6.description': 'How PiCache answers queries for IPv6 addresses (AAAA records). The defaults suit almost every network.',
+  'settings.ipv6.disableAaaa': 'Do not answer IPv6 addresses (AAAA)',
+  'settings.ipv6.disableAaaaHelp':
+    'For networks where IPv6 does not work: devices then connect over IPv4 right away instead of waiting for IPv6 to fail. Local records and the names of this server keep their IPv6 addresses.',
+  'settings.ipv6.dns64': 'Build IPv6 addresses for IPv4-only names (DNS64)',
+  'settings.ipv6.dns64Help':
+    'Only for IPv6-only networks with a NAT64 gateway: when a name has no IPv6 address, PiCache builds one from its IPv4 address and the NAT64 prefix, so devices reach it through the gateway. Leave it off in other networks.',
+  'settings.ipv6.prefix': 'NAT64 prefix',
+  'settings.ipv6.prefixHelp': 'A /96 network, usually the well-known prefix 64:ff9b::/96. Enter your NAT64 gateway’s prefix if it uses its own.',
+  'settings.ipv6.usePrefix': 'Use {prefix}',
+  'settings.ipv6.exclusiveAaaa': 'Turn off DNS64 to use this.',
+  'settings.ipv6.exclusiveDns64': 'Turn off "Do not answer IPv6 addresses" to use DNS64.',
 
   'settings.dnssec.title': 'DNSSEC',
   'settings.dnssec.label': 'Request DNSSEC from upstreams',

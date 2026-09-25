@@ -65,9 +65,11 @@ func (r *Registry) Neighbours(ctx context.Context) ([]Neighbour, error) {
 	return out, err
 }
 
-// arpLoop refreshes the neighbour table now and every 30 s.
+// arpLoop refreshes the neighbour table now, every 30 s and when an early
+// read is requested (kickARP), but then at most once per second.
 func (r *Registry) arpLoop(ctx context.Context) {
 	r.refreshARP()
+	last := time.Now()
 	t := time.NewTicker(arpInterval)
 	defer t.Stop()
 	for {
@@ -75,15 +77,52 @@ func (r *Registry) arpLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			r.refreshARP()
+		case <-r.arpKick:
+			if wait := arpEarlyGap - time.Since(last); wait > 0 {
+				w := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					w.Stop()
+					return
+				case <-w.C:
+				}
+			}
 		}
+		r.refreshARP()
+		last = time.Now()
 	}
 }
 
-// refreshARP re-reads the neighbour table and invalidates the identities of
-// addresses whose MAC changed.
+// refreshARP re-reads the neighbour table, rebuilds the learned MACs and
+// invalidates the identities of addresses whose MAC changed and of the
+// other addresses of those MACs (their name fallback may change), or all
+// identities when the learned MACs changed.
 func (r *Registry) refreshARP() {
+	r.arpMu.Lock()
+	defer r.arpMu.Unlock()
+	r.applyARP(r.readARP())
+}
+
+// refreshARPFor re-reads the neighbour table and applies it if it lists ip
+// (the other reads are left to the regular refresh). It reports whether
+// ip has a MAC now.
+func (r *Registry) refreshARPFor(ip netip.Addr) bool {
+	r.arpMu.Lock()
+	defer r.arpMu.Unlock()
+	if (*r.arp.Load())[ip] != "" {
+		return true // another query applied it meanwhile
+	}
 	next := r.readARP()
+	if next[ip] == "" {
+		return false
+	}
+	r.applyARP(next)
+	return true
+}
+
+// applyARP stores a neighbour table read (arpMu held), rebuilds the learned
+// MACs and invalidates the affected identities.
+func (r *Registry) applyARP(next map[netip.Addr]string) {
 	if next == nil {
 		next = map[netip.Addr]string{}
 	}
@@ -92,15 +131,26 @@ func (r *Registry) refreshARP() {
 		return
 	}
 	r.arp.Store(&next)
+	if r.rebuildLearned() {
+		r.invalidate()
+		return
+	}
+	macs := map[string]bool{}
 	for ip, mac := range next {
-		if old[ip] != mac {
+		if prev := old[ip]; prev != mac {
 			r.invalidateIP(ip)
+			macs[mac], macs[prev] = true, true
 		}
 	}
-	for ip := range old {
+	for ip, mac := range old {
 		if _, ok := next[ip]; !ok {
 			r.invalidateIP(ip)
+			macs[mac] = true
 		}
+	}
+	delete(macs, "")
+	for mac := range macs {
+		r.invalidateMAC(mac)
 	}
 }
 

@@ -304,7 +304,7 @@ func (a *App) build(ctx context.Context) error {
 	if a.dns, err = dnsserver.New(ctx, dnsserver.Deps{
 		DB: a.cdb, Settings: a.set, Upstream: a.up, Filter: a.filter, Clients: a.clients,
 		Services: a.services, Parental: a.parental, Logs: a.logs, ACL: a.acl, DownloadCacheReady: a.downloadCacheReady,
-		Container: a.storage.Capabilities().Container, Log: log,
+		Container: a.storage.Capabilities().Container, Neighbours: a.clients.Neighbours, Log: log,
 	}); err != nil {
 		return fmt.Errorf("dns: %w", err)
 	}
@@ -380,11 +380,16 @@ func (a *App) downloadCacheReady() (bool, string) {
 	return true, ""
 }
 
+// lookupClientName resolves the PTR name of a client address via the local
+// PTR upstreams, else the router resolver while it answers.
 func (a *App) lookupClientName(ctx context.Context, ip netip.Addr) (string, error) {
 	servers := a.set.Get().DNS.LocalPTRUpstreams
 	if len(servers) == 0 {
 		if r := a.dns.Router(); r.Address != "" && r.Answers {
-			servers = []string{r.Address}
+			// "[fe80::1%eth0]:53": a bare IPv6 address is no upstream string.
+			if rip, err := netip.ParseAddr(r.Address); err == nil {
+				servers = []string{netip.AddrPortFrom(rip, 53).String()}
+			}
 		}
 	}
 	if len(servers) == 0 {
@@ -422,7 +427,7 @@ func (a *App) serve(ctx context.Context) error {
 		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
 		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop, a.updates.run,
 		a.notify.Start, a.backups.Start, a.network.Start,
-		func(ctx context.Context) { a.acl.Run(ctx.Done(), 5*time.Minute) },
+		func(ctx context.Context) { a.acl.Run(ctx.Done(), time.Minute) }, // follows prefix changes within a minute
 	} {
 		bg.Go(func() { fn(ctx) })
 	}

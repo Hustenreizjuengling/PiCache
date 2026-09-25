@@ -2,7 +2,10 @@
 // The path selects the page (see src/routes.ts); the query string holds page
 // state (filters, tabs, selected rows) so views can be linked and reloaded.
 
-/** Values accepted by href()/setQuery(); null, undefined, '' and false remove the key. */
+/**
+ * Values accepted by href()/setQuery(); null, undefined, '' and false remove
+ * the key; an array repeats it (?status=a&status=b, like the API client).
+ */
 export type QueryValue = string | number | boolean | null | undefined | readonly (string | number)[]
 export type QueryPatch = Record<string, QueryValue>
 
@@ -132,7 +135,7 @@ function setParam(sp: URLSearchParams, k: string, v: QueryValue): void {
   sp.delete(k)
   if (v === null || v === undefined || v === '' || v === false) return
   if (Array.isArray(v)) {
-    if (v.length > 0) sp.set(k, v.join(','))
+    for (const item of v) if (item !== '') sp.append(k, String(item))
   } else {
     sp.set(k, String(v))
   }
@@ -160,10 +163,13 @@ export const router = {
   param(name: string): string {
     return loc.query.get(name) ?? ''
   },
-  /** A comma-separated list parameter: ?status=a,b → ['a', 'b']. */
+  /** A list parameter, repeated or comma-separated: ?status=a&status=b or ?status=a,b → ['a', 'b']. */
   list(name: string): string[] {
-    const v = loc.query.get(name)
-    return v ? v.split(',').filter(Boolean) : []
+    return loc.query.getAll(name).flatMap((v) => v.split(',')).filter(Boolean)
+  },
+  /** Every value of a repeated parameter, not split at commas: ?client=a&client=b → ['a', 'b']. */
+  all(name: string): string[] {
+    return loc.query.getAll(name)
   },
   /** Navigates to another page (adds a history entry unless replace); asks first if there are unsaved edits. */
   navigate(path: string, query?: QueryPatch, opts: { replace?: boolean } = {}): void {

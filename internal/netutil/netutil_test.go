@@ -24,7 +24,7 @@ func TestIsPublicUnicast(t *testing.T) {
 }
 
 func TestACL(t *testing.T) {
-	a := NewACL([]netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, false)
+	a := NewACL([]netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, false, false)
 	for s, want := range map[string]bool{
 		"192.168.1.10": true, "10.0.0.1": true, "::1": true, "203.0.113.7": true, "8.8.8.8": false,
 		"fe80::1%eth0": true, "::ffff:192.168.1.1": true,
@@ -33,7 +33,7 @@ func TestACL(t *testing.T) {
 			t.Errorf("Allowed(%s) = %v, want %v", s, got, want)
 		}
 	}
-	if !NewACL(nil, true).Allowed(netip.MustParseAddr("8.8.8.8")) {
+	if !NewACL(nil, true, false).Allowed(netip.MustParseAddr("8.8.8.8")) {
 		t.Error("allowAll must allow everything")
 	}
 }
@@ -130,7 +130,7 @@ func TestLimitListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acl := NewACL(nil, false)
+	acl := NewACL(nil, false, false)
 	ll := LimitListener(ln, func() *ACL { return acl }, 1, 10)
 	defer ll.Close()
 	accepted := make(chan net.Conn, 4)
@@ -181,10 +181,10 @@ func fakeInterfaces(t *testing.T, cidrs ...string) {
 	}
 	old := interfaceAddrs
 	interfaceAddrs = func() ([]net.Addr, error) { return addrs, nil }
-	onLink.v6.Store(nil)
+	onLinkV6Cache.reset()
 	t.Cleanup(func() {
 		interfaceAddrs = old
-		onLink.v6.Store(nil)
+		onLinkV6Cache.reset()
 	})
 }
 
@@ -227,11 +227,11 @@ func TestLocalSubnetsPrivateOnly(t *testing.T) {
 	if !slices.Equal(gs, want) {
 		t.Errorf("LocalSubnets() = %v, want %v (public subnets are never trusted automatically)", gs, want)
 	}
-	a := NewACL(nil, false)
+	a := NewACL(nil, false, false)
 	if a.Allowed(netip.MustParseAddr("2001:db8:5::20")) {
 		t.Error("a public on-link IPv6 subnet must not be allowed by default")
 	}
-	if !NewACL([]netip.Prefix{netip.MustParsePrefix("2001:db8:5::/64")}, false).Allowed(netip.MustParseAddr("2001:db8:5::20")) {
+	if !NewACL([]netip.Prefix{netip.MustParsePrefix("2001:db8:5::/64")}, false, false).Allowed(netip.MustParseAddr("2001:db8:5::20")) {
 		t.Error("an explicitly allowed GUA prefix must be allowed")
 	}
 }

@@ -88,11 +88,12 @@ let { params }: PageProps = $props()   // params['*'] = sub-path below the page 
 
 router.path                    // '/dns/queries'
 router.param('domain')         // '' when absent
-router.list('status')          // ?status=a,b → ['a', 'b']
+router.list('status')          // ?status=a&status=b or ?status=a,b → ['a', 'b']
+router.all('client')           // ?client=a&client=b → ['a', 'b'] (repeated, not split at commas)
 router.setQuery({ domain: 'x', cursor: null })      // merge; null/''/false/undefined remove; replaces history
 router.setQuery({ selected: id }, { push: true })   // adds a history entry
 router.navigate('/dns/clients', { ip: '192.168.1.5' })
-href('/dns/queries', { status: ['blocked-list', 'blocked-rule'], range: '1h' })  // '#/dns/queries?status=…'
+href('/dns/queries', { status: ['blocked-list', 'blocked-rule'], range: '1h' })  // '#/dns/queries?status=…&status=…' (arrays repeat the key)
 ```
 
 **Incoming links** (other pages, the overview and the global search link here;
@@ -100,7 +101,7 @@ support these query parameters):
 
 | Target | Parameters |
 |---|---|
-| `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d), `status` (comma list of query statuses; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name) |
+| `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d), `status` (query statuses, repeated or a comma list; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name; repeated for every address of one device, at most 32, shown as "Device with N addresses") |
 | `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here), `tab` (clients, seen, groups), `range` (24h, 7d, 30d; without it the range last chosen in this browser) |
 | `#/cache/downloads` | `client` (IP), `active=true`, `from` + `to` (unix seconds: an explicit time window instead of the range; shown as a removable chip) |
 | `#/cache/library`, `#/cache/storage`, `#/cache/settings` | – |
@@ -133,7 +134,7 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.cache` | `state() services() groups(q) groupDetail(service,key) objects(q) deleteObject(id) pinObject(id,pinned) deleteGroup(service,key) pinGroup(service,key,pinned) purgeService(service) evict() verify(repair) verifyState() live() active() proxyStats() noSlice() resetNoSlice(host) downloads(q) requests(q) sniEvents(q) evictions(q)` |
 | `api.storage` | `capabilities() targets() target(id) create(t) update(id,t) remove(id) test(id) apply(id) init(id,adopt) activate(id) snippets(id) benchmark(id,sizeMiB?) benchmarkState() cancelBenchmark()` |
 | `api.logs` | `queries(q)` (cursor page) |
-| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?) services(range) clients(range)` – `range` is a preset (`'24h'`) or `{ from, to }` |
+| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?, {group?}) services(range) clients(range, {group?})` – `range` is a preset (`'24h'`) or `{ from, to }`; `group: 'device'` (clients, cache-clients) merges the addresses of one device into one row with `addresses` |
 
 Long-running calls (list/source refresh, storage test, starting a storage
 speed test, restore) already carry longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`; so is a stored scheduled backup (`api.backups.fileUrl(name)`).

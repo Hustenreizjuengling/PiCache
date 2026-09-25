@@ -24,6 +24,7 @@ const (
 	minSearchLen     = 3
 	maxFilterLen     = 256
 	maxStatusFilters = 32
+	maxClientFilters = 256 // client values of one query-log filter (the addresses of a device)
 	maxOffset        = 100_000
 	maxGroupClients  = 1000
 	groupRefsPerStmt = 200
@@ -98,22 +99,45 @@ func exact(field, v string, maxLen int) (string, error) {
 	return v, nil
 }
 
-// clientFilter adds a client condition: an IP address matches exactly,
-// anything else (≥ 3 characters) is a substring of the name or address.
-func clientFilter(w *where, ipCol, nameCol, client string) error {
-	client = strings.TrimSpace(client)
-	if client == "" {
-		return nil
+// clientFilter adds a condition that matches any of the client values: an
+// IP address matches exactly, anything else (≥ 3 characters) is a
+// substring of the name or address. Empty values are ignored.
+func clientFilter(w *where, ipCol, nameCol string, clients ...string) error {
+	if len(clients) > maxClientFilters {
+		return apperr.Invalid("client", "at most %d values", maxClientFilters)
 	}
-	if ip, err := netip.ParseAddr(client); err == nil {
-		w.add(ipCol+" = ?", netutil.Canon(ip).String())
-		return nil
+	var ips, args []any
+	var conds []string
+	for _, c := range clients {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if ip, err := netip.ParseAddr(c); err == nil {
+			ips = append(ips, netutil.Canon(ip).String())
+			continue
+		}
+		v, err := search("client", c)
+		if err != nil {
+			return err
+		}
+		conds = append(conds, "(instr(lower("+nameCol+"), ?) > 0 OR instr("+ipCol+", ?) > 0)")
+		args = append(args, v, v)
 	}
-	v, err := search("client", client)
-	if err != nil {
-		return err
+	switch len(ips) {
+	case 0:
+	case 1:
+		conds = append([]string{ipCol + " = ?"}, conds...)
+	default:
+		conds = append([]string{ipCol + " IN (" + strings.Repeat("?, ", len(ips)-1) + "?)"}, conds...)
 	}
-	w.add("(instr(lower("+nameCol+"), ?) > 0 OR instr("+ipCol+", ?) > 0)", v, v)
+	switch len(conds) {
+	case 0:
+	case 1:
+		w.add(conds[0], append(ips, args...)...)
+	default:
+		w.add("("+strings.Join(conds, " OR ")+")", append(ips, args...)...)
+	}
 	return nil
 }
 
@@ -223,38 +247,45 @@ func expandStatuses(in []string) ([]string, error) {
 }
 
 // QueryMatcher builds a live-feed filter from the query-log parameters
-// client (IP address, or ≥ 3 characters of the name or address) and
-// statuses (statuses or class names). It returns nil when nothing is
-// filtered.
-func QueryMatcher(client string, statuses []string) (func(QueryEvent) bool, error) {
+// clients (any of: an IP address, or ≥ 3 characters of the name or
+// address; at most 256) and statuses (statuses or class names). It returns
+// nil when nothing is filtered.
+func QueryMatcher(clients []string, statuses []string) (func(QueryEvent) bool, error) {
 	st, err := expandStatuses(statuses)
 	if err != nil {
 		return nil, err
 	}
-	client = strings.TrimSpace(client)
-	var ip netip.Addr
-	var sub string
-	if client != "" {
-		if a, err := netip.ParseAddr(client); err == nil {
-			ip = netutil.Canon(a)
-		} else if sub, err = search("client", client); err != nil {
+	if len(clients) > maxClientFilters {
+		return nil, apperr.Invalid("client", "at most %d values", maxClientFilters)
+	}
+	var ips, subs []string
+	for _, c := range clients {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if a, err := netip.ParseAddr(c); err == nil {
+			ips = append(ips, netutil.Canon(a).String())
+		} else if sub, err := search("client", c); err != nil {
 			return nil, err
+		} else {
+			subs = append(subs, sub)
 		}
 	}
-	if len(st) == 0 && client == "" {
+	if len(st) == 0 && len(ips)+len(subs) == 0 {
 		return nil, nil
 	}
 	return func(e QueryEvent) bool {
 		if len(st) > 0 && !slices.Contains(st, e.Status) {
 			return false
 		}
-		switch {
-		case ip.IsValid():
-			return e.ClientIP == ip.String()
-		case sub != "":
-			return strings.Contains(strings.ToLower(e.ClientName), sub) || strings.Contains(e.ClientIP, sub)
+		if len(ips)+len(subs) == 0 || slices.Contains(ips, e.ClientIP) {
+			return true
 		}
-		return true
+		name := strings.ToLower(e.ClientName)
+		return slices.ContainsFunc(subs, func(sub string) bool {
+			return strings.Contains(name, sub) || strings.Contains(e.ClientIP, sub)
+		})
 	}, nil
 }
 
@@ -272,7 +303,7 @@ func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) 
 	if err := timeRange(&w, "ts", from, to); err != nil {
 		return QueryPage{}, err
 	}
-	if err := clientFilter(&w, "client_ip", "client_name", f.Client); err != nil {
+	if err := clientFilter(&w, "client_ip", "client_name", f.Clients...); err != nil {
 		return QueryPage{}, err
 	}
 	if d := strings.TrimSpace(f.Domain); len(d) >= 2 && d[0] == '"' && d[len(d)-1] == '"' {

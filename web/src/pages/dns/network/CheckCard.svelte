@@ -3,15 +3,18 @@
   One check that needs attention (warn or info): what was found, with the
   numbers, and the steps that fix it for a FRITZ!Box or any other router,
   PiCache's addresses filled in with copy buttons. Refused sources list the
-  addresses and offer the /64 network of global IPv6 ones for the allowed
-  networks.
+  addresses; for addresses in a network this machine is connected to, admins
+  can allow those networks right here (a DNS setting), for other global IPv6
+  ones the card offers their /64 network for the allowed networks. The IPv6
+  DNS check notes when this machine ignores router advertisements.
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
-  import type { NetworkCheck, NetworkCheckItem, RefusedSource } from '$lib/api'
+  import { api, type NetworkCheck, type NetworkCheckItem, type RefusedSource } from '$lib/api'
   import { formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { href } from '$lib/router.svelte'
-  import { Button, Chip, Icon, Table, Trans, type Column } from '$lib/ui'
+  import { session } from '$lib/session.svelte'
+  import { Badge, Button, Chip, Icon, Notice, Table, toast, Toggle, Trans, type Column } from '$lib/ui'
   import { REPO } from '../../system/health/about'
   import { globalPrefixes, isFritz, stepsFor } from './checks'
   import CopyValue from './CopyValue.svelte'
@@ -91,20 +94,52 @@
   })
 
   const refused = $derived(check.id === 'refused' ? (check.data.sources ?? []) : [])
-  const prefixes = $derived(globalPrefixes(refused.map((s) => s.address)))
+  // Addresses in a connected network are covered by trusting those networks; the /64 offer is for the others.
+  const onLink = $derived(refused.filter((s) => s.onLink))
+  const prefixes = $derived(globalPrefixes(refused.filter((s) => !s.onLink).map((s) => s.address)))
+  const trustOn = $derived(check.id === 'refused' && !!check.data.trustConnectedNetworks)
+
+  // ---- allow the networks this machine is connected to (saved right away)
+
+  let trustSwitch = $state(false)
+  let trusting = $state(false)
+  let trusted = $state(false)
+
+  async function trust(on: boolean) {
+    if (!on || trusting) return
+    trusting = true
+    try {
+      await api.settings.patch('dns', { trustConnectedNetworks: true })
+      trusted = true
+      toast.success(t('dns.network.check.refused.trustedToast'))
+    } catch (e) {
+      trustSwitch = false
+      toast.error(e)
+    } finally {
+      trusting = false
+    }
+  }
 
   const refusedColumns: Column<RefusedSource>[] = $derived([
-    { key: 'address', label: t('dns.network.check.refused.address'), mono: true, value: (s) => s.address },
+    { key: 'address', label: t('dns.network.check.refused.address'), value: (s) => s.address, cell: addressCell },
     { key: 'count', label: t('dns.network.check.refused.count'), align: 'right', value: (s) => s.count, format: (s) => formatNumber(s.count) },
     { key: 'last', label: t('dns.network.check.refused.last'), value: (s) => s.last, cell: lastCell },
   ])
 </script>
+
+{#snippet addressCell(s: RefusedSource)}
+  <span class="raddr">
+    <span class="mono">{s.address}</span>
+    {#if s.onLink}<Badge title={t('dns.network.check.refused.onLinkHelp')}>{t('dns.network.check.refused.onLinkBadge')}</Badge>{/if}
+  </span>
+{/snippet}
 
 {#snippet lastCell(s: RefusedSource)}
   <span class="nowrap" title={formatDateTime(s.last)}>{formatRelative(s.last)}</span>
 {/snippet}
 
 {#snippet settingsLink()}<a href={href('/dns/settings', { section: 'access' })}>{t('dns.network.check.refused.link')}</a>{/snippet}
+{#snippet accessLink()}<a href={href('/dns/settings', { section: 'access' })}>{t('dns.network.check.refused.accessLink')}</a>{/snippet}
 
 <section class={['card', check.status]} aria-labelledby="cc-{auto}">
   <header>
@@ -116,6 +151,9 @@
     {#each text as p, i (i)}<p>{p}</p>{/each}
     {#if check.id === 'ipv6-dns' && !net.self.dnsIpv6}
       <p class="note"><Icon name="alert" size={16} /><span>{t('dns.network.check.ipv6Dns.noListener')}</span></p>
+    {/if}
+    {#if check.id === 'ipv6-dns' && check.data.hostIgnoresRA}
+      <p class="note info"><Icon name="info" size={16} /><span>{t('dns.network.check.ipv6Dns.ignoresRA')}</span></p>
     {/if}
   </div>
 
@@ -149,6 +187,24 @@
     <div class="refused">
       <Table columns={refusedColumns} rows={refused} key={(s) => s.address} compact caption={t('dns.network.check.refused.caption')} />
     </div>
+    {#if onLink.length > 0 && (!trustOn || trusted)}
+      <div class="trust stack-sm">
+        <p>{t('dns.network.check.refused.onLinkText')}</p>
+        {#if trusted}
+          <Notice tone="ok">{t('dns.network.check.refused.trusted')}</Notice>
+        {:else if session.isAdmin}
+          <Toggle
+            bind:checked={trustSwitch}
+            disabled={trusting}
+            label={t('dns.network.check.refused.trust')}
+            description={t('dns.network.check.refused.trustHelp')}
+            onchange={trust}
+          />
+        {:else}
+          <p class="small muted"><Trans key="dns.network.check.refused.trustReadOnly" link={accessLink} /></p>
+        {/if}
+      </div>
+    {/if}
     {#if prefixes.length > 0}
       <div class="prefixes stack-sm">
         <p><Trans key="dns.network.check.refused.prefixes" link={settingsLink} /></p>
@@ -255,6 +311,24 @@
   }
   .prefixes {
     font-size: var(--fs-sm);
+  }
+  /* The badge moves below the address when the card is narrow. */
+  .raddr {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px var(--sp-2);
+    padding: 3px 0;
+  }
+  .raddr .mono {
+    white-space: nowrap;
+  }
+  .trust {
+    max-width: 90ch;
+    font-size: var(--fs-sm);
+  }
+  .note.info :global(.icon) {
+    color: var(--focus);
   }
   .prefixes ul {
     display: flex;

@@ -1,7 +1,7 @@
 <!--
   @component
-  Per-client rate limit (queries per second and burst per /32 or /64),
-  exempt networks and the clients that were limited recently, each with an
+  Per-client rate limit (queries per second and burst per address; public
+  IPv6 addresses of other networks per /64), exempt networks and the clients that were limited recently, each with an
   "Exempt" action that saves the exemption right away.
 -->
 <script lang="ts">

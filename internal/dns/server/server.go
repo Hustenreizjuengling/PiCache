@@ -74,7 +74,7 @@ const (
 // Background intervals.
 const (
 	maintainEvery = 10 * time.Second // rate-limiter sweep, QPS sample, pause expiry
-	refreshEvery  = 5 * time.Minute  // router resolver, cache IPs, host addresses
+	refreshEvery  = time.Minute      // router resolver, cache IPs, host addresses
 	bucketIdle    = time.Minute      // idle rate-limit buckets are dropped
 	shutdownWait  = 5 * time.Second
 	udpReadSize   = dns.DefaultMsgSize
@@ -139,7 +139,11 @@ type Deps struct {
 	// Container is the detected container type ("docker", "podman", "lxc",
 	// "") for cache-IP auto-detection (Docker bridge IPs are never used).
 	Container string
-	Log       *slog.Logger
+	// Neighbours reads the kernel's neighbour table (clients.Registry
+	// .Neighbours): the router's other addresses and its address over IPv6.
+	// nil: only the gateway addresses are known.
+	Neighbours func(ctx context.Context) ([]clients.Neighbour, error)
+	Log        *slog.Logger
 }
 
 // Record is a local DNS record.
@@ -298,7 +302,7 @@ func New(ctx context.Context, d Deps) (*Server, error) {
 	s := &Server{
 		d:          d,
 		log:        d.Log.With(slog.String("component", "dns")),
-		env:        defaultHostEnv(d.Container),
+		env:        defaultHostEnv(d.Container, d.Neighbours),
 		routerKick: make(chan struct{}, 1),
 		limiter:    netutil.NewRateLimiter(0, 0, nil), // configured by reloadConfig
 	}
@@ -334,18 +338,15 @@ func (s *Server) settingsChanged(old, cur *settings.All) {
 
 // reconfigureLimiter applies the rate-limit configuration when it changed.
 // The limiter keeps its buckets and drop statistics. Exempt:
-// dns.rateLimitExempt, loopback, the router resolver, local PTR upstreams
-// and conditional forwarder targets.
+// dns.rateLimitExempt, loopback, the router resolver (all of its addresses,
+// routerState.addrs), local PTR upstreams and conditional forwarder targets.
 func (s *Server) reconfigureLimiter() {
 	s.limMu.Lock()
 	defer s.limMu.Unlock()
 	set := s.d.Settings.Get()
 	exempt := settings.ParsePrefixes(set.DNS.RateLimitExempt)
 	exempt = append(exempt, netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"))
-	var ips []netip.Addr
-	if st := s.router.Load(); st.addr.IsValid() {
-		ips = append(ips, st.addr)
-	}
+	ips := slices.Clone(s.router.Load().addrs)
 	ips = append(ips, upstreamIPs(set.DNS.LocalPTRUpstreams)...)
 	if t := s.fwd.Load(); t != nil {
 		ips = append(ips, t.ips...)
@@ -446,7 +447,7 @@ func (s *Server) maintain(ctx context.Context) {
 }
 
 // refresh re-detects the router resolver, the host addresses and the
-// automatic cache IPs every 5 minutes (router also on settings changes).
+// automatic cache IPs every minute (router also on settings changes).
 func (s *Server) refresh(ctx context.Context) {
 	t := time.NewTicker(refreshEvery)
 	defer t.Stop()

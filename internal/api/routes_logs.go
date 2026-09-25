@@ -45,7 +45,7 @@ func (s *Server) logsQueries(w http.ResponseWriter, r *http.Request) error {
 	}
 	page, err := s.d.Logs.QueryLog(r.Context(), logs.QueryFilter{
 		From: from, To: to,
-		Client:   qString(r, "client"),
+		Clients:  qStrings(r, "client"),
 		Domain:   qString(r, "domain"),
 		Status:   qList(r, "status"),
 		QType:    qString(r, "qtype"),
@@ -129,6 +129,30 @@ func (s *Server) logsTop(w http.ResponseWriter, r *http.Request) error {
 	if kind == "" {
 		return apperr.Invalid("kind", "required")
 	}
+	group, err := statsGroup(r)
+	if err != nil {
+		return err
+	}
+	if group && (kind == logs.TopClients || kind == logs.TopCacheClients) {
+		items, err := s.d.Logs.Top(r.Context(), kind, from, to, maxGroupedTop)
+		if err != nil {
+			return err
+		}
+		keys := make([]string, len(items))
+		for i, it := range items {
+			keys[i] = it.Key
+		}
+		devs, err := s.devices(r.Context(), keys)
+		if err != nil {
+			return err
+		}
+		if devs != nil {
+			if limit <= 0 {
+				limit = defaultTopLimit
+			}
+			return ok(w, groupTop(items, devs, kind == logs.TopCacheClients, min(limit, maxGroupedTop)))
+		}
+	}
 	items, err := s.d.Logs.Top(r.Context(), kind, from, to, limit)
 	if err != nil {
 		return err
@@ -148,14 +172,34 @@ func (s *Server) logsServiceStats(w http.ResponseWriter, r *http.Request) error 
 	return ok(w, stats)
 }
 
+// logsClientStats serves the per-client statistics with the client ID and
+// MAC of every address; ?group=device merges the addresses of a device.
 func (s *Server) logsClientStats(w http.ResponseWriter, r *http.Request) error {
 	from, to, err := qRange(r, logsStatsRange)
+	if err != nil {
+		return err
+	}
+	group, err := statsGroup(r)
 	if err != nil {
 		return err
 	}
 	stats, err := s.d.Logs.ClientStats(r.Context(), from, to)
 	if err != nil {
 		return err
+	}
+	addrs := make([]string, len(stats))
+	for i, st := range stats {
+		addrs[i] = st.ClientIP
+	}
+	devs, err := s.devices(r.Context(), addrs)
+	if err != nil {
+		return err
+	}
+	if devs != nil {
+		annotateClientStats(stats, devs)
+		if group {
+			stats = groupClientStats(stats, devs)
+		}
 	}
 	return ok(w, stats)
 }
@@ -252,7 +296,7 @@ func (s *Server) logsAlive(r *http.Request) func() bool {
 }
 
 func (s *Server) logsStreamQueries(w http.ResponseWriter, r *http.Request) error {
-	match, err := logs.QueryMatcher(qString(r, "client"), qList(r, "status"))
+	match, err := logs.QueryMatcher(qStrings(r, "client"), qList(r, "status"))
 	if err != nil {
 		return err
 	}

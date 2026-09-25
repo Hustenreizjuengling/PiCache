@@ -298,6 +298,8 @@ export interface DnsSettings {
   routerResolver: string
   allowedNetworks: string[]
   allowAllNetworks: boolean
+  /** Also trust every network this machine is connected to (public prefixes too; rebuilt every minute). */
+  trustConnectedNetworks: boolean
   rateLimitQps: number
   rateLimitBurst: number
   rateLimitExempt: string[]
@@ -309,6 +311,16 @@ export interface DnsSettings {
   serveStale: boolean
   serveStaleMaxAgeSec: number
   dnssec: boolean
+  /** Answer forwarded AAAA queries with no records (networks with broken IPv6). Excludes dns64.enabled. */
+  disableAAAA: boolean
+  /** Synthesise AAAA records from A records for NAT64 networks (RFC 6147). */
+  dns64: Dns64Settings
+}
+
+/** settings.DNS64: `prefix` must be a /96 network (400 field "dns.dns64.prefix"). */
+export interface Dns64Settings {
+  enabled: boolean
+  prefix: string
 }
 
 export type BlockingMode = 'null' | 'nxdomain' | 'nodata' | 'refused' | 'custom_ip'
@@ -760,6 +772,8 @@ export interface Ipv6DnsData {
   ipv6Clients: number
   ula: string[]
   global: string[]
+  /** This machine has no ULA/GUA and ignores router advertisements (Linux accept_ra = 0). */
+  hostIgnoresRA: boolean
 }
 
 export interface Ipv6AddressData {
@@ -771,12 +785,16 @@ export interface RefusedSource {
   address: string
   count: number
   last: Timestamp
+  /** Inside a network this machine is connected to. */
+  onLink: boolean
 }
 
 export interface RefusedData {
   /** Newest first, at most 20. */
   sources: RefusedSource[]
   since: Timestamp
+  /** The DNS setting trustConnectedNetworks is on. */
+  trustConnectedNetworks: boolean
 }
 
 export interface DevicesData {
@@ -1610,13 +1628,24 @@ export interface Series<K extends string = string> {
 
 export type TopKind = 'domains' | 'blocked' | 'clients' | 'cache-clients' | 'content' | 'upstreams'
 
+/**
+ * Opt-in grouping of client statistics (/stats/clients, /stats/top for
+ * clients and cache-clients): "device" merges the addresses of one device
+ * (a configured client, else one MAC address, else one IP address).
+ */
+export type StatsGrouping = 'device'
+
 /** logs.TopItem */
 export interface TopItem {
+  /** Grouped by device: the device's most active address. */
   key: string
+  /** Grouped by device: the device name. */
   label?: string
   count: number
   bytes?: number
   extra?: string
+  /** Grouped by device (clients, cache-clients): every address of the device in the range. */
+  addresses?: string[]
 }
 
 /** logs.Download: one client downloading one content group. */
@@ -1649,8 +1678,15 @@ export interface ServiceStat {
 
 /** logs.ClientStat */
 export interface ClientStat {
+  /** Grouped by device: the most recently active address. */
   clientIp: string
+  /** Configured name, else the device's host name. */
   clientName?: string
+  /** The configured client the address (or device) belongs to. */
+  clientId?: number
+  mac?: string
+  /** Grouped by device: all its addresses in the range, most recent first; else [clientIp]. */
+  addresses: string[]
   queries: number
   blocked: number
   cacheBytes: number
@@ -1669,7 +1705,8 @@ export interface GroupClient {
 
 /** GET /logs/queries filter (default range 1h, newest first). */
 export interface QueryLogQuery extends TimeQuery {
-  client?: string
+  /** An address or part of a name; several values (e.g. all addresses of a device) match any of them. */
+  client?: string | string[]
   domain?: string
   status?: QueryStatus[]
   qtype?: string

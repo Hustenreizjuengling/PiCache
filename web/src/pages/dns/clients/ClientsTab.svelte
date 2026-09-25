@@ -1,7 +1,9 @@
 <!--
   @component
   Configured clients: name, identifiers, groups, options and their traffic
-  over the selected range. Rows open the client panel.
+  over the selected range (all addresses the client was recognised by; the
+  ones beyond its identifiers show as "+N addresses"). Rows open the client
+  panel.
   Query: ?sel=<client id>&group=<group id> (only the clients of that group)
 -->
 <script lang="ts">
@@ -13,6 +15,7 @@
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
   import { Badge, Button, Chip, EmptyState, IconButton, Panel, Table, type Column } from '$lib/ui'
+  import AddressList from '../shared/AddressList.svelte'
   import { groupNames } from '../shared/groups'
   import ClientPanel from './ClientPanel.svelte'
   import { clientTotals, type Totals } from './clientStats'
@@ -74,9 +77,11 @@
 </script>
 
 {#snippet nameCell(c: Row)}
+  {@const extra = c.totals.addresses.filter((a) => !c.identifiers.includes(a))}
   <span class="name">
     <span class="truncate strong">{c.name}</span>
     <span class="ids mono truncate" title={c.identifiers.join(', ')}>{c.identifiers.join(', ')}</span>
+    {#if extra.length > 0}<span class="ids mono"><AddressList addresses={extra} first="" /></span>{/if}
   </span>
 {/snippet}
 

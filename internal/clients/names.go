@@ -24,6 +24,41 @@ func (r *Registry) hostname(ip netip.Addr) string {
 	return h.name
 }
 
+// name returns the PTR name of ip, else the name of another neighbour
+// address with the same MAC ("" if none is known).
+func (r *Registry) name(ip netip.Addr, mac string) string {
+	if n := r.hostname(ip); n != "" || mac == "" {
+		return n
+	}
+	if l := r.learned.Load(); l != nil {
+		return r.macName(l.addrs[mac], ip)
+	}
+	return ""
+}
+
+// macName picks the name of one of addrs (except the address except): an
+// IPv4 address's name first (typically the name its DHCPv4 lease gave the
+// device), then the most recently resolved one.
+func (r *Registry) macName(addrs []netip.Addr, except netip.Addr) string {
+	var best hostName
+	bestV4 := false
+	r.namesMu.Lock()
+	defer r.namesMu.Unlock()
+	for _, a := range addrs {
+		if a == except {
+			continue
+		}
+		h, ok := r.names.peek(a)
+		if !ok || h.name == "" {
+			continue
+		}
+		if v4 := a.Is4(); best.name == "" || (v4 && !bestV4) || (v4 == bestV4 && h.at.After(best.at)) {
+			best, bestV4 = h, v4
+		}
+	}
+	return best.name
+}
+
 // enqueueName schedules a PTR lookup for ip (de-duplicated; dropped when
 // the queue is full).
 func (r *Registry) enqueueName(ip netip.Addr) {
@@ -101,6 +136,9 @@ func (r *Registry) lookupName(ctx context.Context, ip netip.Addr) {
 	r.namesMu.Unlock()
 	if name != old.name {
 		r.invalidateIP(ip)
+		if mac := (*r.arp.Load())[ip]; mac != "" {
+			r.invalidateMAC(mac) // their name fallback
+		}
 	}
 }
 
@@ -152,5 +190,20 @@ func (r *Registry) invalidateIP(ip netip.Addr) {
 	r.cacheMu.Lock()
 	r.cacheGen++
 	r.cache.delete(ip)
+	r.cacheMu.Unlock()
+}
+
+// invalidateMAC drops the cached identities of the neighbour addresses of
+// mac.
+func (r *Registry) invalidateMAC(mac string) {
+	l := r.learned.Load()
+	if l == nil || len(l.addrs[mac]) == 0 {
+		return
+	}
+	r.cacheMu.Lock()
+	r.cacheGen++
+	for _, ip := range l.addrs[mac] {
+		r.cache.delete(ip)
+	}
 	r.cacheMu.Unlock()
 }

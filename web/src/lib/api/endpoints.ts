@@ -338,13 +338,18 @@ const storage = {
 // ---------------------------------------------------------------- logs & statistics
 
 const logs = {
-  /** Cursor page of the query log (default range 1h, newest first). */
+  /** Cursor page of the query log (default range 1h, newest first); several `client` values match any of them. */
   queries: (q: T.QueryLogQuery = {}, o?: ReqOpts) =>
     http.get<T.Page<T.QueryEvent>>('/logs/queries', { ...o, query: { ...q } }),
 }
 
 function rangeQuery(r: T.RangeArg): T.TimeQuery {
   return typeof r === 'string' ? { range: r } : { range: r.range, from: r.from, to: r.to }
+}
+
+/** Options of the client statistics: `group: 'device'` merges the addresses of one device. */
+export interface ClientStatsOpts extends ReqOpts {
+  group?: T.StatsGrouping
 }
 
 const stats = {
@@ -356,12 +361,14 @@ const stats = {
   /** Bytes per step for hit/wan/sni, optionally for one service. */
   cache: (range: T.RangeArg, step?: number, service?: string, o?: ReqOpts) =>
     http.get<T.Series<T.CacheSeriesKey>>('/stats/cache', { ...o, query: { ...rangeQuery(range), step, service } }),
-  top: (kind: T.TopKind, range: T.RangeArg, limit = 10, o?: ReqOpts) =>
-    http.get<T.TopItem[]>('/stats/top', { ...o, query: { kind, ...rangeQuery(range), limit } }),
+  /** `group: 'device'` applies to the kinds clients and cache-clients (items then carry `addresses`). */
+  top: (kind: T.TopKind, range: T.RangeArg, limit = 10, { group, ...o }: ClientStatsOpts = {}) =>
+    http.get<T.TopItem[]>('/stats/top', { ...o, query: { kind, ...rangeQuery(range), limit, group } }),
   services: (range: T.RangeArg, o?: ReqOpts) =>
     http.get<T.ServiceStat[]>('/stats/services', { ...o, query: { ...rangeQuery(range) } }),
-  clients: (range: T.RangeArg, o?: ReqOpts) =>
-    http.get<T.ClientStat[]>('/stats/clients', { ...o, query: { ...rangeQuery(range) } }),
+  /** Per address, or per device with `group: 'device'`. */
+  clients: (range: T.RangeArg, { group, ...o }: ClientStatsOpts = {}) =>
+    http.get<T.ClientStat[]>('/stats/clients', { ...o, query: { ...rangeQuery(range), group } }),
 }
 
 /** The complete typed API. */

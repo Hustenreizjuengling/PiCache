@@ -10,8 +10,8 @@ func TestParseProcRoute(t *testing.T) {
 	in := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\n" +
 		"eth0\t0000A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n" +
 		"eth0\t00000000\t01B2A8C0\t0003\t0\t0\t100\t00000000\n"
-	ip, err := parseProcRoute(strings.NewReader(in))
-	if err != nil || ip.String() != "192.168.178.1" {
+	ip, iface, err := parseProcRoute(strings.NewReader(in))
+	if err != nil || ip.String() != "192.168.178.1" || iface != "eth0" {
 		t.Fatalf("got %v %v", ip, err)
 	}
 }
@@ -24,7 +24,7 @@ func TestParseIPv6Route(t *testing.T) {
 		zero + " 00 " + zero + " 00 " + zero + " ffffffff 00000001 00000000 00200200 lo\n" +
 		"garbage\n"
 	ip, err := parseIPv6Route(strings.NewReader(in))
-	if err != nil || ip.String() != "fe80::1" {
+	if err != nil || ip.String() != "fe80::1%wlan0" {
 		t.Fatalf("got %v %v, want the default route with the lowest metric", ip, err)
 	}
 	if _, err := parseIPv6Route(strings.NewReader(zero + " 00 " + zero + " 00 " + zero + " ffffffff 00000001 00000000 00200200 lo\n")); err == nil {

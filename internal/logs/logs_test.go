@@ -185,7 +185,7 @@ func TestSubscriberLimitSlowSubscribersAndFilters(t *testing.T) {
 	wantKind(t, err, apperr.KindTooMany)
 	cancels[0]()
 	cancels[0]() // idempotent
-	match, err := QueryMatcher("10.0.0.1", []string{"blocked"})
+	match, err := QueryMatcher([]string{"10.0.0.1"}, []string{"blocked"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,20 +220,35 @@ func TestSubscriberLimitSlowSubscribersAndFilters(t *testing.T) {
 }
 
 func TestQueryMatcherValidation(t *testing.T) {
-	if m, err := QueryMatcher("", nil); m != nil || err != nil {
+	if m, err := QueryMatcher(nil, nil); m != nil || err != nil {
 		t.Fatalf("empty matcher = %v, %v", m != nil, err)
 	}
-	_, err := QueryMatcher("ab", nil)
+	_, err := QueryMatcher([]string{"ab"}, nil)
 	wantKind(t, err, apperr.KindInvalid)
-	_, err = QueryMatcher("", []string{"nonsense"})
+	_, err = QueryMatcher([]string{""}, []string{"nonsense"})
 	wantKind(t, err, apperr.KindInvalid)
-	m, err := QueryMatcher("lap", []string{"allowed"})
+	m, err := QueryMatcher([]string{"lap"}, []string{"allowed"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !m(QueryEvent{ClientName: "Laptop", Status: "stale"}) || m(QueryEvent{ClientName: "Laptop", Status: "cached"}) {
 		t.Fatal("name/class matching wrong")
 	}
+	// Several values are ORed: the addresses of a device, or a name.
+	m, err = QueryMatcher([]string{"fd00::5", "::ffff:192.168.1.5", " ", "phone"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []QueryEvent{{ClientIP: "fd00::5"}, {ClientIP: "192.168.1.5"}, {ClientIP: "10.0.0.9", ClientName: "Phone"}} {
+		if !m(e) {
+			t.Errorf("%+v must match", e)
+		}
+	}
+	if m(QueryEvent{ClientIP: "fd00::6", ClientName: "tv"}) {
+		t.Error("another client must not match")
+	}
+	_, err = QueryMatcher(make([]string, maxClientFilters+1), nil)
+	wantKind(t, err, apperr.KindInvalid)
 }
 
 func TestQueryLogDisabledKeepsStatistics(t *testing.T) {

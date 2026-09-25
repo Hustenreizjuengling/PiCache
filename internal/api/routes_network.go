@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
-	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 )
 
 // Network is implemented by internal/app: the network check and the
@@ -89,6 +88,11 @@ type NetworkIPv6DNS struct {
 	IPv6Clients int      `json:"ipv6Clients"`
 	ULA         []string `json:"ula"`
 	Global      []string `json:"global"`
+	// HostIgnoresRA: this machine has no ULA or global address and its
+	// default-route interface (or every interface) ignores IPv6 router
+	// advertisements (Linux accept_ra), so it cannot tell whether the
+	// network uses IPv6.
+	HostIgnoresRA bool `json:"hostIgnoresRA"`
 }
 
 // NetworkIPv6Address is the data of ipv6-address.
@@ -99,8 +103,20 @@ type NetworkIPv6Address struct {
 
 // NetworkRefused is the data of refused.
 type NetworkRefused struct {
-	Sources []dnsserver.RefusedSource `json:"sources"` // newest first, at most 20
-	Since   time.Time                 `json:"since"`
+	Sources []NetworkRefusedSource `json:"sources"` // newest first, at most 20
+	Since   time.Time              `json:"since"`
+	// TrustConnectedNetworks is the setting dns.trustConnectedNetworks.
+	TrustConnectedNetworks bool `json:"trustConnectedNetworks"`
+}
+
+// NetworkRefusedSource is a source address the DNS ACL dropped queries of.
+type NetworkRefusedSource struct {
+	Address string    `json:"address"`
+	Count   int64     `json:"count"`
+	Last    time.Time `json:"last"`
+	// OnLink: the address is inside a network this machine is connected to
+	// (the networks dns.trustConnectedNetworks would allow).
+	OnLink bool `json:"onLink"`
 }
 
 // NetworkDeviceCounts is the data of devices.

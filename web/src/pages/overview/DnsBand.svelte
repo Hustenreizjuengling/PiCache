@@ -1,7 +1,8 @@
 <!--
   @component
   Overview band "DNS": allowed/blocked queries per minute (stacked), top
-  blocked domains and top clients.
+  blocked domains and top clients (one row per device with all its
+  addresses; its link shows the queries of every address).
 -->
 <script lang="ts">
   import { t } from '../../i18n/index.svelte'
@@ -24,9 +25,11 @@
     interval: REFRESH,
   })
   // Top lists are hourly: short ranges get an hour-aligned window, labelled with its start.
+  // Clients are grouped by device, so a phone with changing IPv6 addresses is one row.
   async function top(kind: 'blocked' | 'clients', signal: AbortSignal) {
     const w = topWindow(range) // read before the first await: reloads when the range changes
-    return { since: w.since, items: await api.stats.top(kind, w.arg, 10, { signal }) }
+    const group = kind === 'clients' ? 'device' : undefined
+    return { since: w.since, items: await api.stats.top(kind, w.arg, 10, { signal, group }) }
   }
   const blocked = resource((signal) => top('blocked', signal), { interval: REFRESH })
   const clients = resource((signal) => top('clients', signal), { interval: REFRESH })
@@ -96,7 +99,7 @@
       countLabel={t('overview.dns.queries')}
       emptyText={t('overview.dns.noClients')}
       mono
-      link={(it) => links.client(it.key, range)}
+      link={(it) => links.client(it.addresses?.length ? it.addresses : it.key, range)}
     />
   {/snippet}
 </Band>

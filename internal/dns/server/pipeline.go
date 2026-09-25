@@ -81,9 +81,12 @@ type result struct {
 	blocked  bool // blocked reply: EDE 15 for EDNS clients
 }
 
-// process runs ARCHITECTURE 7.1 steps 6–14 for a validated, admitted and
+// process runs ARCHITECTURE 7.1 steps 5a–14 for a validated, admitted and
 // identified query.
 func (s *Server) process(qc *qctx) result {
+	if r, ok := s.dns64PTR(qc); ok { // 5a
+		return r
+	}
 	if r, ok := s.specialUse(qc); ok { // 6
 		return r
 	}
@@ -109,13 +112,23 @@ func (s *Server) process(qc *qctx) result {
 			return s.blocked(qc, qc.dec, statusFor(qc.dec))
 		}
 	}
-	var r result
+	if r, ok := s.aaaaDisabled(qc); ok { // 12a
+		return r
+	}
+	var (
+		r   result
+		via []string
+		ips []netip.Addr
+	)
 	if f := s.fwd.Load().match(qc.qname); f != nil { // 12
-		r = s.resolveVia(qc, f.upstreams, f.ips, "conditional forwarder "+f.domain)
+		via, ips = f.upstreams, f.ips
+		r = s.resolveVia(qc, via, ips, "conditional forwarder "+f.domain)
 	} else { // 13
 		r = s.resolveVia(qc, nil, nil, "upstreams")
 	}
-	s.inspectCNAMEs(qc, &r) // 14
+	s.inspectCNAMEs(qc, &r)            // 14
+	stripIPv6Hints(qc, &r)             // 14a
+	s.synthesizeAAAA(qc, &r, via, ips) // 14b
 	return r
 }
 

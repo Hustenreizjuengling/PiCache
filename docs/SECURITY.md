@@ -39,7 +39,7 @@ fixes; please test against it or a current build of `main`.
 
 | Threat | Controls |
 |---|---|
-| Open resolver, DNS amplification | Answers only loopback, private (RFC 1918, ULA, CGNAT, link-local) and directly connected private networks, plus CIDRs you add. Other UDP queries are dropped; TCP connections are closed at accept. Per-client rate limit (default 50 qps, burst 200), `ANY` refused, CHAOS/`version.bind` refused, EDNS capped at 1232 bytes. `allowAllNetworks` is an explicit, dangerous switch. |
+| Open resolver, DNS amplification | Answers only loopback, private (RFC 1918, ULA, CGNAT, link-local) and directly connected private networks, plus CIDRs you add. "Allow every network this machine is connected to" (`dns.trustConnectedNetworks`, off by default) also answers the public networks of its interfaces (virtual bridges and tunnels excluded), for LANs with a global IPv6 prefix that changes; on a cloud server or VPS the connected network can contain other customers, so leave it off there. Other UDP queries are dropped; TCP connections are closed at accept. Per-client rate limit (default 50 qps, burst 200), `ANY` refused, CHAOS/`version.bind` refused, EDNS capped at 1232 bytes. `allowAllNetworks` is an explicit, dangerous switch. |
 | DNS cache poisoning | Encrypted upstreams by default (DNS-over-HTTPS; DNS-over-TLS is also supported), random IDs and ports, the question is verified on every reply, in-flight deduplication, no client EDNS options forwarded. |
 | Private reverse-DNS leaks | PTR/SOA/NS queries for private and special-use reverse zones never reach public upstreams. |
 | Open HTTP proxy / SSRF via :80 | Only hosts of known cache services are served; unknown hosts get 403. Upstream addresses must be public unicast and not this machine; link-local (cloud metadata) is always refused, and redirects are re-checked. Non-canonical paths are never stored. Per-client fill limits and at most 16 ranges per request prevent WAN amplification. |
@@ -346,7 +346,8 @@ and [§17](ARCHITECTURE.md#17-network-check-internalappnetcheckgo).
 - [ ] PiCache is not reachable from the Internet (no port forwarding; a host
       firewall if the machine has a public interface).
 - [ ] `allowAllNetworks` is off. Additional client networks are added as
-      narrow CIDRs only.
+      narrow CIDRs only. `trustConnectedNetworks` is off on machines whose
+      network is shared with others (cloud servers, VPS).
 - [ ] The machine has a static address, and routers do not hand out another
       resolver (DHCP or IPv6 RA) that bypasses the filter.
 

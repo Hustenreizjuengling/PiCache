@@ -83,8 +83,10 @@ func TestQueryLogFilters(t *testing.T) {
 		want int
 	}{
 		{"default last hour", QueryFilter{}, 4},
-		{"client ip", QueryFilter{Client: "10.0.0.2"}, 2},
-		{"client name", QueryFilter{Client: "LAP"}, 1},
+		{"client ip", QueryFilter{Clients: []string{"10.0.0.2"}}, 2},
+		{"client name", QueryFilter{Clients: []string{"LAP"}}, 1},
+		{"client values ORed", QueryFilter{Clients: []string{"10.0.0.2", "10.0.0.3", "LAP"}}, 4},
+		{"client addresses", QueryFilter{Clients: []string{"10.0.0.2", "::ffff:10.0.0.3"}}, 3},
 		{"domain substring", QueryFilter{Domain: "example.com"}, 2},
 		{"domain exact", QueryFilter{Domain: `"example.com"`}, 1},
 		{"status class", QueryFilter{Status: []string{"blocked"}}, 2},
@@ -105,7 +107,7 @@ func TestQueryLogFilters(t *testing.T) {
 	}
 	for _, f := range []QueryFilter{
 		{Domain: "ex"},
-		{Client: "ab"},
+		{Clients: []string{"ab"}},
 		{Status: []string{"bogus"}},
 		{Cursor: "not-a-cursor"},
 		{From: now, To: now.Add(-time.Minute)},

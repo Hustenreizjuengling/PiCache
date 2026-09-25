@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,16 +45,21 @@ type DNS struct {
 	ServerNames       []string `json:"serverNames"`       // names answered with this server's addresses
 	// RouterResolver answers private reverse zones, the local domain,
 	// home.arpa and resolv.conf search domains when no forwarder or local PTR
-	// upstream covers them: "auto" = the IPv4 default gateway (only if it
-	// answers DNS), "" = off, or an explicit IP.
+	// upstream covers them: "auto" = the IPv4 default gateway, else the
+	// IPv6 one (only if it answers DNS), "" = off, or an explicit IP.
 	RouterResolver string `json:"routerResolver"`
 
 	AllowedNetworks  []string `json:"allowedNetworks"`  // extra client CIDRs beyond the private defaults
 	AllowAllNetworks bool     `json:"allowAllNetworks"` // DANGEROUS: open resolver
-	RateLimitQPS     int      `json:"rateLimitQps"`     // per client (/32, /64); 0 disables
-	RateLimitBurst   int      `json:"rateLimitBurst"`
-	RateLimitExempt  []string `json:"rateLimitExempt"` // CIDRs (loopback, router and forwarder targets are exempt automatically)
-	RefuseANY        bool     `json:"refuseAny"`
+	// TrustConnectedNetworks also allows every network this machine is
+	// connected to, public ones included (netutil.ConnectedSubnets; follows
+	// prefix changes). Off by default: on a cloud server the on-link
+	// network can contain other tenants.
+	TrustConnectedNetworks bool     `json:"trustConnectedNetworks"`
+	RateLimitQPS           int      `json:"rateLimitQps"` // per client key (netutil.ClientKey: a device address; public IPv6 per /64); 0 disables
+	RateLimitBurst         int      `json:"rateLimitBurst"`
+	RateLimitExempt        []string `json:"rateLimitExempt"` // CIDRs (loopback, router and forwarder targets are exempt automatically)
+	RefuseANY              bool     `json:"refuseAny"`
 
 	CacheEnabled        bool   `json:"cacheEnabled"`
 	CacheSize           int    `json:"cacheSize"` // entries
@@ -62,6 +68,33 @@ type DNS struct {
 	ServeStale          bool   `json:"serveStale"`
 	ServeStaleMaxAgeSec int    `json:"serveStaleMaxAgeSec"`
 	DNSSEC              bool   `json:"dnssec"` // set DO upstream and pass AD through (no local validation)
+
+	// DisableAAAA answers AAAA queries that would be forwarded with NODATA
+	// and removes ipv6hint from forwarded HTTPS/SVCB answers (networks with
+	// broken IPv6). Local records and this server's names are not affected.
+	DisableAAAA bool `json:"disableAAAA"`
+	// DNS64 synthesises AAAA answers for IPv4-only names (NAT64 networks).
+	// It cannot be combined with DisableAAAA.
+	DNS64 DNS64 `json:"dns64"`
+}
+
+// DNS64 configures AAAA synthesis (RFC 6147) for NAT64 networks.
+type DNS64 struct {
+	Enabled bool   `json:"enabled"`
+	Prefix  string `json:"prefix"` // an IPv6 /96 (default the well-known prefix 64:ff9b::/96, RFC 6052)
+}
+
+// DefaultDNS64Prefix is the NAT64 well-known prefix (RFC 6052).
+const DefaultDNS64Prefix = "64:ff9b::/96"
+
+// DNS64Prefix returns the configured DNS64 prefix (invalid if it does not
+// parse; Validate rejects that earlier).
+func (d *DNS) DNS64Prefix() netip.Prefix {
+	p, err := netip.ParsePrefix(d.DNS64.Prefix)
+	if err != nil {
+		return netip.Prefix{}
+	}
+	return p.Masked()
 }
 
 // Filter configures blocking.
@@ -212,7 +245,22 @@ var migrations = []string{
 		ELSE json_remove(doc, '$.lancache')
 	END
 	WHERE CASE WHEN json_valid(doc) THEN json_type(doc, '$.lancache') IS NOT NULL ELSE 0 END;`,
+	// v3 (0.6.0): the default bootstrap list has the IPv6 addresses of Quad9
+	// and Cloudflare too. A stored list that equals the old default exactly
+	// gets them appended; an edited list is left alone. Like v2 it also
+	// converts a document restored from an older backup.
+	`UPDATE settings SET doc = json_set(doc, '$.dns.bootstrap', json('` + bootstrapV3 + `'))
+	WHERE CASE WHEN json_valid(doc) AND json_type(doc, '$.dns.bootstrap') = 'array'
+		THEN json(json_extract(doc, '$.dns.bootstrap')) = json('` + bootstrapV2 + `')
+		ELSE 0 END;`,
 }
+
+// Default bootstrap lists: bootstrapV2 until 0.5.x, bootstrapV3 since 0.6.0
+// (settings migration v3; Defaults uses the same addresses).
+const (
+	bootstrapV2 = `["9.9.9.9","149.112.112.112","1.1.1.1","1.0.0.1"]`
+	bootstrapV3 = `["9.9.9.9","149.112.112.112","1.1.1.1","1.0.0.1","2620:fe::fe","2606:4700:4700::1111"]`
+)
 
 // Open loads the settings document, creating it from Defaults on first start.
 // Unknown or missing fields in a stored document are tolerated: missing fields

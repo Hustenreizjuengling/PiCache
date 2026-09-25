@@ -16,10 +16,15 @@ type ACL struct {
 }
 
 // NewACL builds an ACL from the private defaults, the private directly
-// connected subnets (LocalSubnets) and extra user prefixes.
-func NewACL(extra []netip.Prefix, allowAll bool) *ACL {
+// connected subnets (LocalSubnets) and extra user prefixes. With
+// trustConnected (dns.trustConnectedNetworks) every network this machine is
+// connected to is trusted too, public ones included (ConnectedSubnets).
+func NewACL(extra []netip.Prefix, allowAll, trustConnected bool) *ACL {
 	ps := append([]netip.Prefix{}, PrivateLANPrefixes...)
 	ps = append(ps, LocalSubnets()...)
+	if trustConnected && !allowAll {
+		ps = append(ps, ConnectedSubnets()...)
+	}
 	ps = append(ps, extra...)
 	return &ACL{allowAll: allowAll, prefixes: ps}
 }
@@ -36,7 +41,8 @@ func (a *ACL) Allowed(ip netip.Addr) bool {
 }
 
 // ACLWatcher keeps an ACL current with settings (dns.allowedNetworks,
-// dns.allowAllNetworks) and periodically refreshes connected subnets.
+// dns.allowAllNetworks, dns.trustConnectedNetworks) and periodically
+// refreshes connected subnets.
 type ACLWatcher struct {
 	cur atomic.Pointer[ACL]
 	set *settings.Store
@@ -51,14 +57,14 @@ func NewACLWatcher(set *settings.Store) *ACLWatcher {
 }
 
 func (w *ACLWatcher) rebuild(s *settings.All) {
-	w.cur.Store(NewACL(settings.ParsePrefixes(s.DNS.AllowedNetworks), s.DNS.AllowAllNetworks))
+	w.cur.Store(NewACL(settings.ParsePrefixes(s.DNS.AllowedNetworks), s.DNS.AllowAllNetworks, s.DNS.TrustConnectedNetworks))
 }
 
 // Get returns the current ACL.
 func (w *ACLWatcher) Get() *ACL { return w.cur.Load() }
 
 // Run refreshes connected subnets every interval until done is closed
-// (interfaces can change, e.g. DHCP renumbering).
+// (interfaces can change, e.g. DHCP renumbering or a new IPv6 prefix).
 func (w *ACLWatcher) Run(done <-chan struct{}, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()

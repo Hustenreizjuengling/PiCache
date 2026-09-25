@@ -5,6 +5,49 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- IPv6 parity: a client configured by its IPv4 address or a network also
+  covers the device's IPv6 addresses on the same network, privacy addresses
+  included (PiCache learns them from the device's MAC address in the
+  neighbour table; for a new address it resolves the MAC before answering
+  its first query, so parental controls cannot be bypassed over IPv6). An IPv6
+  address without a name of its own shows the name of the device's IPv4
+  address.
+- Statistics per device: the overview's top clients and **Clients &
+  groups** can show one row per device with all its addresses instead of one
+  row per address. API: `GET /stats/clients` and `GET /stats/top` take
+  `group=device`; client statistics carry `clientId`, `mac` and `addresses`;
+  the query log and its live stream take repeated `client` values.
+- **Allow every network this machine is connected to**
+  (`dns.trustConnectedNetworks`, off by default): devices with a public IPv6
+  address of the LAN may use PiCache, and a new prefix from the provider is
+  followed within a minute. The network check offers it for refused
+  devices of the local network and notes when PiCache's machine ignores
+  IPv6 router advertisements.
+- **Do not answer IPv6 addresses (AAAA)** (`dns.disableAAAA`) for networks
+  whose IPv6 does not work, and **DNS64** (`dns.dns64`) for IPv6-only
+  networks with a NAT64 gateway.
+- The router resolver works over IPv6 when there is no IPv4 default gateway,
+  and every address of the router is protected from forwarding loops and
+  exempt from the rate limit.
+- The default bootstrap servers include the IPv6 addresses of Quad9 and
+  Cloudflare; an unchanged default list gets them with the update.
+
+### Fixed
+
+- Server-name answers no longer include deprecated or tentative IPv6
+  addresses, prefer stable addresses over temporary ones and unique local
+  addresses over global ones, and follow address changes within a minute.
+- NODATA answers of the blocking modes `null` (other query types) and
+  `custom_ip` (no blocking address of the queried family) carry the
+  synthetic SOA like the other negative answers.
+- The rate-limit help text: devices are limited per address; public IPv6
+  addresses per /64. The access settings no longer say that the connected
+  networks may always use PiCache (only private ones may).
+- Client names are looked up through a router resolver with an IPv6 address
+  too (the lookups were never sent).
+
 ## [0.5.0] - 2026-09-25
 
 ### Added

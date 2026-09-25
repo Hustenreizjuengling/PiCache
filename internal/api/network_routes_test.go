@@ -10,7 +10,6 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
-	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 )
 
 // fakeNetwork is a Network with a fixed check; Scan answers scanErr or
@@ -31,8 +30,9 @@ func (f *fakeNetwork) Check(context.Context) NetworkCheck {
 		Checks: []NetworkItem{
 			{ID: "router-forwarding", Status: "warn", Data: NetworkForwarding{RouterQueries: 290, TotalQueries: 300, Share: 0.967,
 				RouterAddresses: []string{"192.168.178.1"}}},
-			{ID: "ipv6-dns", Status: "warn", Data: NetworkIPv6DNS{LANHasIPv6: true, ULA: []string{}, Global: []string{}}},
-			{ID: "refused", Status: "ok", Data: NetworkRefused{Sources: []dnsserver.RefusedSource{}, Since: at}},
+			{ID: "ipv6-dns", Status: "warn", Data: NetworkIPv6DNS{LANHasIPv6: true, ULA: []string{}, Global: []string{}, HostIgnoresRA: true}},
+			{ID: "refused", Status: "warn", Data: NetworkRefused{Sources: []NetworkRefusedSource{
+				{Address: "2001:db8:1::5", Count: 2, Last: at, OnLink: true}}, Since: at}},
 			{ID: "devices", Status: "info", Data: NetworkDeviceCounts{Total: 1, Never: 1}},
 		},
 		Devices: []NetworkDevice{{MAC: "aa:00:00:00:00:22", IPs: []string{"192.168.178.22"}, Status: "never"}},
@@ -69,8 +69,8 @@ func TestNetworkRoutes(t *testing.T) {
 		`"self":{"ipv4":["192.168.178.10"],"ula":[],"global":[],"dnsIpv6":true}`,
 		`"queries24h":{"total":300,"ipv4":300,"ipv6":0,"fromRouter":290}`,
 		`{"id":"router-forwarding","status":"warn","data":{"routerQueries":290,"totalQueries":300,"share":0.967,"routerAddresses":["192.168.178.1"]}}`,
-		`"data":{"lanHasIPv6":true,"ipv6Queries":0,"ipv6Clients":0,"ula":[],"global":[]}`,
-		`"data":{"sources":[],"since":"2026-09-25T12:00:00Z"}`,
+		`"data":{"lanHasIPv6":true,"ipv6Queries":0,"ipv6Clients":0,"ula":[],"global":[],"hostIgnoresRA":true}`,
+		`"data":{"sources":[{"address":"2001:db8:1::5","count":2,"last":"2026-09-25T12:00:00Z","onLink":true}],"since":"2026-09-25T12:00:00Z","trustConnectedNetworks":false}`,
 		`"data":{"total":1,"active":0,"inactive":0,"never":1}`,
 		`"devices":[{"mac":"aa:00:00:00:00:22","ips":["192.168.178.22"],"queries24h":0,"status":"never"}]`,
 		`"scan":{"running":true,"startedAt":"2026-09-25T12:00:00Z","addresses":253}`,

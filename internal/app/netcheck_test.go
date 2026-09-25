@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -526,4 +527,50 @@ func TestNetworkScanLimits(t *testing.T) {
 		t.Fatalf("after the cooldown: %v", err)
 	}
 	e.waitScanDone(t)
+}
+
+// refused: each source says whether it is inside a network this machine is
+// connected to, and the check carries dns.trustConnectedNetworks. ipv6-dns
+// reports hostIgnoresRA only while this machine has no ULA or global
+// address.
+func TestNetworkRefusedOnLinkAndIgnoredRA(t *testing.T) {
+	in := fritzInputs()
+	in.refused = []dnsserver.RefusedSource{
+		{Address: "2001:db8:1::77", Count: 3, Last: netNow}, // the LAN's global prefix
+		{Address: "2001:db8:9::1", Count: 1, Last: netNow},  // elsewhere
+		{Address: "203.0.113.9", Count: 1, Last: netNow},
+	}
+	in.trustConnected, in.ignoresRA = true, true
+	nc := computeNetworkCheck(in)
+	ref := checkByID(t, nc, "refused").Data.(api.NetworkRefused)
+	var got []string
+	for _, s := range ref.Sources {
+		got = append(got, fmt.Sprintf("%s/%d/%v", s.Address, s.Count, s.OnLink))
+	}
+	if !ref.TrustConnectedNetworks || !slices.Equal(got, []string{"2001:db8:1::77/3/true", "2001:db8:9::1/1/false", "203.0.113.9/1/false"}) {
+		t.Fatalf("refused %+v (%v)", ref, got)
+	}
+	if d := checkByID(t, nc, "ipv6-dns").Data.(api.NetworkIPv6DNS); d.HostIgnoresRA {
+		t.Error("hostIgnoresRA must be false while this machine has a ULA or global address")
+	}
+	in.host.Prefixes = []netip.Prefix{pfx("192.168.178.10/24"), pfx("fe80::10/64")}
+	if d := checkByID(t, computeNetworkCheck(in), "ipv6-dns").Data.(api.NetworkIPv6DNS); !d.HostIgnoresRA {
+		t.Error("hostIgnoresRA must be reported without own IPv6 addresses")
+	}
+
+	// gather asks for the router advertisement setting only without a ULA
+	// or global address, and reads the trust setting.
+	e := newNetEnv(t, false)
+	var asked atomic.Int32
+	e.n.src.ignoresRA = func() bool { asked.Add(1); return true }
+	e.n.src.trustConnected = func() bool { return true }
+	if g := e.n.gather(context.Background(), netNow); g.ignoresRA || !g.trustConnected || asked.Load() != 0 {
+		t.Fatalf("with own IPv6 addresses: ignoresRA %v, trust %v, asked %d", g.ignoresRA, g.trustConnected, asked.Load())
+	}
+	e.n.src.host = func() dnsserver.HostNetwork {
+		return dnsserver.HostNetwork{Prefixes: []netip.Prefix{pfx("192.168.178.10/24"), pfx("fe80::10/64")}}
+	}
+	if g := e.n.gather(context.Background(), netNow); !g.ignoresRA || asked.Load() != 1 {
+		t.Fatalf("without own IPv6 addresses: ignoresRA %v, asked %d", g.ignoresRA, asked.Load())
+	}
 }

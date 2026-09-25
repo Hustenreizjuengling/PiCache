@@ -1,7 +1,8 @@
 <!--
   @component
-  Clients & groups: configured clients, recently seen addresses (add them as
-  clients) and groups, with per-client traffic over a time range.
+  Clients & groups: configured clients, recently seen devices (add them as
+  clients) and groups, with per-client and per-device traffic over a time
+  range.
   Query: ?tab=clients|seen|groups&range=24h|7d|30d&within=…&sel=<id>&ip=<address>&group=<id>
   (without ?range= the range shown last in this browser). Incoming
   ?ip=<address> (global search, query log) opens the client that address
@@ -15,7 +16,7 @@
   import { loadPref, savePref } from '$lib/storage'
   import { Tabs, TimeRangePicker } from '$lib/ui'
   import ClientsTab from './clients/ClientsTab.svelte'
-  import { asTrafficRange, TRAFFIC_RANGES, type TrafficRange } from './clients/clientStats'
+  import { asTrafficRange, seenDevices, TRAFFIC_RANGES, type TrafficRange } from './clients/clientStats'
   import GroupsTab from './clients/GroupsTab.svelte'
   import SeenTab from './clients/SeenTab.svelte'
 
@@ -55,7 +56,12 @@
   const clients = resource((signal) => api.clients.list({ signal }))
   const groups = resource((signal) => api.groups.list({ signal }))
   const known = resource((signal) => api.clients.known(within, { signal }), { interval: 60_000 })
-  const stats = resource((signal) => api.stats.clients(range, { signal }), { interval: 60_000 })
+  // Traffic of configured clients, grouped by device on the server: every
+  // address a client was recognised by counts (also the IPv6 addresses of a
+  // client configured by its IPv4 address).
+  const clientStats = resource((signal) => api.stats.clients(range, { signal, group: 'device' }), { interval: 60_000 })
+  // Traffic per address, summed per device on "Seen recently" (a client can cover several devices).
+  const addressStats = resource((signal) => api.stats.clients(range, { signal }), { interval: 60_000 })
 
   // ?ip=… on the clients tab: open the client this address belongs to (the
   // server's match from "seen recently", else an exact identifier), or show
@@ -74,7 +80,7 @@
 
   const tabs = $derived([
     { id: 'clients', label: t('dns.clients.tab.clients'), count: clients.data?.length },
-    { id: 'seen', label: t('dns.clients.tab.seen'), count: known.data?.length },
+    { id: 'seen', label: t('dns.clients.tab.seen'), count: known.data ? seenDevices(known.data).length : undefined },
     { id: 'groups', label: t('dns.clients.tab.groups'), count: groups.data?.length },
   ])
 
@@ -111,7 +117,7 @@
             {known}
             clients={clients.data}
             groups={groups.data}
-            stats={stats.data}
+            stats={addressStats.data}
             {range}
             {rangePicker}
             {within}
@@ -121,7 +127,7 @@
         {:else if active === 'groups'}
           <GroupsTab {groups} onchanged={changed} />
         {:else}
-          <ClientsTab {clients} groups={groups.data} stats={stats.data} known={known.data} {range} {rangePicker} onchanged={changed} />
+          <ClientsTab {clients} groups={groups.data} stats={clientStats.data} known={known.data} {range} {rangePicker} onchanged={changed} />
         {/if}
       </div>
     {/snippet}

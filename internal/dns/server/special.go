@@ -157,7 +157,7 @@ func (s *Server) reverseZone(qc *qctx, zone string) result {
 		return s.resolveVia(qc, ups, upstreamIPs(ups), "local PTR upstreams")
 	}
 	if ip, ok := s.routerAddr(); ok {
-		return s.resolveVia(qc, []string{routerUpstream(ip)}, []netip.Addr{ip}, "router resolver")
+		return s.resolveVia(qc, []string{routerUpstream(ip)}, s.routerAddrs(), "router resolver")
 	}
 	qc.note("no local resolver for this reverse zone: NXDOMAIN")
 	return s.negative(qc, dns.RcodeNameError, StatusSpecial, zone)
@@ -210,7 +210,7 @@ func (s *Server) localZoneAnswer(qc *qctx, zone string, router bool) result {
 	}
 	if router {
 		if ip, ok := s.routerAddr(); ok {
-			return s.resolveVia(qc, []string{routerUpstream(ip)}, []netip.Addr{ip}, "router resolver")
+			return s.resolveVia(qc, []string{routerUpstream(ip)}, s.routerAddrs(), "router resolver")
 		}
 	}
 	qc.note("no local data or resolver for this name: NXDOMAIN")
@@ -234,7 +234,7 @@ func (s *Server) routeName(qc *qctx, name string, q dns.Question) (*dns.Msg, ups
 		return s.exchange(qc, q, ups, upstreamIPs(ups))
 	case private || router:
 		if ip, ok := s.routerAddr(); ok {
-			return s.exchange(qc, q, []string{routerUpstream(ip)}, []netip.Addr{ip})
+			return s.exchange(qc, q, []string{routerUpstream(ip)}, s.routerAddrs())
 		}
 		return nil, upstream.Info{}, nil
 	case local || special:

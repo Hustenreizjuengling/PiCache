@@ -50,6 +50,11 @@ unprivileged Proxmox LXC container.
   router.
 - Encrypted upstreams (DNS-over-HTTPS and DNS-over-TLS; plain UDP/TCP too)
   with load balancing, a response cache and serve-stale.
+- IPv6 on par with IPv4: clients configured by IPv4 address are recognised
+  over IPv6 too (privacy addresses included), statistics per device instead
+  of per address, the router over IPv6, an opt-in trust of the networks the
+  machine is connected to (for a changing global IPv6 prefix), and DNS64
+  or "no AAAA answers" for NAT64 and broken-IPv6 networks.
 - Safe by default: not an open resolver (private networks only), rate limits,
   private reverse zones never leak upstream.
 

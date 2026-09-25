@@ -119,6 +119,11 @@ type netSources struct {
 	refused func() []dnsserver.RefusedSource
 	dnsIPv6 func() bool     // a DNS listener serves IPv6
 	ownMACs func() []string // MAC addresses of this machine's interfaces
+	// trustConnected reports the setting dns.trustConnectedNetworks.
+	trustConnected func() bool
+	// ignoresRA reports whether this machine ignores IPv6 router
+	// advertisements (hostIgnoresRA; nil: unknown).
+	ignoresRA func() bool
 	// scanSupported: the neighbour table can be read (Linux).
 	scanSupported bool
 	send          func(ctx context.Context, addrs []netip.Addr) // sends the scan's datagrams
@@ -140,6 +145,11 @@ type netInputs struct {
 	dnsIPv6    bool
 	ownMACs    []string
 	describe   func(ip netip.Addr, mac string) (int64, string, string)
+
+	// trustConnected: dns.trustConnectedNetworks; ignoresRA: this machine
+	// ignores router advertisements (read only without a ULA or global
+	// address).
+	trustConnected, ignoresRA bool
 }
 
 // netChecker computes and caches the network check and runs the discovery
@@ -194,11 +204,39 @@ func (a *App) netSources() netSources {
 			}
 			return st, true
 		},
-		refused:       a.dns.RefusedSources,
-		dnsIPv6:       a.dnsServesIPv6,
-		ownMACs:       interfaceMACs,
-		scanSupported: runtime.GOOS == "linux",
+		refused:        a.dns.RefusedSources,
+		dnsIPv6:        a.dnsServesIPv6,
+		ownMACs:        interfaceMACs,
+		trustConnected: func() bool { return a.set.Get().DNS.TrustConnectedNetworks },
+		ignoresRA:      hostIgnoresRA,
+		scanSupported:  runtime.GOOS == "linux",
 	}
+}
+
+// hostIgnoresRA reports whether this machine ignores IPv6 router
+// advertisements: its default-route interface does, or (without a default
+// route) every interface that is up and neither loopback nor virtual does.
+// False when this cannot be read (systems other than Linux).
+func hostIgnoresRA() bool {
+	if iface := netutil.DefaultRouteInterface(); iface != "" {
+		ignores, ok := netutil.IgnoresRouterAdvertisements(iface)
+		return ok && ignores
+	}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	n := 0
+	for _, ifc := range ifs {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || netutil.VirtualInterface(ifc.Name) {
+			continue
+		}
+		if ignores, ok := netutil.IgnoresRouterAdvertisements(ifc.Name); !ok || !ignores {
+			return false
+		}
+		n++
+	}
+	return n > 0
 }
 
 // dnsServesIPv6 reports whether a DNS listener accepts IPv6 queries from
@@ -277,6 +315,15 @@ func (n *netChecker) gather(ctx context.Context, now time.Time) netInputs {
 	s := n.src
 	in := netInputs{now: now, since: s.since, host: s.host(), domain: s.domain(), refused: s.refused(),
 		dnsIPv6: s.dnsIPv6(), ownMACs: s.ownMACs(), describe: s.describe}
+	if s.trustConnected != nil {
+		in.trustConnected = s.trustConnected()
+	}
+	if s.ignoresRA != nil && !in.host.Bridge && !slices.ContainsFunc(in.host.Prefixes, func(p netip.Prefix) bool {
+		c := addrClass(netutil.Canon(p.Addr()))
+		return c == classULA || c == classGlobal
+	}) {
+		in.ignoresRA = s.ignoresRA()
+	}
 	if ip, err := s.gateway4(); err == nil {
 		in.gw4 = netutil.Canon(ip)
 	}
@@ -383,18 +430,15 @@ func computeNetworkCheck(in netInputs) api.NetworkCheck {
 			lanV6 = true
 		}
 	}
-	nc.Checks = append(nc.Checks, ipv6Checks(nc.Self, lanV6, v6Queries, v6Clients)...)
+	ignoresRA := in.ignoresRA && len(nc.Self.ULA)+len(nc.Self.Global) == 0
+	nc.Checks = append(nc.Checks, ipv6Checks(nc.Self, lanV6, v6Queries, v6Clients, ignoresRA)...)
 
-	refused := in.refused[:min(len(in.refused), maxRefusedShown)]
-	if refused == nil {
-		refused = []dnsserver.RefusedSource{}
-	}
 	status := "ok"
 	if len(in.refused) > 0 {
 		status = "warn"
 	}
 	nc.Checks = append(nc.Checks, api.NetworkItem{ID: "refused", Status: status,
-		Data: api.NetworkRefused{Sources: refused, Since: in.since.UTC()}})
+		Data: api.NetworkRefused{Sources: in.refusedSources(), Since: in.since.UTC(), TrustConnectedNetworks: in.trustConnected}})
 
 	// A bridge network shows only the bridge: no device list.
 	if in.host.Bridge {
@@ -409,6 +453,28 @@ func computeNetworkCheck(in netInputs) api.NetworkCheck {
 	}
 	nc.Checks = append(nc.Checks, api.NetworkItem{ID: "devices", Status: status, Data: counts})
 	return nc
+}
+
+// refusedSources returns the refused sources shown (newest first, at most
+// 20), each marked whether it is inside a network this machine is
+// connected to (the networks dns.trustConnectedNetworks would allow).
+func (in *netInputs) refusedSources() []api.NetworkRefusedSource {
+	var nets []netip.Prefix
+	for _, p := range in.host.Prefixes {
+		if n, ok := netutil.ConnectedPrefix(p); ok {
+			nets = append(nets, n)
+		}
+	}
+	out := make([]api.NetworkRefusedSource, 0, min(len(in.refused), maxRefusedShown))
+	for _, r := range in.refused[:min(len(in.refused), maxRefusedShown)] {
+		src := api.NetworkRefusedSource{Address: r.Address, Count: r.Count, Last: r.Last}
+		if ip, err := netip.ParseAddr(r.Address); err == nil {
+			ip = netutil.Canon(ip)
+			src.OnLink = slices.ContainsFunc(nets, func(p netip.Prefix) bool { return p.Contains(ip) })
+		}
+		out = append(out, src)
+	}
+	return out
 }
 
 // self classifies this machine's addresses (link-local ones are left out)
@@ -589,7 +655,8 @@ func forwardingCheck(q api.NetworkQueries, router map[netip.Addr]bool, perAddr m
 // IPv6: they probably use the router as IPv6 DNS server) and ipv6-address
 // (PiCache has no stable address to announce: warn without any IPv6
 // address, info with global addresses only, which change with the prefix).
-func ipv6Checks(self api.NetworkSelf, lanV6 bool, queries int64, clients int) []api.NetworkItem {
+// ignoresRA is reported with ipv6-dns (hostIgnoresRA).
+func ipv6Checks(self api.NetworkSelf, lanV6 bool, queries int64, clients int, ignoresRA bool) []api.NetworkItem {
 	dns := "ok"
 	if lanV6 && queries == 0 {
 		dns = "warn"
@@ -604,7 +671,7 @@ func ipv6Checks(self api.NetworkSelf, lanV6 bool, queries int64, clients int) []
 	}
 	return []api.NetworkItem{
 		{ID: "ipv6-dns", Status: dns, Data: api.NetworkIPv6DNS{LANHasIPv6: lanV6, IPv6Queries: queries, IPv6Clients: clients,
-			ULA: self.ULA, Global: self.Global}},
+			ULA: self.ULA, Global: self.Global, HostIgnoresRA: ignoresRA}},
 		{ID: "ipv6-address", Status: address, Data: api.NetworkIPv6Address{ULA: self.ULA, Global: self.Global}},
 	}
 }

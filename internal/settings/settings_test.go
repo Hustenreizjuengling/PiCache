@@ -89,6 +89,8 @@ func TestParseUpstream(t *testing.T) {
 		{"9.9.9.9", "udp", "9.9.9.9:53", true},
 		{"tcp://1.1.1.1:5353", "tcp", "1.1.1.1:5353", true},
 		{"[2620:fe::fe]:53", "udp", "[2620:fe::fe]:53", true},
+		{"[fe80::1%eth0]:53", "udp", "[fe80::1%eth0]:53", true}, // a router on its link-local address
+		{"[fe80::1%25eth0]:53", "udp", "[fe80::1%eth0]:53", true},
 		{"tls://dns.quad9.net", "tls", "dns.quad9.net:853", true},
 		{"https://dns.quad9.net/dns-query", "https", "dns.quad9.net:443", true},
 		{"https://dns.quad9.net", "https", "dns.quad9.net:443", true},
@@ -310,6 +312,127 @@ func TestBackupsSection(t *testing.T) {
 				if b.Schedule != "daily" && b.Schedule != "weekly" || strings.TrimSpace(b.Time) != b.Time ||
 					strings.ToLower(b.Destination) != b.Destination {
 					t.Fatalf("not normalised: %+v", b)
+				}
+				return
+			}
+			if e, ok := apperr.As(err); !ok || e.Kind != apperr.KindInvalid || e.Field != tc.field {
+				t.Fatalf("err = %v, want invalid %s", err, tc.field)
+			}
+		})
+	}
+}
+
+// Settings v3 appends the IPv6 bootstrap servers to a stored list that
+// equals the old default exactly; edited lists and newer documents are left
+// alone.
+func TestMigrateBootstrapIPv6(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.DiscardHandler)
+	oldDefault := []string{"9.9.9.9", "149.112.112.112", "1.1.1.1", "1.0.0.1"}
+	for _, tc := range []struct {
+		name   string
+		stored any // the stored dns.bootstrap member (nil: absent)
+		want   []string
+	}{
+		{"old default", oldDefault, Defaults().DNS.Bootstrap},
+		{"edited", []string{"9.9.9.9", "1.1.1.1"}, []string{"9.9.9.9", "1.1.1.1"}},
+		{"reordered", []string{"1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112"}, []string{"1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112"}},
+		{"extended", append(slices.Clone(oldDefault), "8.8.8.8"), append(slices.Clone(oldDefault), "8.8.8.8")},
+		{"empty", []string{}, []string{}},
+		{"absent", nil, Defaults().DNS.Bootstrap},
+		{"not a list", "9.9.9.9", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if err := d.Migrate(ctx, "settings", migrations[:2]); err != nil {
+				t.Fatal(err)
+			}
+			b, err := json.Marshal(Defaults())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc map[string]map[string]any
+			if err := json.Unmarshal(b, &doc); err != nil {
+				t.Fatal(err)
+			}
+			delete(doc["dns"], "bootstrap")
+			if tc.stored != nil {
+				doc["dns"]["bootstrap"] = tc.stored
+			}
+			if b, err = json.Marshal(doc); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.W.ExecContext(ctx, `INSERT INTO settings (id, doc, updated_at) VALUES (1, ?, 0)`, string(b)); err != nil {
+				t.Fatal(err)
+			}
+			s, err := Open(ctx, d, log)
+			if tc.want == nil {
+				if err == nil {
+					t.Fatal("a bootstrap member that is not a list must stay (and fail to decode)")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := s.Get().DNS.Bootstrap; !slices.Equal(got, tc.want) {
+				t.Fatalf("bootstrap %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// DNS64: only IPv6 /96 prefixes (normalised), and never together with
+// dns.disableAAAA.
+func TestDNS64AndDisableAAAAValidation(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	s, err := Open(ctx, d, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get().DNS; got.DisableAAAA || got.DNS64.Enabled || got.DNS64.Prefix != "64:ff9b::/96" || got.TrustConnectedNetworks {
+		t.Fatalf("defaults: %+v", got)
+	}
+	for _, tc := range []struct {
+		name   string
+		fn     func(*DNS)
+		field  string
+		prefix string // the stored prefix when valid
+	}{
+		{"enabled", func(d *DNS) { d.DNS64.Enabled = true }, "", "64:ff9b::/96"},
+		{"network-specific", func(d *DNS) { d.DNS64 = DNS64{Enabled: true, Prefix: " 2001:DB8:64::/96 "} }, "", "2001:db8:64::/96"},
+		{"host bits masked", func(d *DNS) { d.DNS64.Prefix = "2001:db8:64::1/96" }, "", "2001:db8:64::/96"},
+		{"empty means default", func(d *DNS) { d.DNS64.Prefix = "" }, "", "64:ff9b::/96"},
+		{"disable AAAA alone", func(d *DNS) { d.DisableAAAA = true }, "", "64:ff9b::/96"},
+		{"not /96", func(d *DNS) { d.DNS64.Prefix = "64:ff9b::/64" }, "dns.dns64.prefix", ""},
+		{"IPv4", func(d *DNS) { d.DNS64.Prefix = "10.0.0.0/8" }, "dns.dns64.prefix", ""},
+		{"IPv4-mapped", func(d *DNS) { d.DNS64.Prefix = "::ffff:0:0/96" }, "dns.dns64.prefix", ""},
+		{"IPv4-compatible", func(d *DNS) { d.DNS64.Prefix = "::/96" }, "dns.dns64.prefix", ""},
+		{"multicast", func(d *DNS) { d.DNS64.Prefix = "ff0e::/96" }, "dns.dns64.prefix", ""},
+		{"garbage", func(d *DNS) { d.DNS64.Prefix = "nat64" }, "dns.dns64.prefix", ""},
+		{"both", func(d *DNS) { d.DisableAAAA = true; d.DNS64.Enabled = true }, "dns.disableAAAA", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next, err := s.Update(ctx, func(a *All) error {
+				a.DNS.DisableAAAA, a.DNS.DNS64 = false, DNS64{Prefix: DefaultDNS64Prefix}
+				tc.fn(&a.DNS)
+				return nil
+			})
+			if tc.field == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if next.DNS.DNS64.Prefix != tc.prefix {
+					t.Fatalf("prefix %q, want %q", next.DNS.DNS64.Prefix, tc.prefix)
 				}
 				return
 			}

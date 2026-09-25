@@ -22,6 +22,7 @@ Whichever you choose:
 Contents: [Download](#download) · [Build from source](#build-from-source) ·
 [Bare metal](#bare-metal-and-vms-debian-1213) · [LXC](#proxmox-lxc) ·
 [Docker](#docker) · [First-run setup](#first-run-setup) ·
+[IPv6](#ipv6-and-dual-stack-networks) ·
 [Port conflicts](#port-conflicts) · [Persistent data](#persistent-data) ·
 [Backup and restore](#backup-and-restore) · [Updates](#updates) ·
 [Uninstall](#uninstall) · [Cache storage](#cache-storage) ·
@@ -403,9 +404,66 @@ to the network (switching Wi-Fi off and on is enough).
   network's gateway. Use host networking (the provided compose file does).
 - **Refused sources**: if the check lists addresses whose queries PiCache
   refused, they are not in an allowed network, typically devices with a
-  public (global) IPv6 address. Add their prefix (the network check offers
-  the /64) under **DNS settings → Access → Additional networks**
+  public (global) IPv6 address. For addresses of a network PiCache's machine
+  is connected to, the check offers **Allow the networks this machine is
+  connected to** (`dns.trustConnectedNetworks`, see below); for others it
+  offers their /64 under **DNS settings → Access → Additional networks**
   (`dns.allowedNetworks`).
+
+---
+
+## IPv6 and dual-stack networks
+
+PiCache answers over IPv4 and IPv6 alike. What to know for networks with
+IPv6:
+
+- **Give PiCache a ULA and announce it.** A unique local address (`fd…`)
+  stays the same when the provider changes your prefix; global addresses do
+  not, and privacy addresses change every day. Announce the ULA as IPv6 DNS
+  server (router advertisement or DHCPv6; the FRITZ!Box steps are
+  above). If you bind the DNS listener to specific addresses
+  (`PICACHE_DNS_LISTEN`), use the ULA, not a global address. PiCache itself
+  answers its server names with its stable addresses, ULAs first, and never
+  with deprecated or temporary ones while others exist.
+- **Which devices may ask.** Loopback, private IPv4, ULA and link-local
+  addresses are always allowed. Devices that ask from a public (global)
+  IPv6 address of your LAN are refused unless you allow them: turn on
+  **DNS settings → Access → Allow every network this machine is connected
+  to** (`dns.trustConnectedNetworks`), which follows prefix changes within a
+  minute, or add the prefix to the additional networks (it goes stale when
+  the prefix changes). Do not use the switch on a cloud server or VPS: its
+  connected network can belong to other customers, and PiCache would become
+  their resolver.
+- **Clients over IPv4 and IPv6.** A client configured by an IPv4 address or
+  a CIDR also covers the IPv6 addresses of the same device on the same
+  network, privacy addresses included: PiCache learns them from the kernel's
+  neighbour table (the device's MAC address) within about a second of the
+  first query. A MAC address is still the most robust identifier, and the
+  only one that works for devices behind another router. With Docker bridge
+  networking PiCache sees no MAC addresses.
+- **Names and statistics per device.** An IPv6 address without a name of
+  its own gets the name of the device's IPv4 address (for example the
+  name the router's DHCP server gave it). The overview and **Clients &
+  groups** show one row per device with all its addresses, and link to the
+  query log with all of them.
+- **Router over IPv6.** With the router resolver on *auto* and no IPv4
+  default gateway (an IPv6-only network), PiCache asks the router over IPv6:
+  at its ULA or global address if known, else at its link-local address.
+  Queries from any address of the router are never sent back to it and are
+  not rate limited.
+- **Broken IPv6.** If your network announces IPv6 but it does not reach the
+  internet, turn on **Do not answer IPv6 addresses (AAAA)**
+  (`dns.disableAAAA`): devices then use IPv4. Your local AAAA records and
+  PiCache's own names keep working.
+- **IPv6-only networks with NAT64.** Turn on **DNS64** (`dns.dns64`) with
+  the NAT64 prefix of your gateway (the well-known `64:ff9b::/96` by
+  default; only /96 prefixes): names with IPv4 addresses only then get
+  synthesised IPv6 addresses through the gateway. DNS64 and "Do not answer
+  IPv6 addresses" exclude each other.
+- **Bootstrap.** The default bootstrap servers include the IPv6 addresses
+  of Quad9 and Cloudflare (`2620:fe::fe`, `2606:4700:4700::1111`), so
+  encrypted upstreams also work on IPv6-only hosts; IPv4 is tried first.
+  An unchanged default list gets them with the update to 0.6.0.
 
 ---
 
@@ -474,8 +532,9 @@ listens on `127.0.0.53` and `127.0.0.54`. Choose one fix:
   PICACHE_DNS_LISTEN=192.168.1.5:53,127.0.0.1:53
   ```
 
-  Use the machine's static LAN address. Add its IPv6 address too if clients
-  use IPv6 DNS.
+  Use the machine's static LAN address. Add its IPv6 unique local address
+  (`fd…`) too if clients use IPv6 DNS, not a global address: that changes
+  with the provider's prefix.
 
 - **B) Turn off the stub listener** and let the host resolve through PiCache:
 

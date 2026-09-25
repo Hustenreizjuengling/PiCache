@@ -2,7 +2,9 @@
   @component
   Adds or edits a client: name, identifiers (IP, CIDR or MAC, one per line),
   groups, download cache bypass and "don't log". In edit mode it also shows the
-  client's statistics and links to its queries and downloads.
+  client's statistics with the addresses they came from (IPv6 addresses the
+  server recognised through the device's MAC address included) and links to
+  its queries (all those addresses) and downloads.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -21,6 +23,9 @@
   import { formatBytes, formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { href } from '$lib/router.svelte'
   import { Button, Checkbox, confirm, Field, Input, KeyValue, toast } from '$lib/ui'
+  import { isV4 } from '../network/checks'
+  import { clientValues } from '../querylog/filters'
+  import AddressList from '../shared/AddressList.svelte'
   import { lineError } from '../shared/errors'
   import { isIP } from '../shared/input'
   import FormPanel from '../shared/FormPanel.svelte'
@@ -80,9 +85,15 @@
     lineError(err, 'identifiers') ?? (submitted && draft.identifiers.length === 0 ? t('dns.clients.identifiersRequired') : undefined),
   )
   const generalError = $derived(err && !err.field ? errorText(err) : undefined)
+  /** Room for every identifier (a device's MAC plus its IPv4 and ULA addresses) and one more line. */
+  const idRows = $derived(Math.min(8, Math.max(3, draft.identifiers.length + 1)))
 
   /** Address used for links (queries, downloads): the first IP identifier. */
   const firstIp = $derived(client?.identifiers.find(isIP))
+  /** The query log shows the queries of every address the traffic came from. */
+  const queriesFor = $derived(totals?.addresses.length ? clientValues(totals.addresses) : (firstIp ?? client?.name ?? ''))
+  /** Downloads are filtered by one address (they come over IPv4 almost always). */
+  const downloadsFor = $derived(firstIp ?? totals?.addresses.find(isV4) ?? totals?.addresses[0])
 
   async function save() {
     submitted = true
@@ -150,13 +161,18 @@
             { label: t('common.label.lastSeen'), value: totals.lastSeen ? formatRelative(totals.lastSeen) : t('common.state.never') },
             { label: t('common.label.created'), value: formatDateTime(client.createdAt) },
           ]}
-        />
+        >
+          {#if totals.addresses.length > 0}
+            <dt>{t('dns.clients.addresses')}</dt>
+            <dd><AddressList addresses={totals.addresses} /></dd>
+          {/if}
+        </KeyValue>
         <div class="row">
-          <Button size="sm" variant="ghost" icon="list" href={href('/dns/queries', { client: firstIp ?? client.name })}>
+          <Button size="sm" variant="ghost" icon="list" href={href('/dns/queries', { client: queriesFor })}>
             {t('dns.clients.showQueries')}
           </Button>
-          {#if firstIp}
-            <Button size="sm" variant="ghost" icon="download" href={href('/cache/downloads', { client: firstIp })}>
+          {#if downloadsFor}
+            <Button size="sm" variant="ghost" icon="download" href={href('/cache/downloads', { client: downloadsFor })}>
               {t('dns.clients.showDownloads')}
             </Button>
           {/if}
@@ -169,7 +185,7 @@
     <Input bind:value={draft.name} maxlength={64} autocomplete="off" />
   </Field>
   <Field label={t('dns.clients.identifiers')} required help={t('dns.clients.identifiersHelp')} error={idError}>
-    <LinesInput bind:value={draft.identifiers} rows={3} placeholder={'192.168.1.20\naa:bb:cc:dd:ee:ff'} />
+    <LinesInput bind:value={draft.identifiers} rows={idRows} placeholder={'192.168.1.20\naa:bb:cc:dd:ee:ff'} />
   </Field>
   <GroupPicker
     {groups}

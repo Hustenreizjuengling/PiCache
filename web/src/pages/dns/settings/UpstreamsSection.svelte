@@ -173,7 +173,7 @@
 
     <div class="grid">
       <Field label={t('dns.settings.bootstrap')} help={t('dns.settings.bootstrapHelp')} error={lineError(form.saveError, 'dns.bootstrap')}>
-        <LinesInput bind:value={d.bootstrap} rows={4} placeholder="9.9.9.9" />
+        <LinesInput bind:value={d.bootstrap} rows={6} placeholder="9.9.9.9" />
       </Field>
       <Field label={t('dns.settings.localPtr')} optional help={t('dns.settings.localPtrHelp')} error={lineError(form.saveError, 'dns.localPtrUpstreams')}>
         <LinesInput bind:value={d.localPtrUpstreams} rows={4} placeholder="192.168.1.1" />

@@ -66,7 +66,8 @@ var migrations = []string{
 	`ALTER TABLE client_clients RENAME COLUMN lancache_bypass TO download_cache_bypass;`,
 }
 
-// reload rebuilds the identification snapshot from the database.
+// reload rebuilds the identification snapshot from the database and the
+// learned MACs that depend on it.
 func (r *Registry) reload(ctx context.Context) error {
 	groups, err := r.Groups(ctx)
 	if err != nil {
@@ -77,6 +78,7 @@ func (r *Registry) reload(ctx context.Context) error {
 		return err
 	}
 	r.snap.Store(newSnapshot(groups, cl))
+	r.rebuildLearned() // callers invalidate the identity cache afterwards
 	return nil
 }
 

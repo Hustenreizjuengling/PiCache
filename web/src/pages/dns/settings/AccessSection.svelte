@@ -1,8 +1,9 @@
 <!--
   @component
   Who may use this DNS server: extra client networks beyond the private
-  ones, the dangerous "answer everyone" switch (behind a confirmation) and
-  refusing ANY queries.
+  ones, trusting every network this machine is connected to (public IPv6
+  prefixes too, followed when the provider changes them), the dangerous
+  "answer everyone" switch (behind a confirmation) and refusing ANY queries.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -33,6 +34,14 @@
 
 <Panel id="dns-set-access" title={t('dns.settings.access.title')} description={t('dns.settings.access.description')}>
   <div class="stack">
+    <div class="stack-sm">
+      <Toggle
+        bind:checked={d.trustConnectedNetworks}
+        label={t('dns.settings.access.trustConnected')}
+        description={t('dns.settings.access.trustConnectedHelp')}
+      />
+      {#if form.error('trustConnectedNetworks')}<p class="err">{form.error('trustConnectedNetworks')}</p>{/if}
+    </div>
     <Field
       label={t('dns.settings.access.networks')}
       optional
@@ -63,5 +72,9 @@
   }
   .danger.on {
     border-color: var(--danger);
+  }
+  .err {
+    color: var(--danger);
+    font-size: var(--fs-sm);
   }
 </style>

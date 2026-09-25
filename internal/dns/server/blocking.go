@@ -101,18 +101,17 @@ func blockReply(req *dns.Msg, f *settings.Filter) *dns.Msg {
 	q := req.Question[0]
 	ttl := f.BlockedTTL
 	m := newReply(req)
-	nodata := func(withSOA bool) *dns.Msg {
-		if withSOA {
-			m.Ns = []dns.RR{syntheticSOA(q.Name, ttl)}
-		}
+	// nodata adds the synthetic SOA to a reply without answer (RFC 2308).
+	nodata := func() *dns.Msg {
+		m.Ns = []dns.RR{syntheticSOA(q.Name, ttl)}
 		return m
 	}
 	switch f.BlockingMode {
 	case "nxdomain":
 		m.Rcode = dns.RcodeNameError
-		return nodata(true)
+		return nodata()
 	case "nodata":
-		return nodata(true)
+		return nodata()
 	case "refused":
 		m.Rcode = dns.RcodeRefused
 		return m
@@ -124,6 +123,8 @@ func blockReply(req *dns.Msg, f *settings.Filter) *dns.Msg {
 			m.Answer = []dns.RR{&dns.A{Hdr: rrHeader(q.Name, dns.TypeA, ttl), A: v4.AsSlice()}}
 		case q.Qtype == dns.TypeAAAA && v6.Is6():
 			m.Answer = []dns.RR{&dns.AAAA{Hdr: rrHeader(q.Name, dns.TypeAAAA, ttl), AAAA: v6.AsSlice()}}
+		default: // no address of the family, other types
+			return nodata()
 		}
 		return m
 	default: // "null"
@@ -132,6 +133,8 @@ func blockReply(req *dns.Msg, f *settings.Filter) *dns.Msg {
 			m.Answer = []dns.RR{&dns.A{Hdr: rrHeader(q.Name, dns.TypeA, ttl), A: netip.IPv4Unspecified().AsSlice()}}
 		case dns.TypeAAAA:
 			m.Answer = []dns.RR{&dns.AAAA{Hdr: rrHeader(q.Name, dns.TypeAAAA, ttl), AAAA: netip.IPv6Unspecified().AsSlice()}}
+		default:
+			return nodata()
 		}
 		return m
 	}

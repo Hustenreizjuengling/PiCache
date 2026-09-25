@@ -165,7 +165,7 @@ type EvictionEvent struct {
 // Default time range: last hour. Results are newest first.
 type QueryFilter struct {
 	From, To time.Time
-	Client   string   // IP (exact) or name substring (≥ 3 chars)
+	Clients  []string // any of (ORed, at most 256): IP (exact) or name substring (≥ 3 chars)
 	Domain   string   // substring (≥ 3 chars); "\"exact\"" for exact match
 	Status   []string // any of
 	QType    string
@@ -238,6 +238,10 @@ type TopItem struct {
 	Count int64  `json:"count"`
 	Bytes int64  `json:"bytes,omitempty"`
 	Extra string `json:"extra,omitempty"` // e.g. service for content
+	// Addresses are the client addresses of a device (most active first)
+	// when the clients or cache-clients list is grouped by device (API
+	// ?group=device; Key is then the most active address).
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 // Download is a download session: requests of one client for one content
@@ -292,10 +296,20 @@ type ServiceStat struct {
 	SNIBytes       int64  `json:"sniBytes"`
 }
 
-// ClientStat aggregates per client.
+// ClientStat aggregates per client address, or per device when grouped by
+// the API (?group=device: ClientIP is then the most recently active
+// address and the counters are summed).
 type ClientStat struct {
-	ClientIP      string    `json:"clientIp"`
-	ClientName    string    `json:"clientName,omitempty"`
+	ClientIP   string `json:"clientIp"`
+	ClientName string `json:"clientName,omitempty"`
+	// ClientID and MAC describe the device of the address (filled in by the
+	// API from the clients registry): the configured client (0 if none) and
+	// the MAC ("" if unknown).
+	ClientID int64  `json:"clientId,omitzero"`
+	MAC      string `json:"mac,omitempty"`
+	// Addresses are the addresses the row covers: [ClientIP], or every
+	// address of the device in the range (most recent first) when grouped.
+	Addresses     []string  `json:"addresses"`
 	Queries       int64     `json:"queries"`
 	Blocked       int64     `json:"blocked"`
 	CacheBytes    int64     `json:"cacheBytes"`

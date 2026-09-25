@@ -249,11 +249,12 @@ func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, er
 		if h := r.hostname(ip); h != "" {
 			k.Hostname = h
 		}
-		if c := snap.match(ip, k.MAC); c != nil {
+		if c := r.match(snap, ip, k.MAC); c != nil {
 			k.ClientID, k.Name = c.id, c.name
 		}
 		out = append(out, *k)
 	}
+	r.fillMACNames(out)
 	slices.SortFunc(out, func(a, b Known) int {
 		if c := b.LastSeen.Compare(a.LastSeen); c != 0 {
 			return c
@@ -264,4 +265,39 @@ func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, er
 		out = out[:maxKnownRows]
 	}
 	return out, nil
+}
+
+// fillMACNames gives rows without a host name the name of another address
+// with the same MAC: from the current neighbour table (Registry.name), else
+// from the other rows (an IPv4 address's name first, then the most
+// recently active one).
+func (r *Registry) fillMACNames(rows []Known) {
+	type candidate struct {
+		name string
+		v4   bool
+		last time.Time
+	}
+	best := map[string]candidate{}
+	for _, k := range rows {
+		ip, err := netip.ParseAddr(k.IP)
+		if k.MAC == "" || k.Hostname == "" || err != nil {
+			continue
+		}
+		c := candidate{name: k.Hostname, v4: ip.Is4(), last: k.LastSeen}
+		if b, ok := best[k.MAC]; !ok || (c.v4 && !b.v4) || (c.v4 == b.v4 && c.last.After(b.last)) {
+			best[k.MAC] = c
+		}
+	}
+	for i := range rows {
+		k := &rows[i]
+		if k.Hostname != "" || k.MAC == "" {
+			continue
+		}
+		if ip, err := netip.ParseAddr(k.IP); err == nil {
+			k.Hostname = r.name(ip, k.MAC)
+		}
+		if k.Hostname == "" {
+			k.Hostname = best[k.MAC].name
+		}
+	}
 }

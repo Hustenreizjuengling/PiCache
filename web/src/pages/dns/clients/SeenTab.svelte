@@ -1,9 +1,11 @@
 <!--
   @component
-  Recently seen addresses (/clients/known): IP, host name, MAC, the client
-  they belong to and their traffic. Unconfigured addresses can be added as
-  a client in one step.
-  Query: ?tab=seen&within=24h|7d|30d&ip=<address>
+  Recently seen devices (/clients/known grouped by MAC address, newest
+  activity first): addresses ("+N addresses" expands), host name, MAC, the
+  client they belong to and their traffic (summed over their addresses).
+  Unconfigured devices can be added as a client in one step (MAC address
+  plus IPv4 and ULA addresses).
+  Query: ?tab=seen&within=24h|7d|30d&ip=<address> (selects the device with that address)
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte'
@@ -14,13 +16,17 @@
   import { href, router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
   import { Button, EmptyState, KeyValue, Notice, Panel, Select, SidePanel, Table, type Column } from '$lib/ui'
+  import { isV4 } from '../network/checks'
+  import { clientValues } from '../querylog/filters'
+  import AddressList from '../shared/AddressList.svelte'
   import ClientPanel from './ClientPanel.svelte'
-  import { addressStat, clientFromKnown, type TrafficRange } from './clientStats'
+  import { clientFromKnown, deviceTotals, seenDevices, type SeenDevice, type Totals, type TrafficRange } from './clientStats'
 
   interface Props {
     known: Resource<KnownClient[]>
     clients: readonly Client[] | undefined
     groups: readonly ClientGroup[] | undefined
+    /** Traffic per address (not grouped by device). */
     stats: readonly ClientStat[] | undefined
     range: TrafficRange
     /** The range control of the traffic columns (shown in the panel header). */
@@ -32,29 +38,34 @@
 
   let { known, clients, groups, stats, range, rangePicker, within, onwithin, onchanged }: Props = $props()
 
-  type Row = KnownClient & { stat?: ClientStat }
+  type Row = SeenDevice & { stat?: Totals }
 
   let addOpen = $state(false)
   let addPreset = $state.raw<Partial<ClientInput>>({})
 
-  const rows = $derived<Row[] | undefined>(known.data?.map((k) => ({ ...k, stat: addressStat(k.ip, stats) })))
+  const rows = $derived<Row[] | undefined>(known.data && seenDevices(known.data).map((d) => ({ ...d, stat: deviceTotals(d.addresses, stats) })))
   const selIp = $derived(router.param('ip').trim().toLowerCase())
-  const selected = $derived(selIp ? rows?.find((k) => k.ip === selIp) : undefined)
+  const selected = $derived(selIp ? rows?.find((d) => d.addresses.includes(selIp)) : undefined)
   const missing = $derived(!!selIp && known.loaded && !selected)
 
-  function clientName(k: KnownClient): string | undefined {
-    if (!k.clientId) return undefined
-    return k.name || clients?.find((c) => c.id === k.clientId)?.name
+  function clientName(d: Pick<SeenDevice, 'clientId' | 'name'>): string | undefined {
+    if (!d.clientId) return undefined
+    return d.name || clients?.find((c) => c.id === d.clientId)?.name
   }
 
-  function addAsClient(k: Pick<KnownClient, 'ip' | 'mac' | 'hostname'>) {
-    addPreset = clientFromKnown(k)
+  function addAsClient(d: Pick<SeenDevice, 'ip' | 'mac' | 'hostname' | 'addresses'>) {
+    addPreset = clientFromKnown(d)
     addOpen = true
   }
 
   function saved() {
     router.setQuery({ ip: null })
     onchanged()
+  }
+
+  /** The address for the downloads page (downloads come over IPv4 almost always). */
+  function downloadAddress(d: SeenDevice): string {
+    return d.addresses.find(isV4) ?? d.ip
   }
 
   const withinOptions = $derived([
@@ -64,42 +75,46 @@
   ])
 
   const columns: Column<Row>[] = $derived([
-    { key: 'ip', label: t('dns.seen.address'), mono: true, sortable: true, value: (k) => k.ip },
-    { key: 'host', label: t('dns.seen.hostname'), truncate: true, width: '25%', sortable: true, value: (k) => k.hostname ?? '' },
-    { key: 'mac', label: t('dns.seen.mac'), mono: true, value: (k) => k.mac ?? '' },
-    { key: 'client', label: t('common.label.client'), sortable: true, value: (k) => clientName(k) ?? '', cell: clientCell },
+    { key: 'ip', label: t('dns.seen.addresses'), sortable: true, value: (d) => d.ip, cell: addressCell },
+    { key: 'host', label: t('dns.seen.hostname'), truncate: true, width: '25%', sortable: true, value: (d) => d.hostname ?? '' },
+    { key: 'mac', label: t('dns.seen.mac'), mono: true, value: (d) => d.mac ?? '' },
+    { key: 'client', label: t('common.label.client'), sortable: true, value: (d) => clientName(d) ?? '', cell: clientCell },
     {
       key: 'queries',
       label: t('dns.clients.queries'),
       align: 'right',
       sortable: true,
-      value: (k) => k.stat?.queries ?? 0,
-      format: (k) => formatNumber(k.stat?.queries ?? 0),
+      value: (d) => d.stat?.queries ?? 0,
+      format: (d) => (d.stat ? formatNumber(d.stat.queries) : '–'),
     },
     {
       key: 'blocked',
       label: t('dns.clients.blocked'),
       align: 'right',
       sortable: true,
-      value: (k) => k.stat?.blocked ?? 0,
-      format: (k) => formatNumber(k.stat?.blocked ?? 0),
+      value: (d) => d.stat?.blocked ?? 0,
+      format: (d) => (d.stat ? formatNumber(d.stat.blocked) : '–'),
     },
-    { key: 'seen', label: t('common.label.lastSeen'), sortable: true, value: (k) => k.lastSeen, cell: seenCell },
+    { key: 'seen', label: t('common.label.lastSeen'), sortable: true, value: (d) => d.lastSeen, cell: seenCell },
   ])
 </script>
 
-{#snippet clientCell(k: Row)}
-  {#if k.clientId}
-    <a href={href('/dns/clients', { sel: k.clientId })}>{clientName(k) ?? `#${k.clientId}`}</a>
+{#snippet addressCell(d: Row)}
+  <AddressList addresses={d.addresses} />
+{/snippet}
+
+{#snippet clientCell(d: Row)}
+  {#if d.clientId}
+    <a href={href('/dns/clients', { sel: d.clientId })}>{clientName(d) ?? `#${d.clientId}`}</a>
   {:else}
-    <Button size="sm" variant="ghost" icon="plus" disabled={!session.isAdmin} onclick={() => addAsClient(k)}>
+    <Button size="sm" variant="ghost" icon="plus" disabled={!session.isAdmin} onclick={() => addAsClient(d)}>
       {t('dns.seen.addAsClient')}
     </Button>
   {/if}
 {/snippet}
 
-{#snippet seenCell(k: Row)}
-  <span class="nowrap" title={formatDateTime(k.lastSeen)}>{formatRelative(k.lastSeen)}</span>
+{#snippet seenCell(d: Row)}
+  <span class="nowrap" title={formatDateTime(d.lastSeen)}>{formatRelative(d.lastSeen)}</span>
 {/snippet}
 
 <div class="stack">
@@ -107,7 +122,7 @@
     <Notice tone="info" title={t('dns.seen.unknownTitle', { ip: selIp })}>
       {t('dns.seen.unknownText')}
       {#snippet actions()}
-        <Button size="sm" icon="plus" disabled={!session.isAdmin} onclick={() => addAsClient({ ip: selIp })}>
+        <Button size="sm" icon="plus" disabled={!session.isAdmin} onclick={() => addAsClient({ ip: selIp, addresses: [selIp] })}>
           {t('dns.seen.addAsClient')}
         </Button>
       {/snippet}
@@ -117,7 +132,7 @@
   <Panel flush title={t('dns.seen.title')} description={t(`dns.seen.description.${range}`)}>
     {#snippet actions()}
       {@render rangePicker()}
-      <!-- Labelled like the range picker next to it: a different time range (which addresses are listed). -->
+      <!-- Labelled like the range picker next to it: a different time range (which devices are listed). -->
       <label class="within">
         <span class="small muted">{t('dns.seen.within')}</span>
         <Select size="sm" aria-label={t('dns.seen.within')} value={within} options={withinOptions} onchange={(e) => onwithin(e.currentTarget.value)} />
@@ -126,12 +141,12 @@
     <Table
       {columns}
       {rows}
-      key={(k) => k.ip}
+      key={(d) => d.key}
       loading={known.loading && !known.loaded}
       error={known.error && !known.data ? errorText(known.error) : undefined}
       onretry={() => known.refresh()}
-      onrowclick={(k) => router.setQuery({ ip: k.ip })}
-      selected={selected?.ip}
+      onrowclick={(d) => router.setQuery({ ip: d.ip })}
+      selected={selected?.key}
       caption={t('dns.seen.title')}
     >
       {#snippet empty()}
@@ -151,7 +166,6 @@
     <div class="stack">
       <KeyValue
         items={[
-          { label: t('dns.seen.address'), value: selected.ip, mono: true },
           { label: t('dns.seen.hostname'), value: selected.hostname },
           { label: t('dns.seen.mac'), value: selected.mac, mono: true },
           { label: t('common.label.client'), value: clientName(selected) ?? t('dns.seen.notConfigured') },
@@ -160,6 +174,17 @@
           { label: t('dns.seen.queriesSeen'), value: formatNumber(selected.queries) },
         ]}
       />
+      <section class="stack-sm" aria-labelledby="seen-addresses">
+        <h3 id="seen-addresses">{t('dns.seen.addresses')}</h3>
+        <ul class="addrs">
+          {#each selected.entries as e (e.ip)}
+            <li>
+              <span class="mono">{e.ip}</span>
+              <span class="small muted nowrap" title={formatDateTime(e.lastSeen)}>{formatRelative(e.lastSeen)}</span>
+            </li>
+          {/each}
+        </ul>
+      </section>
       <section class="stack-sm" aria-labelledby="seen-stats">
         <h3 id="seen-stats">{t('dns.clients.statsTitle')} <span class="muted small">· {t(`common.range.long.${range}`)}</span></h3>
         <KeyValue
@@ -182,8 +207,10 @@
             {t('dns.seen.addAsClient')}
           </Button>
         {/if}
-        <Button variant="ghost" icon="list" href={href('/dns/queries', { client: selected.ip })}>{t('dns.clients.showQueries')}</Button>
-        <Button variant="ghost" icon="download" href={href('/cache/downloads', { client: selected.ip })}>
+        <Button variant="ghost" icon="list" href={href('/dns/queries', { client: clientValues(selected.addresses) })}>
+          {t('dns.clients.showQueries')}
+        </Button>
+        <Button variant="ghost" icon="download" href={href('/cache/downloads', { client: downloadAddress(selected) })}>
           {t('dns.clients.showDownloads')}
         </Button>
       </div>
@@ -202,5 +229,24 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--sp-2) var(--sp-3);
+  }
+  .addrs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--fs-sm);
+  }
+  .addrs li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 var(--sp-3);
+    min-width: 0;
+  }
+  .addrs .mono {
+    overflow-wrap: anywhere;
   }
 </style>

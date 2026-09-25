@@ -11,6 +11,9 @@ const de: Messages<typeof en> = {
   'shared.noGroupWarning': 'Ohne Gruppe gilt das für niemanden.',
   'shared.groupDisabled': 'Deaktiviert',
   'shared.lineError': 'Eintrag {line}: {message}',
+  'shared.moreAddresses.one': '+1 Adresse',
+  'shared.moreAddresses.other': '+{count} Adressen',
+  'shared.fewerAddresses': 'Weniger zeigen',
   'shared.kind.exact': 'Exakt',
   'shared.kind.subtree': 'Mit Subdomains',
   'shared.kind.regex': 'Muster',
@@ -72,6 +75,9 @@ const de: Messages<typeof en> = {
   'queryLog.filter.domainPlaceholder': 'Teil einer Domain',
   'queryLog.filter.domainTitle': 'Teil eines Domainnamens oder der ganze Name in doppelten Anführungszeichen für eine exakte Suche, z. B. "example.com"',
   'queryLog.filter.clientPlaceholder': 'IP-Adresse oder Name',
+  'queryLog.filter.device.one': 'Gerät mit 1 Adresse',
+  'queryLog.filter.device.other': 'Gerät mit {count} Adressen',
+  'queryLog.filter.deviceClear': 'Gerätefilter entfernen',
   'queryLog.filter.tooShort': 'Gib mindestens {min} Zeichen oder eine IP-Adresse ein.',
   'queryLog.filter.toggle': 'Filter',
   'queryLog.filter.toggleCount': 'Filter ({count} gesetzt)',
@@ -248,7 +254,8 @@ const de: Messages<typeof en> = {
   'clients.deleteTitle': 'Client {name} löschen?',
   'clients.deleteText': 'Seine Geräte gelten wieder als unbekannte Clients in der Gruppe Default.',
   'clients.identifiers': 'Erkennungsmerkmale',
-  'clients.identifiersHelp': 'Eins pro Zeile: eine IP-Adresse, ein Netz wie 192.168.1.0/24 oder eine MAC-Adresse (nur für Geräte im selben Netz wie PiCache).',
+  'clients.identifiersHelp':
+    'Eins pro Zeile: eine IP-Adresse, ein Netz wie 192.168.1.0/24 oder eine MAC-Adresse (nur für Geräte im selben Netz wie PiCache). Eine IP-Adresse oder ein Netz erfasst auch die anderen Adressen des Geräts im selben Netz, etwa seine wechselnden IPv6-Adressen. Am zuverlässigsten erkennt PiCache ein Gerät an seiner MAC-Adresse.',
   'clients.identifiersRequired': 'Gib mindestens eine IP-Adresse, ein Netz oder eine MAC-Adresse ein.',
   'clients.groupsHelp': 'Listen und Regeln dieser Gruppen gelten für den Client.',
   'clients.noGroupWarning': 'Ohne Gruppe kommt der Client in die Gruppe Default.',
@@ -264,6 +271,7 @@ const de: Messages<typeof en> = {
   'clients.cacheServed': 'Vom Cache geliefert',
   'clients.cacheHit': 'Aus dem Cache',
   'clients.statsTitle': 'Verkehr',
+  'clients.addresses': 'Adressen',
   'clients.showQueries': 'Abfragen zeigen',
   'clients.showDownloads': 'Downloads zeigen',
   'clients.showSeen': 'Kürzlich gesehene Geräte zeigen',
@@ -276,11 +284,11 @@ const de: Messages<typeof en> = {
 
   // kürzlich gesehene Adressen
   'seen.title': 'Kürzlich gesehen',
-  'seen.description.24h': 'Adressen, die Abfragen geschickt haben. Die Verkehrsspalten beziehen sich auf die letzten 24 Stunden.',
-  'seen.description.7d': 'Adressen, die Abfragen geschickt haben. Die Verkehrsspalten beziehen sich auf die letzten 7 Tage.',
-  'seen.description.30d': 'Adressen, die Abfragen geschickt haben. Die Verkehrsspalten beziehen sich auf die letzten 30 Tage.',
+  'seen.description.24h': 'Geräte, die Abfragen geschickt haben, ihre Adressen nach MAC-Adresse zusammengefasst. Die Verkehrsspalten beziehen sich auf die letzten 24 Stunden.',
+  'seen.description.7d': 'Geräte, die Abfragen geschickt haben, ihre Adressen nach MAC-Adresse zusammengefasst. Die Verkehrsspalten beziehen sich auf die letzten 7 Tage.',
+  'seen.description.30d': 'Geräte, die Abfragen geschickt haben, ihre Adressen nach MAC-Adresse zusammengefasst. Die Verkehrsspalten beziehen sich auf die letzten 30 Tage.',
   'seen.within': 'Gesehen innerhalb',
-  'seen.address': 'Adresse',
+  'seen.addresses': 'Adressen',
   'seen.hostname': 'Hostname',
   'seen.mac': 'MAC-Adresse',
   'seen.firstSeen': 'Zuerst gesehen',
@@ -495,6 +503,8 @@ const de: Messages<typeof en> = {
   'network.check.ipv6Dns.title': 'Geräte fragen per IPv6 wahrscheinlich den Router',
   'network.check.ipv6Dns.text': 'Dein Netzwerk nutzt IPv6, aber in den letzten 24 Stunden hat kein Gerät PiCache per IPv6 gefragt. Die Geräte nutzen dann den Router als IPv6-DNS-Server und umgehen PiCache bei einem Teil ihrer Abfragen.',
   'network.check.ipv6Dns.noListener': 'PiCache beantwortet gerade kein DNS über IPv6. Bis das geht, schalte im Router die eigene IPv6-DNS-Bekanntgabe aus, statt PiCache bekanntzugeben.',
+  'network.check.ipv6Dns.ignoresRA':
+    'Dieser Rechner ignoriert IPv6-Router-Advertisements (unter Linux: accept_ra ist 0). Er hat deshalb keine IPv6-Adresse, und PiCache kann nicht erkennen, ob dein Netzwerk IPv6 nutzt. Falls ja, lass diesen Rechner Router-Advertisements annehmen (accept_ra 1, oder 2 bei eingeschalteter IP-Weiterleitung) oder gib ihm eine feste ULA.',
   'network.check.ipv6Address.warnTitle': 'PiCache hat keine IPv6-Adresse',
   'network.check.ipv6Address.warnText': 'Dein Netzwerk nutzt IPv6, aber PiCache hat keine IPv6-Adresse, die Geräte als DNS-Server nutzen könnten. Lass den Router Unique Local Addresses vergeben (ULA, beginnt mit fd): Eine ULA bleibt gleich, wenn dein Anbieter das Präfix wechselt. Deshalb ist sie die Adresse, die als DNS-Server bekanntgegeben werden sollte.',
   'network.check.ipv6Address.infoTitle': 'PiCache hat nur wechselnde IPv6-Adressen',
@@ -505,6 +515,17 @@ const de: Messages<typeof en> = {
   'network.check.refused.address': 'Adresse',
   'network.check.refused.count': 'Abgelehnt',
   'network.check.refused.last': 'Zuletzt',
+  'network.check.refused.onLinkBadge': 'Verbundenes Netz',
+  'network.check.refused.onLinkHelp': 'In einem Netz, mit dem dieser Rechner verbunden ist',
+  'network.check.refused.onLinkText':
+    'Einige dieser Adressen liegen in einem Netz, mit dem dieser Rechner verbunden ist, zum Beispiel die öffentlichen IPv6-Adressen deines Heimnetzes. PiCache lehnt sie ab, weil sie keine privaten Adressen sind.',
+  'network.check.refused.trust': 'Netze erlauben, mit denen dieser Rechner verbunden ist',
+  'network.check.refused.trustHelp':
+    'Wird sofort in den DNS-Einstellungen gespeichert. PiCache beantwortet dann auch öffentliche Adressen in diesen Netzen und folgt einem neuen Präfix deines Anbieters von selbst. Nicht für einen Server im Rechenzentrum oder in der Cloud verwenden.',
+  'network.check.refused.trustReadOnly': 'Ein Administrator kann diese Netze unter {link} erlauben.',
+  'network.check.refused.accessLink': 'DNS-Einstellungen → Zugriff',
+  'network.check.refused.trusted': 'Die Netze, mit denen dieser Rechner verbunden ist, sind jetzt erlaubt. Die Geräte bekommen auf ihre nächsten Abfragen Antworten.',
+  'network.check.refused.trustedToast': 'Verbundene Netze erlaubt',
   'network.check.refused.prefixes': 'Diese IPv6-Adressen stammen aus dem Präfix deines Anbieters. Damit diese Geräte PiCache nutzen können, trage das Netz unter {link} ein:',
   'network.check.refused.link': 'DNS-Einstellungen → Zugriff → Weitere Netze',
   'network.check.refused.prefixNote': 'Dein Anbieter kann dieses Präfix von Zeit zu Zeit ändern. Eine ULA (siehe die IPv6-Prüfungen) bleibt gleich.',
@@ -521,6 +542,7 @@ const de: Messages<typeof en> = {
   'network.ok.containerNat': 'PiCache sieht die Adressen deiner Geräte',
   'network.ok.ipv6Dns': 'Die Geräte nutzen PiCache auch über IPv6',
   'network.ok.ipv6DnsNone': 'Dein Netzwerk nutzt kein IPv6, dafür ist also nichts einzurichten',
+  'network.ok.ipv6DnsUnknown': 'Kein IPv6 in deinem Netzwerk gesehen',
   'network.ok.ipv6Address': 'PiCache hat eine feste IPv6-Adresse ({address})',
   'network.ok.refused': 'Seit dem Start von PiCache wurden keine Abfragen abgelehnt',
   'network.ok.devices': 'Jedes Gerät im Netzwerk hat PiCache in den letzten 24 Stunden gefragt',
@@ -692,7 +714,8 @@ const de: Messages<typeof en> = {
   'settings.timeout': 'Zeitlimit',
   'settings.timeoutHelp': 'Wie lange eine Abfrage insgesamt dauern darf, bevor das Gerät einen Fehler bekommt.',
   'settings.bootstrap': 'Bootstrap-Server',
-  'settings.bootstrapHelp': 'Einfache DNS-Server (IP-Adressen), die nur die Namen verschlüsselter Upstreams auflösen.',
+  'settings.bootstrapHelp':
+    'Einfache DNS-Server (IP-Adressen), die nur die Namen verschlüsselter Upstreams auflösen. IPv4-Server werden zuerst versucht; IPv6-Server helfen in reinen IPv6-Netzwerken.',
   'settings.localPtr': 'Private Rückwärtsabfragen',
   'settings.localPtrHelp': 'DNS-Server (IP-Adressen), die die Namen der Geräte in deinem Netz kennen, meist dein Router. Sie beantworten Rückwärtsabfragen privater Adressen.',
 
@@ -743,7 +766,8 @@ const de: Messages<typeof en> = {
   'settings.special.relayHelp': 'Apple-Geräte mit Privat-Relay würden PiCache in Safari sonst umgehen.',
 
   'settings.rate.title': 'Ratenbegrenzung',
-  'settings.rate.description': 'Begrenzt, wie viele Abfragen ein Gerät (eine IPv4-Adresse oder ein IPv6-/64-Netz) schicken darf. Schützt vor fehlerhaften Geräten und Missbrauch.',
+  'settings.rate.description':
+    'Begrenzt, wie viele Abfragen ein Gerät schicken darf: pro Adresse, bei öffentlichen IPv6-Adressen außerhalb deiner Netze pro /64-Netz. Schützt vor fehlerhaften Geräten und Missbrauch.',
   'settings.rate.qps': 'Abfragen pro Sekunde',
   'settings.rate.qpsHelp': '0 schaltet die Begrenzung aus.',
   'settings.rate.burst': 'Spitze',
@@ -762,7 +786,11 @@ const de: Messages<typeof en> = {
   'settings.rate.none': 'In der letzten Stunde wurde kein Gerät begrenzt.',
 
   'settings.access.title': 'Zugriff',
-  'settings.access.description': 'Geräte in privaten Netzen (192.168.x.x, 10.x.x.x, 172.16–31.x.x, IPv6-ULA und Link-Local, 100.64.0.0/10) und in Netzen, mit denen dieser Rechner verbunden ist, dürfen PiCache immer nutzen.',
+  'settings.access.description':
+    'Geräte in privaten Netzen (192.168.x.x, 10.x.x.x, 172.16–31.x.x, 100.64.0.0/10, IPv6-ULA und Link-Local) dürfen PiCache immer nutzen. Abfragen von öffentlichen Adressen, etwa den globalen IPv6-Adressen deiner Geräte, werden abgelehnt, solange du sie hier nicht erlaubst.',
+  'settings.access.trustConnected': 'Jedes Netz erlauben, mit dem dieser Rechner verbunden ist',
+  'settings.access.trustConnectedHelp':
+    'Beantwortet auch Geräte mit öffentlichen Adressen in diesen Netzen, etwa die globalen IPv6-Adressen in deinem Heimnetz. PiCache folgt einem neuen Präfix deines Anbieters innerhalb einer Minute. Nicht auf einem Server im Rechenzentrum oder in der Cloud verwenden, wo sich andere Kunden das Netz teilen können.',
   'settings.access.networks': 'Weitere Netze',
   'settings.access.networksHelp': 'Ein Netz pro Zeile, zum Beispiel ein VPN-Bereich. Höchstens /8 für IPv4 und /32 für IPv6.',
   'settings.access.allowAll': 'Abfragen von jeder Adresse beantworten',
@@ -787,6 +815,20 @@ const de: Messages<typeof en> = {
   'settings.names.routerBad': 'Der Router unter {address} beantwortet keine DNS-Abfragen.',
   'settings.names.routerNone': 'Es wurde kein Router (Standard-Gateway) gefunden, daher wird kein Router gefragt.',
   'settings.names.routerAddressHelp': 'Ohne Adresse ist der Router-Resolver aus.',
+
+  'settings.ipv6.title': 'IPv6',
+  'settings.ipv6.description': 'Wie PiCache Abfragen nach IPv6-Adressen (AAAA-Einträgen) beantwortet. Die Standardwerte passen für fast jedes Netzwerk.',
+  'settings.ipv6.disableAaaa': 'Keine IPv6-Adressen beantworten (AAAA)',
+  'settings.ipv6.disableAaaaHelp':
+    'Für Netzwerke, in denen IPv6 nicht funktioniert: Geräte verbinden sich dann sofort über IPv4, statt zu warten, bis IPv6 scheitert. Lokale Einträge und die Namen dieses Servers behalten ihre IPv6-Adressen.',
+  'settings.ipv6.dns64': 'IPv6-Adressen für reine IPv4-Namen bilden (DNS64)',
+  'settings.ipv6.dns64Help':
+    'Nur für reine IPv6-Netzwerke mit NAT64-Gateway: Hat ein Name keine IPv6-Adresse, bildet PiCache eine aus seiner IPv4-Adresse und dem NAT64-Präfix, damit Geräte ihn über das Gateway erreichen. In anderen Netzwerken ausgeschaltet lassen.',
+  'settings.ipv6.prefix': 'NAT64-Präfix',
+  'settings.ipv6.prefixHelp': 'Ein /96-Netz, meist das bekannte Präfix 64:ff9b::/96. Nutzt dein NAT64-Gateway ein eigenes Präfix, trage dieses ein.',
+  'settings.ipv6.usePrefix': '{prefix} verwenden',
+  'settings.ipv6.exclusiveAaaa': 'Schalte DNS64 aus, um das zu nutzen.',
+  'settings.ipv6.exclusiveDns64': 'Schalte „Keine IPv6-Adressen beantworten“ aus, um DNS64 zu nutzen.',
 
   'settings.dnssec.title': 'DNSSEC',
   'settings.dnssec.label': 'DNSSEC bei Upstreams anfordern',

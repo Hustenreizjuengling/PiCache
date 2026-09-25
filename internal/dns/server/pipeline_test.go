@@ -260,8 +260,9 @@ func TestBlockingModesApplyLive(t *testing.T) {
 		{"nodata", dns.TypeA, dns.RcodeSuccess, nil, true},
 		{"refused", dns.TypeA, dns.RcodeRefused, nil, false},
 		{"custom_ip", dns.TypeA, dns.RcodeSuccess, []string{"192.168.1.99"}, false},
-		{"custom_ip", dns.TypeAAAA, dns.RcodeSuccess, nil, false},
-		{"null", dns.TypeTXT, dns.RcodeSuccess, nil, false},
+		{"custom_ip", dns.TypeAAAA, dns.RcodeSuccess, nil, true}, // no blocking IPv6: NODATA with the SOA
+		{"null", dns.TypeA, dns.RcodeSuccess, []string{"0.0.0.0"}, false},
+		{"null", dns.TypeTXT, dns.RcodeSuccess, nil, true}, // other types: NODATA with the SOA
 	}
 	for _, tc := range tests {
 		t.Run(tc.mode+"/"+dns.TypeToString[tc.qtype], func(t *testing.T) {

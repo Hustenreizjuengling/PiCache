@@ -119,7 +119,9 @@
       case 'container-nat':
         return t('dns.network.ok.containerNat')
       case 'ipv6-dns':
-        return c.data.lanHasIPv6 ? t('dns.network.ok.ipv6Dns') : t('dns.network.ok.ipv6DnsNone')
+        if (c.data.lanHasIPv6) return t('dns.network.ok.ipv6Dns')
+        // No IPv6 address and router advertisements ignored: "no IPv6" may just be unseen.
+        return c.data.hostIgnoresRA ? t('dns.network.ok.ipv6DnsUnknown') : t('dns.network.ok.ipv6DnsNone')
       case 'ipv6-address':
         // Without IPv6 in the network there is nothing to report here (ipv6-dns says so).
         return c.data.ula?.[0] ? t('dns.network.ok.ipv6Address', { address: c.data.ula[0] }) : undefined
@@ -129,6 +131,11 @@
         return t('dns.network.ok.devices')
     }
     return undefined
+  }
+
+  /** A note under a passed check: this machine ignores IPv6 router advertisements. */
+  function okNote(c: NetworkCheckItem): string | undefined {
+    return c.id === 'ipv6-dns' && c.data.hostIgnoresRA ? t('dns.network.check.ipv6Dns.ignoresRA') : undefined
   }
 </script>
 
@@ -199,8 +206,15 @@
         <ul class="passed">
           {#each passed as c (c.id)}
             {@const text = okText(c)}
+            {@const note = okNote(c)}
             {#if text}
-              <li><Icon name="success" size={18} /><span>{text}</span></li>
+              <li class={{ unsure: !!note }}>
+                <Icon name={note ? 'info' : 'success'} size={18} />
+                <span class="ok-text">
+                  <span>{text}</span>
+                  {#if note}<span class="ok-note small muted">{note}</span>{/if}
+                </span>
+              </li>
             {/if}
           {/each}
         </ul>
@@ -314,6 +328,16 @@
   .passed :global(.icon) {
     flex: none;
     color: var(--ok);
+  }
+  .passed .unsure :global(.icon) {
+    color: var(--focus);
+  }
+  .ok-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    max-width: 90ch;
   }
   @media (max-width: 480px) {
     .facts {
