@@ -157,7 +157,9 @@ const de: Messages<typeof en> = {
   'strip.blocked': 'DNS blockiert',
   'strip.hit': 'Aus dem Cache',
   'strip.wan': 'Aus dem Internet',
-  'strip.summary': '{queries} DNS-Anfragen, {blocked} blockiert; {bytes} heruntergeladen, {hit} aus dem Cache',
+  'strip.summary': '{queries}, {blocked} blockiert; {bytes} heruntergeladen, {hit} aus dem Cache',
+  'strip.queries.one': '{count} DNS-Anfrage',
+  'strip.queries.other': '{count} DNS-Anfragen',
   'strip.none': 'Kein Verkehr in den letzten 15 Minuten',
 
   // Komponenten

@@ -6,7 +6,7 @@
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, resource, type CacheObject, type GroupClient, type ObjectSort } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { formatBytes, formatDate, formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
@@ -121,7 +121,7 @@
     let freed = 0
     const ok = await confirm({
       title: t('cache.library.purgeTitle', { name }),
-      message: t('cache.library.purgeText', { size: formatBytes(g?.cachedBytes), count: formatNumber(g?.objects ?? 0) }),
+      message: tn('cache.library.purgeText', g?.objects ?? 0, { size: formatBytes(g?.cachedBytes), count: formatNumber(g?.objects ?? 0) }),
       confirmLabel: t('cache.library.purge'),
       action: async () => {
         freed = (await api.cache.deleteGroup(service, groupKey)).bytesFreed
@@ -192,7 +192,7 @@
 {/snippet}
 
 {#snippet cachedCell(o: CacheObject)}
-  <span title={t('cache.library.slices', { cached: formatNumber(o.sliceCount), total: formatNumber(o.slicesTotal) })}>
+  <span title={tn('cache.library.slices', o.slicesTotal, { cached: formatNumber(o.sliceCount), count: formatNumber(o.slicesTotal) })}>
     {formatBytes(o.cachedBytes)}
   </span>
 {/snippet}

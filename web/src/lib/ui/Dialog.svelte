@@ -51,8 +51,14 @@
   const titleId = `dlg-${auto}`
 
   $effect(() => {
-    if (open && !dlg.open) dlg.showModal()
-    else if (!open && dlg.open) dlg.close()
+    if (open && !dlg.open) {
+      dlg.showModal()
+      // Focus the dialog itself rather than its first control (the close
+      // button): screen readers announce the title, Tab reaches the controls,
+      // and a panel opened from a link or the URL shows no focus ring on a
+      // button nobody chose.
+      dlg.focus()
+    } else if (!open && dlg.open) dlg.close()
   })
 
   function handleClose() {
@@ -73,6 +79,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
 <dialog
   bind:this={dlg}
+  tabindex="-1"
   class={['dlg', size, drawer && 'drawer']}
   aria-labelledby={titleId}
   onclose={handleClose}
@@ -115,6 +122,10 @@
   .dlg[open] {
     display: flex;
     animation: dlg-in var(--dur-fast) ease-out;
+  }
+  /* The dialog is focused on open (see above); its controls keep their rings. */
+  .dlg:focus {
+    outline: none;
   }
   .sm {
     width: min(420px, calc(100vw - 2 * var(--sp-4)));

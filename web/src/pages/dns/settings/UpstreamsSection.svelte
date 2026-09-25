@@ -5,7 +5,7 @@
   it), mode, timeout, bootstrap servers and private reverse-lookup servers.
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, toApiError, type ApiError, type DnsSettings, type UpstreamStat, type UpstreamTestResult } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatNumber, formatRelative } from '$lib/format'
@@ -125,8 +125,8 @@
                 <Chip size="sm" tone={st.healthy ? 'ok' : 'fail'} label={st.healthy ? t('dns.settings.upstreams.healthy') : t('dns.settings.upstreams.failing')} />
                 <span class="muted">
                   {t('dns.settings.upstreams.stats', {
-                    queries: formatNumber(st.queries),
-                    errors: formatNumber(st.errors),
+                    queries: tn('dns.settings.upstreams.queries', st.queries, { count: formatNumber(st.queries) }),
+                    errors: tn('dns.settings.upstreams.errors', st.errors, { count: formatNumber(st.errors) }),
                     rtt: formatNumber(st.avgRttMs, 1),
                   })}
                 </span>

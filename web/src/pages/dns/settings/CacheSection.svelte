@@ -4,7 +4,7 @@
   live hit rate and "Flush DNS cache".
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, type DnsSettings, type UpstreamCacheStat } from '$lib/api'
   import { formatNumber, formatPercent } from '$lib/format'
   import type { SettingsForm } from '$lib/settings.svelte'
@@ -50,7 +50,7 @@
           entries: formatNumber(cache.entries),
           capacity: formatNumber(cache.capacity),
           hitRate: formatPercent(hitRate),
-          stale: formatNumber(cache.staleHits),
+          stale: tn('dns.settings.cache.staleAnswers', cache.staleHits, { count: formatNumber(cache.staleHits) }),
         })}
       </p>
     {/if}

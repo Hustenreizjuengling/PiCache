@@ -5,7 +5,7 @@
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, toApiError, type ApiError, type ClientGroup, type FilterList, type FilterListInput } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatDateTime, formatNumber, formatRelative } from '$lib/format'
@@ -85,7 +85,7 @@
       if (updated.status === 'failed-cached' || updated.status === 'failed-empty') {
         toast.error(updated.lastError || listStatus(updated.status).label)
       } else {
-        toast.success(t('dns.lists.updated', { count: formatNumber(updated.entries) }))
+        toast.success(tn('dns.lists.updated', updated.entries, { count: formatNumber(updated.entries) }))
       }
     } catch (e) {
       toast.error(e)

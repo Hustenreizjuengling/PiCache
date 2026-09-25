@@ -21,6 +21,13 @@
   }
 
   let { source, error, refreshing, onrefresh }: Props = $props()
+
+  // A successful update starts before it is stored, so a later attempt is one that failed.
+  const failedAt = $derived.by(() => {
+    const at = source?.lastAttempt
+    if (!at) return undefined
+    return !source?.lastFetched || Date.parse(at) > Date.parse(source.lastFetched) ? at : undefined
+  })
 </script>
 
 <Panel title={t('cache.source.title')} description={t('cache.source.description')}>
@@ -56,7 +63,7 @@
           { label: t('cache.source.services'), value: formatNumber(source.serviceCount) },
           { label: t('cache.services.hostNames'), value: formatNumber(source.domainCount) },
           { label: t('cache.source.lastFetched'), value: source.lastFetched ? formatDateTime(source.lastFetched) : t('common.state.never') },
-          { label: t('cache.source.lastAttempt'), value: source.lastAttempt ? formatDateTime(source.lastAttempt) : t('common.state.never') },
+          ...(failedAt ? [{ label: t('cache.source.lastFailed'), value: formatDateTime(failedAt) }] : []),
         ]}
       />
       {#if source.skipped && source.skipped.length > 0}

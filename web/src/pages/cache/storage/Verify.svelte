@@ -5,7 +5,7 @@
   2 seconds while it runs.
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, isApiError, resource } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatDateTime, formatDuration, formatNumber, formatRelative } from '$lib/format'
@@ -73,7 +73,7 @@
           <Spinner size={18} />
           <span>
             {v.repair ? t('cache.verify.repairing') : t('cache.verify.checking')}
-            {t('cache.verify.progress', { files: formatNumber(v.progress.filesScanned), size: formatBytes(v.progress.bytesScanned) })}
+            {tn('cache.verify.progress', v.progress.filesScanned, { count: formatNumber(v.progress.filesScanned), size: formatBytes(v.progress.bytesScanned) })}
           </span>
         </p>
       {:else if v.finishedAt}

@@ -39,7 +39,7 @@
     { key: 'enabled', label: t('common.label.enabled'), width: '1%', cell: enabledCell },
     { key: 'domain', label: t('common.label.domain'), mono: true, sortable: true, value: (f) => f.domain },
     { key: 'upstreams', label: t('dns.forwarders.upstreams'), mono: true, truncate: true, width: '38%', value: (f) => f.upstreams.join(', ') },
-    { key: 'comment', label: t('common.label.comment'), truncate: true, value: (f) => f.comment },
+    { key: 'comment', label: t('common.label.comment'), truncate: true, width: '40%', value: (f) => f.comment },
   ])
 </script>
 

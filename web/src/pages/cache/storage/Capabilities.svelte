@@ -8,6 +8,7 @@
   import { t } from '$i18n/index.svelte'
   import type { ApiError, StorageCapabilities } from '$lib/api'
   import { errorText } from '$lib/errors'
+  import { appStatus } from '$lib/status.svelte'
   import { Chip, KeyValue, Notice, Panel, Skeleton } from '$lib/ui'
 
   let { caps, error }: { caps: StorageCapabilities | undefined; error: ApiError | undefined } = $props()
@@ -36,6 +37,8 @@
   })
 
   const mapped = $derived(!!caps && !caps.initUserNs && (caps.uidMapOffset > 0 || caps.gidMapOffset > 0))
+  // In a bridge network only the auto-detected cache address is the unreachable container address.
+  const bridgeWarning = $derived(caps?.dockerMode === 'bridge' && appStatus.overview.data?.cacheIps.auto === true)
 </script>
 
 <Panel title={t('cache.caps.title')} description={t('cache.caps.description')}>
@@ -79,7 +82,7 @@
             gid: String(caps.gidMapOffset + caps.gid),
           })}</p>
       {/if}
-      {#if caps.dockerMode === 'bridge'}
+      {#if bridgeWarning}
         <Notice tone="warn">{t('cache.caps.bridgeWarning')}</Notice>
       {/if}
     </div>

@@ -5,9 +5,10 @@
 -->
 <script lang="ts">
   import { t } from '../../i18n/index.svelte'
-  import { api, resource, type RangePreset, type Series } from '../../lib/api'
+  import { api, resource, type RangePreset } from '../../lib/api'
   import { errorText } from '../../lib/errors'
   import { formatCompact, formatNumber, formatTime } from '../../lib/format'
+  import { seriesRates } from '../../lib/series'
   import { Button, Chart } from '../../lib/ui'
   import Band from './Band.svelte'
   import { links } from './links'
@@ -18,7 +19,10 @@
 
   const REFRESH = 60_000
 
-  const series = resource((signal) => api.stats.dns(range, undefined, { signal }), { interval: REFRESH })
+  // asOf: the end of the range, for the rate of the bucket still in progress.
+  const series = resource(async (signal) => ({ asOf: Date.now(), s: await api.stats.dns(range, undefined, { signal }) }), {
+    interval: REFRESH,
+  })
   // Top lists are hourly: short ranges get an hour-aligned window, labelled with its start.
   async function top(kind: 'blocked' | 'clients', signal: AbortSignal) {
     const w = topWindow(range) // read before the first await: reloads when the range changes
@@ -31,19 +35,14 @@
     return s === undefined ? undefined : t('overview.dns.topSince', { time: formatTime(s * 1000) })
   }
 
-  function perMinute(s: Series, key: 'allowed' | 'cached' | 'lancache' | 'blocked' | 'other'): number[] {
-    const f = 60 / Math.max(1, s.step)
-    return s.timestamps.map((_, i) => (s.values[key]?.[i] ?? 0) * f)
-  }
-
   const chart = $derived.by(() => {
-    const s = series.data
-    if (!s) return { timestamps: [] as number[], allowed: [] as number[], blocked: [] as number[] }
-    const parts = (['allowed', 'cached', 'lancache', 'other'] as const).map((k) => perMinute(s, k))
+    if (!series.data) return { timestamps: [] as number[], allowed: [] as number[], blocked: [] as number[] }
+    const keys = ['allowed', 'cached', 'lancache', 'other', 'blocked'] as const
+    const { timestamps, values: v } = seriesRates(series.data.s, keys, 60, series.data.asOf)
     return {
-      timestamps: s.timestamps,
-      allowed: s.timestamps.map((_, i) => parts.reduce((sum, p) => sum + p[i], 0)),
-      blocked: perMinute(s, 'blocked'),
+      timestamps,
+      allowed: timestamps.map((_, i) => v.allowed[i] + v.cached[i] + v.lancache[i] + v.other[i]),
+      blocked: v.blocked,
     }
   })
 </script>

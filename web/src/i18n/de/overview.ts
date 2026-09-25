@@ -6,7 +6,8 @@ import type { Messages } from '../types'
 const de: Messages<typeof en> = {
   loadError: 'Der Status konnte nicht geladen werden',
   rangeLabel: 'Zeitraum der Diagramme und Top-Listen',
-  'unit.qpm': 'Anfragen/Min.',
+  'unit.qpm.one': 'Anfrage/Min.',
+  'unit.qpm.other': 'Anfragen/Min.',
   'unit.perMinute': '{n}/Min.',
 
   'sentence.dns': 'DNS beantwortet {rate}',

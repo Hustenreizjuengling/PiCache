@@ -9,7 +9,7 @@
   import { t, tn } from '$i18n/index.svelte'
   import { api, resource, type AuditEntry } from '$lib/api'
   import { errorText } from '$lib/errors'
-  import { formatDateTime, formatRelative } from '$lib/format'
+  import { formatDateTime, formatDateTimeShort, formatRelative } from '$lib/format'
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
   import {
@@ -69,24 +69,31 @@
     router.setQuery({ entry: e?.id }, { push: !!e })
   }
 
+  // Time, action, user and address keep their natural width (1 %); target and
+  // details share the rest, details the larger part.
   const columns = $derived<Column<AuditEntry>[]>([
-    { key: 'time', label: t('common.label.time'), cell: timeCell, value: (e) => e.time },
-    { key: 'action', label: t('system.audit.action'), cell: actionCell, value: (e) => e.action },
-    { key: 'target', label: t('system.audit.target'), mono: true, truncate: true, value: (e) => e.target },
-    { key: 'user', label: t('system.audit.user'), value: (e) => e.username },
-    { key: 'ip', label: t('system.audit.ip'), cell: ipCell, value: (e) => e.ip },
+    { key: 'time', label: t('common.label.time'), width: '1%', cell: timeCell, value: (e) => e.time },
+    { key: 'action', label: t('system.audit.action'), width: '1%', cell: actionCell, value: (e) => e.action },
+    { key: 'target', label: t('system.audit.target'), mono: true, truncate: true, width: '30%', value: (e) => e.target },
+    { key: 'user', label: t('system.audit.user'), width: '1%', cell: userCell, value: (e) => e.username },
+    { key: 'ip', label: t('system.audit.ip'), width: '1%', cell: ipCell, value: (e) => e.ip },
     {
       key: 'details',
       label: t('common.label.details'),
       mono: true,
       truncate: true,
+      width: '70%',
       value: (e) => summarizeDetails(e.details),
     },
   ])
 </script>
 
 {#snippet timeCell(e: AuditEntry)}
-  <span class="nowrap">{formatDateTime(e.time, true)}</span>
+  <span class="nowrap" title={formatDateTime(e.time, true)}>{formatDateTimeShort(e.time, true)}</span>
+{/snippet}
+
+{#snippet userCell(e: AuditEntry)}
+  <span class="nowrap">{e.username || '–'}</span>
 {/snippet}
 
 {#snippet ipCell(e: AuditEntry)}

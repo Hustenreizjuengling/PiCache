@@ -5,7 +5,7 @@
   "Exempt" action that saves the exemption right away.
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, type DnsSettings, type DnsStats, type RateLimited } from '$lib/api'
   import { formatDateTime, formatNumber, formatRelative } from '$lib/format'
   import type { SettingsForm } from '$lib/settings.svelte'
@@ -99,7 +99,7 @@
       <h3 id="rate-limited-title">{t('dns.settings.rate.limitedTitle')}</h3>
       {#if stats}
         <p class="small muted">
-          {t('dns.settings.rate.totals', { dropped: formatNumber(stats.rateLimited), overloaded: formatNumber(stats.overloaded) })}
+          {tn('dns.settings.rate.totals', stats.rateLimited, { count: formatNumber(stats.rateLimited), overloaded: formatNumber(stats.overloaded) })}
         </p>
       {/if}
       <div class="table">

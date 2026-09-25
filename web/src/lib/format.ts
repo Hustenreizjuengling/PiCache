@@ -175,6 +175,33 @@ export function formatDateTime(v: string | number | Date | null | undefined, sec
   }).format(d)
 }
 
+/**
+ * Compact date and time for dense tables: "Sep 24, 2:05 PM" / "24. Sept., 14:05"
+ * (seconds optional); the year only when it is not the current one.
+ */
+export function formatDateTimeShort(v: string | number | Date | null | undefined, seconds = false): string {
+  const d = toDate(v)
+  if (!d) return DASH
+  const year = d.getFullYear() !== new Date().getFullYear()
+  // Two-digit hours on a 24-hour clock ("00:29"), as in formatTime.
+  const cycle = df('hc', { timeStyle: 'short' }).resolvedOptions().hourCycle
+  return df(`dts${year}${seconds}`, {
+    year: year ? 'numeric' : undefined,
+    month: 'short',
+    day: 'numeric',
+    hour: cycle === 'h23' || cycle === 'h24' ? '2-digit' : 'numeric',
+    minute: '2-digit',
+    second: seconds ? '2-digit' : undefined,
+  }).format(d)
+}
+
+/** Whether two times fall on the same local calendar day. */
+export function sameDay(a: string | number | Date | null | undefined, b: string | number | Date | null | undefined): boolean {
+  const x = toDate(a)
+  const y = toDate(b)
+  return !!x && !!y && x.toDateString() === y.toDateString()
+}
+
 /** Time of day: "14:05" or "2:05 PM" (seconds optional). */
 export function formatTime(v: string | number | Date | null | undefined, seconds = false): string {
   const d = toDate(v)

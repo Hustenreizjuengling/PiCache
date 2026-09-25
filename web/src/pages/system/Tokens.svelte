@@ -61,7 +61,7 @@
   }
 
   const columns = $derived<Column<TokenInfo>[]>([
-    { key: 'name', label: t('common.label.name'), sortable: true, value: (x) => x.name, truncate: true },
+    { key: 'name', label: t('common.label.name'), sortable: true, value: (x) => x.name, truncate: true, width: '30%' },
     { key: 'scope', label: t('system.tokens.scopeLabel'), cell: scopeCell, value: (x) => x.scope, sortable: true },
     { key: 'prefix', label: t('system.tokens.prefix'), mono: true, value: (x) => x.prefix, format: (x) => `${x.prefix}…` },
     {

@@ -4,7 +4,7 @@
   the matching filtered pages.
 -->
 <script lang="ts">
-  import { t } from '../../i18n/index.svelte'
+  import { t, tn } from '../../i18n/index.svelte'
   import type { Summary, SystemOverview } from '../../lib/api'
   import { formatBytes, formatNumber, formatPercent, formatTime } from '../../lib/format'
   import { Skeleton, Stat, Trans } from '../../lib/ui'
@@ -12,7 +12,11 @@
 
   let { overview, summary }: { overview?: SystemOverview; summary?: Summary } = $props()
 
-  const qpm = $derived(overview ? overview.dns.qps * 60 : 0)
+  // Rounded as shown (one decimal below 10), so the unit's plural form matches the number.
+  const qpm = $derived.by(() => {
+    const v = overview ? overview.dns.qps * 60 : 0
+    return v < 10 ? Math.round(v * 10) / 10 : Math.round(v)
+  })
   const blocking = $derived(overview?.blocking)
 </script>
 
@@ -23,8 +27,8 @@
     <span class="clause">
       <Trans key="overview.sentence.dns">
         {#snippet rate()}<Stat
-            value={formatNumber(qpm, qpm < 10 ? 1 : 0)}
-            label={t('overview.unit.qpm')}
+            value={formatNumber(qpm, 1)}
+            label={tn('overview.unit.qpm', qpm)}
             href={links.queries()}
           />{/snippet}
       </Trans>

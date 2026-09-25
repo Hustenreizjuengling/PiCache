@@ -6,7 +6,7 @@
   opens the group's details (?group=<key>&groupService=<service>).
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, isApiError, resource, type GroupSort, type GroupView } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatDate, formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
@@ -87,7 +87,7 @@
     let freed = 0
     const ok = await confirm({
       title: t('cache.library.purgeServiceTitle', { name }),
-      message: t('cache.library.purgeServiceText', {
+      message: tn('cache.library.purgeServiceText', u?.groups ?? 0, {
         size: formatBytes(u?.cachedBytes ?? 0),
         count: formatNumber(u?.groups ?? 0),
       }),

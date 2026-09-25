@@ -1,7 +1,7 @@
 // What a storage target can do next, derived from its mount-guard status
 // (internal/storage: probe and checkMarker).
 
-import type { StorageCapabilities, StorageStatus, StorageTargetWithStatus } from '$lib/api'
+import type { StorageCapabilities, StorageStatus, StorageTargetWithStatus, StoreState } from '$lib/api'
 import type { Tone } from '$lib/ui'
 
 export type TargetState =
@@ -66,4 +66,17 @@ export function targetActions(t: StorageTargetWithStatus, caps: StorageCapabilit
     apply: t.mode === 'host-apply' && !!caps?.hostApply,
     remove: t.id !== 'local' && !t.active,
   }
+}
+
+// The effective minimum free space is min(cache.minFreeBytes, 10 % of the
+// disk), but at least 2 GiB on a disk shared with PiCache's own data
+// (docs/ARCHITECTURE.md, eviction).
+const SHARED_MIN_FREE = 2 * 2 ** 30
+
+/**
+ * On a disk shared with PiCache's data (the caller checks sameFsAsData): the
+ * minimum free space is the 2 GiB floor.
+ */
+export function minFreeRaised(store: StoreState): boolean {
+  return store.minFreeBytes === SHARED_MIN_FREE
 }

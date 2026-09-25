@@ -7,7 +7,7 @@
   <PairStrip allowed={q - b} blocked={b} hit={hitBytes} wan={wanBytes} />
 -->
 <script lang="ts">
-  import { t } from '../../i18n/index.svelte'
+  import { t, tn } from '../../i18n/index.svelte'
   import { formatBytes, formatNumber, formatPercent } from '../format'
   import { placeTooltip } from './position'
 
@@ -57,7 +57,7 @@
   const summary = $derived(
     shares.any
       ? t('common.strip.summary', {
-          queries: formatNumber(allowed + blocked),
+          queries: tn('common.strip.queries', allowed + blocked, { count: formatNumber(allowed + blocked) }),
           blocked: formatPercent(shares.blockedRatio),
           bytes: formatBytes(hit + wan),
           hit: formatPercent(shares.hitRatio),

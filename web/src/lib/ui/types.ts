@@ -29,7 +29,12 @@ export interface Column<T> {
   cell?: Snippet<[T]>
   /** Header tooltip / explanation. */
   title?: string
-  /** Truncate long text with an ellipsis (full text in the title). */
+  /**
+   * Truncate long text with an ellipsis (full text in the title). The text
+   * does not widen the column, so give it a `width` (e.g. '30%') and the
+   * short one-line columns next to it '1%' (as wide as their content):
+   * otherwise those take the free space and this column keeps only a minimum.
+   */
   truncate?: boolean
 }
 

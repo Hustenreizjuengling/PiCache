@@ -5,6 +5,14 @@
 import type { Client, ClientInput, ClientStat, KnownClient } from '$lib/api'
 import { isIP } from '../shared/input'
 
+/** Time ranges of the traffic columns. */
+export const TRAFFIC_RANGES = ['24h', '7d', '30d'] as const
+export type TrafficRange = (typeof TRAFFIC_RANGES)[number]
+
+export function asTrafficRange(v: string | null): TrafficRange | undefined {
+  return TRAFFIC_RANGES.find((r) => r === v)
+}
+
 export interface Totals {
   queries: number
   blocked: number

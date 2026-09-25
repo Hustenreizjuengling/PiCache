@@ -69,7 +69,7 @@
       value: (r) => r.ttl,
       format: (r) => formatDuration(r.ttl * 1000),
     },
-    { key: 'comment', label: t('common.label.comment'), truncate: true, value: (r) => r.comment },
+    { key: 'comment', label: t('common.label.comment'), truncate: true, width: '30%', value: (r) => r.comment },
   ])
 </script>
 

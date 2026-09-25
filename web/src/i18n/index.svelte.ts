@@ -124,16 +124,25 @@ function lookup(key: string): string {
   return catalogs[current][ns]?.[k] ?? catalogs.en[ns]?.[k] ?? key
 }
 
+// Numbers in messages keep at most one fraction digit; the plural form is
+// chosen for that rounded number, so 0.96 reads "1 query", not "1 queries".
+const PARAM_DIGITS = { maximumFractionDigits: 1 }
+
 let numberFormat: Intl.NumberFormat | null = null
-let numberFormatLocale = ''
+let pluralRules: Intl.PluralRules | null = null
+let formatLocale = ''
+
+function formats(): { number: Intl.NumberFormat; plural: Intl.PluralRules } {
+  if (formatLocale !== current || !numberFormat || !pluralRules) {
+    numberFormat = new Intl.NumberFormat(i18n.tag, PARAM_DIGITS)
+    pluralRules = new Intl.PluralRules(i18n.tag, PARAM_DIGITS)
+    formatLocale = current
+  }
+  return { number: numberFormat, plural: pluralRules }
+}
 
 function formatParam(v: string | number): string {
-  if (typeof v === 'string') return v
-  if (numberFormatLocale !== current || !numberFormat) {
-    numberFormat = new Intl.NumberFormat(i18n.tag, { maximumFractionDigits: 1 })
-    numberFormatLocale = current
-  }
-  return numberFormat.format(v)
+  return typeof v === 'string' ? v : formats().number.format(v)
 }
 
 function interpolate(msg: string, params?: Params): string {
@@ -146,9 +155,13 @@ export function t(key: MessageKey, params?: Params): string {
   return interpolate(lookup(key), params)
 }
 
-/** Plural form: uses '<key>.one' or '<key>.other' and provides {count}. */
+/**
+ * Plural form: uses '<key>.one' or '<key>.other' and provides {count}. The
+ * form follows count rounded to one fraction digit; pass a count rounded like
+ * the number that is shown when {count} is formatted differently.
+ */
 export function tn(key: PluralKey, count: number, params?: Params): string {
-  const rule = new Intl.PluralRules(i18n.tag).select(count) === 'one' ? 'one' : 'other'
+  const rule = formats().plural.select(count) === 'one' ? 'one' : 'other'
   return interpolate(lookup(`${key}.${rule}`), { count, ...params })
 }
 

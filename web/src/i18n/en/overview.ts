@@ -3,7 +3,8 @@
 export default {
   loadError: 'The status could not be loaded',
   rangeLabel: 'Time range of the charts and top lists',
-  'unit.qpm': 'queries/min',
+  'unit.qpm.one': 'query/min',
+  'unit.qpm.other': 'queries/min',
   'unit.perMinute': '{n}/min',
 
   'sentence.dns': 'DNS is answering {rate}',

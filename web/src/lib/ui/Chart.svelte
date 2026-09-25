@@ -91,6 +91,25 @@
     return [timestamps, ...out]
   }
 
+  /**
+   * Right padding for the x axis: its labels are centred on their ticks, and
+   * the last tick can sit at the right edge, so half of the widest label must
+   * fit beside the plot (else "Sep 25" is cut to "Sep 2"). Measured over the
+   * hours of a day and the months of a year in both label formats.
+   */
+  function xLabelPad(font: string): number {
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (!ctx) return 32
+    ctx.font = font
+    let widest = 0
+    for (let i = 0; i < 24; i++) {
+      const hour = formatAxisTime(new Date(2026, 8, 28, i, 0).getTime() / 1000, 3600)
+      const day = formatAxisTime(new Date(2026, i % 12, 28).getTime() / 1000, 7 * 86400)
+      widest = Math.max(widest, ctx.measureText(hour).width, ctx.measureText(day).width)
+    }
+    return Math.max(8, Math.ceil(widest / 2) + 2)
+  }
+
   function fmtValue(v: number | null | undefined): string {
     if (v === null || v === undefined || !Number.isFinite(v)) return '–'
     return (valueFormat ?? yFormat)(v)
@@ -110,7 +129,7 @@
     const opts: uPlot.Options = {
       width,
       height,
-      padding: [8, 8, 0, 0],
+      padding: [8, xLabelPad(font), 0, 0],
       cursor: { drag: { x: false, y: false }, points: { size: 6 } },
       legend: { live: true },
       scales: {

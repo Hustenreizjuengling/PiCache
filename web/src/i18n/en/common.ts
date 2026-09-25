@@ -154,7 +154,9 @@ export default {
   'strip.blocked': 'DNS blocked',
   'strip.hit': 'From the cache',
   'strip.wan': 'From the Internet',
-  'strip.summary': '{queries} DNS queries, {blocked} blocked; {bytes} downloaded, {hit} from the cache',
+  'strip.summary': '{queries}, {blocked} blocked; {bytes} downloaded, {hit} from the cache',
+  'strip.queries.one': '{count} DNS query',
+  'strip.queries.other': '{count} DNS queries',
   'strip.none': 'No traffic in the last 15 minutes',
 
   // components

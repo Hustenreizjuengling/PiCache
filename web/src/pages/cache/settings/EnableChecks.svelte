@@ -11,6 +11,7 @@
   import { errorText } from '$lib/errors'
   import { formatBytes, formatNumber } from '$lib/format'
   import { Chip, KeyValue, Notice, Skeleton } from '$lib/ui'
+  import { minFreeRaised } from '../storage/status'
 
   const ips = resource((signal) => api.dns.cacheIps({ signal }))
   const store = resource((signal) => api.cache.state({ signal }))
@@ -91,7 +92,11 @@
         </Notice>
       {/if}
       {#if target?.status.sameFsAsData}
-        <Notice tone="info">{t('cache.store.sameFs')}</Notice>
+        <Notice tone="info">
+          {store.data && minFreeRaised(store.data)
+            ? t('cache.store.sameFsRaised', { size: formatBytes(store.data.minFreeBytes) })
+            : t('cache.store.sameFs')}
+        </Notice>
       {/if}
     </section>
 

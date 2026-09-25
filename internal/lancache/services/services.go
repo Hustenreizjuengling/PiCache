@@ -84,7 +84,7 @@ type ServiceInput struct {
 type SourceStatus struct {
 	Source       string    `json:"source"`
 	LastFetched  time.Time `json:"lastFetched,omitzero"` // last successful fetch
-	LastAttempt  time.Time `json:"lastAttempt,omitzero"`
+	LastAttempt  time.Time `json:"lastAttempt,omitzero"` // start of the last fetch (after a restart: the snapshot's fetch time)
 	Error        string    `json:"error,omitempty"`
 	ServiceCount int       `json:"serviceCount"`
 	DomainCount  int       `json:"domainCount"`
@@ -167,6 +167,9 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client,
 		r.status.Error = "waiting for the first download"
 	default:
 		r.applySourceLocked(src)
+		// Attempts are not stored: the fetch that made the snapshot is the
+		// last one known (not "never" next to its update time).
+		r.status.LastAttempt = src.FetchedAt
 	}
 	r.rebuildLocked(set.Get())
 	r.mu.Unlock()

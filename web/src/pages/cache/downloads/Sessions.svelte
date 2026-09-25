@@ -5,10 +5,21 @@
   the URL (?session=<id>).
 -->
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { t } from '$i18n/index.svelte'
   import { api, resource, type ActiveDownload, type Download, type RangePreset } from '$lib/api'
   import { errorText } from '$lib/errors'
-  import { formatBytes, formatDateTime, formatDuration, formatNumber, formatRate, formatRelative } from '$lib/format'
+  import {
+    formatBytes,
+    formatDateTime,
+    formatDateTimeShort,
+    formatDuration,
+    formatNumber,
+    formatRate,
+    formatRelative,
+    formatTime,
+    sameDay,
+  } from '$lib/format'
   import { href, router } from '$lib/router.svelte'
   import { loadPref, savePref } from '$lib/storage'
   import { Button, Chip, EmptyState, KeyValue, Pager, Panel, SidePanel, Table, type Column } from '$lib/ui'
@@ -52,19 +63,50 @@
     { interval: 10_000 },
   )
 
-  const liveRates = $derived(new Map((live ?? []).map((d) => [`${d.clientIp}|${d.service}|${d.groupKey}`, d.rateBps])))
+  const liveKey = (d: { clientIp: string; service: string; groupKey: string }) => `${d.clientIp}|${d.service}|${d.groupKey}`
+  const liveByKey = $derived(new Map((live ?? []).map((d) => [liveKey(d), d])))
+
+  /**
+   * The live entry of an active session when it covers the whole session
+   * (it started with the session's first request; after a pause of 30 s to
+   * 2 min the live entry covers only the part since then). Its counts are the
+   * ones "Downloading now" shows: they include requests still running and
+   * update every 3 s, while the session log is written when requests end.
+   */
+  function liveOf(d: Download): ActiveDownload | undefined {
+    if (!d.active) return undefined
+    const l = liveByKey.get(liveKey(d))
+    return l && Date.parse(l.started) <= Date.parse(d.firstSeen) + 1000 ? l : undefined
+  }
+
+  /** A session with the live counts of a running download. */
+  function current(d: Download): Download {
+    const l = liveOf(d)
+    return l ? { ...d, bytesSent: l.bytesSent, bytesHit: l.bytesHit, bytesWan: l.bytesWan } : d
+  }
 
   /** Current speed of an active session, else its average speed. */
   function speed(d: Download): number | null {
     if (d.active) {
-      const r = liveRates.get(`${d.clientIp}|${d.service}|${d.groupKey}`)
+      const r = liveByKey.get(liveKey(d))?.rateBps
       if (r !== undefined) return r
     }
     return averageRate(d.bytesSent, d.firstSeen, d.lastSeen)
   }
 
+  const rows = $derived(list.data?.items.map(current))
+
+  // A download that starts or ends in "Downloading now" shows in the list at once, not with the next poll.
+  let liveKeys: string | undefined
+  $effect(() => {
+    if (!live) return
+    const keys = [...liveByKey.keys()].sort().join('\n')
+    if (liveKeys !== undefined && keys !== liveKeys) untrack(() => void list.refresh())
+    liveKeys = keys
+  })
+
   const selectedId = $derived(Number(router.param('session')) || 0)
-  const selected = $derived(list.data?.items.find((d) => d.id === selectedId))
+  const selected = $derived(rows?.find((d) => d.id === selectedId))
 
   function open(d: Download) {
     router.setQuery({ session: d.id }, { push: true })
@@ -95,9 +137,11 @@
     })
   }
 
+  // Every other column is one short line; the content label takes the rest of
+  // the width and wraps when that is narrow (it is the column people read).
   const columns: Column<Download>[] = $derived([
-    { key: 'content', label: t('cache.col.content'), cell: contentCell },
-    { key: 'service', label: t('common.label.service'), format: (d) => catalog.name(d.service) },
+    { key: 'content', label: t('cache.col.content'), width: '100%', cell: contentCell },
+    { key: 'service', label: t('common.label.service'), cell: serviceCell },
     { key: 'client', label: t('common.label.client'), cell: clientCell },
     { key: 'started', label: t('cache.col.started'), cell: startedCell },
     { key: 'ended', label: t('cache.col.ended'), cell: endedCell },
@@ -112,23 +156,30 @@
   <span class="content" title={d.groupKey}>{d.label || d.groupKey}</span>
 {/snippet}
 
+{#snippet serviceCell(d: Download)}
+  <span class="nowrap">{catalog.name(d.service)}</span>
+{/snippet}
+
 {#snippet clientCell(d: Download)}
   {#if d.clientName}
-    <span title={d.clientIp}>{d.clientName}</span>
+    <span class="nowrap" title={d.clientIp}>{d.clientName}</span>
   {:else}
     <span class="mono nowrap">{d.clientIp}</span>
   {/if}
 {/snippet}
 
+<!-- Compact times (full date and time on hover); the end shows only the time on the day the download started. -->
 {#snippet startedCell(d: Download)}
-  <span class="nowrap" title={formatDateTime(d.firstSeen, true)}>{formatDateTime(d.firstSeen)}</span>
+  <span class="nowrap" title={formatDateTime(d.firstSeen, true)}>{formatDateTimeShort(d.firstSeen)}</span>
 {/snippet}
 
 {#snippet endedCell(d: Download)}
   {#if d.active}
     <Chip size="sm" tone="info" label={t('cache.downloads.active')} />
   {:else}
-    <span class="nowrap" title={formatDateTime(d.lastSeen, true)}>{formatDateTime(d.lastSeen)}</span>
+    <span class="nowrap" title={formatDateTime(d.lastSeen, true)}>
+      {sameDay(d.firstSeen, d.lastSeen) ? formatTime(d.lastSeen) : formatDateTimeShort(d.lastSeen)}
+    </span>
   {/if}
 {/snippet}
 
@@ -149,7 +200,7 @@
     {:else}
       <Table
         caption={t('cache.downloads.caption')}
-        rows={list.data?.items}
+        {rows}
         key={(d) => d.id}
         {columns}
         loading={list.loading && !list.loaded}
@@ -216,12 +267,11 @@
 </SidePanel>
 
 <style>
+  /* Never narrower than a readable label (the table scrolls sideways
+     instead); long IDs without spaces break anywhere. */
   .content {
-    display: inline-block;
-    max-width: 36ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    vertical-align: bottom;
+    display: block;
+    min-width: 12em;
+    overflow-wrap: anywhere;
   }
 </style>

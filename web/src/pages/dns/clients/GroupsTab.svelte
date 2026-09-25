@@ -44,7 +44,7 @@
   const columns: Column<ClientGroup>[] = $derived([
     { key: 'enabled', label: t('common.label.enabled'), width: '1%', cell: enabledCell },
     { key: 'name', label: t('common.label.name'), sortable: true, value: (g) => g.name, cell: nameCell },
-    { key: 'comment', label: t('common.label.comment'), truncate: true, value: (g) => g.comment },
+    { key: 'comment', label: t('common.label.comment'), truncate: true, width: '50%', value: (g) => g.comment },
     {
       key: 'clients',
       label: t('dns.groups.clients'),

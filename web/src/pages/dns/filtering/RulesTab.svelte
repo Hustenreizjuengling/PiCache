@@ -101,14 +101,16 @@
 
   const filtered = $derived(!!(query.action || query.type || query.search))
 
+  // The one-line columns keep their natural width (1 %); pattern, groups and
+  // comment share the rest.
   const columns: Column<FilterRule>[] = $derived([
     { key: 'enabled', label: t('common.label.enabled'), width: '1%', cell: enabledCell },
     { key: 'action', label: t('dns.rules.action'), width: '1%', sortable: true, value: (r) => r.action, cell: actionCell },
-    { key: 'type', label: t('common.label.type'), sortable: true, value: (r) => typeLabel(r.type) },
-    { key: 'pattern', label: t('dns.rules.pattern'), mono: true, truncate: true, width: '36%', sortable: true, value: (r) => r.pattern },
-    { key: 'groups', label: t('common.label.groups'), value: (r) => groupNames(r.groupIds, groups) },
-    { key: 'comment', label: t('common.label.comment'), truncate: true, value: (r) => r.comment },
-    { key: 'updated', label: t('common.label.updated'), sortable: true, value: (r) => r.updatedAt, cell: updatedCell },
+    { key: 'type', label: t('common.label.type'), width: '1%', sortable: true, value: (r) => typeLabel(r.type), cell: typeCell },
+    { key: 'pattern', label: t('dns.rules.pattern'), mono: true, truncate: true, width: '35%', sortable: true, value: (r) => r.pattern },
+    { key: 'groups', label: t('common.label.groups'), truncate: true, width: '20%', value: (r) => groupNames(r.groupIds, groups) },
+    { key: 'comment', label: t('common.label.comment'), truncate: true, width: '45%', value: (r) => r.comment },
+    { key: 'updated', label: t('common.label.updated'), width: '1%', sortable: true, value: (r) => r.updatedAt, cell: updatedCell },
   ])
 </script>
 
@@ -126,6 +128,10 @@
     pair={r.action === 'block' ? 'orange' : 'blue'}
     label={r.action === 'block' ? t('dns.rules.action.block') : t('dns.rules.action.allow')}
   />
+{/snippet}
+
+{#snippet typeCell(r: FilterRule)}
+  <span class="nowrap">{typeLabel(r.type)}</span>
 {/snippet}
 
 {#snippet updatedCell(r: FilterRule)}

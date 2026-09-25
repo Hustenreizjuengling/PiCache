@@ -12,10 +12,9 @@ npm run check    # svelte-check: must report 0 errors and 0 warnings
 npm run build    # production build into ../internal/webui/dist
 ```
 
-While several people or agents work at the same time, never build into the
-shared `dist` directory. Verify with
-`npx vite build --outDir <some temp dir> --emptyOutDir` and
-`npx svelte-check --tsconfig ./tsconfig.json`.
+`npm run build` replaces the embedded `../internal/webui/dist`. To check a
+production build without touching it, run
+`npx vite build --outDir <temporary directory> --emptyOutDir`.
 
 ## Layout
 
@@ -27,9 +26,9 @@ src/app.css              design tokens (light/dark), base styles, utilities, uPl
 src/routes.ts            route table (path → lazily loaded page), sidebar sections
 src/shell/               pair strip, sidebar/drawer, top bar (status, blocking menu, search, theme, language, account)
 src/pages/               Login, Setup, Overview (+ overview/, auth/) and the section pages
-src/pages/dns/**         owned by the DNS page work
-src/pages/cache/**       owned by the cache page work
-src/pages/system/**      owned by the system page work
+src/pages/dns/**         DNS pages: query log, filtering, clients, local DNS, settings
+src/pages/cache/**       cache pages: downloads, library, services, storage, settings
+src/pages/system/**      system pages: account, tokens, audit log, backup, health
 src/lib/api/             typed REST client, polling, SSE
 src/lib/ui/              components (import from '$lib/ui')
 src/lib/*.ts             router, session, app status, settings forms, formatters, icons, theme, errors
@@ -40,14 +39,16 @@ Aliases: `$lib` = `src/lib`, `$i18n` = `src/i18n`.
 
 ## Rules for page work
 
-- **No new dependencies.** Everything needed is in `lib/`.
-- **Do not change** `lib/`, `shell/`, `routes.ts`, `app.css`, `App.svelte`,
-  `main.ts`, `i18n/index.svelte.ts` or `i18n/*/common.ts`. Put page-local
-  components in a folder next to your page (`pages/dns/querylog/Row.svelte`).
-  If you need a change in `lib/`, work around it locally and list the request
-  in your report.
-- Your files: `pages/<section>/**` and `i18n/{en,de}/<section>.ts`. Keep the
-  page file names (`routes.ts` imports them): `dns/{QueryLog,Filtering,Clients,LocalDns,DnsSettings}.svelte`,
+- **No new dependencies** without a discussion first. Everything a page
+  needs is in `lib/`.
+- Shared code (`lib/`, `shell/`, `routes.ts`, `app.css`, `App.svelte`,
+  `main.ts`, `i18n/index.svelte.ts`, `i18n/*/common.ts`) is used by every
+  page. Change it deliberately, in its own commit, and check the other
+  pages. Put page-local components in a folder next to the page
+  (`pages/dns/querylog/Row.svelte`).
+- A page's files are `pages/<section>/**` and `i18n/{en,de}/<section>.ts`.
+  Keep the page file names, because `routes.ts` imports them:
+  `dns/{QueryLog,Filtering,Clients,LocalDns,DnsSettings}.svelte`,
   `cache/{Downloads,Library,Services,Storage,CacheSettings}.svelte`,
   `system/{Account,Tokens,Audit,Backup,Health}.svelte`.
 - **Never render HTML from data**: no `{@html}`, no `innerHTML`. No inline
@@ -97,7 +98,7 @@ support these query parameters):
 | Target | Parameters |
 |---|---|
 | `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d), `status` (comma list of query statuses; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name) |
-| `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here) |
+| `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here), `tab` (clients, seen, groups), `range` (24h, 7d, 30d; without it the range last chosen in this browser) |
 | `#/cache/downloads` | `client` (IP), `active=true`, `from` + `to` (unix seconds: an explicit time window instead of the range; shown as a removable chip) |
 | `#/cache/library`, `#/cache/storage`, `#/cache/settings` | – |
 | `#/system/health`, `#/system/account` | – |
@@ -219,7 +220,7 @@ All components are keyboard accessible, themed and translated. Props marked
 | `QueryStatusChip` / `CacheStatusChip` / `HealthChip` | `status`, `size` (sm) | Translated labels, fixed colours (`lib/traffic.ts`). |
 | `Badge` | `tone`, `title`, children | Counts and tags ("Default", "3"). |
 | `Panel` | `title`, `description`, `level` 2\|3, `flush`, `id`, snippets `actions`, `footer`, children | Tables go into `flush` panels. |
-| `Table<T>` | `columns: Column<T>[]`, `rows`, `key(row)`, `loading`, `error`, `onretry`, `skeletonRows` (5), `bind:sort` / `onsort` (server-side), `onrowclick`, `selected`, `compact`, `maxHeight` (sticky header), `caption`, `emptyText` / snippet `empty`, `rowClass` | `Column`: `key`, `label`, `align`, `mono` (kept on one line), `wrap` (a long mono value may break), `sortable`, `width`, `value(row)` (sort + default text), `format(row)`, `cell` snippet, `title`, `truncate`. Without `onsort` sorting is client-side by `value`. Empty/error messages render below the table, within the visible width. |
+| `Table<T>` | `columns: Column<T>[]`, `rows`, `key(row)`, `loading`, `error`, `onretry`, `skeletonRows` (5), `bind:sort` / `onsort` (server-side), `onrowclick`, `selected`, `compact`, `maxHeight` (sticky header), `caption`, `emptyText` / snippet `empty`, `rowClass` | `Column`: `key`, `label`, `align`, `mono` (kept on one line), `wrap` (a long mono value may break), `sortable`, `width`, `value(row)` (sort + default text), `format(row)`, `cell` snippet, `title`, `truncate`. Without `onsort` sorting is client-side by `value`. A `truncate` column needs a `width` (e.g. '30%'), and the short one-line columns next to it '1%', or it shrinks to its header. Empty/error messages render below the table, within the visible width. |
 | `Pager` | offset: `total`, `bind:limit` (50), `bind:offset`, `onchange(offset)`; cursor: `mode="cursor"`, `hasPrev`, `hasNext`, `onprev`, `onnext`, `onfirst`, `count`; `limits` + `onlimit` | Place it directly below the table inside the flush Panel (it draws its own top border). |
 | `SidePanel` | `bind:open`, `title`, `subtitle`, `size` md\|lg, `dismissible`, `onclose`, snippet `actions`, children | Drawer from the right for row details. |
 | `Dialog` | `bind:open`, `title`, `subtitle`, `size` sm\|md\|lg, `dismissible` (true), `onclose`, snippet `actions`, children | Content mounts only while open (forms start fresh). |
@@ -262,7 +263,8 @@ colours `--blue --orange --green --brown`, tones `--ok --warn --fail`, sizes
 
 ```ts
 import { formatNumber, formatCompact, formatPercent, formatBytes, formatRate, formatDuration,
-         formatMicros, formatRelative, formatDateTime, formatTime, formatDate } from '$lib/format'
+         formatMicros, formatRelative, formatDateTime, formatDateTimeShort, formatTime, formatDate,
+         sameDay } from '$lib/format'
 formatNumber(12345)          // "12,345" / "12.345"
 formatPercent(0.183)         // ratio 0..1 → "18%" / "18 %"
 formatBytes(38e9)            // "38 GB" (decimal units)
@@ -271,6 +273,8 @@ formatDuration(ms)           // "850 ms", "4.2 sec", "3 hr 5 min"
 formatMicros(us)             // DNS durations
 formatRelative(iso)          // "5 minutes ago"
 formatDateTime(iso, seconds?) · formatTime(iso) · formatDate(iso)
+formatDateTimeShort(iso, seconds?)  // dense tables: "Sep 24, 2:05 PM" / "24. Sept., 14:05" (year only if not the current one)
+sameDay(a, b)                // same local calendar day
 ```
 
 All formatters follow the active language and return "–" for missing values.
@@ -279,6 +283,7 @@ All formatters follow the active language and return "–" for missing values.
 - `lib/session.svelte.ts`: `session.user`, `session.isAdmin`, `session.status` (AuthStatus), `session.logout()`.
 - `lib/theme.svelte.ts`: `theme.effective` ('light' | 'dark'), `prefersReducedMotion()`.
 - `lib/storage.ts`: `loadPref(key)` / `savePref(key, value)` for per-browser conveniences only (never secrets or server state).
+- `lib/series.ts`: `seriesRates(series, keys, per, asOfMs)` turns a statistics series into rates per `per` seconds for charts. The last bucket of a range that ends now is still filling: it is divided by the time elapsed in it, and left out while that is less than 30 s or a quarter of the step, whichever is longer.
 
 ## Translations (`$i18n/index.svelte`)
 
@@ -288,6 +293,11 @@ t('dns.queryLog.title')
 t('dns.lists.deleteTitle', { name: list.name })       // {name} placeholders; numbers are formatted
 tn('dns.queryLog.results', count)                     // uses 'queryLog.results.one' / '.other', provides {count}
 ```
+
+`tn()` picks the form for `count` rounded to one fraction digit, as `{count}`
+is shown. If the sentence shows the number rounded differently, pass the
+rounded number. A sentence with several counts is composed from plural
+fragments rather than one message with several numbers.
 
 - One flat dictionary per namespace and language: `i18n/en/dns.ts` is
   `export default { 'queryLog.title': 'Query log', … }`; keys are prefixed by

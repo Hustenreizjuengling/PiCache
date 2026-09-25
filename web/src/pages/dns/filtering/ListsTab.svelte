@@ -6,7 +6,7 @@
   Query: ?sel=<list id>
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, resource, type ClientGroup, type FilterList } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatDateTime, formatNumber, formatRelative } from '$lib/format'
@@ -78,7 +78,7 @@
       if (updated.status === 'failed-cached' || updated.status === 'failed-empty') {
         toast.error(updated.lastError || listStatus(updated.status).label)
       } else {
-        toast.success(t('dns.lists.updatedNamed', { name: updated.name, count: formatNumber(updated.entries) }))
+        toast.success(tn('dns.lists.updatedNamed', updated.entries, { name: updated.name, count: formatNumber(updated.entries) }))
       }
     } catch (e) {
       toast.error(e)
@@ -152,7 +152,7 @@
   {#if l.lastError}
     <span class="problem truncate" title={l.lastError}>{l.lastError}</span>
   {:else if skippedLines(l) > 0}
-    <span class="muted nowrap" title={t('dns.lists.skippedHelp')}>{t('dns.lists.skipped', { count: formatNumber(skippedLines(l)) })}</span>
+    <span class="muted nowrap" title={t('dns.lists.skippedHelp')}>{tn('dns.lists.skipped', skippedLines(l), { count: formatNumber(skippedLines(l)) })}</span>
   {:else}
     <span class="subtle">–</span>
   {/if}

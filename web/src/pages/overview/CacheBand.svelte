@@ -9,6 +9,7 @@
   import { api, resource, type RangePreset, type SystemOverview } from '../../lib/api'
   import { errorText } from '../../lib/errors'
   import { formatRate } from '../../lib/format'
+  import { seriesRates } from '../../lib/series'
   import { Button, Chart, Notice } from '../../lib/ui'
   import Band from './Band.svelte'
   import LanCacheOff from './LanCacheOff.svelte'
@@ -20,20 +21,17 @@
 
   // A derived boolean: the overview object changes every poll, the flag rarely.
   const enabled = $derived(overview.lancacheEnabled)
+  // asOf: the end of the range, for the rate of the bucket still in progress.
   const series = resource(
-    (signal) => (enabled ? api.stats.cache(range, undefined, undefined, { signal }) : Promise.resolve(undefined)),
+    async (signal) =>
+      enabled ? { asOf: Date.now(), s: await api.stats.cache(range, undefined, undefined, { signal }) } : undefined,
     { interval: 60_000 },
   )
 
   const chart = $derived.by(() => {
-    const s = series.data
-    if (!s) return { timestamps: [] as number[], hit: [] as number[], wan: [] as number[] }
-    const step = Math.max(1, s.step)
-    return {
-      timestamps: s.timestamps,
-      hit: s.timestamps.map((_, i) => (s.values.hit?.[i] ?? 0) / step),
-      wan: s.timestamps.map((_, i) => (s.values.wan?.[i] ?? 0) / step),
-    }
+    if (!series.data) return { timestamps: [] as number[], hit: [] as number[], wan: [] as number[] }
+    const { timestamps, values } = seriesRates(series.data.s, ['hit', 'wan'], 1, series.data.asOf)
+    return { timestamps, hit: values.hit, wan: values.wan }
   })
 </script>
 

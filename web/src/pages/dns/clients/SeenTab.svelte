@@ -6,28 +6,31 @@
   Query: ?tab=seen&within=24h|7d|30d&ip=<address>
 -->
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import { t } from '$i18n/index.svelte'
-  import type { Client, ClientGroup, ClientInput, ClientStat, KnownClient, RangePreset, Resource } from '$lib/api'
+  import type { Client, ClientGroup, ClientInput, ClientStat, KnownClient, Resource } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { href, router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
   import { Button, EmptyState, KeyValue, Notice, Panel, Select, SidePanel, Table, type Column } from '$lib/ui'
   import ClientPanel from './ClientPanel.svelte'
-  import { addressStat, clientFromKnown } from './clientStats'
+  import { addressStat, clientFromKnown, type TrafficRange } from './clientStats'
 
   interface Props {
     known: Resource<KnownClient[]>
     clients: readonly Client[] | undefined
     groups: readonly ClientGroup[] | undefined
     stats: readonly ClientStat[] | undefined
-    range: RangePreset
+    range: TrafficRange
+    /** The range control of the traffic columns (shown in the panel header). */
+    rangePicker: Snippet
     within: string
     onwithin: (within: string) => void
     onchanged: () => void
   }
 
-  let { known, clients, groups, stats, range, within, onwithin, onchanged }: Props = $props()
+  let { known, clients, groups, stats, range, rangePicker, within, onwithin, onchanged }: Props = $props()
 
   type Row = KnownClient & { stat?: ClientStat }
 
@@ -62,7 +65,7 @@
 
   const columns: Column<Row>[] = $derived([
     { key: 'ip', label: t('dns.seen.address'), mono: true, sortable: true, value: (k) => k.ip },
-    { key: 'host', label: t('dns.seen.hostname'), truncate: true, sortable: true, value: (k) => k.hostname ?? '' },
+    { key: 'host', label: t('dns.seen.hostname'), truncate: true, width: '25%', sortable: true, value: (k) => k.hostname ?? '' },
     { key: 'mac', label: t('dns.seen.mac'), mono: true, value: (k) => k.mac ?? '' },
     { key: 'client', label: t('common.label.client'), sortable: true, value: (k) => clientName(k) ?? '', cell: clientCell },
     {
@@ -111,9 +114,14 @@
     </Notice>
   {/if}
 
-  <Panel flush title={t('dns.seen.title')} description={t('dns.seen.description', { range: t(`common.range.long.${range}`) })}>
+  <Panel flush title={t('dns.seen.title')} description={t(`dns.seen.description.${range}`)}>
     {#snippet actions()}
-      <Select size="sm" aria-label={t('dns.seen.within')} value={within} options={withinOptions} onchange={(e) => onwithin(e.currentTarget.value)} />
+      {@render rangePicker()}
+      <!-- Labelled like the range picker next to it: a different time range (which addresses are listed). -->
+      <label class="within">
+        <span class="small muted">{t('dns.seen.within')}</span>
+        <Select size="sm" aria-label={t('dns.seen.within')} value={within} options={withinOptions} onchange={(e) => onwithin(e.currentTarget.value)} />
+      </label>
     {/snippet}
     <Table
       {columns}
@@ -188,5 +196,11 @@
 <style>
   h3 {
     font-size: var(--fs-md);
+  }
+  .within {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
   }
 </style>

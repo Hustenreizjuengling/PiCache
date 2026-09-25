@@ -12,6 +12,7 @@
   import { session } from '$lib/session.svelte'
   import { Button, Chip, KeyValue, Meter, Notice, Panel, Skeleton, toast } from '$lib/ui'
   import { formatBinary } from '../shared/util'
+  import { minFreeRaised } from './status'
 
   interface Props {
     store: StoreState | undefined
@@ -33,7 +34,7 @@
     try {
       const r = await api.cache.evict()
       if (r.objects > 0) {
-        toast.success(t('cache.store.evicted', { count: formatNumber(r.objects), size: formatBytes(r.bytes) }))
+        toast.success(tn('cache.store.evicted', r.objects, { count: formatNumber(r.objects), size: formatBytes(r.bytes) }))
       } else {
         toast.info(t('cache.store.evictedNothing'))
       }
@@ -119,7 +120,9 @@
       <p class="facts">
         {#if store.online}<Chip size="sm" tone="ok" label={t('cache.store.online')} />{/if}
         {#if target?.status.sameFsAsData}
-          <span class="muted small">{t('cache.store.sameFs')}</span>
+          <span class="muted small">
+            {minFreeRaised(store) ? t('cache.store.sameFsRaised', { size: formatBytes(store.minFreeBytes) }) : t('cache.store.sameFs')}
+          </span>
         {/if}
       </p>
     </div>

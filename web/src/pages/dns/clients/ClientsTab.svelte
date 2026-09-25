@@ -5,6 +5,7 @@
   Query: ?sel=<client id>
 -->
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import { t } from '$i18n/index.svelte'
   import type { Client, ClientGroup, ClientStat, KnownClient, RangePreset, Resource } from '$lib/api'
   import { errorText } from '$lib/errors'
@@ -22,10 +23,12 @@
     stats: readonly ClientStat[] | undefined
     known: readonly KnownClient[] | undefined
     range: RangePreset
+    /** The range control of the traffic columns (shown in the panel header). */
+    rangePicker: Snippet
     onchanged: () => void
   }
 
-  let { clients, groups, stats, known, range, onchanged }: Props = $props()
+  let { clients, groups, stats, known, range, rangePicker, onchanged }: Props = $props()
 
   type Row = Client & { totals: Totals }
 
@@ -88,6 +91,7 @@
 
 <Panel flush title={t('dns.clients.title')} description={t('dns.clients.description')}>
   {#snippet actions()}
+    {@render rangePicker()}
     <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.clients.add')}</Button>
   {/snippet}
   <Table

@@ -280,8 +280,11 @@
     white-space: normal;
     overflow-wrap: anywhere;
   }
+  /* max-width: 0 keeps long text from widening the column (it gets its share
+     from `width`); min-width keeps a column without one readable. */
   td.trunc {
     max-width: 0;
+    min-width: 6em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

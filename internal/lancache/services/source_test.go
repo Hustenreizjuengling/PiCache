@@ -213,7 +213,7 @@ func TestOfflineStartUsesSnapshot(t *testing.T) {
 	e.cdn.setDown(true)
 	r2 := e.registry(t)
 	st := r2.Status()
-	if !st.Ready || st.ServiceCount != 6 || st.LastFetched.IsZero() {
+	if !st.Ready || st.ServiceCount != 6 || st.LastFetched.IsZero() || !st.LastAttempt.Equal(st.LastFetched) {
 		t.Fatalf("offline status = %+v", st)
 	}
 	if id, ok := r2.MatchDNS("us.cdn.blizzard.com"); !ok || id != "blizzard" {

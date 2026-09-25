@@ -24,10 +24,14 @@
 
   const groups = resource((signal) => api.groups.list({ signal }))
   const stats = resource((signal) => api.filter.stats({ signal }), { interval: 10_000 })
+  // The tab badges count what the tabs list, disabled entries included; the
+  // summary line counts what the compiled filter uses.
+  const lists = resource((signal) => api.filter.lists.list({ signal }))
+  const rules = resource((signal) => api.filter.rules.list({}, { signal }))
 
   const tabs = $derived([
-    { id: 'lists', label: t('dns.filtering.tab.lists'), count: stats.data?.lists },
-    { id: 'rules', label: t('dns.filtering.tab.rules'), count: stats.data?.rules },
+    { id: 'lists', label: t('dns.filtering.tab.lists'), count: lists.data?.length },
+    { id: 'rules', label: t('dns.filtering.tab.rules'), count: rules.data?.length },
     { id: 'test', label: t('dns.filtering.tab.test') },
   ])
 
@@ -38,6 +42,8 @@
 
   function changed() {
     void stats.refresh()
+    void lists.refresh()
+    void rules.refresh()
   }
 </script>
 
@@ -50,7 +56,7 @@
       <span aria-hidden="true">·</span>
       <span>{tn('dns.filtering.summary.entries', s.entries, { count: formatNumber(s.entries) })}</span>
       <span aria-hidden="true">·</span>
-      <span>{tn('dns.filtering.summary.patterns', s.patterns, { count: formatNumber(s.patterns) })}</span>
+      <span title={t('dns.filtering.summary.patternsHint')}>{tn('dns.filtering.summary.patterns', s.patterns, { count: formatNumber(s.patterns) })}</span>
       <span aria-hidden="true">·</span>
       <span>{tn('dns.filtering.summary.rules', s.rules, { count: formatNumber(s.rules) })}</span>
       {#if s.compiledAt}

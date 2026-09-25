@@ -3,33 +3,53 @@
   Clients & groups: configured clients, recently seen addresses (add them as
   clients) and groups, with per-client traffic over a time range.
   Query: ?tab=clients|seen|groups&range=24h|7d|30d&within=…&sel=<id>&ip=<address>
-  Incoming ?ip=<address> (global search, query log) opens the client that
-  address belongs to, or the address on the "Seen recently" tab.
+  (without ?range= the range shown last in this browser). Incoming
+  ?ip=<address> (global search, query log) opens the client that address
+  belongs to, or the address on the "Seen recently" tab.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
   import { t } from '$i18n/index.svelte'
-  import { api, resource, type RangePreset } from '$lib/api'
+  import { api, resource } from '$lib/api'
   import { router } from '$lib/router.svelte'
+  import { loadPref, savePref } from '$lib/storage'
   import { Tabs, TimeRangePicker } from '$lib/ui'
   import ClientsTab from './clients/ClientsTab.svelte'
+  import { asTrafficRange, TRAFFIC_RANGES, type TrafficRange } from './clients/clientStats'
   import GroupsTab from './clients/GroupsTab.svelte'
   import SeenTab from './clients/SeenTab.svelte'
 
   const TABS = ['clients', 'seen', 'groups'] as const
   type Tab = (typeof TABS)[number]
-  const RANGES: RangePreset[] = ['24h', '7d', '30d']
-  const DEFAULT_RANGE: RangePreset = '24h'
+  const DEFAULT_RANGE: TrafficRange = '24h'
+  const RANGE_PREF = 'dns.clients.range'
   const WITHIN = ['24h', '7d', '30d']
 
   const tab = $derived.by((): Tab => {
     const v = router.param('tab') as Tab
     return TABS.includes(v) ? v : 'clients'
   })
-  const range = $derived.by((): RangePreset => {
-    const r = router.param('range') as RangePreset
-    return RANGES.includes(r) ? r : DEFAULT_RANGE
+  // The range shown last is remembered in this browser: links and tabs
+  // without ?range= (e.g. ?tab=seen from the search) keep it.
+  let preferred = $state<TrafficRange>(asTrafficRange(loadPref(RANGE_PREF)) ?? DEFAULT_RANGE)
+  const range = $derived(asTrafficRange(router.param('range')) ?? preferred)
+
+  function remember(r: TrafficRange) {
+    if (r === preferred) return
+    preferred = r
+    savePref(RANGE_PREF, r === DEFAULT_RANGE ? null : r)
+  }
+
+  $effect(() => {
+    const r = range
+    untrack(() => remember(r))
   })
+
+  function setRange(r: TrafficRange) {
+    remember(r)
+    router.setQuery({ range: r === DEFAULT_RANGE ? null : r })
+  }
+
   const within = $derived(WITHIN.includes(router.param('within')) ? router.param('within') : '30d')
 
   const clients = resource((signal) => api.clients.list({ signal }))
@@ -69,19 +89,20 @@
   }
 </script>
 
-<div class="page">
-  {#if tab !== 'groups'}
-    <div class="range">
-      <span class="small muted">{t('dns.clients.rangeLabel')}</span>
-      <TimeRangePicker
-        value={range}
-        options={RANGES}
-        label={t('dns.clients.rangeLabel')}
-        onchange={(r) => router.setQuery({ range: r === DEFAULT_RANGE ? null : r })}
-      />
-    </div>
-  {/if}
+<!-- In the panels whose traffic columns it sets (not above the tabs: the Groups tab has none). -->
+{#snippet rangePicker()}
+  <div class="range">
+    <span class="small muted">{t('dns.clients.rangeLabel')}</span>
+    <TimeRangePicker
+      value={range}
+      options={[...TRAFFIC_RANGES]}
+      label={t('dns.clients.rangeLabel')}
+      onchange={(r) => setRange(asTrafficRange(r) ?? DEFAULT_RANGE)}
+    />
+  </div>
+{/snippet}
 
+<div class="page">
   <Tabs {tabs} active={tab} label={t('common.nav.clients')} onchange={selectTab}>
     {#snippet children(active)}
       <div class="tab">
@@ -92,6 +113,7 @@
             groups={groups.data}
             stats={stats.data}
             {range}
+            {rangePicker}
             {within}
             onwithin={(w) => router.setQuery({ within: w === '30d' ? null : w })}
             onchanged={changed}
@@ -99,7 +121,7 @@
         {:else if active === 'groups'}
           <GroupsTab {groups} onchanged={changed} />
         {:else}
-          <ClientsTab {clients} groups={groups.data} stats={stats.data} known={known.data} {range} onchanged={changed} />
+          <ClientsTab {clients} groups={groups.data} stats={stats.data} known={known.data} {range} {rangePicker} onchanged={changed} />
         {/if}
       </div>
     {/snippet}
