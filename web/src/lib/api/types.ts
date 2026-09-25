@@ -1091,6 +1091,70 @@ export interface StorageInitResult {
   adopted: boolean
 }
 
+// ---------------------------------------------------------------- storage speed test
+
+/** State of a speed test run; one runs at a time, globally. */
+export type BenchmarkState = 'running' | 'done' | 'failed' | 'cancelled'
+
+/** Phase of a speed test run, in this order (`slices` is skipped with a note when not possible). */
+export type BenchmarkPhase = 'prepare' | 'write' | 'read' | 'slices' | 'metadata' | 'cleanup' | 'done'
+
+/** Sizes offered for a speed test (MiB). */
+export type BenchmarkSize = 64 | 256 | 1024
+
+/** storage.Throughput */
+export interface BenchmarkThroughput {
+  bytes: number
+  seconds: number
+  bytesPerSec: number
+}
+
+/** storage.BenchmarkResult: bytes and bytes/s (the UI shows decimal MB/s). */
+export interface BenchmarkResult {
+  targetId: string
+  fsType: string
+  storeRoot: string
+  testedAt: Timestamp
+  /** Bytes actually written (less than requested when the write budget ran out). */
+  sizeBytes: number
+  /** Free space before the test. */
+  freeBytes: number
+  /** Sequential 1 MiB blocks; the time includes the final fsync. */
+  write: BenchmarkThroughput
+  /** Sequential read of the test file after dropping it from the page cache (if possible). */
+  read: BenchmarkThroughput & { cacheDropped: boolean }
+  /** Reads of real cached slices (the hit path); only for the active store with cached content. */
+  slices?: BenchmarkThroughput & { count: number; p50Ms: number; p95Ms: number }
+  /** Create 4 KiB + fsync + rename + delete, per operation. */
+  metadata: { ops: number; p50Ms: number; p95Ms: number; maxMs: number }
+  /** User-facing remarks (skipped phase, budget reached, page cache not dropped, …). */
+  notes: string[]
+}
+
+/** storage.BenchmarkRun */
+export interface BenchmarkRun {
+  state: BenchmarkState
+  targetId: string
+  sizeMiB: number
+  phase: BenchmarkPhase
+  /** 0..1 over the whole run. */
+  progress: number
+  startedAt: Timestamp
+  finishedAt?: Timestamp
+  /** User-facing, for `failed`. */
+  error?: string
+  /** Set when done; partial when cancelled or failed after a phase finished. */
+  result?: BenchmarkResult
+}
+
+/** GET /storage/benchmark (in memory only: empty after a restart). */
+export interface BenchmarkStatus {
+  /** The running or most recent run (kept until the next one starts). */
+  run?: BenchmarkRun
+  /** The last completed result per target id. */
+  last: Record<string, BenchmarkResult>
+}
+
 // ---------------------------------------------------------------- logs / stats
 
 /** logs.QueryEvent */

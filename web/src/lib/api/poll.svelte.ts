@@ -7,8 +7,12 @@ import { toApiError, type ApiError } from './client'
 export type Loader<T> = (signal: AbortSignal) => Promise<T>
 
 export interface ResourceOptions {
-  /** Poll interval in ms (0/undefined = load once). */
-  interval?: number
+  /**
+   * Poll interval in ms (0/undefined = load once). A function is asked again
+   * before every wait, so the pace can follow the data (e.g. every second
+   * while a background job runs, rarely otherwise).
+   */
+  interval?: number | (() => number)
   /** Stop polling while the tab is hidden (default true). */
   pauseWhenHidden?: boolean
 }
@@ -77,6 +81,12 @@ export class Resource<T> {
     this.error = undefined
   }
 
+  /** The current poll interval in ms (0 = none). */
+  #interval(): number {
+    const iv = this.#opts.interval
+    return (typeof iv === 'function' ? iv() : iv) || 0
+  }
+
   #pauseHidden(): boolean {
     return (this.#opts.pauseWhenHidden ?? true) && !!this.#opts.interval
   }
@@ -86,7 +96,7 @@ export class Resource<T> {
     if (document.visibilityState === 'hidden') {
       clearTimeout(this.#timer)
       this.#timer = undefined
-    } else if (Date.now() - this.#lastRun >= (this.#opts.interval ?? 0)) {
+    } else if (Date.now() - this.#lastRun >= this.#interval()) {
       void this.#run()
     } else {
       this.#schedule()
@@ -96,7 +106,7 @@ export class Resource<T> {
   #schedule(): void {
     clearTimeout(this.#timer)
     this.#timer = undefined
-    const iv = this.#opts.interval
+    const iv = this.#interval()
     if (!iv || !this.#running) return
     if (this.#pauseHidden() && document.visibilityState === 'hidden') return
     this.#timer = setTimeout(() => void this.#run(), iv)

@@ -151,6 +151,9 @@ func (m *Manager) Test(ctx context.Context, id string) TestResult {
 	m.mu.Lock()
 	e := m.targets[id]
 	busy := e != nil && e.busy
+	if e != nil && !busy {
+		e.testing++
+	}
 	m.mu.Unlock()
 	switch {
 	case e == nil:
@@ -158,6 +161,11 @@ func (m *Manager) Test(ctx context.Context, id string) TestResult {
 	case busy: // the write test must not race the emptiness check of InitStore
 		return TestResult{Error: "the store is being initialised; test again in a moment", Steps: []string{}, Status: m.Status(id)}
 	}
+	defer func() {
+		m.mu.Lock()
+		e.testing--
+		m.mu.Unlock()
+	}()
 	res, err := m.freshCheck(ctx, id, testTimeout)
 	if err != nil {
 		return TestResult{Steps: []string{"Started the check"}, Error: errMessage(err),
@@ -181,6 +189,9 @@ func (m *Manager) InitStore(ctx context.Context, id string, adopt bool) (InitRes
 	}
 	m.setBusy(id, true)
 	defer m.setBusy(id, false)
+	if m.benchmarkOn(id) { // its test file would make the root look non-empty
+		return InitResult{}, apperr.Conflict("a speed test is running on this storage target; wait until it has finished or cancel it")
+	}
 
 	res, err := m.freshCheck(ctx, id, initTimeout)
 	if err != nil {

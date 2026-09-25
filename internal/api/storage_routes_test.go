@@ -165,6 +165,9 @@ func TestStorageRoutesRegistered(t *testing.T) {
 		{"POST", "/api/v1/storage/targets/" + id + "/init", "POST /api/v1/storage/targets/{id}/init"},
 		{"POST", "/api/v1/storage/targets/" + id + "/activate", "POST /api/v1/storage/targets/{id}/activate"},
 		{"GET", "/api/v1/storage/targets/" + id + "/snippets", "GET /api/v1/storage/targets/{id}/snippets"},
+		{"POST", "/api/v1/storage/targets/local/benchmark", "POST /api/v1/storage/targets/{id}/benchmark"},
+		{"GET", "/api/v1/storage/benchmark", "GET /api/v1/storage/benchmark"},
+		{"DELETE", "/api/v1/storage/benchmark", "DELETE /api/v1/storage/benchmark"},
 	} {
 		if _, p := s.mux.Handler(httptest.NewRequest(rc.method, rc.path, nil)); p != rc.pattern {
 			t.Errorf("%s %s → %q, want %q", rc.method, rc.path, p, rc.pattern)
@@ -306,6 +309,84 @@ func TestStorageRoutesApplyAndCapabilities(t *testing.T) {
 	}
 	storageWant(t, "apply", e.call(e.srv.storageApply, "POST", nfs.ID, ""), want, "")
 	storageWant(t, "apply local", e.call(e.srv.storageApply, "POST", storage.LocalTargetID, ""), http.StatusConflict, "")
+}
+
+// TestStorageRoutesBenchmark runs a speed test of the built-in store through
+// the real middleware: read tokens see results, only admins start and
+// cancel; the start is audited.
+func TestStorageRoutesBenchmark(t *testing.T) {
+	e := newStorageTestEnv(t)
+	e.srv.d.Config.WebListen = []string{":8080"}
+	ce := &coreEnv{srv: New(e.srv.d), auth: e.auth}
+	session := ce.provisionAndLogin(t)
+	readTok := ce.createToken(t, session, "read")
+	const start = "/api/v1/storage/targets/local/benchmark"
+
+	w := ce.do("GET", "/api/v1/storage/benchmark", "", readTok)
+	if w.Code != http.StatusOK || w.Body.String() != `{"last":{}}` {
+		t.Fatalf("empty overview: %d %s", w.Code, w.Body)
+	}
+	coreWantError(t, ce.do("POST", start, `{"sizeMiB":64}`, readTok), http.StatusForbidden, "forbidden", "")
+	coreWantError(t, ce.do("DELETE", "/api/v1/storage/benchmark", "", readTok), http.StatusForbidden, "forbidden", "")
+	coreWantError(t, ce.do("GET", "/api/v1/storage/benchmark", "", ""), http.StatusUnauthorized, "unauthorized", "")
+
+	coreWantError(t, ce.do("POST", start, `{"sizeMiB":100}`, session), http.StatusBadRequest, "invalid", "sizeMiB")
+	coreWantError(t, ce.do("POST", start, `{"size":64}`, session), http.StatusBadRequest, "invalid", "body")
+	coreWantError(t, ce.do("POST", "/api/v1/storage/targets/ffffffffffffffffffffffffffffffff/benchmark", "", session),
+		http.StatusNotFound, "not_found", "")
+	// Without a body the default size is used; a missing directory is not available.
+	missing := e.call(e.srv.storageCreate, "POST", "", `{"name":"Gone","kind":"local","path":"`+jsonPath(filepath.Join(e.cfg.MountRoot, "gone"))+`"}`)
+	gone := storageDecode[storage.Target](t, missing).ID
+	w = ce.do("POST", "/api/v1/storage/targets/"+gone+"/benchmark", "", session)
+	coreWantError(t, w, http.StatusConflict, "conflict", "")
+	if !strings.Contains(w.Body.String(), "the storage target is not available: ") {
+		t.Fatalf("unavailable: %s", w.Body)
+	}
+
+	w = ce.do("POST", start, `{"sizeMiB":64}`, session)
+	if w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), "not enough free space") {
+		t.Skipf("the temp directory lacks the free space of a speed test: %s", w.Body)
+	}
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start: %d %s", w.Code, w.Body)
+	}
+	var run storage.BenchmarkRun
+	coreDecode(t, w, &run)
+	if run.State != "running" || run.TargetID != storage.LocalTargetID || run.SizeMiB != 64 || run.Phase != "prepare" {
+		t.Fatalf("started %+v", run)
+	}
+	// Cancel (the run may also have finished already); DELETE waits for the end.
+	if w := ce.do("DELETE", "/api/v1/storage/benchmark", "", session); w.Code != http.StatusNoContent {
+		t.Fatalf("cancel: %d %s", w.Code, w.Body)
+	}
+	var o storage.BenchmarkOverview
+	coreDecode(t, ce.do("GET", "/api/v1/storage/benchmark", "", readTok), &o)
+	if o.Run == nil || (o.Run.State != "cancelled" && o.Run.State != "done") || o.Run.FinishedAt.IsZero() {
+		t.Fatalf("after cancel: %+v", o.Run)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(e.cfg.CacheDir, "tmp")); len(ents) != 0 {
+		t.Fatalf("test files left: %v", ents)
+	}
+	if w := ce.do("DELETE", "/api/v1/storage/benchmark", "", session); w.Code != http.StatusNoContent {
+		t.Fatalf("cancel without a run: %d", w.Code)
+	}
+
+	entries, _, err := e.auth.AuditLog(context.Background(), auth.AuditQuery{Search: "storage.benchmark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var starts int
+	for _, a := range entries {
+		if a.Action == "storage.benchmark" {
+			starts++
+			if a.Target != storage.LocalTargetID || a.Details != `{"sizeMiB":64}` {
+				t.Fatalf("audit entry %+v", a)
+			}
+		}
+	}
+	if starts != 1 { // refused starts are not audited
+		t.Fatalf("audit %+v", entries)
+	}
 }
 
 // jsonPath escapes a file system path for a JSON string literal (Windows).

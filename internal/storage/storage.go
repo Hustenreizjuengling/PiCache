@@ -1,8 +1,8 @@
 // Package storage manages cache storage targets (local path, SMB, NFS):
 // capability detection, the mount guard, store initialisation, host-apply
 // (a root helper writes systemd mount units; the service itself never
-// mounts and never holds CAP_SYS_ADMIN) and configuration snippets
-// (docs/ARCHITECTURE.md 10).
+// mounts and never holds CAP_SYS_ADMIN), configuration snippets and the
+// storage speed test (docs/ARCHITECTURE.md 10).
 //
 // Tables (picache.db, component "storage"): storage_targets
 // (… password_sealed TEXT NULL …).
@@ -230,7 +230,10 @@ type Manager struct {
 	closed    bool
 
 	kick chan struct{}  // wakes the guard loop after changes
-	wg   sync.WaitGroup // check and init goroutines
+	wg   sync.WaitGroup // check, init and speed test goroutines
+
+	bench    benchState  // speed test (benchmark.go)
+	benchLim benchLimits // its sizes and budgets
 }
 
 // entry is the in-memory state of one target.
@@ -242,6 +245,7 @@ type entry struct {
 	notified Status    // last status passed to listeners
 	run      *checkRun // in-flight check (single flight)
 	busy     bool      // InitStore is writing; the guard leaves the target alone
+	testing  int       // functional tests running (Test); no speed test starts meanwhile
 }
 
 // New creates the manager, ensuring the built-in local target exists (and
@@ -263,6 +267,7 @@ func New(ctx context.Context, d *db.DB, box *secrets.Box, cfg *config.Config, sl
 		hostApplyFlag: HostApplyFlagFile,
 		targets:       make(map[string]*entry),
 		kick:          make(chan struct{}, 1),
+		benchLim:      defaultBenchLimits,
 	}
 	m.probeFn = m.probe
 	if err := d.Migrate(ctx, "storage", migrations); err != nil {

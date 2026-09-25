@@ -221,13 +221,15 @@ func (m *Manager) freshCheck(ctx context.Context, id string, timeout time.Durati
 	}
 }
 
-// shutdown stops new checks and waits for running ones, but not forever: a
-// statfs on a hung hard mount can block in the kernel indefinitely. Checks
-// never touch the database, so returning early is safe.
+// shutdown stops new checks, cancels a speed test and waits for running
+// ones, but not forever: a statfs on a hung hard mount can block in the
+// kernel indefinitely. Checks and speed tests never touch the database, so
+// returning early is safe.
 func (m *Manager) shutdown() {
 	m.mu.Lock()
 	m.closed = true
 	m.mu.Unlock()
+	m.cancelBench() // after closed: StartBenchmark starts no run once it sees closed
 	done := make(chan struct{})
 	go func() {
 		m.wg.Wait()

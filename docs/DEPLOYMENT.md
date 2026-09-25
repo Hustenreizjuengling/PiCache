@@ -808,10 +808,43 @@ Recommendations:
 - The generated mounts are soft and have timeouts, so a hanging NAS cannot
   freeze PiCache. Use the same options for your own mounts.
 - Hits cannot be faster than the NAS: about 110 MB/s over 1 GbE, which can be
-  slower than your Internet connection.
+  slower than your Internet connection. The [speed test](#speed-test) shows
+  what the NAS really delivers.
+- A separate storage network between PiCache and the NAS (a second network
+  card or VLAN, for example `192.168.8.0/24`) needs no setting in PiCache:
+  give the NAS address in that network as the server, and the host routes
+  the traffic over it. It keeps SMB/NFS off the client network (the share is
+  then not reachable from it) and helps with fast Internet connections,
+  because a miss otherwise sends every byte twice over one network card (to
+  the client and to the NAS). For cache hits it makes no difference on a
+  full-duplex network.
 - Docker named volumes of type `cifs`/`nfs` are not recommended. The
   container, and with it DNS, fails to start when the NAS is down, and
   `docker volume inspect` shows the SMB password.
+
+### Speed test
+
+**Cache → Storage → Test speed** measures a storage target that is online
+(admins only; one test at a time):
+
+| Measurement | What it shows |
+|---|---|
+| Write | sequential writes in 1 MiB blocks, including the final flush: how fast misses can be stored |
+| Read | sequential reads of the test file after PiCache dropped it from the host's memory. A NAS may still answer from its own memory |
+| Cache reads | reads of up to 128 randomly chosen cached slices (active store only): the path of a cache hit, with the time per slice |
+| File operations | create, flush, rename and delete of small files: the latency every stored slice pays |
+
+Choose 64 MiB (quick), 256 MiB (default) or 1 GiB (thorough). The test writes
+a temporary file into the target (it needs the test size plus 1 GiB free),
+loads the storage for up to two minutes and can be cancelled; downloads keep
+working meanwhile, perhaps slower. The test file is always removed. The last
+result of each target stays visible until PiCache restarts.
+
+Reading the result: cache hits cannot be faster than the slower of the cache
+reads and the network to the clients (1 GbE ≈ 118 MB/s, 2.5 GbE ≈ 295 MB/s,
+10 GbE ≈ 1,180 MB/s). If the storage is clearly faster than the network, the
+network is the limit; if it is slower, a faster disk, an SSD cache on the NAS
+or NFS instead of SMB helps more than anything in PiCache.
 
 ### Host-apply (root helper)
 

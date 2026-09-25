@@ -5,6 +5,18 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Storage speed test: **Cache → Storage → Test speed** measures write,
+  read, cache-read (the path of a cache hit) and file-operation speed of a
+  storage target, compares it with network speeds and keeps the last result
+  per target.
+
+### Documentation
+
+- How to put the NAS on a separate storage network (no PiCache setting
+  needed) and when that helps.
+
 ## [0.2.0] - 2026-09-25
 
 Update from v0.1.0 on **System → Updates** or with `sudo picache update`

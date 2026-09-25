@@ -197,6 +197,14 @@ All return 503 `unavailable` when no store is online (except `/cache/state`).
 | POST `/storage/targets/{id}/init` | A | `{adopt:bool}` | `storage.InitResult` |
 | POST `/storage/targets/{id}/activate` | A | – | `api.StoreState` (409 `not initialised` → call init first) |
 | GET `/storage/targets/{id}/snippets` | A | – | `storage.Snippets` (never contains the password) |
+| POST `/storage/targets/{id}/benchmark` | A | `{sizeMiB?}` — 64, 256 or 1024; default 256 (the body may be empty) | 202 `storage.BenchmarkRun` (`state:"running"`). 400 `field:"sizeMiB"` for other sizes; 400 `not enough free space: the test needs <size + 1 GiB>, <free> are free`; 404 unknown target; 409 `a speed test is already running`, the target is being initialised or tested, or `the storage target is not available: <reason>` (the functional test's fresh check). `extendDeadlines` 2 min. Audited as `storage.benchmark` (details `{sizeMiB}`) |
+| GET `/storage/benchmark` | R | – | `storage.BenchmarkOverview` = `{run?: BenchmarkRun, last: {[targetId]: BenchmarkResult}}`: `run` is the running or most recent run (kept until the next one starts), `last` the last completed result per target. In memory only (empty after a restart) |
+| DELETE `/storage/benchmark` | A | – | 204; cancels a running speed test (no-op if none) and waits up to 5 s for it to stop. The run ends `cancelled`; its partial result stays in `run.result`. Audited as `storage.benchmark_cancel` when a run was cancelled |
+
+Speed test (one run at a time, in the background, not tied to the request; docs/ARCHITECTURE.md 10.6). Sizes are bytes, speeds bytes/s (the UI shows decimal MB/s):
+- `BenchmarkRun {state: running|done|failed|cancelled, targetId, sizeMiB, phase: prepare|write|read|slices|metadata|cleanup|done, progress (0..1 over the whole run), startedAt, finishedAt?, error? (failed, user-facing), result? (done; partial after a cancel or failure once a phase finished)}`
+- `BenchmarkResult {targetId, fsType ("" if unknown), storeRoot, testedAt, sizeBytes (written; less than requested when the write budget ran out), freeBytes (before the test; 0 if unknown), write: Throughput (1 MiB blocks, time includes the final fsync), read: Throughput + {cacheDropped} (after dropping the file from the page cache), slices?: Throughput + {count, p50Ms, p95Ms} (cached slices of the active store; seconds = sum of the per-slice times open → close), metadata: {ops, p50Ms, p95Ms, maxMs} (create 4 KiB + fsync + rename + delete), notes: [string]}`
+- `Throughput {bytes, seconds, bytesPerSec}`
 
 ## Logs, statistics, downloads, streams — `routes_logs.go`
 

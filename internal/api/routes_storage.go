@@ -25,6 +25,9 @@ func (s *Server) registerStorageRoutes() {
 	s.route("POST /api/v1/storage/targets/{id}/init", permAdmin, s.storageInit)
 	s.route("POST /api/v1/storage/targets/{id}/activate", permAdmin, s.storageActivate)
 	s.route("GET /api/v1/storage/targets/{id}/snippets", permAdmin, s.storageSnippets)
+	s.route("POST /api/v1/storage/targets/{id}/benchmark", permAdmin, s.storageBenchmarkStart)
+	s.route("GET /api/v1/storage/benchmark", permRead, s.storageBenchmark)
+	s.route("DELETE /api/v1/storage/benchmark", permAdmin, s.storageBenchmarkCancel)
 }
 
 // storageTargetID validates the {id} path value ("local" or 32 hex chars).
@@ -167,6 +170,46 @@ func (s *Server) storageActivate(w http.ResponseWriter, r *http.Request) error {
 	}
 	s.audit(r, "storage.activate", id, nil)
 	return ok(w, s.d.Runtime.StoreState())
+}
+
+// storageBenchmarkStart checks the target and starts a speed test in the
+// background (202); it keeps running when the client goes away.
+func (s *Server) storageBenchmarkStart(w http.ResponseWriter, r *http.Request) error {
+	extendDeadlines(w, storageLongOp) // the check before the start waits for the storage
+	id, err := storageTargetID(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		SizeMiB *int `json:"sizeMiB"`
+	}
+	if r.ContentLength != 0 { // the body is optional
+		if err := decode(w, r, &in); err != nil {
+			return err
+		}
+	}
+	size := storage.BenchmarkDefaultMiB
+	if in.SizeMiB != nil {
+		size = *in.SizeMiB
+	}
+	run, err := s.d.Storage.StartBenchmark(r.Context(), id, size, s.d.Runtime.ActiveStore())
+	if err != nil {
+		return err
+	}
+	s.audit(r, "storage.benchmark", id, map[string]int{"sizeMiB": size})
+	return writeJSON(w, http.StatusAccepted, run)
+}
+
+func (s *Server) storageBenchmark(w http.ResponseWriter, r *http.Request) error {
+	return ok(w, s.d.Storage.Benchmark())
+}
+
+// storageBenchmarkCancel cancels a running speed test (no-op if none).
+func (s *Server) storageBenchmarkCancel(w http.ResponseWriter, r *http.Request) error {
+	if id, cancelled := s.d.Storage.CancelBenchmark(r.Context()); cancelled {
+		s.audit(r, "storage.benchmark_cancel", id, nil)
+	}
+	return noContent(w)
 }
 
 func (s *Server) storageSnippets(w http.ResponseWriter, r *http.Request) error {

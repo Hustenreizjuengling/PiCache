@@ -2,14 +2,15 @@
   @component
   One storage target in a side panel: its state and why, all settings, and
   the steps to use it: test, set up (initialise) or adopt an existing cache,
-  mount (host-apply), switch the cache to it; configuration snippets; edit
-  and delete.
+  mount (host-apply), switch the cache to it; its speed test; configuration
+  snippets; edit and delete.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
   import {
     api,
     toApiError,
+    type BenchmarkStatus,
     type StorageCapabilities,
     type StorageTargetWithStatus,
     type StorageTestResult,
@@ -19,6 +20,9 @@
   import { appStatus } from '$lib/status.svelte'
   import { Button, Chip, Icon, KeyValue, Notice, SidePanel, Spinner, confirm, toast, type KeyValueItem } from '$lib/ui'
   import Snippets from './Snippets.svelte'
+  import SpeedResult from './SpeedResult.svelte'
+  import SpeedRun from './SpeedRun.svelte'
+  import { lastLine } from './speed'
   import { STATE_TONES, targetActions, targetState } from './status'
 
   interface Props {
@@ -26,17 +30,31 @@
     caps: StorageCapabilities | undefined
     /** Run a test right away (after adding the target). */
     autoTest?: boolean
+    /** Speed test state: the running or most recent run and the last result per target. */
+    speed: BenchmarkStatus | undefined
+    /** Name of a storage target by id (the target of a running speed test). */
+    nameOf: (id: string) => string
     /** State changed on the server: reload targets and the store state. */
     onchanged: () => Promise<void> | void
+    /** Opens the speed test dialog for this target. */
+    onspeedtest: () => void
+    /** Reload the speed test state. */
+    onspeedchanged: () => Promise<void> | void
     onedit: () => void
     onclose: () => void
   }
 
-  let { target, caps, autoTest = false, onchanged, onedit, onclose }: Props = $props()
+  let { target, caps, autoTest = false, speed, nameOf, onchanged, onspeedtest, onspeedchanged, onedit, onclose }: Props = $props()
 
   const st = $derived(target.status)
   const current = $derived(targetState(target))
   const can = $derived(targetActions(target, caps))
+
+  // ---- speed test: this target's run (running or its most recent), else its last result
+  const speedRun = $derived(speed?.run)
+  const speedRunning = $derived(speedRun?.state === 'running')
+  const ownRun = $derived(speedRun?.targetId === target.id ? speedRun : undefined)
+  const lastSpeed = $derived(speed?.last?.[target.id])
 
   // ---- test
 
@@ -238,9 +256,15 @@
             {t('cache.target.activate')}
           </Button>
         {/if}
+        {#if session.isAdmin && st.online}
+          <Button icon="overview" disabled={speedRunning || testing || !!busy} onclick={onspeedtest}>{t('cache.speed.test')}</Button>
+        {/if}
       </div>
       {#if !target.active && !can.activate && target.storeId && !st.online}
         <p class="muted small">{t('cache.target.activateNeedsOnline')}</p>
+      {/if}
+      {#if session.isAdmin && st.online && speedRunning && speedRun && speedRun.targetId !== target.id}
+        <p class="muted small">{t('cache.speed.busyOther', { name: nameOf(speedRun.targetId) })}</p>
       {/if}
     </section>
 
@@ -267,6 +291,21 @@
         {/if}
       </section>
     {/if}
+
+    <section class="stack-sm">
+      <h3>{t('cache.speed.title')}</h3>
+      {#if ownRun}
+        <SpeedRun run={ownRun} onchanged={onspeedchanged} level={4} />
+      {:else if lastSpeed}
+        <p>{lastLine(lastSpeed)}</p>
+        <details class="speed-details">
+          <summary>{t('common.label.details')}</summary>
+          <SpeedResult result={lastSpeed} level={4} />
+        </details>
+      {:else}
+        <p class="muted small">{t('cache.speed.noneTarget')}</p>
+      {/if}
+    </section>
 
     <section class="stack-sm">
       <h3>{t('cache.target.settingsTitle')}</h3>
@@ -320,5 +359,15 @@
   }
   .steps li.problem :global(.icon) {
     color: var(--fail);
+  }
+  .speed-details > summary {
+    width: fit-content;
+    margin-bottom: var(--sp-3);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .speed-details:not([open]) > summary {
+    margin-bottom: 0;
   }
 </style>

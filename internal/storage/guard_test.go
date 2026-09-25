@@ -18,7 +18,7 @@ import (
 // bareManager is a Manager without a database (the guard never uses it).
 func bareManager(cfg *config.Config, targets ...Target) *Manager {
 	m := &Manager{cfg: cfg, log: slog.New(slog.DiscardHandler), sliceSize: func() int64 { return 1 << 20 },
-		targets: map[string]*entry{}, kick: make(chan struct{}, 1)}
+		targets: map[string]*entry{}, kick: make(chan struct{}, 1), benchLim: defaultBenchLimits}
 	m.probeFn = m.probe
 	for _, t := range targets {
 		m.targets[t.ID] = &entry{t: t, st: pendingStatus(t, "not checked yet")}

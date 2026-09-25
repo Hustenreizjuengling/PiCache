@@ -258,6 +258,22 @@ const storage = {
   activate: (id: string, o?: ReqOpts) =>
     http.post<T.StoreState>(`/storage/targets/${seg(id)}/activate`, undefined, { ...o, timeoutMs: STORAGE_LONG_OP_MS }),
   snippets: (id: string, o?: ReqOpts) => http.get<T.StorageSnippets>(`/storage/targets/${seg(id)}/snippets`, o),
+  /**
+   * Starts a speed test of the target (202 with the running run; default size
+   * 256 MiB). It first runs the same fresh check as test(), so it can take as
+   * long. 409 when a test is already running, the target is busy or not
+   * available; 400 with field "sizeMiB" for other sizes; 400 when there is
+   * not enough free space (size + 1 GiB).
+   */
+  benchmark: (id: string, sizeMiB?: T.BenchmarkSize, o?: ReqOpts) =>
+    http.post<T.BenchmarkRun>(`/storage/targets/${seg(id)}/benchmark`, sizeMiB ? { sizeMiB } : {}, {
+      ...o,
+      timeoutMs: STORAGE_LONG_OP_MS,
+    }),
+  /** The running or most recent speed test and the last result per target. */
+  benchmarkState: (o?: ReqOpts) => http.get<T.BenchmarkStatus>('/storage/benchmark', o),
+  /** Cancels a running speed test (no-op if none); its partial result is kept. */
+  cancelBenchmark: (o?: ReqOpts) => http.del('/storage/benchmark', o),
 }
 
 // ---------------------------------------------------------------- logs & statistics

@@ -99,7 +99,7 @@ internal/dlcache/services/   cache-domains source, service registry & matcher, c
 internal/dlcache/store/      slice store + index DB + eviction + verify/rebuild + store marker   (package cachestore)
 internal/dlcache/proxy/      HTTP cache proxy (:80)
 internal/dlcache/sni/        TLS SNI pass-through (:443)
-internal/storage/            storage targets, capability detection, mount guard, store init/adopt, host-apply root helper, snippets
+internal/storage/            storage targets, capability detection, mount guard, store init/adopt, host-apply root helper, snippets, speed test
 internal/update/             releases: check (GitHub API), SemVer, signature check (compiled-in keys), install + rollback, update requests of the root helper
 internal/logs/               logs.db: query log, cache events, sessions, rollups, evictions, live subscriptions
 internal/api/                REST API + SSE, middleware, one routes_<domain>.go file per domain
@@ -112,7 +112,7 @@ docs/                        this file, API.md, DESIGN.md, DEPLOYMENT.md, SECURI
 
 Dependency rules:
 - Foundation packages (`version`, `config`, `db`, `apperr`, `listing`, `settings`, `secrets`, `netutil`) import only each other (`settings` → `db`, `apperr`; `netutil` → `settings`).
-- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker only). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore`, `update` import no other domain package (`update` imports only `version`).
+- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker; slice sampling and page-cache dropping for the speed test). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore`, `update` import no other domain package (`update` imports only `version`).
 - `dnsserver`, `proxy` and `sni` declare **consumer-side interfaces** for their collaborators (see their `Deps`) so they can be tested with fakes.
 - `api` imports domain packages; domain packages never import `api`. `app` imports everything and is imported only by `cmd`.
 
@@ -159,7 +159,7 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
 | Secret leakage | NAS passwords sealed (XChaCha20-Poly1305, AAD per record), write-only in the API, never in snippets, logs or audit details (redacted by name), decrypted only by the root helper. |
 | Privilege | Runtime is unprivileged and never holds `CAP_SYS_ADMIN` (6.2). |
 | Metrics / status | `/metrics` disabled by default, admin token required. `/healthz` returns only `ok`. |
-| Resource exhaustion | Bounded caches, queues, subscribers (16 SSE), fill memory (≤ 1 GiB), query timeouts (10 s), log DB size cap, audit retention, connection caps. |
+| Resource exhaustion | Bounded caches, queues, subscribers (16 SSE), fill memory (≤ 1 GiB), query timeouts (10 s), log DB size cap, audit retention, connection caps. One storage speed test at a time (admin only, ≤ 2 min, needs its size + 1 GiB free, its file does not count for eviction). |
 
 ### 6.2 Privilege model per deployment
 
@@ -372,6 +372,19 @@ Online only if: the path exists; for smb/nfs (or `requireMountpoint`) it is a mo
 ### 10.5 Capability detection (shown in the UI)
 
 Container type, init user namespace and UID offset, systemd, kernel filesystems (`/proc/filesystems`), mount helpers, whether the root helper is installed (`/etc/picache/host-apply.enabled`), Docker network mode (best effort). `/proc/1/environ` is only searched for `container=` and never returned.
+
+### 10.6 Speed test
+
+`POST /storage/targets/{id}/benchmark` measures a target's store root so the admin can see whether the storage, the network or PiCache limits cache hits (`storage/benchmark.go`). It runs inside the unprivileged service, one run at a time (refused while the target is initialised or functionally tested; `InitStore` is refused while a run uses its target), in the background: not tied to the request, cancelled by `DELETE /storage/benchmark` and at shutdown. Results are kept in memory only.
+
+1. **Prepare**: the functional test's fresh check (mount guard, write test) must pass, and free space ≥ size + 1 GiB (64, 256 or 1024 MiB; not checkable outside Linux → note). The store root is opened again and the guard's location checks (no symbolic links below the mount root, mount point where required, file system type) are repeated on that handle. The test file is `<root>/tmp/picache-speedtest-<16 hex>.tmp` (the store cleans `tmp/*.tmp` at start), or `<root>/.picache-speedtest-<16 hex>.tmp` without a `tmp/` directory (uninitialised target); created `O_CREATE|O_EXCL`, 0600, through `os.Root`, never following links. Leftovers of an earlier crash are removed (bounded scan).
+2. **Write**: 1 MiB blocks cut from one random block per run and stamped with the block number every 4 KiB (not compressible, not deduplicable), then fsync; the time includes the fsync.
+3. **Read**: the file is dropped from the page cache (`posix_fadvise(POSIX_FADV_DONTNEED)`; Linux only, otherwise `cacheDropped:false` and a note) and read sequentially. A NAS may still answer from its own memory (note).
+4. **Cached content** (only the active store with cached slices, else skipped with a note): up to 128 slices picked uniformly from the index (`cachestore.SampleSlices`), each opened and validated like `ReadSlice`, dropped from the page cache and read completely (`ReadSliceUncached`: no I/O slot, nothing is repaired); latency per slice from open to close.
+5. **File operations**: 32 × create 4 KiB, write, fsync, close, rename, delete; latency per iteration.
+6. **Cleanup**: the test files are always removed, also after an error or a cancel.
+
+Budgets: the whole run 120 s; write 50 s, read 40 s, cached content 20 s, file operations 10 s. A phase at its budget stops after the current block (slice, operation) and its result covers what was done; a phase that would start after the whole budget is skipped; both leave a note. The run does not take the store's I/O semaphore: the storage is loaded for up to two minutes (the UI warns). The eviction counts the test file as free space, so a speed test never evicts cached content.
 
 ---
 

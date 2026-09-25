@@ -111,7 +111,8 @@ func (a *App) reconcileStore(ctx context.Context) {
 		a.log.Info("cache store online", slog.String("target", target), slog.String("root", root), slog.String("store", storeID))
 	}
 	minFree := effectiveMinFree(cfg, tst)
-	lowSpace := tst.FreeBytes > 0 && int64(tst.FreeBytes) < minFree
+	free := tst.FreeBytes + a.storage.BenchmarkBytes(target) // a speed test's file is temporary
+	lowSpace := free > 0 && int64(free) < minFree
 	u := cur.Usage()
 	a.storeState.Store(&api.StoreState{TargetID: target, StoreID: storeID, Online: true, Usage: &u,
 		SliceSize: cur.SliceSize(), TotalBytes: tst.TotalBytes, FreeBytes: tst.FreeBytes, MinFreeBytes: minFree,
@@ -234,10 +235,19 @@ func (a *App) evictLoop(ctx context.Context) {
 var errNoStore = apperr.Unavailable("no cache store is online")
 
 // policy returns the eviction policy for a pass on st, with the free space
-// of its filesystem measured now (see freeSpace.measure).
+// of its filesystem measured now (see freeSpace.measure). The test file of
+// a storage speed test on the target counts as free: a test must not evict
+// cached content.
 func (a *App) policy(st *cachestore.Store) cachestore.Policy {
 	c := a.set.Get().Cache
-	return evictPolicy(c, a.storage.Status(c.ActiveStoreID), st.Root(), &a.free)
+	p := evictPolicy(c, a.storage.Status(c.ActiveStoreID), st.Root(), &a.free)
+	if free := p.FreeBytes; free != nil {
+		p.FreeBytes = func() (uint64, error) {
+			n, err := free()
+			return n + a.storage.BenchmarkBytes(c.ActiveStoreID), err
+		}
+	}
+	return p
 }
 
 // evictPolicy builds the eviction policy from the cache settings and the

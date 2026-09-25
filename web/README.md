@@ -128,12 +128,12 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.filter` | `lists.{list,create,update,remove,refresh(id),refreshAll}`, `catalog()`, `rules.{list(query),create,update,remove}`, `stats()`, `explain(domain, clientIp?)` |
 | `api.downloadCache` | `services() service(id) setEnabled(id,on) setExtraDomains(id,list) createService(s) updateService(id,s) deleteService(id) source() refreshSource() setLabel(groupKey,label) sni()` |
 | `api.cache` | `state() services() groups(q) groupDetail(service,key) objects(q) deleteObject(id) pinObject(id,pinned) deleteGroup(service,key) pinGroup(service,key,pinned) purgeService(service) evict() verify(repair) verifyState() live() active() proxyStats() noSlice() resetNoSlice(host) downloads(q) requests(q) sniEvents(q) evictions(q)` |
-| `api.storage` | `capabilities() targets() target(id) create(t) update(id,t) remove(id) test(id) apply(id) init(id,adopt) activate(id) snippets(id)` |
+| `api.storage` | `capabilities() targets() target(id) create(t) update(id,t) remove(id) test(id) apply(id) init(id,adopt) activate(id) snippets(id) benchmark(id,sizeMiB?) benchmarkState() cancelBenchmark()` |
 | `api.logs` | `queries(q)` (cursor page) |
 | `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?) services(range) clients(range)` – `range` is a preset (`'24h'`) or `{ from, to }` |
 
-Long-running calls (list/source refresh, storage test, restore) already carry
-longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`.
+Long-running calls (list/source refresh, storage test, starting a storage
+speed test, restore) already carry longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`.
 
 **Errors.** Every failure is an `ApiError { status, code, message, field? }`;
 `code` is one of `invalid not_found conflict forbidden unavailable unauthorized
@@ -156,6 +156,11 @@ overlapping) and aborts on destroy.
 const range = $derived(router.param('range') || '1h')
 const top = resource((signal) => api.stats.top('blocked', range, 10, { signal }), { interval: 30_000 })
 // top.data · top.error (ApiError) · top.loading · top.loaded · top.refresh() · top.set(value)
+
+// interval may be a function, asked before every wait: poll fast only while a job runs
+const bench: Resource<BenchmarkStatus> = resource((s) => api.storage.benchmarkState({ signal: s }), {
+  interval: () => (bench.data?.run?.state === 'running' ? 1_000 : 15_000),
+})
 ```
 
 `new Resource(loader, opts)` + `start()/stop()` for manual control;
