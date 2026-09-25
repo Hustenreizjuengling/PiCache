@@ -11,6 +11,7 @@ set -eu
 
 BIN=/usr/local/bin/picache
 UNIT_DIR=/usr/local/lib/systemd/system
+DOC_DIR=/usr/share/doc/picache
 CONF_DIR=/etc/picache
 ENV_FILE=$CONF_DIR/picache.env
 CRED_DIR=$CONF_DIR/credentials
@@ -23,7 +24,12 @@ MOUNT_ROOT=$DEFAULT_MOUNT_ROOT
 # Drop-in install.sh writes for the helper units when those paths differ.
 PATHS_DROPIN=50-picache-paths.conf
 SHARED_MOUNTS_UNIT=picache-shared-mounts.service
-UNIT_SRC=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/systemd
+DEPLOY_SRC=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+UNIT_SRC=$DEPLOY_SRC/systemd
+# License texts that go with every copy of the binary, taken from the source
+# tree that contains deploy/.
+DOC_SRC=$(dirname -- "$DEPLOY_SRC")
+DOC_FILES="LICENSE THIRD_PARTY_NOTICES.md"
 
 say() { printf '%s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
@@ -148,6 +154,29 @@ install_binary() {
 	esac
 	mv -f "$tmp" "$BIN"
 	say "installed $BIN: $out"
+}
+
+# install_docs copies the license texts to $DOC_DIR. A missing file is only
+# reported: PiCache runs without it. Symbolic links are not followed, so a
+# link in the source tree cannot turn another file into a world-readable copy.
+install_docs() {
+	absent=""
+	for f in $DOC_FILES; do
+		if [ -f "$DOC_SRC/$f" ] && [ ! -L "$DOC_SRC/$f" ]; then
+			install -d -m 0755 -o root -g root "$DOC_DIR"
+			install -m 0644 -o root -g root "$DOC_SRC/$f" "$DOC_DIR/$f"
+		else
+			absent="$absent $f"
+		fi
+	done
+	if [ -n "$absent" ]; then
+		warn "not found in $DOC_SRC:$absent
+Copies of PiCache must carry their license texts. Put LICENSE and
+THIRD_PARTY_NOTICES.md from the PiCache source tree next to deploy/ and run
+install.sh again; they are installed to $DOC_DIR."
+	else
+		say "installed the license texts to $DOC_DIR"
+	fi
 }
 
 env_template() {
@@ -445,6 +474,10 @@ do_uninstall() {
 		rmdir "/etc/systemd/system/$d" 2>/dev/null || true
 	done
 	rm -f "$HOST_APPLY_MARKER" "$BIN"
+	for f in $DOC_FILES; do
+		rm -f "$DOC_DIR/$f"
+	done
+	rmdir "$DOC_DIR" 2>/dev/null || true
 	systemctl daemon-reload
 	say "PiCache was stopped and removed. Kept, delete them yourself if no longer needed:"
 	say "  configuration   $CONF_DIR  (NAS credentials in $CRED_DIR)"
@@ -516,6 +549,7 @@ fi
 check_os
 ensure_user
 install_binary
+install_docs
 
 install -d -m 0750 -o root -g picache "$CONF_DIR"
 write_env_file

@@ -39,10 +39,13 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 COPY --from=web /src/internal/webui/dist/ internal/webui/dist/
+# Builds without build args (docker compose) still get a build date, which
+# the clock guard needs.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     set -eu; \
     if [ "$TARGETARCH" = "arm" ]; then export GOARM="${TARGETVARIANT#v}"; fi; \
+    if [ "$DATE" = unknown ]; then DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ); fi; \
     pkg=github.com/hustenreizjuengling/picache/internal/version; \
     GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
       -ldflags "-s -w -X $pkg.Version=$VERSION -X $pkg.Commit=$COMMIT -X $pkg.Date=$DATE" \
@@ -51,6 +54,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # owner and mode (PiCache never chowns). They are copied via their parent
 # directory because COPY of a directory itself does not keep its mode.
 RUN install -d -m 0750 /out/state/data /out/state/cache && install -d -m 0755 /out/srv/picache
+# License texts that go with every copy, for /usr/share/doc/picache (root,
+# world-readable). Modes are set here because COPY --chmod would also apply
+# the file mode to the directory it creates.
+COPY LICENSE THIRD_PARTY_NOTICES.md /tmp/doc/
+RUN install -d -m 0755 /out/doc/picache && install -m 0644 /tmp/doc/* /out/doc/picache/
 
 # ---- runtime: distroless static (CA certificates, tzdata, no shell) ----
 FROM gcr.io/distroless/static-debian13
@@ -59,6 +67,7 @@ ARG COMMIT=unknown
 ARG DATE=unknown
 LABEL org.opencontainers.image.title="PiCache" \
       org.opencontainers.image.description="Filtering DNS server and LanCache-compatible download cache with a web UI" \
+      org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="https://github.com/hustenreizjuengling/picache" \
       org.opencontainers.image.documentation="https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md" \
       org.opencontainers.image.version="$VERSION" \
@@ -67,6 +76,7 @@ LABEL org.opencontainers.image.title="PiCache" \
 COPY --from=build /out/picache /picache
 COPY --from=build --chown=65532:65532 /out/state/ /
 COPY --from=build /out/srv/ /srv/
+COPY --from=build /out/doc/ /usr/share/doc/
 ENV PICACHE_DATA_DIR=/data \
     PICACHE_CACHE_DIR=/cache \
     PICACHE_RUN_AS=65532:65532 \

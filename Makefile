@@ -42,6 +42,7 @@ build-all:
 	GOOS=linux GOARCH=amd64 $(GOBUILD) -o bin/picache-linux-amd64 ./cmd/picache
 	GOOS=linux GOARCH=arm64 $(GOBUILD) -o bin/picache-linux-arm64 ./cmd/picache
 	GOOS=linux GOARCH=arm GOARM=7 $(GOBUILD) -o bin/picache-linux-armv7 ./cmd/picache
+	cp LICENSE THIRD_PARTY_NOTICES.md bin/
 
 test:
 	$(GO) test ./...

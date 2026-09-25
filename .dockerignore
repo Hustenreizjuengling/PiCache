@@ -1,10 +1,13 @@
-# Allowlist: the image is built only from the Go module and the web sources.
+# Allowlist: the image is built only from the Go module and the web sources,
+# and carries the license texts.
 *
 !go.mod
 !go.sum
 !cmd/
 !internal/
 !web/
+!LICENSE
+!THIRD_PARTY_NOTICES.md
 
 # Built inside the image (web stage), never taken from the host.
 internal/webui/dist/*

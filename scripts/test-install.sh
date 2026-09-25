@@ -23,6 +23,8 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
 docker run --rm -i \
 	-v "$root/deploy:/src/deploy:ro" \
+	-v "$root/LICENSE:/src/LICENSE:ro" \
+	-v "$root/THIRD_PARTY_NOTICES.md:/src/THIRD_PARTY_NOTICES.md:ro" \
 	-v "$bin:/src/picache:ro" \
 	"$image" sh -s <<'EOF'
 set -eu
@@ -58,6 +60,8 @@ getent passwd picache >/dev/null || fail "user picache missing"
 check_mode /usr/local/bin/picache 755 root:root
 check_mode /etc/picache 750 root:picache
 check_mode /etc/picache/picache.env 640 root:picache
+check_mode /usr/share/doc/picache/LICENSE 644 root:root
+check_mode /usr/share/doc/picache/THIRD_PARTY_NOTICES.md 644 root:root
 check_mode /srv/picache 750 root:picache
 check_mode /usr/local/lib/systemd/system/picache.service 644 root:root
 grep -q '^enable picache.service' /tmp/systemctl.log || fail "service not enabled"
@@ -105,6 +109,7 @@ for u in picache.service picache-storage.service picache-storage.path; do
 	[ ! -e "/usr/local/lib/systemd/system/$u" ] || fail "$u left behind"
 done
 [ ! -e /etc/picache/host-apply.enabled ] || fail "host-apply marker left behind"
+[ ! -e /usr/share/doc/picache ] || fail "license texts left behind"
 [ -e /etc/picache/picache.env ] || fail "configuration was removed"
 echo "PASS"
 EOF
