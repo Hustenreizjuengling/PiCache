@@ -9,6 +9,8 @@
   import { api, resource } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatDateTime, formatDuration, formatNumber } from '$lib/format'
+  import { href } from '$lib/router.svelte'
+  import { appStatus } from '$lib/status.svelte'
   import { Icon, KeyValue, Notice, Panel, Skeleton, type KeyValueItem } from '$lib/ui'
   import RestartButton from './RestartButton.svelte'
   import ChecksPanel from './health/ChecksPanel.svelte'
@@ -26,8 +28,18 @@
     const i = info.data
     if (!i) return []
     const v = i.version
+    const upd = appStatus.update.data
     return [
       { label: t('system.health.about.version'), value: v.version, mono: true },
+      ...(upd?.updateAvailable && upd.latest && upd.status?.state !== 'running'
+        ? [
+            {
+              label: t('system.health.about.update'),
+              value: t('system.health.about.updateAvailable', { version: upd.latest.version }),
+              href: href('/system/updates'),
+            },
+          ]
+        : []),
       { label: t('system.health.about.commit'), value: v.commit, mono: true },
       { label: t('system.health.about.built'), value: buildDate(v.date) },
       { label: t('system.health.about.go'), value: v.goVersion, mono: true },

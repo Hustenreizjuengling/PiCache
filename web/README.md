@@ -28,7 +28,7 @@ src/shell/               pair strip, sidebar/drawer, top bar (status, blocking m
 src/pages/               Login, Setup, Overview (+ overview/, auth/) and the section pages
 src/pages/dns/**         DNS pages: query log, filtering, clients, local DNS, settings
 src/pages/cache/**       cache pages: downloads, library, services, storage, settings
-src/pages/system/**      system pages: account, tokens, audit log, backup, health
+src/pages/system/**      system pages: account, tokens, audit log, backup, health, updates
 src/lib/api/             typed REST client, polling, SSE
 src/lib/ui/              components (import from '$lib/ui')
 src/lib/*.ts             router, session, app status, settings forms, formatters, icons, theme, errors
@@ -50,10 +50,13 @@ Aliases: `$lib` = `src/lib`, `$i18n` = `src/i18n`.
   Keep the page file names, because `routes.ts` imports them:
   `dns/{QueryLog,Filtering,Clients,LocalDns,DnsSettings}.svelte`,
   `cache/{Downloads,Library,Services,Storage,CacheSettings}.svelte`,
-  `system/{Account,Tokens,Audit,Backup,Health}.svelte`.
+  `system/{Account,Tokens,Audit,Backup,Health,Updates}.svelte`.
 - **Never render HTML from data**: no `{@html}`, no `innerHTML`. No inline
   scripts, no `eval`, no external requests (CSP `script-src 'self'`,
   `connect-src 'self'`). Inline `style=` / `style:` is allowed.
+  Markdown from outside (GitHub release notes) goes through
+  `pages/system/updates/markdown.ts` + `ReleaseNotes.svelte`, which build
+  elements with text content only and link https URLs only.
 - The top bar already shows the page title as `<h1>`: pages start with
   content, section headings are `<h2>` (Panel titles).
 - Wrap the page in `<div class="page">` (vertical rhythm between panels).
@@ -101,7 +104,7 @@ support these query parameters):
 | `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here), `tab` (clients, seen, groups), `range` (24h, 7d, 30d; without it the range last chosen in this browser) |
 | `#/cache/downloads` | `client` (IP), `active=true`, `from` + `to` (unix seconds: an explicit time window instead of the range; shown as a removable chip) |
 | `#/cache/library`, `#/cache/storage`, `#/cache/settings` | – |
-| `#/system/health`, `#/system/account` | – |
+| `#/system/health`, `#/system/account`, `#/system/updates` | – |
 
 ## API layer (`$lib/api`)
 
@@ -116,7 +119,7 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 |---|---|
 | `api.auth` | `status() setup(b) login({username,password,totp?}) logout() me() changePassword({currentPassword,newPassword,keepTokens?}) sessions() revokeSession(id) totpBegin(currentPassword) totpConfirm(code) totpDisable(password)` |
 | `api.tokens` | `list() create({name,scope,expiresInDays?,currentPassword}) remove(id)` |
-| `api.system` | `info() health() overview() audit({search,limit,offset}) backupUrl(includeSecrets) restore(blob, password) restart()` |
+| `api.system` | `info() health() overview() audit({search,limit,offset}) backupUrl(includeSecrets) restore(blob, password) restart() update() checkUpdate() applyUpdate({version,currentPassword})` |
 | `api.settings` | `get() put(all) patch(section, partial) defaults()` |
 | `api.dns` | `blocking() setBlocking(enabled, pauseSeconds?) lookup(req) stats() cacheIps() router()`, `records.{list,create,update,remove}`, `forwarders.{list,create,update,remove}` |
 | `api.upstreams` | `get() test(upstream) flushCache()` |
@@ -160,6 +163,9 @@ const top = resource((signal) => api.stats.top('blocked', range, 10, { signal })
 10 s: `appStatus.overview.data` (`/system/overview`) and `appStatus.strip.data`
 (`/stats/summary?range=15m`) from `$lib/status.svelte`; call
 `appStatus.overview.refresh()` after changing blocking, LanCache or storage.
+`appStatus.update.data` (`/system/update`) is loaded once per page load and
+then hourly; it drives the "update available" dot on Updates in the
+navigation. The updates page puts its fresher answers into it (`set()`).
 
 **Cursor lists** (query log, cache requests, SNI events, evictions):
 
@@ -248,7 +254,7 @@ chevron-down chevron-up chevron-left chevron-right first check plus minus sun
 moon monitor globe logout pause play shield shield-check shield-off alert info
 error success copy external refresh trash edit pin download upload filter more
 sort arrow-up arrow-down overview list users user home sliders layers grid
-drive key lock document archive activity clock eye eye-off link power.
+drive key lock document archive activity clock eye eye-off link power update.
 
 CSS utilities (`app.css`): `.page`, `.stack`, `.stack-sm`, `.row`, `.spacer`,
 `.cols-2`, `.toolbar`, `.mono`, `.num`, `.muted`, `.subtle`, `.small`,

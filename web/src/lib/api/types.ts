@@ -153,6 +153,66 @@ export interface RestoreResult {
   message: string
 }
 
+/**
+ * How an update is installed (docs/ARCHITECTURE.md 14.4): `helper` = from the
+ * web UI through the root helper, `docker` = pull the new image, `manual` =
+ * `sudo picache update` on the host.
+ */
+export type UpdateMode = 'helper' | 'docker' | 'manual'
+
+/** State of the last update run (status.json of the root helper). */
+export type UpdateState = 'running' | 'succeeded' | 'failed' | 'rolled-back'
+
+/** Step of an update run, in this order; `rollback` only when the new version did not come up. */
+export type UpdateStep = 'download' | 'verify' | 'install' | 'restart' | 'health' | 'rollback' | 'done'
+
+/** The newest eligible release found by the last check. */
+export interface UpdateRelease {
+  version: string
+  publishedAt: Timestamp
+  /** Release page on GitHub. */
+  url: string
+  /** Release notes (Markdown, at most 64 KiB). Untrusted: rendered as text only. */
+  notes: string
+  prerelease: boolean
+}
+
+/** Progress or result of the last update run. */
+export interface UpdateRun {
+  state: UpdateState
+  step: UpdateStep
+  /** Target version. */
+  version: string
+  /** Version before the update. */
+  from: string
+  startedAt: Timestamp
+  finishedAt?: Timestamp
+  message?: string
+}
+
+/** GET /system/update, POST /system/update/check */
+export interface UpdateInfo {
+  current: VersionInfo
+  currentIsDevBuild: boolean
+  mode: UpdateMode
+  checkEnabled: boolean
+  includePrereleases: boolean
+  latest?: UpdateRelease
+  updateAvailable: boolean
+  /** Time of the last check (successful or not). */
+  checkedAt?: Timestamp
+  /** Why the last check failed (no network, private repository, …). */
+  checkError?: string
+  status?: UpdateRun
+  /** Commands shown for the modes `manual` (cli) and `docker`. */
+  commands: { cli: string; docker?: string }
+}
+
+/** POST /system/update/apply */
+export interface UpdateQueued {
+  queued: boolean
+}
+
 // ---------------------------------------------------------------- auth
 
 export type Scope = 'admin' | 'read'
@@ -313,6 +373,14 @@ export interface WebSettings {
   language: '' | 'en' | 'de'
 }
 
+/** settings.Updates */
+export interface UpdatesSettings {
+  /** Check GitHub for a new release every day. */
+  checkEnabled: boolean
+  /** Offer pre-releases (vX.Y.Z-rc.N) too. */
+  includePrereleases: boolean
+}
+
 /** settings.All */
 export interface Settings {
   dns: DnsSettings
@@ -321,6 +389,7 @@ export interface Settings {
   cache: CacheSettings
   logs: LogsSettings
   web: WebSettings
+  updates: UpdatesSettings
 }
 
 /** Sections accepted by PATCH /settings/{section}. */

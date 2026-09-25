@@ -28,6 +28,8 @@ export default {
   'nav.audit': 'Audit log',
   'nav.backup': 'Backup & restore',
   'nav.health': 'Health & about',
+  'nav.updates': 'Updates',
+  'nav.updateAvailable': 'Update available',
 
   // actions (buttons say what happens; pages add the object: "Add blocklist")
   'action.add': 'Add',

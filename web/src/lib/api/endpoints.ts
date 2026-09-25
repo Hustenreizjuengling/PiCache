@@ -63,6 +63,19 @@ const system = {
     }),
   /** 202; the process exits and systemd/Docker restarts it (poll /auth/status until it answers again). */
   restart: (o?: ReqOpts) => http.post<T.RestartResult>('/system/restart', undefined, o),
+  /** Running version, the last check result, the install mode and the progress of an update. */
+  update: (o?: ReqOpts) => http.get<T.UpdateInfo>('/system/update', o),
+  /** Checks GitHub now (at most once per 30 s; faster calls return the last result). */
+  checkUpdate: (o?: ReqOpts) =>
+    http.post<T.UpdateInfo>('/system/update/check', undefined, { ...o, timeoutMs: 60_000 }),
+  /**
+   * Queues the update to `version` (the available version of the last check)
+   * for the root helper. 400 with field "currentPassword" for a missing or
+   * wrong password; 409 when the mode is not `helper`, an update is running or
+   * the version is not the available one.
+   */
+  applyUpdate: (body: { version: string; currentPassword: string }, o?: ReqOpts) =>
+    http.post<T.UpdateQueued>('/system/update/apply', body, o),
 }
 
 // ---------------------------------------------------------------- settings

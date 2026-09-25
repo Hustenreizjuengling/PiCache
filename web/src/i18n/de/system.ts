@@ -1,5 +1,5 @@
 // System-Seiten: Konto & Sicherheit, API-Tokens, Audit-Log, Sicherung &
-// Wiederherstellung, Zustand & Info. Gleiche Schlüssel wie en/system.ts.
+// Wiederherstellung, Zustand & Info, Updates. Gleiche Schlüssel wie en/system.ts.
 
 import type en from '../en/system'
 import type { Messages } from '../types'
@@ -314,6 +314,8 @@ const de: Messages<typeof en> = {
   'health.about.uptime': 'Laufzeit',
   'health.about.instance': 'Instanz-ID',
   'health.about.restartHint': 'Änderungen an Listenern (PICACHE_*_LISTEN) brauchen einen Neustart.',
+  'health.about.update': 'Update',
+  'health.about.updateAvailable': '{version} verfügbar',
 
   'health.paths.title': 'Daten und Schlüssel',
   'health.paths.description': 'Wo PiCache seine Daten ablegt. Datenbanken müssen auf einer lokalen Platte liegen.',
@@ -359,6 +361,161 @@ const de: Messages<typeof en> = {
   'health.docs.security': 'Sicherheitsmodell',
   'health.docs.api': 'REST-API',
   'health.docs.issues': 'Problem melden',
+
+  // Updates
+  'updates.loadError': 'Der Update-Status konnte nicht geladen werden',
+  'updates.check': 'Jetzt prüfen',
+  'updates.checkedAt': 'Geprüft {time}',
+  'updates.checked.error': 'Die Suche nach Updates ist fehlgeschlagen',
+  'updates.checked.available': 'PiCache {version} ist verfügbar',
+  'updates.checked.upToDate': 'Geprüft: PiCache ist aktuell',
+
+  'updates.summary.installing': 'PiCache {version} wird installiert …',
+  'updates.summary.error': 'Die Suche nach Updates hat nicht geklappt',
+  'updates.summary.errorRetry': 'PiCache versucht es bei der nächsten täglichen Prüfung wieder.',
+  'updates.summary.available': 'PiCache {version} ist verfügbar',
+  'updates.summary.published': 'Veröffentlicht am {date}.',
+  'updates.summary.never': 'Noch nicht nach Updates gesucht',
+  'updates.summary.neverAuto':
+    'PiCache fragt einmal am Tag bei GitHub nach. Die erste Prüfung läuft einige Minuten nach dem Start.',
+  'updates.summary.neverOff':
+    'Die tägliche Prüfung ist aus. Mit „Jetzt prüfen“ suchst du nach einer neuen Version.',
+  'updates.summary.neverOffRead': 'Die tägliche Prüfung ist aus.',
+  'updates.summary.upToDate': 'PiCache ist aktuell',
+  'updates.summary.noRelease': 'Es wurde noch keine Version veröffentlicht.',
+  'updates.summary.newest': 'Du verwendest die neueste Version.',
+  'updates.summary.latestIs': 'Die neueste Version ist {version}.',
+
+  'updates.current.title': 'Installierte Version',
+  'updates.current.version': 'Version',
+  'updates.current.devBuild': 'Entwicklungsversion',
+  'updates.current.prerelease': 'Vorabversion',
+  'updates.current.commit': 'Commit',
+  'updates.current.built': 'Erstellt',
+  'updates.current.install': 'Update-Weg',
+  'updates.current.auto': 'Update-Prüfung',
+  'updates.current.autoOn': 'Täglich, stabile Versionen',
+  'updates.current.autoOnPre': 'Täglich, auch Vorabversionen',
+  'updates.current.autoOff': 'Aus',
+  'updates.current.lastRun': 'Letztes Update',
+  'updates.mode.helper': 'Auf dieser Seite (Update-Helfer)',
+  'updates.mode.docker': 'Neues Docker-Image',
+  'updates.mode.manual': 'Befehl auf dem Host',
+  'updates.runState.running': 'läuft',
+  'updates.runState.succeeded': 'installiert',
+  'updates.runState.failed': 'fehlgeschlagen',
+  'updates.runState.rolled-back': 'zurückgesetzt',
+
+  'updates.dev.title': 'Entwicklungsversion',
+  'updates.dev.base':
+    'Diese Version basiert auf {base}. Die Update-Prüfung vergleicht Releases mit {base}; die Entwicklungsversion gilt als neuer, deshalb werden nur spätere Versionen angeboten.',
+  'updates.dev.noBase': 'Diese Version hat keine Versionsnummer, deshalb gilt jede veröffentlichte Version als neuer.',
+  'updates.pre.title': 'Du verwendest eine Vorabversion',
+  'updates.pre.text':
+    'Angeboten werden nur stabile Versionen. Schalte „Vorabversionen einbeziehen“ ein, um auch den nächsten Release Candidate zu bekommen.',
+
+  'updates.release.title': 'Neu in {version}',
+  'updates.release.github': 'Release auf GitHub',
+  'updates.release.prerelease': 'Vorabversion',
+  'updates.notes.label': 'Versionshinweise zu {version}',
+  'updates.notes.none': 'Zu dieser Version gibt es keine Versionshinweise.',
+  'updates.notes.more': 'Mehr anzeigen',
+  'updates.notes.less': 'Weniger anzeigen',
+  'updates.notes.newTab': 'öffnet in einem neuen Tab',
+
+  'updates.how.helper':
+    'PiCache lädt die Version von GitHub herunter, prüft ihre Signatur, ersetzt das Programm und startet neu. Startet die neue Version nicht, kehrt PiCache von selbst zu {current} zurück.',
+  'updates.how.adminOnly': 'Nur ein Admin kann Updates installieren.',
+  'updates.how.docker':
+    'PiCache läuft in einem Docker-Container und kann sich nicht selbst ersetzen. Lade im Verzeichnis mit deiner compose.yaml das neue Image und erstelle den Container neu:',
+  'updates.how.dockerHint': 'Deine Daten bleiben im Volume. DNS und der Cache sind einige Sekunden lang nicht erreichbar.',
+  'updates.how.manual': 'Installiere sie auf dem PiCache-Host als root:',
+  'updates.how.manualHint':
+    'Der Befehl zeigt den Anfang der Versionshinweise und fragt vor dem Installieren nach. Er prüft die Signatur und kehrt zur aktuellen Version zurück, wenn die neue nicht startet.',
+  'updates.how.copy': 'Befehl kopieren',
+
+  'updates.install.button': 'Update installieren',
+  'updates.install.title': 'PiCache {version} installieren?',
+  'updates.install.text':
+    'PiCache lädt {version} von GitHub herunter, prüft die Signatur, ersetzt das Programm und startet neu. DNS, der Cache und diese Seite sind bis zu einer Minute lang nicht erreichbar. Startet die neue Version nicht, kehrt PiCache von selbst zu {current} zurück.',
+  'updates.install.password': 'Dein Passwort',
+  'updates.install.passwordHelp': 'Ein Update ersetzt das Programm, deshalb fragt PiCache noch einmal nach deinem Passwort.',
+  'updates.install.passwordRequired': 'Gib dein Passwort ein.',
+  'updates.install.confirm': 'Update installieren',
+  'updates.install.refused': 'Das Update wurde nicht gestartet',
+
+  'updates.last.failed': 'Das Update auf {version} ist fehlgeschlagen',
+  'updates.last.failedText': 'Details stehen im Protokoll des Update-Helfers: journalctl -u picache-update.',
+  'updates.last.rolledBack': 'Das Update auf {version} wurde zurückgesetzt',
+  'updates.last.rolledBackText':
+    'Die neue Version ist nicht gestartet, deshalb ist PiCache zur vorherigen Version und ihrer Konfiguration zurückgekehrt.',
+  'updates.last.when': 'Beendet {time}.',
+
+  'updates.progress.title': 'PiCache {version} wird installiert',
+  'updates.progress.titleDone': 'PiCache {version} installiert',
+  'updates.progress.titleFailed': 'Update auf {version} fehlgeschlagen',
+  'updates.progress.titleRolledBack': 'Update auf {version} zurückgesetzt',
+  'updates.progress.steps': 'Schritte des Updates',
+  'updates.progress.queued': 'Warte auf den Start des Update-Helfers …',
+  'updates.progress.queuedSlow':
+    'Das dauert länger als üblich. Der Helfer wird von systemd gestartet (picache-update.path).',
+  'updates.progress.keepOpen': 'Du kannst diese Seite verlassen: Das Update läuft auf dem Server weiter.',
+  'updates.progress.restarting': 'PiCache startet neu …',
+  'updates.progress.restartingText': 'DNS, der Cache und diese Seite sind gleich wieder da.',
+  'updates.progress.noAnswer': 'Seit {time} keine Antwort. Das dauert meist weniger als eine Minute.',
+  'updates.progress.doneTitle': 'PiCache {version} läuft',
+  'updates.progress.reloading.one': 'Die Seite wird in {count} Sekunde neu geladen, damit du die neue Version siehst.',
+  'updates.progress.reloading.other': 'Die Seite wird in {count} Sekunden neu geladen, damit du die neue Version siehst.',
+  'updates.progress.doneText': 'Das Update ist abgeschlossen.',
+  'updates.progress.reloadNow': 'Jetzt neu laden',
+  'updates.progress.failedTitle': 'Das Update ist fehlgeschlagen',
+  'updates.progress.failedRunning':
+    'PiCache läuft mit {version}. Details stehen im Protokoll des Update-Helfers: journalctl -u picache-update.',
+  'updates.progress.failedText': 'Details stehen im Protokoll des Update-Helfers: journalctl -u picache-update.',
+  'updates.progress.rolledBackTitle': 'PiCache ist zu {version} zurückgekehrt',
+  'updates.progress.rolledBackText':
+    'Die neue Version hat die Zustandsprüfung nicht bestanden, deshalb wurden das vorherige Programm und seine Konfiguration wiederhergestellt. Details stehen im Protokoll des Update-Helfers: journalctl -u picache-update.',
+  'updates.progress.timeoutTitle': 'PiCache ist noch nicht wieder da',
+  'updates.progress.timeoutText':
+    'Seit 3 Minuten kommt keine Antwort. Prüfe den Dienst auf dem Host: systemctl status picache, journalctl -u picache-update -u picache.',
+  'updates.progress.stalledTitle': 'Das Update hat nicht begonnen',
+  'updates.progress.stalledText':
+    'Der Update-Helfer hat die Anfrage seit 3 Minuten nicht übernommen. Prüfe, ob er installiert und aktiv ist: systemctl status picache-update.path.',
+  'updates.progress.keepWaiting': 'Weiter warten',
+
+  'updates.step.download': '{version} herunterladen',
+  'updates.step.verify': 'Signatur prüfen',
+  'updates.step.install': 'Programm ersetzen',
+  'updates.step.restart': 'PiCache neu starten',
+  'updates.step.health': 'Prüfen, ob die neue Version funktioniert',
+  'updates.step.rollback': 'Zu {from} zurückkehren',
+  'updates.step.done': 'Fertig',
+  'updates.stepNow.download': '{version} wird heruntergeladen …',
+  'updates.stepNow.verify': 'Signatur wird geprüft …',
+  'updates.stepNow.install': 'Programm wird ersetzt …',
+  'updates.stepNow.restart': 'PiCache startet neu …',
+  'updates.stepNow.health': 'Neue Version wird geprüft …',
+  'updates.stepNow.rollback': 'Rückkehr zu {from} …',
+  'updates.stepNow.done': 'Wird abgeschlossen …',
+  'updates.stepState.done': 'erledigt',
+  'updates.stepState.current': 'läuft',
+  'updates.stepState.pending': 'noch nicht begonnen',
+  'updates.stepState.failed': 'fehlgeschlagen',
+
+  'updates.settings.title': 'Update-Prüfung',
+  'updates.settings.description':
+    'PiCache sucht auf GitHub nur nach neuen Versionen. Installiert wird nichts, solange es kein Admin startet.',
+  'updates.settings.loadError': 'Die Update-Einstellungen konnten nicht geladen werden',
+  'updates.settings.check': 'Täglich nach Updates suchen',
+  'updates.settings.checkHelp':
+    'Fragt einmal am Tag bei GitHub nach einer neuen Version und markiert dann „Updates“ in der Navigation.',
+  'updates.settings.checkOn': 'Tägliche Update-Prüfung eingeschaltet',
+  'updates.settings.checkOff': 'Tägliche Update-Prüfung ausgeschaltet',
+  'updates.settings.pre': 'Vorabversionen einbeziehen',
+  'updates.settings.preHelp':
+    'Bietet auch Release Candidates an (zum Beispiel v1.4.0-rc.1), die weniger getestet sind. Gilt ab der nächsten Prüfung.',
+  'updates.settings.preOn': 'Ab der nächsten Prüfung werden auch Vorabversionen angeboten',
+  'updates.settings.preOff': 'Ab der nächsten Prüfung werden nur stabile Versionen angeboten',
 }
 
 export default de

@@ -48,6 +48,7 @@ export const routes: RouteDef[] = [
   { path: '/system/audit', section: 'system', title: 'common.nav.audit', icon: 'document', load: () => import('./pages/system/Audit.svelte') },
   { path: '/system/backup', section: 'system', title: 'common.nav.backup', icon: 'archive', load: () => import('./pages/system/Backup.svelte') },
   { path: '/system/health', section: 'system', title: 'common.nav.health', icon: 'activity', load: () => import('./pages/system/Health.svelte') },
+  { path: '/system/updates', section: 'system', title: 'common.nav.updates', icon: 'update', load: () => import('./pages/system/Updates.svelte') },
 ]
 
 /** Navigation groups in sidebar order. */

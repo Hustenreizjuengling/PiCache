@@ -1,5 +1,5 @@
 // System pages: account & security, API tokens, audit log, backup & restore,
-// health & about. Keys are prefixed by page or shared part.
+// health & about, updates. Keys are prefixed by page or shared part.
 
 export default {
   // shared form strings
@@ -302,6 +302,8 @@ export default {
   'health.about.uptime': 'Uptime',
   'health.about.instance': 'Instance ID',
   'health.about.restartHint': 'Listener changes (PICACHE_*_LISTEN) need a restart.',
+  'health.about.update': 'Update',
+  'health.about.updateAvailable': '{version} available',
 
   'health.paths.title': 'Data and keys',
   'health.paths.description': 'Where PiCache keeps its data. Databases must be on a local disk.',
@@ -346,4 +348,157 @@ export default {
   'health.docs.security': 'Security model',
   'health.docs.api': 'REST API',
   'health.docs.issues': 'Report a problem',
+
+  // updates
+  'updates.loadError': 'The update status could not be loaded',
+  'updates.check': 'Check now',
+  'updates.checkedAt': 'Checked {time}',
+  'updates.checked.error': 'The check for updates failed',
+  'updates.checked.available': 'PiCache {version} is available',
+  'updates.checked.upToDate': 'Checked: PiCache is up to date',
+
+  'updates.summary.installing': 'Installing PiCache {version}…',
+  'updates.summary.error': 'Could not check for updates',
+  'updates.summary.errorRetry': 'PiCache tries again with the next daily check.',
+  'updates.summary.available': 'PiCache {version} is available',
+  'updates.summary.published': 'Published on {date}.',
+  'updates.summary.never': 'Not checked for updates yet',
+  'updates.summary.neverAuto': 'PiCache asks GitHub once a day. The first check runs a few minutes after it starts.',
+  'updates.summary.neverOff': 'The daily check is off. Use “Check now” to look for a new version.',
+  'updates.summary.neverOffRead': 'The daily check is off.',
+  'updates.summary.upToDate': 'PiCache is up to date',
+  'updates.summary.noRelease': 'No release has been published yet.',
+  'updates.summary.newest': 'You are running the newest release.',
+  'updates.summary.latestIs': 'The newest release is {version}.',
+
+  'updates.current.title': 'Installed version',
+  'updates.current.version': 'Version',
+  'updates.current.devBuild': 'Development build',
+  'updates.current.prerelease': 'Pre-release',
+  'updates.current.commit': 'Commit',
+  'updates.current.built': 'Built',
+  'updates.current.install': 'Update method',
+  'updates.current.auto': 'Update check',
+  'updates.current.autoOn': 'Daily, stable releases',
+  'updates.current.autoOnPre': 'Daily, including pre-releases',
+  'updates.current.autoOff': 'Off',
+  'updates.current.lastRun': 'Last update',
+  'updates.mode.helper': 'From this page (update helper)',
+  'updates.mode.docker': 'New Docker image',
+  'updates.mode.manual': 'Command on the host',
+  'updates.runState.running': 'running',
+  'updates.runState.succeeded': 'installed',
+  'updates.runState.failed': 'failed',
+  'updates.runState.rolled-back': 'rolled back',
+
+  'updates.dev.title': 'Development build',
+  'updates.dev.base':
+    'This build is based on {base}. Update checks compare releases with {base}, and the build counts as newer than it, so only later releases are offered.',
+  'updates.dev.noBase': 'This build has no release version, so every release counts as newer.',
+  'updates.pre.title': 'You are running a pre-release',
+  'updates.pre.text':
+    'Only stable releases are offered. Turn on “Include pre-releases” to get the next release candidate as well.',
+
+  'updates.release.title': 'What’s new in {version}',
+  'updates.release.github': 'Release on GitHub',
+  'updates.release.prerelease': 'Pre-release',
+  'updates.notes.label': 'Release notes of {version}',
+  'updates.notes.none': 'This release has no release notes.',
+  'updates.notes.more': 'Show more',
+  'updates.notes.less': 'Show less',
+  'updates.notes.newTab': 'opens in a new tab',
+
+  'updates.how.helper':
+    'PiCache downloads the release from GitHub, checks its signature, replaces the program and restarts. If the new version does not start, it goes back to {current} by itself.',
+  'updates.how.adminOnly': 'Only an admin can install updates.',
+  'updates.how.docker':
+    'PiCache runs in a Docker container and cannot replace itself. In the directory with your compose.yaml, pull the new image and recreate the container:',
+  'updates.how.dockerHint': 'Your data stays in its volume. DNS and the cache are unavailable for a few seconds.',
+  'updates.how.manual': 'Install it on the PiCache host as root:',
+  'updates.how.manualHint':
+    'The command shows the start of the release notes and asks before it installs. It checks the signature and goes back to the current version if the new one does not start.',
+  'updates.how.copy': 'Copy command',
+
+  'updates.install.button': 'Install update',
+  'updates.install.title': 'Install PiCache {version}?',
+  'updates.install.text':
+    'PiCache downloads {version} from GitHub, checks its signature, replaces the program and restarts. DNS, the cache and this page are unavailable for up to a minute. If the new version does not start, PiCache goes back to {current} by itself.',
+  'updates.install.password': 'Your password',
+  'updates.install.passwordHelp': 'Installing an update replaces the program, so PiCache asks for your password again.',
+  'updates.install.passwordRequired': 'Enter your password.',
+  'updates.install.confirm': 'Install update',
+  'updates.install.refused': 'The update was not started',
+
+  'updates.last.failed': 'The update to {version} failed',
+  'updates.last.failedText': 'The log of the update helper has the details: journalctl -u picache-update.',
+  'updates.last.rolledBack': 'The update to {version} was rolled back',
+  'updates.last.rolledBackText':
+    'The new version did not start, so PiCache went back to the previous version and its configuration.',
+  'updates.last.when': 'Finished {time}.',
+
+  'updates.progress.title': 'Installing PiCache {version}',
+  'updates.progress.titleDone': 'PiCache {version} installed',
+  'updates.progress.titleFailed': 'Update to {version} failed',
+  'updates.progress.titleRolledBack': 'Update to {version} rolled back',
+  'updates.progress.steps': 'Update steps',
+  'updates.progress.queued': 'Waiting for the update helper to start…',
+  'updates.progress.queuedSlow':
+    'This takes longer than usual. The helper is started by systemd (picache-update.path).',
+  'updates.progress.keepOpen': 'You can leave this page: the update continues on the server.',
+  'updates.progress.restarting': 'Restarting PiCache…',
+  'updates.progress.restartingText': 'DNS, the cache and this page are back in a moment.',
+  'updates.progress.noAnswer': 'No answer for {time}. This usually takes less than a minute.',
+  'updates.progress.doneTitle': 'PiCache {version} is running',
+  'updates.progress.reloading.one': 'This page reloads in {count} second to show the new version.',
+  'updates.progress.reloading.other': 'This page reloads in {count} seconds to show the new version.',
+  'updates.progress.doneText': 'The update is complete.',
+  'updates.progress.reloadNow': 'Reload now',
+  'updates.progress.failedTitle': 'The update failed',
+  'updates.progress.failedRunning':
+    'PiCache is running {version}. The log of the update helper has the details: journalctl -u picache-update.',
+  'updates.progress.failedText': 'The log of the update helper has the details: journalctl -u picache-update.',
+  'updates.progress.rolledBackTitle': 'PiCache went back to {version}',
+  'updates.progress.rolledBackText':
+    'The new version did not pass the health check, so the previous program and its configuration were restored. The log of the update helper has the details: journalctl -u picache-update.',
+  'updates.progress.timeoutTitle': 'PiCache has not come back yet',
+  'updates.progress.timeoutText':
+    'It has not answered for 3 minutes. Check the service on the host: systemctl status picache, journalctl -u picache-update -u picache.',
+  'updates.progress.stalledTitle': 'The update has not started',
+  'updates.progress.stalledText':
+    'The update helper has not picked up the request for 3 minutes. Check that it is installed and active: systemctl status picache-update.path.',
+  'updates.progress.keepWaiting': 'Keep waiting',
+
+  'updates.step.download': 'Download {version}',
+  'updates.step.verify': 'Check the signature',
+  'updates.step.install': 'Replace the program',
+  'updates.step.restart': 'Restart PiCache',
+  'updates.step.health': 'Check that the new version works',
+  'updates.step.rollback': 'Go back to {from}',
+  'updates.step.done': 'Done',
+  'updates.stepNow.download': 'Downloading {version}…',
+  'updates.stepNow.verify': 'Checking the signature…',
+  'updates.stepNow.install': 'Replacing the program…',
+  'updates.stepNow.restart': 'Restarting PiCache…',
+  'updates.stepNow.health': 'Checking that the new version works…',
+  'updates.stepNow.rollback': 'Going back to {from}…',
+  'updates.stepNow.done': 'Finishing…',
+  'updates.stepState.done': 'done',
+  'updates.stepState.current': 'in progress',
+  'updates.stepState.pending': 'not started',
+  'updates.stepState.failed': 'failed',
+
+  'updates.settings.title': 'Update check',
+  'updates.settings.description':
+    'PiCache only looks for new releases on GitHub. It never installs anything unless an admin starts it.',
+  'updates.settings.loadError': 'The update settings could not be loaded',
+  'updates.settings.check': 'Check for updates daily',
+  'updates.settings.checkHelp':
+    'Asks GitHub once a day whether a new release is out and marks “Updates” in the navigation when there is one.',
+  'updates.settings.checkOn': 'Daily update check turned on',
+  'updates.settings.checkOff': 'Daily update check turned off',
+  'updates.settings.pre': 'Include pre-releases',
+  'updates.settings.preHelp':
+    'Also offer release candidates (for example v1.4.0-rc.1), which are tested less. Applies from the next check.',
+  'updates.settings.preOn': 'Pre-releases are offered from the next check',
+  'updates.settings.preOff': 'Only stable releases are offered from the next check',
 }
