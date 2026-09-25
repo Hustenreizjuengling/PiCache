@@ -29,6 +29,7 @@ const de: Messages<typeof en> = {
   'nav.audit': 'Änderungsprotokoll',
   'nav.backup': 'Sicherung & Wiederherstellung',
   'nav.health': 'Zustand & Info',
+  'nav.notifications': 'Benachrichtigungen',
   'nav.updates': 'Updates',
   'nav.updateAvailable': 'Update verfügbar',
 

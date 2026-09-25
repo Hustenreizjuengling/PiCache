@@ -1,7 +1,8 @@
 <!--
   @component
   Backup & restore: download the configuration database, restore one
-  (staged, applied by a restart) and the log retention and privacy settings.
+  (staged, applied by a restart), scheduled backups (settings, state, "Back
+  up now", stored files) and the log retention and privacy settings.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -11,6 +12,7 @@
   import BackupPanel from './backup/BackupPanel.svelte'
   import LogSettingsPanel from './backup/LogSettingsPanel.svelte'
   import RestorePanel from './backup/RestorePanel.svelte'
+  import Scheduled from './backup/Scheduled.svelte'
 
   const info = resource((signal) => api.system.info({ signal }))
 </script>
@@ -24,6 +26,8 @@
     <BackupPanel info={info.data} />
     <RestorePanel />
   </div>
+
+  <Scheduled info={info.data} />
 
   <LogSettingsPanel />
 </div>

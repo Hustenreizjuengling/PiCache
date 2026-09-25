@@ -273,6 +273,63 @@ func TestLoginThrottle(t *testing.T) {
 	}
 }
 
+// New lockouts are reported once each (security.lockout notification),
+// with the client but never the username.
+func TestLockoutCallback(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	var got []Lockout
+	e.a.OnLockout(func(l Lockout) { got = append(got, l) })
+	for range maxFailures {
+		_, err := e.a.Login(ctx, "admin", "wrong password", "", meta)
+		wantKind(t, err, apperr.KindUnauthorized)
+	}
+	// Further attempts are refused while locked and report nothing new.
+	for range 3 {
+		_, err := e.a.Login(ctx, "admin", "wrong password", "", meta)
+		wantKind(t, err, apperr.KindTooMany)
+	}
+	if len(got) != 2 {
+		t.Fatalf("lockouts %+v", got)
+	}
+	byKind := map[string]Lockout{}
+	for _, l := range got {
+		byKind[l.Kind] = l
+	}
+	if c := byKind[LockoutClient]; c.Client != "192.168.1.10/32" || c.For != lockoutDuration {
+		t.Fatalf("client lockout %+v", c)
+	}
+	if u := byKind[LockoutUsername]; u.Client != "192.168.1.10/32" || u.For != userDelayBase {
+		t.Fatalf("username delay %+v", u)
+	}
+	// After the lockout (and 15 minutes without failures for the
+	// username), the next five failures start both again.
+	e.clock.Advance(lockoutDuration)
+	for range maxFailures {
+		e.clock.Advance(userDelayMax)
+		_, _ = e.a.Login(ctx, "admin", "wrong password", "", meta)
+	}
+	if len(got) != 4 || got[2].Kind != LockoutClient || got[3].Kind != LockoutUsername {
+		t.Fatalf("second lockout %+v", got)
+	}
+
+	// Password confirmations of a session lock the session and the client.
+	e.clock.Advance(lockoutDuration)
+	s := e.login(t)
+	p := &Principal{UserID: 1, Username: "admin", SessionID: s.ID, Scope: ScopeAdmin, IP: "192.168.1.77"}
+	for range maxFailures {
+		_ = e.a.ConfirmPassword(ctx, p, "wrong password")
+	}
+	kinds := map[string]string{}
+	for _, l := range got[4:] {
+		kinds[l.Kind] = l.Client
+	}
+	if len(got) != 6 || kinds[LockoutSession] != "192.168.1.77/32" || kinds[LockoutClient] != "192.168.1.77/32" {
+		t.Fatalf("session lockout %+v", got[4:])
+	}
+}
+
 // SEC-05: failed sign-ins for a username from other LAN hosts slow sign-ins
 // for that username down, but never lock the owner out: the delay starts at
 // 1 s, is capped at 30 s and ends with a successful sign-in.

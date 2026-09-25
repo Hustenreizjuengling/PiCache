@@ -129,6 +129,10 @@ func (a *All) normalize() {
 	l.DisabledServices = clean(l.DisabledServices, true)
 	l.NocacheClients = clean(l.NocacheClients, true)
 	a.Web.AllowedHosts = clean(a.Web.AllowedHosts, true)
+	b := &a.Backups
+	b.Schedule = strings.ToLower(strings.TrimSpace(b.Schedule))
+	b.Time = strings.TrimSpace(b.Time)
+	b.Destination = strings.ToLower(strings.TrimSpace(b.Destination))
 }
 
 // Validate checks all sections and returns an apperr.Invalid error naming
@@ -352,7 +356,44 @@ func (a *All) Validate() error {
 		return apperr.Invalid("web.language", "must be empty, en or de")
 	}
 	// updates: two switches, any combination is valid.
+
+	b := a.Backups
+	switch b.Schedule {
+	case "daily", "weekly":
+	default:
+		return apperr.Invalid("backups.schedule", "must be daily or weekly")
+	}
+	if _, _, ok := ParseClock(b.Time); !ok {
+		return apperr.Invalid("backups.time", "must be a time of day as HH:MM (00:00 to 23:59)")
+	}
+	if b.Weekday < 0 || b.Weekday > 6 {
+		return apperr.Invalid("backups.weekday", "must be between 0 (Sunday) and 6 (Saturday)")
+	}
+	if b.Keep < 1 || b.Keep > 90 {
+		return apperr.Invalid("backups.keep", "must be between 1 and 90")
+	}
+	if b.Destination != BackupsLocal && !targetIDRE.MatchString(b.Destination) {
+		return apperr.Invalid("backups.destination", "must be local or the id of a storage target")
+	}
 	return nil
+}
+
+// targetIDRE matches storage target ids other than the built-in one
+// (storage.ValidTargetID; settings cannot import storage).
+var targetIDRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// ParseClock parses a time of day "HH:MM" (two digits each, 00:00–23:59).
+func ParseClock(s string) (hour, minute int, ok bool) {
+	if len(s) != 5 || s[2] != ':' {
+		return 0, 0, false
+	}
+	for _, i := range []int{0, 1, 3, 4} {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, 0, false
+		}
+	}
+	hour, minute = int(s[0]-'0')*10+int(s[1]-'0'), int(s[3]-'0')*10+int(s[4]-'0')
+	return hour, minute, hour <= 23 && minute <= 59
 }
 
 func validPrefixes(field string, in []string) error {

@@ -32,14 +32,35 @@ func (a *App) kickStore() {
 func (a *App) storeLoop(ctx context.Context) {
 	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
+	var watch storeWatch
 	for {
 		a.reconcileStore(ctx)
+		a.watchStore(ctx, &watch, time.Now())
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		case <-a.storeKick:
 		}
+	}
+}
+
+// watchStore raises storage.offline when the active store has been offline
+// for 2 minutes and storage.online when it is back (events.go). It watches
+// only while the download cache is enabled: otherwise nothing uses the
+// store.
+func (a *App) watchStore(ctx context.Context, w *storeWatch, now time.Time) {
+	if !a.set.Get().DownloadCache.Enabled {
+		*w = storeWatch{}
+		return
+	}
+	st := a.StoreState()
+	name := st.TargetID
+	if t, err := a.storage.Target(ctx, st.TargetID); err == nil {
+		name = t.Name
+	}
+	if m, ok := w.observe(st.Online, name, st.Reason, now); ok {
+		a.notify.Emit(m)
 	}
 }
 

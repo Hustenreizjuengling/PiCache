@@ -104,6 +104,9 @@ func (s *Server) storageDelete(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if id != storage.LocalTargetID && id == s.d.Settings.Get().Backups.Destination {
+		return apperr.Conflict("scheduled backups are written to this storage target; choose another backup destination first")
+	}
 	if err := s.d.Storage.Delete(r.Context(), id, s.storageActiveID()); err != nil {
 		return err
 	}

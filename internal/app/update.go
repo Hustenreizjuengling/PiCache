@@ -14,6 +14,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/notify"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/update"
 )
@@ -21,6 +22,8 @@ import (
 // Release check schedule (docs/ARCHITECTURE.md 14.3).
 const (
 	updateCheckKey   = "update.last_check" // app_meta key of the last result
+	updateNotifyKey  = "update.notified"   // app_meta key: versions and runs already notified
+	runPollInterval  = time.Minute         // how often the state of an update run is read
 	firstCheckDelay  = 5 * time.Minute
 	checkInterval    = 24 * time.Hour
 	checkJitter      = 30 * time.Minute
@@ -39,6 +42,7 @@ type updater struct {
 	mode  func() string
 	check func(ctx context.Context, includePre bool) (*update.Release, error)
 	now   func() time.Time
+	emit  func(notify.Message) // nil: no notifications
 
 	checkMu sync.Mutex // one check at a time
 	queueMu sync.Mutex // one queue decision at a time
@@ -46,7 +50,15 @@ type updater struct {
 	last    update.CheckResult
 	lastTry time.Time // start of the last check (the 30 s floor)
 	lastErr string    // last logged check error (logged when it changes)
+	seen    updateSeen
 	kick    chan struct{}
+}
+
+// updateSeen is what the update notifications have reported (app_meta
+// update.notified), so that a restart does not report it again.
+type updateSeen struct {
+	Available string `json:"available,omitempty"` // version reported as available
+	Run       string `json:"run,omitempty"`       // startedAt of the last finished run seen
 }
 
 func newUpdater(dataDir, current string, cdb *db.DB, set *settings.Store, mode func() string,
@@ -72,17 +84,23 @@ func updateMode(container string, systemdService, marker bool) string {
 // sets INVOCATION_ID for every service it runs).
 func runsAsSystemdService(systemd bool) bool { return systemd && os.Getenv("INVOCATION_ID") != "" }
 
-// load reads the last check result from app_meta, so it survives restarts.
+// load reads the last check result and what was notified from app_meta,
+// so they survive restarts.
 func (u *updater) load(ctx context.Context) {
 	if u.cdb == nil {
 		return
 	}
-	var doc string
-	err := u.cdb.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = ?`, updateCheckKey).Scan(&doc)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			u.log.Debug("no stored update check result", slog.Any("err", err))
+	var seen updateSeen
+	if doc, ok := u.loadMeta(ctx, updateNotifyKey); ok {
+		if err := json.Unmarshal([]byte(doc), &seen); err != nil {
+			u.log.Warn("ignoring the stored update notification state", slog.Any("err", err))
 		}
+	}
+	u.mu.Lock()
+	u.seen = seen
+	u.mu.Unlock()
+	doc, ok := u.loadMeta(ctx, updateCheckKey)
+	if !ok {
 		return
 	}
 	var res update.CheckResult
@@ -95,29 +113,54 @@ func (u *updater) load(ctx context.Context) {
 	u.mu.Unlock()
 }
 
+// loadMeta reads an app_meta value.
+func (u *updater) loadMeta(ctx context.Context, key string) (string, bool) {
+	var doc string
+	err := u.cdb.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = ?`, key).Scan(&doc)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			u.log.Debug("cannot read stored update state", slog.String("key", key), slog.Any("err", err))
+		}
+		return "", false
+	}
+	return doc, true
+}
+
 func (u *updater) save(ctx context.Context, res update.CheckResult) {
+	u.saveMeta(ctx, updateCheckKey, res)
+}
+
+// saveMeta stores v as JSON in app_meta (not persisted without a database).
+func (u *updater) saveMeta(ctx context.Context, key string, v any) {
 	if u.cdb == nil {
 		return
 	}
-	b, err := json.Marshal(res)
+	b, err := json.Marshal(v)
 	if err == nil {
-		_, err = u.cdb.W.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES (?, ?)
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, updateCheckKey, string(b))
+		_, err = u.cdb.W.ExecContext(context.WithoutCancel(ctx), `INSERT INTO app_meta (key, value) VALUES (?, ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, string(b))
 	}
 	if err != nil {
-		u.log.Warn("cannot store the update check result", slog.Any("err", err))
+		u.log.Warn("cannot store update state", slog.String("key", key), slog.Any("err", err))
 	}
 }
 
 // run checks 5 minutes after the start and then every 24 h (±30 min) while
-// checks are enabled; a changed updates setting checks at once.
+// checks are enabled; a changed updates setting checks at once. It reads
+// the state of update runs at the start and every minute (watchRun).
 func (u *updater) run(ctx context.Context) {
 	t := time.NewTimer(firstCheckDelay)
 	defer t.Stop()
+	poll := time.NewTicker(runPollInterval)
+	defer poll.Stop()
+	u.watchRun(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-poll.C:
+			u.watchRun(ctx)
+			continue
 		case <-u.kick:
 			if u.set.Get().Updates.CheckEnabled {
 				u.checkNow(ctx)
@@ -183,7 +226,74 @@ func (u *updater) checkNow(ctx context.Context) update.CheckResult {
 				slog.String("running", u.current), slog.String("url", o.Latest.URL))
 		}
 	}
+	if err == nil {
+		u.notifyAvailable(ctx, u.overview(res))
+	}
 	return res
+}
+
+// notifyAvailable sends update.available once per version.
+func (u *updater) notifyAvailable(ctx context.Context, o update.Overview) {
+	if !o.UpdateAvailable || o.Latest == nil {
+		return
+	}
+	u.mu.Lock()
+	known := u.seen.Available == o.Latest.Version
+	u.seen.Available = o.Latest.Version
+	seen := u.seen
+	u.mu.Unlock()
+	if known {
+		return
+	}
+	u.saveMeta(ctx, updateNotifyKey, seen)
+	u.notify(notify.Message{Event: notify.EventUpdateAvailable, Title: "PiCache " + o.Latest.Version + " is available",
+		Message: fmt.Sprintf("PiCache %s is available (running %s). Release notes: %s\nInstall it under System → Updates.",
+			o.Latest.Version, u.current, o.Latest.URL)})
+}
+
+// watchRun reports a finished update run once: update.installed when it
+// succeeded and this process runs the new version (the helper restarted
+// it), update.failed when it failed or was rolled back. A run is known by
+// its start time; the first run seen after an upgrade to a version with
+// notifications is reported too (there are no channels yet then).
+func (u *updater) watchRun(ctx context.Context) {
+	st := update.ReadStatus(u.dataDir, u.current, u.now())
+	if st == nil || st.State == update.StateRunning {
+		return
+	}
+	key := st.StartedAt.UTC().Format(time.RFC3339Nano)
+	u.mu.Lock()
+	known := u.seen.Run == key
+	u.seen.Run = key
+	seen := u.seen
+	u.mu.Unlock()
+	if known {
+		return
+	}
+	u.saveMeta(ctx, updateNotifyKey, seen)
+	switch st.State {
+	case update.StateSucceeded:
+		if st.Version == u.current {
+			u.notify(notify.Message{Event: notify.EventUpdateInstalled, Title: "PiCache " + st.Version + " installed",
+				Message: fmt.Sprintf("The update from %s to %s finished successfully.", st.From, st.Version)})
+		}
+	case update.StateFailed, update.StateRolledBack:
+		title, what := "Update to "+st.Version+" failed", "failed"
+		if st.State == update.StateRolledBack {
+			title, what = "Update to "+st.Version+" rolled back", "was rolled back; "+st.From+" runs again"
+		}
+		msg := fmt.Sprintf("The update from %s to %s %s (step %s).", st.From, st.Version, what, st.Step)
+		if st.Message != "" {
+			msg += "\n" + st.Message
+		}
+		u.notify(notify.Message{Event: notify.EventUpdateFailed, Title: title, Message: msg})
+	}
+}
+
+func (u *updater) notify(m notify.Message) {
+	if u.emit != nil {
+		u.emit(m)
+	}
 }
 
 func (u *updater) overview(last update.CheckResult) update.Overview {

@@ -381,6 +381,25 @@ export interface UpdatesSettings {
   includePrereleases: boolean
 }
 
+/** How often scheduled backups run. */
+export type BackupSchedule = 'daily' | 'weekly'
+
+/** settings.Backups (scheduled backups) */
+export interface BackupsSettings {
+  enabled: boolean
+  schedule: BackupSchedule
+  /** "HH:MM", local time of the host. */
+  time: string
+  /** Weekly only: 0 = Sunday … 6 = Saturday. */
+  weekday: number
+  /** Scheduled backups kept (1–90); older ones are deleted after a successful run. */
+  keep: number
+  /** "local" (`<data>/backups/scheduled/`) or a storage target id (`<store root>/picache-backups/`). */
+  destination: string
+  /** Keep the sealed NAS and notification secrets (useless without the master key). */
+  includeSecrets: boolean
+}
+
 /** settings.All */
 export interface Settings {
   dns: DnsSettings
@@ -390,6 +409,7 @@ export interface Settings {
   logs: LogsSettings
   web: WebSettings
   updates: UpdatesSettings
+  backups: BackupsSettings
 }
 
 /** Sections accepted by PATCH /settings/{section}. */
@@ -1153,6 +1173,115 @@ export interface BenchmarkStatus {
   run?: BenchmarkRun
   /** The last completed result per target id. */
   last: Record<string, BenchmarkResult>
+}
+
+// ---------------------------------------------------------------- notifications
+
+/** Delivery format of a notification channel. */
+export type NotifyKind = 'webhook' | 'ntfy' | 'gotify'
+
+/** Severity of an event; a channel gets events at or above its minimum. */
+export type NotifySeverity = 'info' | 'warning' | 'error'
+
+/** notify.Channel (the secret is never returned) */
+export interface NotifyChannel {
+  /** 32 hex characters. */
+  id: string
+  name: string
+  kind: NotifyKind
+  /** http(s) URL; may contain a query string (shown without it). */
+  url: string
+  /** A secret is stored (webhook: Authorization header, ntfy: access token, gotify: app token). */
+  hasSecret: boolean
+  enabled: boolean
+  minSeverity: NotifySeverity
+  /** Event keys; empty = all events. */
+  events: string[]
+  createdAt: Timestamp
+  updatedAt: Timestamp
+}
+
+/** notify.ChannelInput: secret undefined (absent) = keep, "" = remove, a value = replace. */
+export interface NotifyChannelInput {
+  name: string
+  kind: NotifyKind
+  url: string
+  secret?: string | null
+  enabled: boolean
+  minSeverity: NotifySeverity
+  events: string[]
+}
+
+/** POST /notifications/channels/{id}/test (sent once, synchronously, 10 s timeout) */
+export interface NotifyTestResult {
+  ok: boolean
+  error?: string
+  /** HTTP status of the receiver, if it answered. */
+  status?: number
+  durationMs: number
+}
+
+/** GET /notifications/events: an event PiCache can notify about. */
+export interface NotifyEvent {
+  key: string
+  /** Default severity. */
+  severity: NotifySeverity
+  title: string
+  description: string
+}
+
+/** GET /notifications/log: one delivery attempt (in memory, the last 200). */
+export interface NotifyDelivery {
+  time: Timestamp
+  channelId: string
+  channelName: string
+  event: string
+  severity: NotifySeverity
+  title: string
+  ok: boolean
+  error?: string
+  /** 1..3 */
+  attempt: number
+}
+
+// ---------------------------------------------------------------- scheduled backups
+
+/** The last scheduled (or "run now") backup. */
+export interface ScheduledBackupRun {
+  time: Timestamp
+  ok: boolean
+  error?: string
+  /** File name (picache-backup-<instanceId>-<YYYYMMDDTHHMMSSZ>.db). */
+  file?: string
+  sizeBytes?: number
+  /** "local" or a storage target id. */
+  destination: string
+}
+
+/** A stored scheduled backup in the current destination. */
+export interface ScheduledBackupFile {
+  name: string
+  sizeBytes: number
+  time: Timestamp
+}
+
+/** GET /system/backups/scheduled */
+export interface ScheduledBackups {
+  /** The `backups` settings section, as in /settings. */
+  settings: BackupsSettings
+  last?: ScheduledBackupRun
+  /** Next scheduled run (absent while scheduled backups are off). */
+  next?: Timestamp
+  /** A backup is being written right now (scheduled or started by hand). */
+  running: boolean
+  /** Abbreviation of the host time zone that settings.time refers to ("CEST", "UTC"). */
+  timeZone?: string
+  /** Directory of the current destination as PiCache sees it ("" when the storage target is unknown). */
+  destinationPath?: string
+  /** Why `files` is empty although there may be backups (e.g. the storage target is offline). */
+  filesError?: string
+  /** Newest first, of the current destination. */
+  files: ScheduledBackupFile[]
 }
 
 // ---------------------------------------------------------------- logs / stats

@@ -10,12 +10,17 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/api"
 )
 
-// healthLoop evaluates health every 60 s and logs every status change once.
+// healthLoop evaluates health every 60 s, logs every status change once and
+// raises the health.* notifications (debounced, events.go).
 func (a *App) healthLoop(ctx context.Context) {
 	prev := map[string]string{}
+	var watch healthWatch
 	eval := func() {
 		h := a.evalHealth(ctx)
 		a.health.Store(&h)
+		for _, m := range watch.observe(h.Checks) {
+			a.notify.Emit(m)
+		}
 		for _, c := range h.Checks {
 			old, seen := prev[c.Name]
 			if seen && old == c.Status {

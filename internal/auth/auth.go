@@ -169,9 +169,10 @@ type Service struct {
 	box *secrets.Box
 	log *slog.Logger
 
-	now      func() time.Time // clock (tests replace it)
-	hashSem  chan struct{}    // bounds concurrent argon2id computations
-	throttle *throttle
+	now       func() time.Time // clock (tests replace it)
+	hashSem   chan struct{}    // bounds concurrent argon2id computations
+	throttle  *throttle
+	onLockout atomic.Pointer[func(Lockout)] // new lockouts (OnLockout)
 
 	setupFile  string
 	setupMu    sync.Mutex

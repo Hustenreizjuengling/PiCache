@@ -67,6 +67,8 @@ services:
       #   bind:
       #     propagation: rslave
     # environment:
+    #   # Time zone for the time of scheduled backups (default UTC).
+    #   TZ: "Europe/Berlin"
     #   # Extra host names for the web UI (DNS-rebinding protection); IP
     #   # addresses and localhost always work.
     #   PICACHE_WEB_HOSTS: "picache.lan"

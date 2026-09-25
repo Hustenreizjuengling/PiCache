@@ -52,7 +52,9 @@ fixes; please test against it or a current build of `main`.
 | Malicious backup upload | A restore needs an interactive session and the current password. Uploads with triggers, views, virtual tables, generated columns, tables or indexes the running PiCache does not have, indexes defined differently from the running PiCache's (including named indexes disguised as automatic ones), or altered account tables are refused, at upload and again at the next start. The restore keeps the accounts, API tokens and audit log of the running instance and ends all sessions. Every database connection runs with `trusted_schema` off. PiCache creates no triggers or views: any found in `picache.db` (e.g. planted through a restore by an older version) are removed at start with a warning, by `picache reset-password`, and from every backup copy; revoking sessions or tokens and scrubbing a backup verify that the rows are really gone. |
 | DNS rebinding against the UI | Host allowlist (IP addresses, localhost, this machine's names, configured hosts); other hosts get 421. |
 | XSS, clickjacking | Strict Content-Security-Policy, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`. The UI never renders HTML from data. |
-| Secret leakage | NAS passwords and TOTP secrets are sealed (XChaCha20-Poly1305) with a master key that is never part of a backup. Secrets are write-only in the API and redacted in logs, snippets and the audit log. Only the root helper decrypts NAS passwords. CDN query strings are never logged or stored. |
+| Secret leakage | NAS passwords, notification secrets and TOTP secrets are sealed (XChaCha20-Poly1305) with a master key that is never part of a backup. Secrets are write-only in the API and redacted in logs, snippets, notifications and the audit log. Only the root helper decrypts NAS passwords. CDN query strings are never logged or stored. |
+| Outbound notifications | Only admins configure channels. PiCache sends only to the URLs they entered (http or https, no redirects, no proxy, verified TLS, 10 s), and never to link-local (cloud metadata), multicast or unspecified addresses. Private and loopback addresses are allowed on purpose. A stored secret is never sent to a changed server. Messages carry no secrets, passwords, tokens, session data or user names. Details in [Notifications](#notifications). |
+| Scheduled backups | Same content as downloaded backups (no accounts; sealed secrets only on request), written only to the data directory or to a storage target's store, without following symbolic links. Details in [Scheduled backups](#scheduled-backups). |
 | Privilege escalation | The service runs unprivileged and never holds `CAP_SYS_ADMIN`. NAS mounts are done by systemd on request of a separate root helper that re-validates every request and never trusts the database: it opens it read-only as a regular file (no links, FIFOs or devices) with an untrusted schema, touches only names derived from the target id, never follows links in the service-owned request directory, and runs sandboxed with a memory limit. |
 | Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total. |
 | Malicious or tampered update | A release is installed only if its `SHA256SUMS` carries an Ed25519 signature by a key compiled into the running binary, the binary matches its checksum and reports the expected version. The web UI can only queue a version number; the root helper installs exactly that release from the fixed GitHub repository and never an older one. Starting an update needs a browser session and the password. Details in [Updates](#updates). |
@@ -231,6 +233,74 @@ the release.
   accepts anything signed with it, so affected installations must be updated
   by hand, with the files checked against the new `docs/release-key.pem`.
 
+## Notifications
+
+PiCache can send notifications (health problems, cache storage offline,
+updates, scheduled backups, sign-in lockouts) to webhooks (for example Home
+Assistant), ntfy and Gotify (**System → Notifications**). The binding rules
+are in [ARCHITECTURE.md §15.1](ARCHITECTURE.md#151-notifications-internalnotify).
+
+- **Only what the admin configured leaves the host.** Channels are created
+  by admins (browser session or admin API token). PiCache sends a `POST` to
+  exactly the configured URL (`http` or `https`); it follows no redirects,
+  uses no proxy, verifies TLS certificates, gives up after 10 seconds and
+  reads at most 4 KiB of the answer, which it discards.
+- **Private addresses are allowed on purpose.** The usual receivers run on
+  the LAN or on the same host (Home Assistant, a self-hosted ntfy or
+  Gotify), so unlike list downloads and the cache proxy, notifications may
+  go to RFC 1918, ULA, CGNAT and loopback addresses, and host names are
+  resolved by the host's resolver. An admin can therefore make PiCache send
+  a `POST` with a notification to a LAN service and see its HTTP status in
+  the test result; this needs admin rights, which already control far more
+  than that. Link-local addresses (including the cloud metadata address
+  169.254.169.254), multicast and unspecified addresses are always refused,
+  also after name resolution.
+- **Secrets are sealed and write-only.** The webhook `Authorization` value,
+  the ntfy access token and the Gotify application token are sealed with the
+  master key like NAS passwords, never returned by the API (only whether one
+  is stored), never logged or written to the audit log, and dropped from
+  backups unless secrets are included. A stored secret is kept only while
+  the channel's kind and the URL's scheme, host and port stay the same; to
+  point a channel at another server the secret has to be entered again, so
+  a stolen admin token cannot redirect a stored secret to its own server.
+- **Prefer the secret field to tokens in the URL.** A token in the URL (for
+  example ntfy's `?auth=`) is stored in plain text and visible to admins; the
+  UI shows URLs without the query string, and the audit log and error
+  messages never contain it. Home Assistant webhook ids are part of the URL
+  path: treat such URLs as secrets and use `https` where possible.
+- **Message content.** Messages may name health checks, storage targets,
+  versions, backup files and, for sign-in lockouts, the client address. They
+  never contain secrets, passwords, tokens, session data or user names (a
+  user name can be a mistyped password).
+- **Bounded.** At most 10 channels, 32 queued messages and 20 messages in
+  10 minutes per channel (then one summary), 3 attempts per message; the
+  delivery log keeps the last 200 attempts in memory only.
+
+## Scheduled backups
+
+Scheduled backups (**System → Backup & restore**) have exactly the content
+of a backup downloaded in the UI: never accounts, password hashes,
+sessions or API tokens, and sealed NAS passwords and notification secrets
+only when "include sealed secrets" is on (they are useless without the
+master key, which is never part of a backup). The binding rules are in
+[ARCHITECTURE.md §15.2](ARCHITECTURE.md#152-scheduled-backups).
+
+- They are written to `<data>/backups/scheduled/` or to
+  `picache-backups/` in the store of an online storage target, as files
+  of mode 0640 in a directory of mode 0750 created by PiCache. Files are
+  written under a temporary name (created exclusively, never through a
+  symbolic link) and renamed when complete; a symbolic link in place of the
+  directory is refused.
+- Retention deletes only files named exactly like this installation's
+  scheduled backups (`picache-backup-<instance id>-<time>.db`); nothing else
+  in the directory is touched.
+- Anyone who can read the destination (for example other users of the NAS
+  share) can read the configuration, the audit log and the client list in
+  these files. Restrict the share like other sensitive data.
+- Changing the schedule, running a backup, downloading and deleting
+  backups need admin rights and are audited; read-only users see the status
+  and the file names.
+
 ## Hardening checklist
 
 **Network**
@@ -293,10 +363,14 @@ the release.
 **Data and secrets**
 
 - [ ] Backups of `picache.db` are stored like other sensitive data. Backups
-      downloaded in the UI or API hold the configuration and the audit log
-      (never accounts, password hashes, sessions or API tokens); file copies
-      of `picache.db` hold everything. Backups "including secrets" are made
-      only when needed.
+      downloaded in the UI or API and scheduled backups hold the
+      configuration and the audit log (never accounts, password hashes,
+      sessions or API tokens); file copies of `picache.db` hold everything.
+      Backups "including secrets" are made only when needed.
+- [ ] A NAS share that receives scheduled backups is readable only by
+      PiCache and the people who may see the configuration.
+- [ ] Notification channels use `https` where the receiver supports it,
+      and access tokens go into the secret field, not into the URL.
 - [ ] `keys/master.key` is backed up separately from the database (or the key
       comes from a systemd credential / Docker secret). A systemd credential
       is given to `picache-storage.service` too when host-apply mounts SMB

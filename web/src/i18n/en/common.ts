@@ -28,6 +28,7 @@ export default {
   'nav.audit': 'Audit log',
   'nav.backup': 'Backup & restore',
   'nav.health': 'Health & about',
+  'nav.notifications': 'Notifications',
   'nav.updates': 'Updates',
   'nav.updateAvailable': 'Update available',
 

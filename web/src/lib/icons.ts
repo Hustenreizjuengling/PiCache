@@ -64,6 +64,8 @@ export const icons = {
   link: 'M8.5 11.5a3.5 3.5 0 0 0 5 0L16 9a3.5 3.5 0 0 0-5-5l-1 1M11.5 8.5a3.5 3.5 0 0 0-5 0L4 11a3.5 3.5 0 0 0 5 5l1-1',
   power: 'M10 2.5V9M6.2 5.2a6 6 0 1 0 7.6 0',
   update: `${circle(10, 10, 7)}M10 13.5v-7M7 9.5l3-3 3 3`,
+  bell: 'M5 14V9a5 5 0 0 1 10 0v5l1.5 1.5h-13zM8 15.5a2 2 0 0 0 4 0',
+  send: 'M17 3L3 8.5l6 2.5 2.5 6zM17 3l-8 8',
 } as const
 
 export type IconName = keyof typeof icons

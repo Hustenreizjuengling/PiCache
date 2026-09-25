@@ -33,8 +33,9 @@ var restoreMu sync.Mutex
 // (users with their password hashes and TOTP secrets, sessions, API tokens)
 // are always removed: a restore never replaces them, and a download (also
 // possible with an admin API token) must not give a password hash to crack
-// offline. Sealed NAS passwords only survive with includeSecrets (they need
-// the master key, which is never part of a backup).
+// offline. Sealed NAS passwords and notification secrets only survive with
+// includeSecrets (they need the master key, which is never part of a
+// backup).
 func (a *App) Backup(ctx context.Context, w io.Writer, includeSecrets bool) error {
 	tmp := filepath.Join(a.cfg.DataDir, "tmp", fmt.Sprintf("backup-%d.db", time.Now().UnixNano()))
 	defer os.Remove(tmp)
@@ -64,24 +65,42 @@ func scrubBackup(ctx context.Context, path string, includeSecrets bool) error {
 		return err
 	}
 	if !includeSecrets {
-		_, err := d.ExecContext(ctx, `UPDATE storage_targets SET password_sealed = NULL`)
-		switch {
-		case err != nil && !strings.Contains(err.Error(), "no such table"):
-			return err
-		case err == nil:
-			var left int
-			if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM storage_targets WHERE password_sealed IS NOT NULL`).
-				Scan(&left); err != nil {
+		for _, c := range sealedColumns {
+			if err := clearColumn(ctx, d, c.table, c.column, c.what); err != nil {
 				return err
-			}
-			if left != 0 {
-				return fmt.Errorf("%d sealed NAS passwords could not be removed", left)
 			}
 		}
 	}
 	// VACUUM rewrites the file, so deleted secrets are not left in free pages.
 	_, err = d.ExecContext(ctx, `VACUUM`)
 	return err
+}
+
+// sealedColumns hold secrets sealed with the master key; backups keep them
+// only with includeSecrets.
+var sealedColumns = []struct{ table, column, what string }{
+	{"storage_targets", "password_sealed", "sealed NAS passwords"},
+	{"notify_channels", "secret_sealed", "sealed notification secrets"},
+}
+
+// clearColumn sets column to NULL in every row of table and verifies it (a
+// missing table, e.g. in a copy of an older version, is fine).
+func clearColumn(ctx context.Context, d *sql.DB, table, column, what string) error {
+	_, err := d.ExecContext(ctx, `UPDATE `+table+` SET `+column+` = NULL`)
+	switch {
+	case err != nil && strings.Contains(err.Error(), "no such table"):
+		return nil
+	case err != nil:
+		return err
+	}
+	var left int
+	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE `+column+` IS NOT NULL`).Scan(&left); err != nil {
+		return err
+	}
+	if left != 0 {
+		return fmt.Errorf("%d %s could not be removed", left, what)
+	}
+	return nil
 }
 
 // StageRestore validates an uploaded picache.db against the live database

@@ -63,7 +63,7 @@ Everything persistent lives in exactly two places plus optional NAS mounts.
 
 | Path (bare metal / LXC) | Docker | Contents | Backup? |
 |---|---|---|---|
-| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3; a failed update puts back the one made during its run); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and `status.json` of the root update helper, 14.4); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
+| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, local records, services, storage targets with sealed NAS passwords, notification channels with sealed secrets, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3; a failed update puts back the one made during its run); `backups/scheduled/` (scheduled backups, 15.2); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and `status.json` of the root update helper, 14.4); `picache.db.before-restore` (after a restore) | `picache.db` (UI download, scheduled backups (15.2) or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords and notification secrets should survive a move to another machine. |
 | `/var/cache/picache` (`PICACHE_CACHE_DIR`) | `/cache` | The built-in **local** cache store (slice files). Large. | No |
 | `/srv/picache/<id>` (`PICACHE_MOUNT_ROOT`) | `/srv/picache` (bind, `rslave`) | NAS cache stores. The only place outside the cache dir where stores may live (the only NAS path writable inside the sandbox). | No |
 | `/etc/picache/picache.env` | environment | Bootstrap settings only. Read by systemd **and by every CLI command**. | Yes |
@@ -73,7 +73,7 @@ Rules:
 - SQLite databases MUST live on local disk. PiCache refuses to open a DB on NFS/CIFS.
 - Only slice files may live on a NAS.
 - A broken `logs.db` is moved aside (`logs.db.broken-<ts>`) and recreated; if that fails, logging is disabled but DNS keeps running. A broken cache index is moved aside and rebuilt from the self-describing slice headers.
-- UI backups never contain accounts (users with password hashes and TOTP secrets, sessions, API tokens); sealed NAS passwords only on explicit opt-in. A restore (browser session + current password) replaces the configuration, never the accounts: on the next start the running instance's users, API tokens and audit log are copied into the restored database and all sessions end. Uploads with triggers, views, virtual tables, generated columns, tables or indexes the live database does not have, indexes defined differently, or altered account tables are refused (at upload and again at start). PiCache creates no triggers or views; any found in `picache.db` are dropped at start (WARN), by `picache reset-password` and in every backup copy.
+- UI backups and scheduled backups never contain accounts (users with password hashes and TOTP secrets, sessions, API tokens); sealed NAS passwords and notification secrets only on explicit opt-in. A restore (browser session + current password) replaces the configuration, never the accounts: on the next start the running instance's users, API tokens and audit log are copied into the restored database and all sessions end. Uploads with triggers, views, virtual tables, generated columns, tables or indexes the live database does not have, indexes defined differently, or altered account tables are refused (at upload and again at start). PiCache creates no triggers or views; any found in `picache.db` are dropped at start (WARN), by `picache reset-password` and in every backup copy.
 - Schema changes are append-only component migrations (5), run at start after the pre-upgrade copy (14.4); a restored backup of an older version is migrated at the start that applies it. v0.2.0 renamed the download cache identifiers: settings v2 moves the old download cache section to `downloadCache` (a `downloadCache` section that is already there wins), clients v2 renames the bypass column of `client_clients` to `download_cache_bypass`, and logs v2 renames the matching rollup column of `logs_dns_minute`/`logs_dns_hourly` to `override` and rewrites the status of logged queries to `override` (the old names are in the migration code only). Backups made by v0.2.0 are refused by v0.1.x (newer schema); audit entries keep the action they were written with.
 
 ---
@@ -101,10 +101,11 @@ internal/dlcache/proxy/      HTTP cache proxy (:80)
 internal/dlcache/sni/        TLS SNI pass-through (:443)
 internal/storage/            storage targets, capability detection, mount guard, store init/adopt, host-apply root helper, snippets, speed test
 internal/update/             releases: check (GitHub API), SemVer, signature check (compiled-in keys), install + rollback, update requests of the root helper
+internal/notify/             notification channels (webhook, ntfy, Gotify), sealed secrets, per-channel queues with retries and rate limit, delivery log
 internal/logs/               logs.db: query log, cache events, sessions, rollups, evictions, live subscriptions
 internal/api/                REST API + SSE, middleware, one routes_<domain>.go file per domain
 internal/webui/              go:embed of the built frontend (internal/webui/dist)
-internal/app/                wiring, lifecycle, privilege drop, store switching, health, backup/restore
+internal/app/                wiring, lifecycle, privilege drop, store switching, health, backup/restore, scheduled backups, notification events
 web/                         Svelte 5 + Vite SPA (builds into internal/webui/dist)
 deploy/                      docker/, systemd/, lxc/, install.sh
 docs/                        this file, API.md, DESIGN.md, DEPLOYMENT.md, SECURITY.md
@@ -112,7 +113,7 @@ docs/                        this file, API.md, DESIGN.md, DEPLOYMENT.md, SECURI
 
 Dependency rules:
 - Foundation packages (`version`, `config`, `db`, `apperr`, `listing`, `settings`, `secrets`, `netutil`) import only each other (`settings` → `db`, `apperr`; `netutil` → `settings`).
-- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker; slice sampling and page-cache dropping for the speed test). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore`, `update` import no other domain package (`update` imports only `version`).
+- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker; slice sampling and page-cache dropping for the speed test). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore`, `update`, `notify` import no other domain package (`update` imports only `version`). Events reach `notify` from `app`: `auth` reports lockouts through a callback (`OnLockout`), health, store, update and backup events are raised by `app` itself.
 - `dnsserver`, `proxy` and `sni` declare **consumer-side interfaces** for their collaborators (see their `Deps`) so they can be tested with fakes.
 - `api` imports domain packages; domain packages never import `api`. `app` imports everything and is imported only by `cmd`.
 
@@ -156,7 +157,9 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
 | Token misuse | API tokens (read/admin) can never manage tokens, passwords, TOTP or sessions, nor restore a backup (`permSession`; a restore also needs the current password in `X-PiCache-Password`). Backup download and restart stay available to admin tokens. SSE streams re-validate the principal every 15 s and end after 1 h. |
 | DNS rebinding against the UI | Host allowlist (IP literals, localhost, hostname + local/search domains, server names, configured hosts) → 421. |
 | XSS / clickjacking | Strict CSP (`default-src 'none'; script-src 'self'; …`), `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, COOP/CORP. The UI never renders HTML from data. HSTS only when the HTTPS redirect is enabled; redirects are 307. |
-| Secret leakage | NAS passwords sealed (XChaCha20-Poly1305, AAD per record), write-only in the API, never in snippets, logs or audit details (redacted by name), decrypted only by the root helper. |
+| Secret leakage | NAS passwords and notification secrets sealed (XChaCha20-Poly1305, AAD per record), write-only in the API, never in snippets, logs, messages or audit details (redacted by name), dropped from backups unless included. NAS passwords are decrypted only by the root helper, notification secrets only for sending. A stored notification secret is kept on an update only while the kind and the URL's origin stay the same (15.1). |
+| Outbound notifications (SSRF, exfiltration) | Only admins configure channels; http/https only, no user info in URLs, no redirects, no proxy, verified TLS, 10 s, responses ≤ 4 KiB discarded. Private and loopback destinations are allowed on purpose (Home Assistant, self-hosted ntfy/Gotify); link-local (cloud metadata), multicast and unspecified addresses never. Delivery errors and logs never contain the URL; URLs are shown and audited without their query string. Messages never contain secrets, passwords, tokens, session data or usernames (15.1). |
+| Scheduled backup files | Same content as UI backups (no accounts, secrets only on opt-in); written through `os.Root` with `O_EXCL`/`O_NOFOLLOW`, temp file + rename, 0640 in a 0750 directory; a symbolic link in place of the directory is refused; retention and download/delete touch only names of this installation's pattern (15.2). |
 | Privilege | Runtime is unprivileged and never holds `CAP_SYS_ADMIN` (6.2). |
 | Metrics / status | `/metrics` disabled by default, admin token required. `/healthz` returns only `ok`. |
 | Resource exhaustion | Bounded caches, queues, subscribers (16 SSE), fill memory (≤ 1 GiB), query timeouts (10 s), log DB size cap, audit retention, connection caps. One storage speed test at a time (admin only, ≤ 2 min, needs its size + 1 GiB free, its file does not count for eviction). |
@@ -403,7 +406,7 @@ Budgets: the whole run 120 s; write 50 s, read 40 s, cached content 20 s, file o
 - REST under `/api/v1`, JSON only (`docs/API.md`). SSE under `/api/v1/stream/*`.
 - Auth: cookie session (UI) or `Authorization: Bearer <token>` (scope `read`/`admin`). Permissions per route: `public`, `read`, `admin`, `session` (interactive admin session only: password, TOTP, tokens, sessions).
 - Middleware: recover → security headers → host allowlist → HTTPS redirect (307, if enabled) → CrossOriginProtection → handler. Long handlers lift the server timeouts with `extendDeadlines`.
-- `GET /healthz` → `ok`. `GET /metrics` → Prometheus text (admin token, disabled by default). Health checks carry severity (`ok|warn|fail`) and hints, are evaluated every 60 s and every status change is logged once.
+- `GET /healthz` → `ok`. `GET /metrics` → Prometheus text (admin token, disabled by default). Health checks carry severity (`ok|warn|fail`) and hints, are evaluated every 60 s and every status change is logged once; problems that last two evaluations are also notified (15.1).
 - Audit log for every state-changing admin action (secrets redacted by member name).
 - Static UI embedded; hashed assets cached for a year, `index.html` never.
 
@@ -411,7 +414,7 @@ Budgets: the whole run 120 s; write 50 s, read 40 s, cached content 20 s, file o
 
 Svelte 5 (runes) + Vite 8 + TypeScript 6, plain SPA with a hash router, uPlot for charts, no other runtime dependencies. English and German. Design system: `docs/DESIGN.md`.
 
-Information architecture: **Overview** · **DNS** (Query log, Filtering, Clients & groups, Local DNS, DNS settings) · **Cache** (Downloads, Library, Services, Storage, Cache settings) · **System** (Account & security, API tokens, Audit log, Backup & restore, Health & about).
+Information architecture: **Overview** · **DNS** (Query log, Filtering, Clients & groups, Local DNS, DNS settings) · **Cache** (Downloads, Library, Services, Storage, Cache settings) · **System** (Account & security, API tokens, Audit log, Notifications, Backup & restore, Health & about).
 
 ---
 
@@ -434,6 +437,8 @@ Information architecture: **Overview** · **DNS** (Query log, Filtering, Clients
 | Logs | query log 7 days, cache log 48 h, sessions 90 days, stats 365 days, logs.db ≤ 2 GiB |
 | Web sessions | idle 60 min, absolute 7 days |
 | Updates | daily check on (stable releases only); installing always needs an admin action |
+| Notifications | no channels; a new channel gets minimum severity `warning` and all events |
+| Scheduled backups | off; daily at 03:30 local time, keep 7, in the data directory, without secrets |
 
 ---
 
@@ -485,7 +490,7 @@ Only the binary is replaced. Unit files and the installer change rarely; release
 - `install.sh` installs `picache-update.path` and `picache-update.service` and creates the marker `/etc/picache/updater.enabled` by default (`--without-updater` skips both; `--uninstall` removes them). With a custom `PICACHE_DATA_DIR` it writes a path drop-in like for host-apply.
 - `POST /system/update/apply {version, currentPassword}` (interactive session + password, like restore) accepts only the available version of the last check result, and only when no update is running. It writes `<data>/update-requests/request` (JSON `{version, requestedAt, requestedBy}`, written to a temporary file and renamed, mode 0640).
 - `picache-update.path` starts `picache-update.service` (root, `picache update apply-pending`), which moves the request to `.claim`, validates the version string (`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`), and runs the procedure for exactly that version from the fixed GitHub repository. The request carries no URL, file or command: a compromised service can at most ask for another signed release, and the helper refuses any that is not newer than the installed binary (only the CLI has `--allow-downgrade`).
-- Progress goes to `<data>/update-requests/status.json` (owner picache, 0640): `{state:"running"|"succeeded"|"failed"|"rolled-back", step:"download"|"verify"|"install"|"restart"|"health"|"rollback"|"done", version, from, startedAt, finishedAt?, message?}`. The service reads it for `GET /system/update`; after the restart the new process reports the result. Every run writes a new `startedAt`. Until the helper has claimed a request, the service reports it as `{state:"running", step:"download"}` with a waiting message, and as `failed` once it has waited for 3 minutes (path unit not running); a run that still says `running` after 45 minutes (the helper's `TimeoutStartSec` is 30 min) is reported as `failed`. A `.claim` left by a killed helper is reported as `failed` by the next run, which also starts `picache.service` in case the run died while it was stopped.
+- Progress goes to `<data>/update-requests/status.json` (owner picache, 0640): `{state:"running"|"succeeded"|"failed"|"rolled-back", step:"download"|"verify"|"install"|"restart"|"health"|"rollback"|"done", version, from, startedAt, finishedAt?, message?}`. The service reads it for `GET /system/update` and every minute for the notifications `update.installed`/`update.failed` (15.1); after the restart the new process reports the result. Every run writes a new `startedAt`. Until the helper has claimed a request, the service reports it as `{state:"running", step:"download"}` with a waiting message, and as `failed` once it has waited for 3 minutes (path unit not running); a run that still says `running` after 45 minutes (the helper's `TimeoutStartSec` is 30 min) is reported as `failed`. A `.claim` left by a killed helper is reported as `failed` by the next run, which also starts `picache.service` in case the run died while it was stopped.
 - Mode reported to the UI: `helper` when the marker exists and the service runs as a systemd service (`INVOCATION_ID` is set); `docker` in a Docker or Podman container (the UI shows `docker compose pull && docker compose up -d`); `manual` otherwise, including an LXC container without the helper (the UI shows `sudo picache update`).
 
 ### 14.5 One-line installer (`get-picache.sh`)
@@ -495,3 +500,58 @@ Only the binary is replaced. Unit files and the installer change rarely; release
 - It downloads `SHA256SUMS` and `SHA256SUMS.sig` of the chosen release (`latest` or `--version vX.Y.Z`), verifies the signature with the release key embedded in the script (the same key as `docs/release-key.pem` and `keys.go`), then downloads `picache-deploy.tar.gz` and the binary for this architecture and checks them against `SHA256SUMS`. Only then does it run `deploy/install.sh` from that archive (`--binary`, or `--uninstall [--purge] [--yes]`), passing `--with-host-apply` and `--without-updater` through. Downloads use HTTPS only; `PICACHE_RELEASE_BASE` may point to a mirror with the same layout (the signature is checked all the same).
 - Running it again on an installed machine upgrades it like the manual installer path, including unit files.
 - `install.sh --uninstall --purge` also stops and removes the NAS mount units written by the host-apply helper and deletes `/etc/picache`, the data directory, the local cache directory and the picache system account. It deletes only the default paths and never a mount point or anything below one (custom `PICACHE_DATA_DIR`, `PICACHE_CACHE_DIR`, `PICACHE_MOUNT_ROOT` and mount points are listed instead), refuses while anything is still mounted below those directories, and asks on the terminal (`/dev/tty`, the script may come through a pipe) unless `--yes` is given.
+
+---
+
+## 15. Notifications and scheduled backups
+
+### 15.1 Notifications (`internal/notify`)
+
+**Channels** (table `notify_channels`, component `notify`; at most 10): `id` (32 hex), `name` (1–64 characters, no control characters), `kind` (`webhook`, `ntfy`, `gotify`), `url`, `enabled`, `minSeverity` (`info` < `warning` < `error`; default `warning`), `events` (event keys; empty = all), `secret_sealed`.
+
+- URL: `http`/`https`, at most 2048 bytes of printable ASCII, a host name or IP literal, no user name or password (credentials go into the secret), no fragment. IP literals that are link-local, multicast or unspecified are refused. Private and loopback addresses are allowed on purpose: the usual receivers (Home Assistant, a self-hosted ntfy or Gotify) run on the LAN or on this host, and only admins configure channels.
+- Secret (write-only, `hasSecret` only): **webhook** = the value of an `Authorization` header (optional); **ntfy** = an access token, sent as `Authorization: Bearer <token>` (a pasted `Bearer ` prefix is removed; optional); **gotify** = the application token (required), sent as `X-Gotify-Key`. At most 1024 printable ASCII characters. Sealed with the master key (AAD `picache/notify/<id>/secret`). In `ChannelInput`, `secret` absent or `null` keeps it, `""` removes it, a value replaces it. A stored secret is kept only while the kind and the URL's origin (scheme, host, port) stay the same; an update that changes them without a new secret is refused (field `secret`), so a changed URL can never receive a stored secret. Backups drop it unless secrets are included (`scrubBackup`).
+- A row whose event list cannot be read (an edited database) is loaded disabled.
+
+**Formats** (all `POST`, `User-Agent: PiCache/<version>`):
+
+| Kind | Target | Body and headers |
+|---|---|---|
+| webhook | the URL | `application/json` `{"event","severity","title","message","time" (RFC 3339 UTC),"instance","hostname","version"}`; `Authorization: <secret>` if set |
+| ntfy | the topic URL | `text/plain; charset=utf-8` body = message; `Title` (RFC 2047 encoded when not ASCII), `Priority` (info 3, warning 4, error 5), `Tags: <event>,<severity>`; `Authorization: Bearer <token>` if set |
+| gotify | `<url>/message` | `application/json` `{"title","message","priority"}` (info 4, warning 6, error 8); `X-Gotify-Key: <token>` |
+
+**Delivery.** `Emit` never blocks its caller: it checks each channel's filter (enabled, severity ≥ minimum, event list) and appends the message to that channel's queue (≤ 32). A sliding window accepts at most 20 messages per channel in 10 minutes; further ones are dropped and counted, and as soon as the window has room one summary `notify.dropped` ("N notifications dropped", severity warning, not selectable, not filtered) is queued. One worker per channel sends the messages in order: up to 3 attempts, 10 s and 60 s after the previous one; network errors, timeouts, 408, 429 and 5xx are retried, other answers (redirects, 401, 403, 404, …) and configuration errors (missing or undecryptable secret) are not. 2xx = delivered. Each attempt uses the channel as it is configured then; disabling a channel drops its queue, deleting it stops its worker. Every attempt goes to the delivery log (the last 200 attempts, memory only: time, channel id and name, event, severity, title, ok, error, attempt). Failures are logged when the error changes or hourly. At shutdown requests in flight get 2 s; queued messages are dropped.
+
+**HTTP client.** 10 s per request, no redirects (`http.ErrUseLastResponse`), no proxy, TLS 1.2+ verified against the system roots, response bodies read up to 4 KiB and discarded. Host names are resolved by the host's resolver, so LAN names work. The dialer refuses link-local (incl. 169.254.169.254), multicast, broadcast, `0.0.0.0/8` and unspecified addresses after resolution, also when a NAT64/6to4 address embeds one. Errors never contain the URL (its query may carry a token); URLs are shown, logged and audited without their query string.
+
+**Test.** `POST /notifications/channels/{id}/test` sends `notify.test` synchronously once (no queue, ignoring `enabled` and the filters), at most 2 tests at a time (429), and logs the attempt.
+
+**Events** (the list with titles and descriptions is `notify.Events`, served by the API):
+
+| Key | Severity | Source and rule |
+|---|---|---|
+| `health.failed`, `health.warning` | error, warning | health loop (every 60 s): a check with the same status `fail`/`warn` in 2 consecutive evaluations that was not reported with that status yet (a change between fail and warn is reported again); message = the check's message and hint |
+| `health.recovered` | info | a check reported as fail/warn is `ok` again or no longer evaluated (checks that exist only during a problem, features switched off) |
+| `storage.offline` | warning | store loop (every 15 s), only while the download cache is enabled: the active store has been offline (pass-through) for 2 minutes; once per outage |
+| `storage.online` | info | the store is online again after a reported `storage.offline` |
+| `update.available` | info | after a successful check that finds an update; once per version (app_meta `update.notified`) |
+| `update.installed` | info | the updater reads the run state at start and every minute: a run that `succeeded` and whose version this process runs (the new process after the restart) |
+| `update.failed` | error | a run that ended `failed` or `rolled-back` (incl. a request the helper did not pick up within 3 minutes); message with the step and the helper's message. Each finished run is reported once (by `startedAt`, app_meta `update.notified`) |
+| `backup.failed`, `backup.succeeded` | error, info | the backup scheduler after each run (scheduled, catch-up or "run now") |
+| `security.lockout` | warning | `auth` throttling (`OnLockout`): a new lockout of a client, a device or a session's password confirmations, or the start of a username delay; once per lockout; names the client key, never the username or the session |
+| `notify.test` | info | the test button |
+
+**Messages** are English, a title (one line, ≤ 200 characters) and a message (≤ 2000 characters, line breaks kept), with control characters removed. They may contain storage and check names, versions and client addresses for security events, never secrets, passwords, tokens, session data or usernames.
+
+### 15.2 Scheduled backups
+
+**Settings** (section `backups`): `enabled` (false), `schedule` (`daily`|`weekly`), `time` (`HH:MM`, 00:00–23:59, local time of the host; `03:30`), `weekday` (0 = Sunday … 6, weekly only; 0), `keep` (1–90; 7), `destination` (`local` or a storage target id; `local`), `includeSecrets` (false). The API refuses a changed destination that is not an existing storage target, and a storage target that is the destination cannot be deleted (409).
+
+**Destination.** `local` = `<data>/backups/scheduled/` (the pre-upgrade copies in `<data>/backups/` are not affected). A storage target = `<its store root>/picache-backups/`; the target must be online (mount guard; this implies an initialised store), otherwise the run fails with the target's reason. The built-in cache target (`local`) cannot be chosen: `local` means the data directory. The directory is created with 0750; a symbolic link in its place is refused, and it is used as an `os.Root` that must be the directory checked before opening.
+
+**Run.** File name `picache-backup-<instanceId>-<YYYYMMDDTHHMMSSZ>.db` (UTC start time; the instance id of `<data>/instance-id` with characters outside `[A-Za-z0-9._-]` replaced). Content = `App.Backup` (the UI backup: no accounts, sealed secrets only with `includeSecrets`). Written as `<name>.tmp` (`O_CREATE|O_EXCL|O_NOFOLLOW`, 0640), synced, renamed; leftover `.tmp` files of this installation are removed first. Retention after a successful run: this installation's backups in the destination (regular files whose names match the pattern exactly), newest first by the time in the name; the ones beyond `keep` are deleted. No other file is ever touched. One run at a time; `POST /system/backups/scheduled/run` uses the same code path (409 while a run is going). The result `{time, ok, error?, file?, sizeBytes?, destination}` is kept in memory and in app_meta `backups.last` (with the time of the last success) and sent as `backup.succeeded`/`backup.failed`.
+
+**Timing.** The scheduler checks every minute. For each local date (weekly: each date with the weekday) the run time is `time.Date(date, HH:MM, time.Local)`; a run starts when a run time lies between the previous check and now, so every run time is due exactly once, also when the clock is set back. When the clocks go forward and the time does not exist, it is moved forward by the gap (02:30 → 03:30); when they go back and it exists twice, `time.Date` picks one of the two. Catch-up: when scheduled backups are enabled at start and the last successful run is older than the interval (24 h or 7 days) + 1 h, or there was none, a run is made 5 minutes after the start (so the mount guard has checked the NAS), unless a run succeeded meanwhile. At shutdown a run is cancelled and waited for at most 3 s.
+
+**Files.** The overview lists this installation's backups in the current destination (newest first, ≤ 10 000 directory entries read, 5 s; one listing at a time, a hung NAS is reported in `filesError`). Download and delete accept only names that match the pattern of this installation, regular files in the current destination; downloads are opened with `O_NOFOLLOW`.

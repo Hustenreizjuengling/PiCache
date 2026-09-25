@@ -20,6 +20,7 @@ export const RANGES = {
   statsRetentionDays: { min: 1, max: 3_650 },
   maxDbSizeMiB: { min: 64, max: 1_048_576 },
   tokenExpiryDays: { min: 1, max: 3_650 },
+  backupKeep: { min: 1, max: 90 },
 } satisfies Record<string, Range>
 
 /** Longest API token name (characters). */

@@ -70,8 +70,11 @@ unprivileged Proxmox LXC container.
 - English and German UI with dashboard, live query and download streams,
   query log, statistics and health checks with hints.
 - One admin account with optional TOTP two-factor authentication, API tokens
-  (`read`/`admin`) for automation, an audit log, backup and restore, and
-  optional Prometheus metrics.
+  (`read`/`admin`) for automation, an audit log, backup and restore
+  (also scheduled, for example to your NAS), and optional Prometheus metrics.
+- Notifications through ntfy, Gotify or a webhook (Home Assistant) when the
+  storage goes offline, a health check fails, an update is out or installed,
+  or a backup fails.
 - A single static binary for Linux amd64, arm64 and armv7. Deploy it with
   hardened systemd units, in a Proxmox LXC container, or as a distroless
   Docker image.

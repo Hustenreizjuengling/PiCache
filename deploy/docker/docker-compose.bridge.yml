@@ -63,6 +63,7 @@ services:
       #   bind:
       #     propagation: rslave
     # environment:
+    #   TZ: "Europe/Berlin" # time zone for scheduled backups (default UTC)
     #   PICACHE_WEB_HOSTS: "picache.lan"
     logging:
       driver: json-file

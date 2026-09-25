@@ -189,24 +189,60 @@ func (t *throttle) sweepLocked(now time.Time) {
 	}
 }
 
+// Lockout kinds (Lockout.Kind).
+const (
+	LockoutClient   = "client"   // a client key (5 failures → 15 min)
+	LockoutDevice   = "device"   // a browser that signed in before (5 failures → 15 min)
+	LockoutSession  = "session"  // password confirmations of a session (5 failures → 15 min)
+	LockoutUsername = "username" // the username delay started (never a lockout)
+)
+
+// Lockout is a new lockout or username delay, reported once per lockout to
+// the OnLockout callback. It never names the username or the session:
+// users sometimes type their password into the username field.
+type Lockout struct {
+	Kind   string
+	Client string // client key of the failing request, e.g. "192.168.1.10/32" ("" if unknown)
+	For    time.Duration
+}
+
+// OnLockout registers fn for new lockouts and username delays (the
+// security.lockout notification). fn runs on the request goroutine and
+// must not block.
+func (a *Service) OnLockout(fn func(Lockout)) { a.onLockout.Store(&fn) }
+
 // recordFailure counts a failed attempt and logs new lockouts and delays.
 // Usernames are never logged: users sometimes type their password into that
 // field.
 func (a *Service) recordFailure(keys ...string) {
+	client := ""
+	for _, k := range keys {
+		if strings.HasPrefix(k, "c:") && k != "c:unknown" {
+			client = strings.TrimPrefix(k, "c:")
+		}
+	}
 	for _, k := range a.throttle.fail(a.now(), keys...) {
+		l := Lockout{Client: client, For: lockoutDuration}
 		switch {
 		case strings.HasPrefix(k, "c:"):
+			l.Kind = LockoutClient
 			a.log.Warn("client locked out after repeated failed sign-in attempts",
 				slog.String("client", strings.TrimPrefix(k, "c:")), slog.Duration("for", lockoutDuration))
 		case strings.HasPrefix(k, "d:"):
+			l.Kind = LockoutDevice
 			a.log.Warn("a browser that signed in before is locked out after repeated failed sign-in attempts "+
 				"(its device cookie may have been copied)", slog.Duration("for", lockoutDuration))
 		case strings.HasPrefix(k, "s:"):
+			l.Kind = LockoutSession
 			a.log.Warn("password confirmations of a session are locked after repeated wrong passwords",
 				slog.Duration("for", lockoutDuration))
 		default:
+			l.Kind, l.For = LockoutUsername, userDelay(maxFailures)
 			a.log.Warn("sign-in attempts for a username from browsers that have not signed in before are delayed "+
 				"after repeated failures (up to 30 s per attempt, never a lockout)", slog.Duration("delay", userDelay(maxFailures)))
+		}
+		if fn := a.onLockout.Load(); fn != nil {
+			(*fn)(l)
 		}
 	}
 }

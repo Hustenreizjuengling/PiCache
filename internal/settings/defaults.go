@@ -67,5 +67,11 @@ func Defaults() All {
 		Updates: Updates{
 			CheckEnabled: true,
 		},
+		Backups: Backups{
+			Schedule:    "daily",
+			Time:        "03:30",
+			Keep:        7,
+			Destination: BackupsLocal,
+		},
 	}
 }

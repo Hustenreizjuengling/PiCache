@@ -64,6 +64,7 @@ type storageTestEnv struct {
 	rt   *storageTestRuntime
 	auth *auth.Service
 	cfg  *config.Config
+	db   *db.DB
 }
 
 func newStorageTestEnv(t *testing.T) *storageTestEnv {
@@ -105,7 +106,7 @@ func newStorageTestEnv(t *testing.T) *storageTestEnv {
 	}
 	rt := &storageTestRuntime{st: st}
 	srv := &Server{d: Deps{Config: cfg, Settings: set, Auth: a, Storage: st, Runtime: rt, Log: log}, log: log, mux: http.NewServeMux()}
-	return &storageTestEnv{srv: srv, st: st, rt: rt, auth: a, cfg: cfg}
+	return &storageTestEnv{srv: srv, st: st, rt: rt, auth: a, cfg: cfg, db: d}
 }
 
 // call invokes a storage handler directly as an admin (authentication and

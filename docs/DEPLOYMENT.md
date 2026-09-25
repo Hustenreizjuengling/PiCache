@@ -453,8 +453,34 @@ it, re-enter the NAS passwords and, after a file restore, sign in with
   database, it puts the previous one back automatically (the failed file is
   kept as `picache.db.failed-restore-<timestamp>`).
 
-Automated backups use an **admin** API token (restores are done in the web
-UI):
+### Scheduled backups
+
+**System → Backup & restore → Scheduled backups** writes the same backup as
+**Download** on a schedule:
+
+- daily or weekly at a local time (default 03:30), keeping the newest 1–90
+  files (default 7). The time is that of the PiCache host; a Docker
+  container uses UTC unless you set `TZ` (for example `TZ: "Europe/Berlin"`
+  in the compose file). The page shows which time zone applies;
+- to the data directory (`<data>/backups/scheduled/`) or to a storage target
+  that is online, for example your NAS (`<store root>/picache-backups/`), so
+  that a copy survives the loss of the PiCache machine;
+- a run missed while PiCache was down is made up within ten minutes after the
+  next start;
+- **Run now** starts one at once; stored backups can be downloaded and
+  deleted there. Only files named
+  `picache-backup-<instance>-<time>.db` of this instance are ever deleted.
+
+Like downloads, scheduled backups never contain accounts, and sealed secrets
+(NAS passwords, notification tokens) only if you opt in. Keep
+`keys/master.key` separately if restored secrets should work on another
+machine. A failed run is reported as a notification (`backup.failed`, see
+[Notifications](#notifications)).
+
+### With an API token
+
+Automated backups from another machine use an **admin** API token (restores
+are done in the web UI):
 
 ```sh
 curl -fsS -H "Authorization: Bearer $PICACHE_TOKEN" \
@@ -495,6 +521,43 @@ on the new machine and restore a downloaded backup in the UI: the account
 created there stays. The cache can be copied too, or it simply fills again.
 A NAS store is adopted by initialising the target with *adopt* in
 **Cache → Storage**.
+
+---
+
+## Notifications
+
+**System → Notifications** sends messages when something needs attention,
+for example when the cache storage goes offline, a health check fails, an
+update is available or installed, a scheduled backup fails, or sign-ins are
+locked out after wrong passwords. Problems are reported only after they have
+lasted about two minutes, and again when they are over.
+
+| Channel | URL | Secret |
+|---|---|---|
+| **ntfy** | the topic URL, e.g. `https://ntfy.sh/<long random topic>` or your own server | access token (optional) |
+| **Gotify** | the server, e.g. `http://192.168.1.20:8080` | application token (required) |
+| **Webhook** | any URL that accepts a JSON `POST`, e.g. a Home Assistant webhook `http://homeassistant.local:8123/api/webhook/<id>` | value of an `Authorization` header (optional) |
+
+- Each channel has a minimum severity (info, warning, error; default
+  warning) and optionally a list of events. **Send test** checks a channel at
+  once; the delivery log shows the last 200 attempts.
+- On ntfy.sh, the topic name is the only protection: use a long random one,
+  or your own server with an access token.
+- Secrets are stored encrypted with the master key and never shown again;
+  backups contain them only if you opt in. Messages never contain passwords,
+  tokens or session data.
+- A channel may point to an address in your LAN (Home Assistant, a
+  self-hosted ntfy or Gotify). PiCache follows no redirects and gives up after
+  10 seconds; it retries twice and sends at most 20 messages per channel in
+  ten minutes.
+
+The webhook body is:
+
+```json
+{"event":"storage.offline","severity":"warning","title":"…","message":"…",
+ "time":"2026-09-26T03:30:00Z","instance":"picache-3d8b4c93de6c",
+ "hostname":"picache","version":"v0.4.0"}
+```
 
 ---
 

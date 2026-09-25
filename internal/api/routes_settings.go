@@ -6,9 +6,11 @@ import (
 	"encoding/json/v2"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/settings"
+	"github.com/hustenreizjuengling/picache/internal/storage"
 )
 
 // registerSettingsRoutes registers the settings endpoints (docs/API.md).
@@ -76,8 +78,10 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 		dst, apply = &cur.Web, func(a *settings.All) error { a.Web = cur.Web; return nil }
 	case "updates":
 		dst, apply = &cur.Updates, func(a *settings.All) error { a.Updates = cur.Updates; return nil }
+	case "backups":
+		dst, apply = &cur.Backups, func(a *settings.All) error { a.Backups = cur.Backups; return nil }
 	default:
-		return apperr.Invalid("section", "unknown settings section (dns, filter, downloadCache, cache, logs, web, updates)")
+		return apperr.Invalid("section", "unknown settings section (dns, filter, downloadCache, cache, logs, web, updates, backups)")
 	}
 	if err := decode(w, r, dst); err != nil {
 		return err
@@ -89,7 +93,12 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 // member paths) and responds with the new document.
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(*settings.All) error) error {
 	old := s.d.Settings.Get()
-	next, err := s.d.Settings.Update(r.Context(), fn)
+	next, err := s.d.Settings.Update(r.Context(), func(a *settings.All) error {
+		if err := fn(a); err != nil {
+			return err
+		}
+		return s.checkBackupDestination(r, old.Backups.Destination, a.Backups.Destination)
+	})
 	if err != nil {
 		return err
 	}
@@ -97,6 +106,23 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(
 		s.audit(r, "settings.update", "", map[string][]string{"changed": changed})
 	}
 	return ok(w, next)
+}
+
+// checkBackupDestination refuses a new backup destination that is not
+// "local" or an existing storage target (the settings package checks only
+// the form of the id). An unchanged destination is not checked again.
+func (s *Server) checkBackupDestination(r *http.Request, old, dest string) error {
+	dest = strings.ToLower(strings.TrimSpace(dest))
+	if dest == old || dest == settings.BackupsLocal || !storage.ValidTargetID(dest) {
+		return nil // settings.Validate reports malformed values
+	}
+	if s.d.Storage == nil {
+		return apperr.Invalid("backups.destination", "no storage target with this id")
+	}
+	if _, err := s.d.Storage.Target(r.Context(), dest); err != nil {
+		return apperr.Invalid("backups.destination", "no storage target with this id")
+	}
+	return nil
 }
 
 // changedSettings returns the paths ("dns.upstreams", …) of the members that

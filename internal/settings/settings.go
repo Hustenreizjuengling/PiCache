@@ -28,6 +28,7 @@ type All struct {
 	Logs          Logs          `json:"logs"`
 	Web           Web           `json:"web"`
 	Updates       Updates       `json:"updates"`
+	Backups       Backups       `json:"backups"`
 }
 
 // DNS configures the resolver side.
@@ -130,6 +131,24 @@ type Updates struct {
 	CheckEnabled       bool `json:"checkEnabled"`       // check GitHub for a new release every day
 	IncludePrereleases bool `json:"includePrereleases"` // offer pre-releases (vX.Y.Z-rc.N) too
 }
+
+// Backups configures scheduled backups of picache.db (docs/ARCHITECTURE.md
+// 15.2). The files hold the same content as a backup downloaded in the UI.
+type Backups struct {
+	Enabled  bool   `json:"enabled"`
+	Schedule string `json:"schedule"` // daily | weekly
+	Time     string `json:"time"`     // HH:MM, local time of the host
+	Weekday  int    `json:"weekday"`  // weekly only: 0 = Sunday … 6 = Saturday
+	Keep     int    `json:"keep"`     // scheduled backups kept in the destination (1..90)
+	// Destination is "local" (<data>/backups/scheduled) or the id of a
+	// storage target (<its store root>/picache-backups); the API checks
+	// that the target exists.
+	Destination    string `json:"destination"`
+	IncludeSecrets bool   `json:"includeSecrets"` // keep sealed NAS and notification secrets
+}
+
+// BackupsLocal is the Backups.Destination of the data directory.
+const BackupsLocal = "local"
 
 // BlockingActive reports whether blocking is effective at t.
 func (f *Filter) BlockingActive(t time.Time) bool {

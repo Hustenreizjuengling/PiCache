@@ -250,3 +250,72 @@ func TestMigrateDownloadCacheSection(t *testing.T) {
 		})
 	}
 }
+
+// The backups section: defaults for documents of older versions, then
+// validation and normalisation of every member.
+func TestBackupsSection(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	log := slog.New(slog.DiscardHandler)
+	if _, err := Open(ctx, d, log); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.W.ExecContext(ctx, `UPDATE settings SET doc = json_remove(doc, '$.backups')`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(ctx, d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Backups{Schedule: "daily", Time: "03:30", Keep: 7, Destination: BackupsLocal}
+	if got := s.Get().Backups; got != want {
+		t.Fatalf("defaults of an older document: %+v", got)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		fn    func(*Backups)
+		field string
+	}{
+		{"weekly", func(b *Backups) { b.Schedule = " Weekly "; b.Weekday = 6 }, ""},
+		{"target", func(b *Backups) { b.Destination = "0123456789ABCDEF0123456789abcdef" }, ""},
+		{"midnight", func(b *Backups) { b.Time = "00:00" }, ""},
+		{"last minute", func(b *Backups) { b.Time = " 23:59 " }, ""},
+		{"schedule", func(b *Backups) { b.Schedule = "hourly" }, "backups.schedule"},
+		{"no time", func(b *Backups) { b.Time = "" }, "backups.time"},
+		{"hour 24", func(b *Backups) { b.Time = "24:00" }, "backups.time"},
+		{"minute 60", func(b *Backups) { b.Time = "12:60" }, "backups.time"},
+		{"one digit", func(b *Backups) { b.Time = "3:30" }, "backups.time"},
+		{"seconds", func(b *Backups) { b.Time = "03:30:00" }, "backups.time"},
+		{"sign", func(b *Backups) { b.Time = "+3:30" }, "backups.time"},
+		{"weekday low", func(b *Backups) { b.Weekday = -1 }, "backups.weekday"},
+		{"weekday high", func(b *Backups) { b.Weekday = 7 }, "backups.weekday"},
+		{"keep 0", func(b *Backups) { b.Keep = 0 }, "backups.keep"},
+		{"keep 91", func(b *Backups) { b.Keep = 91 }, "backups.keep"},
+		{"destination", func(b *Backups) { b.Destination = "../../etc" }, "backups.destination"},
+		{"short id", func(b *Backups) { b.Destination = "0123456789abcdef" }, "backups.destination"},
+		{"empty destination", func(b *Backups) { b.Destination = "" }, "backups.destination"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next, err := s.Update(ctx, func(a *All) error { a.Backups = want; tc.fn(&a.Backups); return nil })
+			if tc.field == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				b := next.Backups
+				if b.Schedule != "daily" && b.Schedule != "weekly" || strings.TrimSpace(b.Time) != b.Time ||
+					strings.ToLower(b.Destination) != b.Destination {
+					t.Fatalf("not normalised: %+v", b)
+				}
+				return
+			}
+			if e, ok := apperr.As(err); !ok || e.Kind != apperr.KindInvalid || e.Field != tc.field {
+				t.Fatalf("err = %v, want invalid %s", err, tc.field)
+			}
+		})
+	}
+}

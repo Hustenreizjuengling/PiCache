@@ -28,7 +28,7 @@ src/shell/               pair strip, sidebar/drawer, top bar (status, blocking m
 src/pages/               Login, Setup, Overview (+ overview/, auth/) and the section pages
 src/pages/dns/**         DNS pages: query log, filtering, clients, local DNS, settings
 src/pages/cache/**       cache pages: downloads, library, services, storage, settings
-src/pages/system/**      system pages: account, tokens, audit log, backup, health, updates
+src/pages/system/**      system pages: account, tokens, audit log, backup (+ scheduled backups), health, notifications, updates
 src/lib/api/             typed REST client, polling, SSE
 src/lib/ui/              components (import from '$lib/ui')
 src/lib/*.ts             router, session, app status, settings forms, formatters, icons, theme, errors
@@ -50,7 +50,7 @@ Aliases: `$lib` = `src/lib`, `$i18n` = `src/i18n`.
   Keep the page file names, because `routes.ts` imports them:
   `dns/{QueryLog,Filtering,Clients,LocalDns,DnsSettings}.svelte`,
   `cache/{Downloads,Library,Services,Storage,CacheSettings}.svelte`,
-  `system/{Account,Tokens,Audit,Backup,Health,Updates}.svelte`.
+  `system/{Account,Tokens,Audit,Backup,Health,Notifications,Updates}.svelte`.
 - **Never render HTML from data**: no `{@html}`, no `innerHTML`. No inline
   scripts, no `eval`, no external requests (CSP `script-src 'self'`,
   `connect-src 'self'`). Inline `style=` / `style:` is allowed.
@@ -104,7 +104,8 @@ support these query parameters):
 | `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here), `tab` (clients, seen, groups), `range` (24h, 7d, 30d; without it the range last chosen in this browser) |
 | `#/cache/downloads` | `client` (IP), `active=true`, `from` + `to` (unix seconds: an explicit time window instead of the range; shown as a removable chip) |
 | `#/cache/library`, `#/cache/storage`, `#/cache/settings` | – |
-| `#/system/health`, `#/system/account`, `#/system/updates` | – |
+| `#/system/notifications` | `channel` (id: open that channel) |
+| `#/system/health`, `#/system/account`, `#/system/updates`, `#/system/backup` | – |
 
 ## API layer (`$lib/api`)
 
@@ -120,6 +121,8 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.auth` | `status() setup(b) login({username,password,totp?}) logout() me() changePassword({currentPassword,newPassword,keepTokens?}) sessions() revokeSession(id) totpBegin(currentPassword) totpConfirm(code) totpDisable(password)` |
 | `api.tokens` | `list() create({name,scope,expiresInDays?,currentPassword}) remove(id)` |
 | `api.system` | `info() health() overview() audit({search,limit,offset}) backupUrl(includeSecrets) restore(blob, password) restart() update() checkUpdate() applyUpdate({version,currentPassword})` |
+| `api.backups` | `scheduled() run() fileUrl(name) removeFile(name)` (scheduled backups; their settings are the `backups` section of `api.settings`) |
+| `api.notifications` | `channels.{list,create,update,remove,test(id)}`, `events()`, `log(limit?)` |
 | `api.settings` | `get() put(all) patch(section, partial) defaults()` |
 | `api.dns` | `blocking() setBlocking(enabled, pauseSeconds?) lookup(req) stats() cacheIps() router()`, `records.{list,create,update,remove}`, `forwarders.{list,create,update,remove}` |
 | `api.upstreams` | `get() test(upstream) flushCache()` |
@@ -133,7 +136,7 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?) services(range) clients(range)` – `range` is a preset (`'24h'`) or `{ from, to }` |
 
 Long-running calls (list/source refresh, storage test, starting a storage
-speed test, restore) already carry longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`.
+speed test, restore) already carry longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`; so is a stored scheduled backup (`api.backups.fileUrl(name)`).
 
 **Errors.** Every failure is an `ApiError { status, code, message, field? }`;
 `code` is one of `invalid not_found conflict forbidden unavailable unauthorized
@@ -259,7 +262,8 @@ chevron-down chevron-up chevron-left chevron-right first check plus minus sun
 moon monitor globe logout pause play shield shield-check shield-off alert info
 error success copy external refresh trash edit pin download upload filter more
 sort arrow-up arrow-down overview list users user home sliders layers grid
-drive key lock document archive activity clock eye eye-off link power update.
+drive key lock document archive activity clock eye eye-off link power update
+bell send.
 
 CSS utilities (`app.css`): `.page`, `.stack`, `.stack-sm`, `.row`, `.spacer`,
 `.cols-2`, `.toolbar`, `.mono`, `.num`, `.muted`, `.subtle`, `.small`,

@@ -33,6 +33,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/notify"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
@@ -72,6 +73,8 @@ type App struct {
 	proxy    *proxy.Server
 	sni      *sni.Server
 	updates  *updater
+	notify   *notify.Service // nil in tests that build parts of the App (Emit is nil-safe)
+	backups  *backupScheduler
 	api      *api.Server
 
 	ln listeners
@@ -205,6 +208,11 @@ func (a *App) build(ctx context.Context) error {
 		return err
 	}
 	a.acl = netutil.NewACLWatcher(a.set)
+	host, _ := os.Hostname()
+	if a.notify, err = notify.New(ctx, a.cdb, a.box,
+		notify.Options{InstanceID: a.instanceID, Hostname: host, Version: version.Version}, log); err != nil {
+		return fmt.Errorf("notify: %w", err)
+	}
 
 	a.openLogs(ctx)
 
@@ -234,6 +242,7 @@ func (a *App) build(ctx context.Context) error {
 	if a.auth, err = auth.New(ctx, a.cdb, a.set, a.box, a.paths.SetupTokenFile, log); err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}
+	a.auth.OnLockout(func(l auth.Lockout) { a.notify.Emit(lockoutMessage(l)) })
 	if !a.restoredAt.IsZero() {
 		// CarryOverAccounts already emptied the sessions; a failure here
 		// rolls the restore back.
@@ -262,7 +271,10 @@ func (a *App) build(ctx context.Context) error {
 		_, err := os.Stat(update.HelperMarker)
 		return updateMode(caps.Container, service, err == nil)
 	}, releases.Latest, log)
+	a.updates.emit = a.notify.Emit
 	a.updates.load(ctx)
+	a.backups = newBackupScheduler(a.cfg.DataDir, a.instanceID, a.cdb, a.set, a.Backup, a.backupTarget, a.notify.Emit, log)
+	a.backups.load(ctx)
 	a.storage.OnStatusChange(func(string, storage.Status) { a.kickStore() })
 	a.set.Subscribe(func(o, n *settings.All) {
 		if o.Cache.ActiveStoreID != n.Cache.ActiveStoreID || o.Cache.MinFreeBytes != n.Cache.MinFreeBytes {
@@ -295,7 +307,7 @@ func (a *App) build(ctx context.Context) error {
 	a.api = api.New(api.Deps{
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
-		Logs: a.logs, Runtime: a, Updates: a.updates, UI: webui.Handler(), Log: log,
+		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups, UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil
@@ -394,6 +406,7 @@ func (a *App) serve(ctx context.Context) error {
 	for _, fn := range []func(context.Context){
 		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
 		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop, a.updates.run,
+		a.notify.Start, a.backups.Start,
 		func(ctx context.Context) { a.acl.Run(ctx.Done(), 5*time.Minute) },
 	} {
 		bg.Go(func() { fn(ctx) })

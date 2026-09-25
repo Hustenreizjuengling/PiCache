@@ -78,6 +78,37 @@ const system = {
     http.post<T.UpdateQueued>('/system/update/apply', body, o),
 }
 
+/** Scheduled backups (settings: PATCH /settings/backups). */
+const backups = {
+  /** Settings, the last run, the next run and the stored files of the current destination. */
+  scheduled: (o?: ReqOpts) => http.get<T.ScheduledBackups>('/system/backups/scheduled', o),
+  /** 202 {started:true}; 409 while a backup is running. */
+  run: (o?: ReqOpts) => http.post<{ started: boolean }>('/system/backups/scheduled/run', undefined, o),
+  /** URL for a plain <a href download> of a stored scheduled backup. */
+  fileUrl: (name: string) => apiUrl(`/system/backups/scheduled/files/${seg(name)}`),
+  removeFile: (name: string, o?: ReqOpts) => http.del(`/system/backups/scheduled/files/${seg(name)}`, o),
+}
+
+// ---------------------------------------------------------------- notifications
+
+const notifications = {
+  channels: {
+    list: (o?: ReqOpts) => http.get<T.NotifyChannel[]>('/notifications/channels', o),
+    /** 400 with field name, kind, url, minSeverity, events or secret (gotify without a token). */
+    create: (c: T.NotifyChannelInput, o?: ReqOpts) => http.post<T.NotifyChannel>('/notifications/channels', c, o),
+    update: (id: string, c: T.NotifyChannelInput, o?: ReqOpts) =>
+      http.put<T.NotifyChannel>(`/notifications/channels/${seg(id)}`, c, o),
+    remove: (id: string, o?: ReqOpts) => http.del(`/notifications/channels/${seg(id)}`, o),
+    /** Sends a test message now (ignores the channel's filters; the server waits up to 10 s). */
+    test: (id: string, o?: ReqOpts) =>
+      http.post<T.NotifyTestResult>(`/notifications/channels/${seg(id)}/test`, undefined, { ...o, timeoutMs: 30_000 }),
+  },
+  /** Events PiCache can notify about, with titles and descriptions. */
+  events: (o?: ReqOpts) => http.get<T.NotifyEvent[]>('/notifications/events', o),
+  /** The last delivery attempts, newest first (limit ≤ 200). */
+  log: (limit?: number, o?: ReqOpts) => http.get<T.NotifyDelivery[]>('/notifications/log', { ...o, query: { limit } }),
+}
+
 // ---------------------------------------------------------------- settings
 
 const settings = {
@@ -310,6 +341,8 @@ export const api = {
   auth,
   tokens,
   system,
+  backups,
+  notifications,
   settings,
   dns,
   upstreams,

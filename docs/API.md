@@ -57,7 +57,7 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 | GET `/system/health` | R | – | `api.Health` (check names: `listeners`, `upstreams`, `blocklists`, `dns-rate-limit`, `cache-domains`, `download_cache`, `sni`, `cache-store`, `logs`, `data-disk`) |
 | GET `/system/overview` | R | – | Top-bar/overview status in one call: `{blocking:dnsserver.BlockingStatus, dns:dnsserver.Stats, cacheIps:dnsserver.CacheIPStatus, router:dnsserver.RouterStatus, downloadCacheEnabled:bool, servicesReady:bool, store:api.StoreState, proxy:proxy.Stats, sni:sni.Stats, filter:filter.Stats, upstreams:[]upstream.UpstreamStat, clockGuard:bool, health:{ok:bool, warnings:int, failures:int}}` |
 | GET `/system/audit` | A | `?search&limit&offset` | `listing.Page[auth.AuditEntry]` |
-| GET `/system/backup` | A | `?includeSecrets=true` (sealed NAS passwords; useless without the master key) | `application/octet-stream` download `picache-backup-<date>.db`. Never contains accounts: users (password hashes, TOTP secrets), sessions and API tokens are removed; the audit log stays |
+| GET `/system/backup` | A | `?includeSecrets=true` (sealed NAS passwords and notification secrets; useless without the master key) | `application/octet-stream` download `picache-backup-<date>.db`. Never contains accounts: users (password hashes, TOTP secrets), sessions and API tokens are removed; the audit log stays |
 | POST `/system/restore` | S | raw body (`application/octet-stream`, ≤ 512 MiB); header `X-PiCache-Password`: the current password, percent-encoded as UTF-8 (JavaScript `encodeURIComponent`; ASCII passwords without `%` can be sent as they are) | 202 `{staged:true, message:"Restart PiCache to apply"}`; 401 with `field:"password"` for a missing or wrong password (nothing is staged; the session stays valid); 429 throttled; 400 for invalid or newer-version backups and for uploads with triggers, views, virtual tables, generated columns, tables or indexes the running PiCache does not have, indexes defined differently, or changed account tables. On the next start the restore keeps the running instance's accounts, API tokens and audit log and ends all sessions |
 | POST `/system/restart` | A | – | 202; the process exits with code 75 and is restarted by systemd/Docker |
 | GET `/system/update` | R | – | `{current:version.Info, currentIsDevBuild:bool, mode:"helper"|"docker"|"manual", checkEnabled:bool, includePrereleases:bool, latest?:{version, publishedAt, url, notes, prerelease:bool}, updateAvailable:bool, checkedAt?, checkError?:string, status?:{state, step, version, from, startedAt, finishedAt?, message?}, commands:{cli:string, docker?:string}}` (ARCHITECTURE 14). `update.Overview`. `latest` is the newest eligible release of the last check (kept when a later check fails; left out while it is a pre-release and pre-releases are off); `checkedAt`/`checkError` describe the last check. `status` (`update.Status`, left out if no update was ever queued) is the last run of the root helper: `state` one of `running`, `succeeded`, `failed`, `rolled-back`; `step` one of `download`, `verify`, `install`, `restart`, `health`, `rollback`, `done` (the failing step for `failed`, `rollback` for `rolled-back`); every run has a new `startedAt`; a request the helper has not claimed yet is `running`/`download` with a waiting `message` and becomes `failed` after 3 minutes. `commands.cli` is `sudo picache update --version <latest>` when an update is available, else `sudo picache update`; `commands.docker` only in mode `docker`. 503 if the process has no updater |
@@ -65,18 +65,49 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 | POST `/system/update/apply` | S | `{version, currentPassword}` | 202 `{queued:true}`; 400 with `field:"currentPassword"` for a missing or wrong password (checked first, throttled like restore, audited as `auth.login_failed`; 429 while throttled); 409 if the mode is not `helper`, an update is already running, or `version` is not the available version of the last check. Audited as `system.update_queued` (target: the version, details `{from}`). The request only queues the update; follow it with `GET /system/update` |
 | GET `/metrics` (no `/api/v1` prefix) | A token | – | Prometheus text (404 unless `web.metricsEnabled`) |
 
+## Scheduled backups — `routes_backups.go`
+
+Backups of `picache.db` at a local time of day (ARCHITECTURE 15.2), configured with `PATCH /settings/backups`. Same content as `GET /system/backup` (never accounts; sealed secrets only with `includeSecrets`). 503 if the process has no scheduler.
+
+| Method & path | P | Request | Response |
+|---|---|---|---|
+| GET `/system/backups/scheduled` | R | – | `api.ScheduledBackupsOverview` `{settings:settings.Backups, last?:{time, ok:bool, error?, file?, sizeBytes?, destination}, next?, running:bool, timeZone:string, destinationPath:string, filesError?:string, files:[{name, sizeBytes, time}]}`. `last`: the last run (scheduled, catch-up or run now; kept across restarts), `time` = its start, `destination` = `local` or the target id at that time. `next`: the next run while `enabled` (a pending catch-up run if earlier). `running`: a run is in progress. `timeZone`: abbreviation of the host time zone that `settings.time` refers to (`CEST`, `UTC`; a container without `TZ` uses UTC). A run in the same second as the previous one is stamped one second later, so file names stay unique. `destinationPath`: the directory of the current destination as PiCache sees it (`""` for an unknown target). `files`: this installation's backups in the current destination, newest first, `time` from the file name (UTC); empty with `filesError` when the destination cannot be read (e.g. `the storage target "NAS" is not available: <reason>`, or no answer within 5 s) |
+| POST `/system/backups/scheduled/run` | A | – | 202 `{started:true}`: runs in the background with the current settings (also while scheduled backups are disabled); follow it with GET. 409 while a run is going. Audited as `system.backup_scheduled_run` |
+| GET `/system/backups/scheduled/files/{name}` | A | – | the file as `application/octet-stream` with `Content-Disposition: attachment; filename=<name>` and `Content-Length`. `name` must be `picache-backup-<instanceId>-<YYYYMMDDTHHMMSSZ>.db` of this installation (400 `field:"name"` otherwise), a regular file in the current destination (404 otherwise; 503 while the destination is offline). Audited as `system.backup_download` (target: the name) |
+| DELETE `/system/backups/scheduled/files/{name}` | A | – | 204; same name rules. Audited as `system.backup_delete` (target: the name) |
+
+## Notifications — `routes_notify.go`
+
+Notification channels and the delivery log (ARCHITECTURE 15.1). Channel URLs may carry access tokens (webhook ids, `?auth=`), so channels and the log need admin rights; the event list does not. 503 if the process has no notifier (except `/notifications/events`).
+
+| Method & path | P | Request | Response |
+|---|---|---|---|
+| GET `/notifications/channels` | A | – | `[]notify.Channel` (oldest first) |
+| POST `/notifications/channels` | A | `notify.ChannelInput` | 201 `notify.Channel`. 400 with `field` `name`, `kind`, `url`, `minSeverity`, `events` or `secret` (Gotify without a token, invalid characters, too long); 409 with 10 channels. Audited as `notifications.channel.create` (target: id; the channel with the URL without its query string, never the secret) |
+| PUT `/notifications/channels/{id}` | A | `notify.ChannelInput` (all members; an omitted `events` means all events, an omitted `enabled` false) | `notify.Channel`; 400 `field:"id"` for a malformed id, 404 unknown. 400 `field:"secret"` when a stored secret would be kept although `kind` or the URL's scheme, host or port changed: enter it again. Audited as `notifications.channel.update` (details: the channel and `secretChanged`) |
+| DELETE `/notifications/channels/{id}` | A | – | 204; queued messages of the channel are dropped. Audited as `notifications.channel.delete` |
+| POST `/notifications/channels/{id}/test` | A | – | `notify.TestResult` `{ok:bool, error?:string, status?:int, durationMs:int}`: sends the event `notify.test` once, synchronously (10 s), also to a disabled channel and regardless of its filters; `status` is the HTTP status if the server answered, `error` a text without the URL (e.g. `HTTP 401 Unauthorized`, `no answer within 10 seconds`, `HTTP 302 Found: redirects are not followed; use the final URL`). 429 while 2 other tests run. Logged in the delivery log and audited as `notifications.channel.test` (details `{ok, status}`) |
+| GET `/notifications/events` | R | – | `[]notify.EventInfo` `[{key, severity, title, description}]`: the selectable events with their default severity (12, in this order: `health.failed`, `health.warning`, `health.recovered`, `storage.offline`, `storage.online`, `update.available`, `update.installed`, `update.failed`, `backup.failed`, `backup.succeeded`, `security.lockout`, `notify.test`) |
+| GET `/notifications/log` | A | `?limit` (1–200, default 200) | `[]notify.LogEntry` `[{time, channelId, channelName, event, severity, title, ok:bool, error?, attempt}]`, newest first, the last 200 attempts since the start (memory only). `event` may also be `notify.dropped`: the summary sent after the rate limit dropped messages |
+
+- `notify.Channel` = `{id (32 hex), name, kind:"webhook"|"ntfy"|"gotify", url, hasSecret:bool, enabled:bool, minSeverity:"info"|"warning"|"error", events:[string] (empty = all), createdAt, updatedAt}`. The secret is never returned.
+- `notify.ChannelInput` = `{name, kind, url, secret?:string|null, enabled, minSeverity, events}`: `secret` absent or `null` keeps the stored secret, `""` removes it, a value replaces it (webhook: the whole `Authorization` header value, e.g. `Bearer abc`; ntfy: the access token; gotify: the application token, required). `minSeverity` `""` means `warning`. `name` 1–64 characters; `url` http/https, ≤ 2048 characters, printable ASCII, no user name or password, no fragment, not a link-local, multicast or unspecified IP address (private and loopback addresses are allowed); `events` known keys, duplicates removed.
+- Delivery (ARCHITECTURE 15.1): up to 3 attempts (10 s and 60 s apart), at most 20 messages per channel in 10 minutes (then one `notify.dropped` summary), no redirects. Formats: webhook JSON `{event, severity, title, message, time, instance, hostname, version}`; ntfy text with `Title`, `Priority` (3/4/5) and `Tags: <event>,<severity>`; Gotify `POST <url>/message` `{title, message, priority}` (4/6/8).
+
 ## Settings — `routes_settings.go`
 
 | Method & path | P | Request | Response |
 |---|---|---|---|
 | GET `/settings` | R | – | `settings.All` |
 | PUT `/settings` | A | `settings.All` (full document) | `settings.All`; 400 with `field` on validation errors |
-| PATCH `/settings/{section}` | A | one section object (`dns`, `filter`, `downloadCache`, `cache`, `logs`, `web`, `updates`) | `settings.All` |
+| PATCH `/settings/{section}` | A | one section object (`dns`, `filter`, `downloadCache`, `cache`, `logs`, `web`, `updates`, `backups`) | `settings.All` |
 | GET `/settings/defaults` | R | – | `settings.All` (defaults, for "reset" buttons) |
 
 Changes to `cache.activeStoreId` via these endpoints are rejected (use `POST /storage/targets/{id}/activate`).
 
 Section `updates` = `settings.Updates` `{checkEnabled:bool, includePrereleases:bool}` (defaults `true`, `false`): the daily release check and whether pre-releases are offered (ARCHITECTURE 14.3). Changing it starts a check (at most once per 30 s).
+
+Section `backups` = `settings.Backups` `{enabled:bool, schedule:"daily"|"weekly", time:"HH:MM", weekday:0..6, keep:1..90, destination:"local"|<storage target id>, includeSecrets:bool}` (defaults `false`, `daily`, `03:30`, `0` = Sunday, `7`, `local`, `false`): scheduled backups (ARCHITECTURE 15.2). `time` is the local time of the host, exactly two digits each (`00:00`–`23:59`); `weekday` is used for `weekly` only; `destination` `local` is `<data>/backups/scheduled`, a storage target id (32 hex, not the built-in cache target) is `<its store root>/picache-backups`. 400 with `field` `backups.schedule`, `backups.time`, `backups.weekday`, `backups.keep` or `backups.destination` (malformed, or a changed destination that is not an existing storage target). `schedule` and `destination` are normalised to lower case.
 
 ## DNS: blocking, lookup, records, forwarders, clients, groups — `routes_dns.go`
 
@@ -191,7 +222,7 @@ All return 503 `unavailable` when no store is online (except `/cache/state`).
 | GET `/storage/targets/{id}` | R | – | `storage.TargetWithStatus` |
 | POST `/storage/targets` | A | `storage.TargetInput` | 201 `storage.Target` |
 | PUT `/storage/targets/{id}` | A | `storage.TargetInput` | `storage.Target` |
-| DELETE `/storage/targets/{id}` | A | – | 204 (not local, not active) |
+| DELETE `/storage/targets/{id}` | A | – | 204 (not local, not active); 409 while it is the destination of scheduled backups (`backups.destination`) |
 | POST `/storage/targets/{id}/test` | A | – | `storage.TestResult` (`extendDeadlines` 2 min) |
 | POST `/storage/targets/{id}/apply` | A | – | `storage.Status` with `applyState:"queued"` (503 if the root helper is not installed) |
 | POST `/storage/targets/{id}/init` | A | `{adopt:bool}` | `storage.InitResult` |
@@ -239,5 +270,5 @@ Speed test (one run at a time, in the background, not tied to the request; docs/
 - Decode with `decode(w, r, &in)`; respond with `ok`, `created`, `noContent` or `writeJSON`.
 - Handlers that may take long (list/source refresh, storage test, backup, restore) call `extendDeadlines(w, d)` first; SSE handlers use `sse(w, r, event, ch, alive)` with `alive = func() bool { return s.d.Auth.Valid(ctx, principal(r)) }`.
 - Audit every successful state change with `s.audit(r, "<area>.<verb>", target, details)`; details are redacted by member name (password, token, secret, code, totp, setupToken, …). Never pass a token secret.
-- Never return secrets (NAS password, token secrets except once at creation, TOTP secret except at begin).
+- Never return secrets (NAS password, notification secrets, token secrets except once at creation, TOTP secret except at begin).
 - Validate path IDs with `pathID(r, "id")`; parse ranges with `qRange(r, 24*time.Hour)`.

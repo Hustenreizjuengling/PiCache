@@ -5,6 +5,21 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Notifications: **System → Notifications** sends messages through ntfy,
+  Gotify or a webhook (for example Home Assistant) when a health check fails
+  or warns (and recovers), the cache storage goes offline (and back), an
+  update is available, installed or fails, a scheduled backup fails or
+  succeeds, or sign-ins are locked out. Per channel: minimum severity, event
+  filter, test button; secrets are sealed with the master key and
+  write-only; a delivery log shows the last attempts.
+- Scheduled backups: daily or weekly at a set time, keeping the newest N
+  files, to the data directory or to a storage target such as the NAS;
+  missed runs are made up after a restart; run now, download and delete in
+  **System → Backup & restore**. The time is that of the host, and the page
+  shows its time zone (a Docker container uses UTC unless `TZ` is set).
+
 ## [0.3.1] - 2026-09-25
 
 ### Fixed
