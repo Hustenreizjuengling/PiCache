@@ -27,6 +27,7 @@ type All struct {
 	Cache    Cache    `json:"cache"`
 	Logs     Logs     `json:"logs"`
 	Web      Web      `json:"web"`
+	Updates  Updates  `json:"updates"`
 }
 
 // DNS configures the resolver side.
@@ -120,6 +121,13 @@ type Web struct {
 	RedirectToHTTPS    bool     `json:"redirectToHttps"`
 	MetricsEnabled     bool     `json:"metricsEnabled"`
 	Language           string   `json:"language"` // "" = browser default, "en", "de"
+}
+
+// Updates configures the release check (docs/ARCHITECTURE.md 14.3). Installing
+// an update always needs an admin action.
+type Updates struct {
+	CheckEnabled       bool `json:"checkEnabled"`       // check GitHub for a new release every day
+	IncludePrereleases bool `json:"includePrereleases"` // offer pre-releases (vX.Y.Z-rc.N) too
 }
 
 // BlockingActive reports whether blocking is effective at t.

@@ -27,6 +27,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
+	"github.com/hustenreizjuengling/picache/internal/update"
 )
 
 // StoreState describes the active cache store.
@@ -106,6 +107,22 @@ type Runtime interface {
 	Health(ctx context.Context) Health // last evaluated health (refreshed every 60 s)
 }
 
+// Updater is implemented by internal/app: the release check and the request
+// queue of the root update helper (docs/ARCHITECTURE.md 14). The service
+// itself never downloads or installs anything.
+type Updater interface {
+	// UpdateOverview returns the running version, the last check result, the
+	// install mode and the state of the last update run.
+	UpdateOverview(ctx context.Context) update.Overview
+	// CheckUpdate checks GitHub now (at most once per 30 s; faster calls get
+	// the last result) and returns the overview.
+	CheckUpdate(ctx context.Context) update.Overview
+	// QueueUpdate asks the root helper to install version, which must be the
+	// update found by the last check (apperr.Conflict otherwise, without the
+	// helper, or while an update runs).
+	QueueUpdate(ctx context.Context, version, requestedBy string) error
+}
+
 // Deps are everything the API talks to.
 type Deps struct {
 	Config   *config.Config
@@ -121,6 +138,7 @@ type Deps struct {
 	Storage  *storage.Manager
 	Logs     *logs.Store
 	Runtime  Runtime
+	Updates  Updater      // nil: the update endpoints answer 503
 	UI       http.Handler // embedded web UI
 	Log      *slog.Logger
 }

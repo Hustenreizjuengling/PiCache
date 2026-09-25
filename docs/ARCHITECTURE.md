@@ -63,7 +63,7 @@ Everything persistent lives in exactly two places plus optional NAS mounts.
 
 | Path (bare metal / LXC) | Docker | Contents | Backup? |
 |---|---|---|---|
-| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3); `storage-requests/` (mount requests for the root helper); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
+| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3; a failed update puts back the one made during its run); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and `status.json` of the root update helper, 14.4); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
 | `/var/cache/picache` (`PICACHE_CACHE_DIR`) | `/cache` | The built-in **local** cache store (slice files). Large. | No |
 | `/srv/picache/<id>` (`PICACHE_MOUNT_ROOT`) | `/srv/picache` (bind, `rslave`) | NAS cache stores. The only place outside the cache dir where stores may live (the only NAS path writable inside the sandbox). | No |
 | `/etc/picache/picache.env` | environment | Bootstrap settings only. Read by systemd **and by every CLI command**. | Yes |
@@ -80,7 +80,7 @@ Rules:
 ## 4. Package layout and dependency rules
 
 ```
-cmd/picache/                 CLI: serve (default), version, healthcheck, reset-password, setup-token, storage apply|apply-pending
+cmd/picache/                 CLI: serve (default), version, healthcheck, reset-password, setup-token, storage apply|apply-pending, update [--check] | apply-pending
 internal/version/            build info (ldflags)
 internal/config/             bootstrap config from env/flags, derived paths
 internal/db/                 SQLite (modernc) writer/reader pools, per-component migrations, read-only open, schema registry
@@ -99,6 +99,7 @@ internal/lancache/store/     slice store + index DB + eviction + verify/rebuild 
 internal/lancache/proxy/     HTTP cache proxy (:80)
 internal/lancache/sni/       TLS SNI pass-through (:443)
 internal/storage/            storage targets, capability detection, mount guard, store init/adopt, host-apply root helper, snippets
+internal/update/             releases: check (GitHub API), SemVer, signature check (compiled-in keys), install + rollback, update requests of the root helper
 internal/logs/               logs.db: query log, cache events, sessions, rollups, evictions, live subscriptions
 internal/api/                REST API + SSE, middleware, one routes_<domain>.go file per domain
 internal/webui/              go:embed of the built frontend (internal/webui/dist)
@@ -110,7 +111,7 @@ docs/                        this file, API.md, DESIGN.md, DEPLOYMENT.md, SECURI
 
 Dependency rules:
 - Foundation packages (`version`, `config`, `db`, `apperr`, `listing`, `settings`, `secrets`, `netutil`) import only each other (`settings` → `db`, `apperr`; `netutil` → `settings`).
-- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker only). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore` import no other domain package.
+- Domain packages import foundation packages and each other only along these edges: `dnsserver` → {`upstream`, `filter`, `clients`, `logs`} (types only; collaborators are consumer-side interfaces); `proxy` → {`cachestore`, `clients`, `logs`, `services` (pure functions GroupFor/IsBypassPath/constants only)}; `sni` → {`clients`, `logs`}; `storage` → {`cachestore`} (store marker only). `filter`, `services`, `upstream`, `clients`, `logs`, `auth`, `cachestore`, `update` import no other domain package (`update` imports only `version`).
 - `dnsserver`, `proxy` and `sni` declare **consumer-side interfaces** for their collaborators (see their `Deps`) so they can be tested with fakes.
 - `api` imports domain packages; domain packages never import `api`. `app` imports everything and is imported only by `cmd`.
 
@@ -162,7 +163,8 @@ Third-party dependencies are limited to: `github.com/miekg/dns v1.1.73`, `modern
 ### 6.2 Privilege model per deployment
 
 - **Bare metal / LXC (systemd)**: user `picache`, `AmbientCapabilities=CAP_NET_BIND_SERVICE`, `NoNewPrivileges=yes`, `ProtectSystem=strict`, full hardening (`deploy/systemd/picache.service`). NAS mounts are done by the optional **root helper**: `picache-storage.path` watches `/var/lib/picache/storage-requests/` and starts `picache-storage.service` (`picache storage apply-pending`, root, oneshot), which re-validates every request (`storage.ValidateTarget`), writes `/etc/picache/credentials/<id>.cred` and a `.mount` unit for `/srv/picache/<id>` and starts it. The main service only writes request files. In unprivileged LXC the helper cannot mount CIFS/NFS (kernel rule); the Proxmox host mounts the share and bind-mounts it (snippets in the UI).
-- **Docker**: the image starts as root, binds all listeners, then **drops to `PICACHE_RUN_AS` (default `65532:65532`) before touching any file** (`setgroups/setgid/setuid`, verified; regaining root is checked to fail). PiCache never chowns: named volumes inherit ownership from the image (`/data`, `/cache` owned by 65532); bind-mounted directories must be chowned on the host (clear error otherwise). Compose: `cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE, SETUID, SETGID]`, `security_opt: [no-new-privileges:true]`, `read_only: true`, host networking. NAS: host fstab + bind with `rslave` (snippets in the UI).
+  Updates from the web UI use a second root helper the same way (14.4): `picache-update.path` watches `<data>/update-requests/` and starts `picache-update.service` (`picache update apply-pending`, root, oneshot), which takes nothing but a version string from the request and installs only a release that is signed with a compiled-in key and newer than the installed one. Its sandbox allows writes only to `/usr/local/bin` and the data directory, keeps `CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`, `CAP_CHOWN`, `CAP_FOWNER` and needs the network (HTTPS to GitHub, the local health check). The service only writes the request file; it never downloads or replaces a binary. `install.sh` installs this helper by default (marker `/etc/picache/updater.enabled`; `--without-updater` leaves it out).
+- **Docker**: the image starts as root, binds all listeners, then **drops to `PICACHE_RUN_AS` (default `65532:65532`) before touching any file** (`setgroups/setgid/setuid`, verified; regaining root is checked to fail). PiCache never chowns: named volumes inherit ownership from the image (`/data`, `/cache` owned by 65532); bind-mounted directories must be chowned on the host (clear error otherwise). Compose: `cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE, SETUID, SETGID]`, `security_opt: [no-new-privileges:true]`, `read_only: true`, host networking. NAS: host fstab + bind with `rslave` (snippets in the UI). Updates: pull the new image (the service reports mode `docker`, 14.4).
 
 ---
 
@@ -417,3 +419,65 @@ Information architecture: **Overview** · **DNS** (Query log, Filtering, Clients
 | Fills | 64 global (× slice ≤ 1 GiB), 32 per client, read-ahead 2 |
 | Logs | query log 7 days, cache log 48 h, sessions 90 days, stats 365 days, logs.db ≤ 2 GiB |
 | Web sessions | idle 60 min, absolute 7 days |
+| Updates | daily check on (stable releases only); installing always needs an admin action |
+
+---
+
+## 14. Releases and updates
+
+### 14.1 Releases
+
+- Versions follow SemVer 2.0 with a `v` prefix. Pushing a tag `vX.Y.Z` (or `vX.Y.Z-rc.N`, published as a pre-release) runs `.github/workflows/release.yml`, which builds everything from that tag with `make dist VERSION=<tag>` and publishes a GitHub release. Release notes are the matching `CHANGELOG.md` section.
+- Release assets (exact names): `picache-linux-amd64`, `picache-linux-arm64`, `picache-linux-armv7` (static binaries reporting the tag as version), `picache-deploy.tar.gz` (`deploy/`, `LICENSE`, `THIRD_PARTY_NOTICES.md`), `get-picache.sh` (the one-line installer, 14.5), `SHA256SUMS` (`sha256sum` format: `<64 hex>  <name>`, one line per other asset) and `SHA256SUMS.sig`.
+- `SHA256SUMS.sig` is one line of base64: the Ed25519 signature over the exact bytes of `SHA256SUMS`, made in CI with the private key from the secret `RELEASE_SIGNING_KEY` (PEM, `openssl pkeyutl -sign -rawin`). Only the job `sign` (environment `release`) gets the key: it runs no checked-out code, no dependency and no action, and receives `SHA256SUMS` from the build job and returns the signature as job outputs, so the install scripts of the npm dependencies in the build job never see the key. The workflow verifies the signature against `docs/release-key.pem` before publishing and fails without the secret.
+- Trusted public keys are compiled into the binary (`internal/update/keys.go`, a list for rotation; raw 32-byte keys in base64). The same key is published as `docs/release-key.pem`, so anyone can check a release by hand (`openssl pkeyutl -verify -pubin -inkey docs/release-key.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig.bin` after `base64 -d SHA256SUMS.sig > SHA256SUMS.sig.bin`, then `sha256sum -c --ignore-missing SHA256SUMS`). Key rotation: a release signed with the old key ships the new key in its list; later releases are signed with the new key only.
+- The workflow also pushes multi-arch images (`linux/amd64`, `linux/arm64`, `linux/arm/v7`) to `ghcr.io/hustenreizjuengling/picache` with the tag `X.Y.Z` and, for non-pre-releases, `X.Y` and `latest`.
+
+### 14.2 Versions of the running binary
+
+- `internal/update` parses `version.Version`. A plain SemVer (`v1.2.3`, `v1.2.3-rc.1`) is a release build. `dev`, a bare commit hash, or a `git describe` string (`v1.2.3-4-gabc1234[-dirty]`) is a development build; for `git describe` the base version `v1.2.3` is used for comparisons (a development build counts as newer than its base).
+- An update is available when the newest eligible release is greater than the running release version (or the base version of a development build; a development build without a base accepts any release). Downgrades are never offered and are only possible from the CLI with `--allow-downgrade`.
+
+### 14.3 Checking for updates (`internal/update`, run by the service)
+
+- Setting `updates.checkEnabled` (default `true`): the first check runs 5 minutes after start, then every 24 h (±30 min jitter). `POST /system/update/check` checks at once (at most once per 30 s; faster calls return the last result).
+- Source: `GET https://api.github.com/repos/Hustenreizjuengling/PiCache/releases?per_page=30` with `Accept: application/vnd.github+json`, `User-Agent: PiCache/<version>`, 15 s timeout, response ≤ 2 MiB, through the normal outbound HTTP client (DNS through PiCache's own upstream resolver, like list downloads). Drafts are ignored; pre-releases only if `updates.includePrereleases` (default `false`). The newest eligible release by SemVer precedence that has the binary for this architecture (`GOARCH`; `arm` → `armv7`), `SHA256SUMS` and `SHA256SUMS.sig` wins.
+- The result (`latest`: version, publishedAt, html URL, notes ≤ 64 KiB, prerelease flag; `checkedAt`; `error`) is kept in memory and in `app_meta` (key `update.last_check`, JSON), so it survives restarts. A private repository or no network gives an error message ("release information is not reachable …"), never a crash; the UI shows it.
+- Checking never downloads binaries and never installs anything.
+
+### 14.4 Installing an update
+
+Common procedure (`update.Apply`, used by the CLI and by the root helper; runs as root):
+
+1. Resolve the target release (GitHub, or `--from <dir>` with the same file names).
+2. Take the update lock (`flock` on the data directory; one update at a time) and check that the installed binary still reports the version of the running process, against which the target was found newer (otherwise another update replaced it meanwhile: stop). Download `SHA256SUMS` and `SHA256SUMS.sig` (≤ 64 KiB each) and verify the signature against the compiled-in keys. Nothing else is trusted before this.
+3. Download the binary (≤ 256 MiB) into `<dir of the installed binary>/.picache.update` (same file system, mode 0700) and check its SHA-256 against `SHA256SUMS`.
+4. Run `<new binary> version`; it must print `picache <target version> `.
+5. Copy the installed binary to `<bindir>/picache.prev`, then `chmod 0755` and `rename` the new one over `<bindir>/picache` (atomic).
+6. `systemctl restart picache.service`, then wait up to 90 s for the health probe (the same checks as `picache healthcheck`: `/healthz` on the web listener and the DNS probe).
+7. If step 6 fails: put `picache.prev` back, restore the pre-upgrade database copy that the new version made during this run (the oldest `<data>/backups/picache-<old version>-<timestamp>.db` not older than the start of the run; a regular file with one link that fits into the space the service itself could still use; -wal/-shm removed, owner kept) with the service stopped (if it cannot be stopped, the database is left alone and the run is `failed`), start it again and report `rolled-back`. The new version makes that copy at its first start before it migrates anything and does not start if the copy fails, so the old version always gets a database it can open.
+
+Only the binary is replaced. Unit files and the installer change rarely; release notes say when `install.sh` from `picache-deploy.tar.gz` must be run.
+
+**CLI** (`picache update`):
+
+- `picache update --check`: prints the running and the latest version and the release URL; exit code 0 = up to date, 10 = update available, 1 = error. Needs no root.
+- `sudo picache update [--version vX.Y.Z] [--prerelease] [--allow-downgrade] [--yes]`: shows the start of the release notes and asks for confirmation unless `--yes`, then runs the procedure above.
+- `sudo picache update --from <dir> [--yes]`: offline install from a directory with the release assets (same signature check).
+- `picache update apply-pending`: entry point of the root helper only.
+
+**Web UI** (bare metal, VM, LXC with the helper): the service runs unprivileged and cannot replace its own binary. As with host-apply (10.2), it only queues a request and a root helper does the work:
+
+- `install.sh` installs `picache-update.path` and `picache-update.service` and creates the marker `/etc/picache/updater.enabled` by default (`--without-updater` skips both; `--uninstall` removes them). With a custom `PICACHE_DATA_DIR` it writes a path drop-in like for host-apply.
+- `POST /system/update/apply {version, currentPassword}` (interactive session + password, like restore) accepts only the available version of the last check result, and only when no update is running. It writes `<data>/update-requests/request` (JSON `{version, requestedAt, requestedBy}`, written to a temporary file and renamed, mode 0640).
+- `picache-update.path` starts `picache-update.service` (root, `picache update apply-pending`), which moves the request to `.claim`, validates the version string (`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`), and runs the procedure for exactly that version from the fixed GitHub repository. The request carries no URL, file or command: a compromised service can at most ask for another signed release, and the helper refuses any that is not newer than the installed binary (only the CLI has `--allow-downgrade`).
+- Progress goes to `<data>/update-requests/status.json` (owner picache, 0640): `{state:"running"|"succeeded"|"failed"|"rolled-back", step:"download"|"verify"|"install"|"restart"|"health"|"rollback"|"done", version, from, startedAt, finishedAt?, message?}`. The service reads it for `GET /system/update`; after the restart the new process reports the result. Every run writes a new `startedAt`. Until the helper has claimed a request, the service reports it as `{state:"running", step:"download"}` with a waiting message, and as `failed` once it has waited for 3 minutes (path unit not running); a run that still says `running` after 45 minutes (the helper's `TimeoutStartSec` is 30 min) is reported as `failed`. A `.claim` left by a killed helper is reported as `failed` by the next run, which also starts `picache.service` in case the run died while it was stopped.
+- Mode reported to the UI: `helper` when the marker exists and the service runs as a systemd service (`INVOCATION_ID` is set); `docker` in a Docker or Podman container (the UI shows `docker compose pull && docker compose up -d`); `manual` otherwise, including an LXC container without the helper (the UI shows `sudo picache update`).
+
+### 14.5 One-line installer (`get-picache.sh`)
+
+- `scripts/get-picache.sh` is published as a release asset, so `https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh` always serves the installer of the newest release (`/releases/download/<tag>/get-picache.sh` a fixed one), and it is covered by `SHA256SUMS` like every other asset. Usage: `curl -fsSL <url> | sudo sh [-s -- options]`.
+- It is POSIX sh, runs as root on systemd hosts only, and wraps everything in `main`, called on the last line, so a truncated download runs nothing. It installs `openssl` and `ca-certificates` with apt if they are missing and needs nothing else beyond a Debian base system.
+- It downloads `SHA256SUMS` and `SHA256SUMS.sig` of the chosen release (`latest` or `--version vX.Y.Z`), verifies the signature with the release key embedded in the script (the same key as `docs/release-key.pem` and `keys.go`), then downloads `picache-deploy.tar.gz` and the binary for this architecture and checks them against `SHA256SUMS`. Only then does it run `deploy/install.sh` from that archive (`--binary`, or `--uninstall [--purge] [--yes]`), passing `--with-host-apply` and `--without-updater` through. Downloads use HTTPS only; `PICACHE_RELEASE_BASE` may point to a mirror with the same layout (the signature is checked all the same).
+- Running it again on an installed machine upgrades it like the manual installer path, including unit files.
+- `install.sh --uninstall --purge` also stops and removes the NAS mount units written by the host-apply helper and deletes `/etc/picache`, the data directory, the local cache directory and the picache system account. It deletes only the default paths and never a mount point or anything below one (custom `PICACHE_DATA_DIR`, `PICACHE_CACHE_DIR`, `PICACHE_MOUNT_ROOT` and mount points are listed instead), refuses while anything is still mounted below those directories, and asks on the terminal (`/dev/tty`, the script may come through a pipe) unless `--yes` is given.

@@ -36,6 +36,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
+	"github.com/hustenreizjuengling/picache/internal/update"
 	"github.com/hustenreizjuengling/picache/internal/version"
 	"github.com/hustenreizjuengling/picache/internal/webui"
 )
@@ -70,6 +71,7 @@ type App struct {
 	dns      *dnsserver.Server
 	proxy    *proxy.Server
 	sni      *sni.Server
+	updates  *updater
 	api      *api.Server
 
 	ln listeners
@@ -161,7 +163,7 @@ func newApp(cfg *config.Config, log *slog.Logger) *App {
 func (a *App) prepareDirs() error {
 	for _, d := range []string{a.cfg.DataDir, a.paths.CacheIndexDir, a.paths.ListsDir, a.paths.CacheDomainsDir,
 		a.paths.TLSDir, filepath.Join(a.cfg.DataDir, "tmp"), filepath.Join(a.cfg.DataDir, "backups"),
-		filepath.Join(a.cfg.DataDir, "storage-requests")} {
+		filepath.Join(a.cfg.DataDir, "storage-requests"), filepath.Join(a.cfg.DataDir, update.RequestsDirName)} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			return fmt.Errorf("create %s: %w (the data directory must be writable by the PiCache user)", d, err)
 		}
@@ -188,7 +190,7 @@ func (a *App) build(ctx context.Context) error {
 		return err
 	}
 	if err := a.preUpgradeBackup(ctx); err != nil {
-		log.Warn("pre-upgrade backup failed", slog.Any("err", err))
+		return fmt.Errorf("pre-upgrade backup: %w", err)
 	}
 	if a.set, err = settings.Open(ctx, a.cdb, log); err != nil {
 		return err
@@ -251,6 +253,16 @@ func (a *App) build(ctx context.Context) error {
 	if a.storage, err = storage.New(ctx, a.cdb, a.box, a.cfg, sliceSize, log); err != nil {
 		return fmt.Errorf("storage: %w", err)
 	}
+	// Release checks (docs/ARCHITECTURE.md 14.3) use the same outbound client as
+	// list downloads: DNS through the upstreams, public destinations only.
+	caps := a.storage.Capabilities()
+	service := runsAsSystemdService(caps.Systemd)
+	releases := &update.Client{HTTP: newFetchClient(lookup46)}
+	a.updates = newUpdater(a.cfg.DataDir, version.Version, a.cdb, a.set, func() string {
+		_, err := os.Stat(update.HelperMarker)
+		return updateMode(caps.Container, service, err == nil)
+	}, releases.Latest, log)
+	a.updates.load(ctx)
 	a.storage.OnStatusChange(func(string, storage.Status) { a.kickStore() })
 	a.set.Subscribe(func(o, n *settings.All) {
 		if o.Cache.ActiveStoreID != n.Cache.ActiveStoreID || o.Cache.MinFreeBytes != n.Cache.MinFreeBytes {
@@ -258,6 +270,9 @@ func (a *App) build(ctx context.Context) error {
 		}
 		if o.Cache.MaxSizeBytes != n.Cache.MaxSizeBytes || o.Cache.MaxAgeDays != n.Cache.MaxAgeDays {
 			a.kickEvict() // apply a lowered limit now, not within the next minute
+		}
+		if o.Updates != n.Updates {
+			a.updates.kickCheck() // e.g. pre-releases were allowed: look for them now
 		}
 	})
 
@@ -280,7 +295,7 @@ func (a *App) build(ctx context.Context) error {
 	a.api = api.New(api.Deps{
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
-		Logs: a.logs, Runtime: a, UI: webui.Handler(), Log: log,
+		Logs: a.logs, Runtime: a, Updates: a.updates, UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil
@@ -378,7 +393,7 @@ func (a *App) serve(ctx context.Context) error {
 	}
 	for _, fn := range []func(context.Context){
 		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
-		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop,
+		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop, a.updates.run,
 		func(ctx context.Context) { a.acl.Run(ctx.Done(), 5*time.Minute) },
 	} {
 		bg.Go(func() { fn(ctx) })

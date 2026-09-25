@@ -21,6 +21,7 @@ import (
 	cachestore "github.com/hustenreizjuengling/picache/internal/lancache/store"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
+	"github.com/hustenreizjuengling/picache/internal/update"
 )
 
 // coreRuntime is a fake Runtime for the auth/system/settings route tests.
@@ -89,6 +90,7 @@ type coreEnv struct {
 	auth      *auth.Service
 	set       *settings.Store
 	rt        *coreRuntime
+	upd       *coreUpdater
 	setupFile string
 }
 
@@ -124,9 +126,9 @@ func newCoreEnv(t *testing.T) *coreEnv {
 		DataDir: dir, CacheDir: filepath.Join(dir, "cache"), MountRoot: filepath.Join(dir, "mnt"),
 		WebListen: []string{":8080"}, WebTLSListen: []string{":8443"}, WebHosts: []string{"picache.example"},
 	}
-	rt := &coreRuntime{}
-	srv := New(Deps{Config: cfg, Settings: set, Auth: a, Runtime: rt, Log: log})
-	return &coreEnv{srv: srv, auth: a, set: set, rt: rt, setupFile: setupFile}
+	rt, upd := &coreRuntime{}, &coreUpdater{}
+	srv := New(Deps{Config: cfg, Settings: set, Auth: a, Runtime: rt, Updates: upd, Log: log})
+	return &coreEnv{srv: srv, auth: a, set: set, rt: rt, upd: upd, setupFile: setupFile}
 }
 
 // coreRequest builds a request to the test host; a non-empty body is sent as JSON.
@@ -246,3 +248,36 @@ func coreReadSetupToken(t *testing.T, path string) string {
 }
 
 var errCoreBackup = errors.New("disk full")
+
+// coreUpdater is a fake Updater: it returns overview and records checks
+// and queued versions (queueErr: what QueueUpdate answers).
+type coreUpdater struct {
+	mu       sync.Mutex
+	overview update.Overview
+	checks   int
+	queued   []string // "version by user"
+	queueErr error
+}
+
+func (f *coreUpdater) UpdateOverview(context.Context) update.Overview {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.overview
+}
+
+func (f *coreUpdater) CheckUpdate(context.Context) update.Overview {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks++
+	return f.overview
+}
+
+func (f *coreUpdater) QueueUpdate(_ context.Context, version, by string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.queueErr != nil {
+		return f.queueErr
+	}
+	f.queued = append(f.queued, version+" by "+by)
+	return nil
+}

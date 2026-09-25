@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
+	"github.com/hustenreizjuengling/picache/internal/version"
 )
 
 // newRestoreApp returns an App with prepared directories and nothing open.
@@ -488,5 +490,71 @@ func TestPlantedLiveTriggerIsRemoved(t *testing.T) {
 	}
 	if err := a.cdb.R.QueryRow(`SELECT COUNT(*) FROM auth_tokens`).Scan(&tokens); err != nil || tokens != 0 {
 		t.Fatalf("tokens after delete = %d, %v", tokens, err)
+	}
+}
+
+// The pre-upgrade copy is the database as the previous version left it:
+// made before this version migrates anything (app_meta included), because
+// a rollback puts it back for the previous version, which refuses newer
+// schema versions. Without a copy nothing is migrated and the start fails.
+func TestPreUpgradeBackupBeforeMigrations(t *testing.T) {
+	ctx := context.Background()
+	a := newRestoreApp(t)
+	openLive(t, a)
+	oldVersion, oldMigrations := version.Version, appMigrations
+	t.Cleanup(func() { version.Version, appMigrations = oldVersion, oldMigrations })
+	appState := func(d *sql.DB) (schema int, bin string) {
+		t.Helper()
+		if err := d.QueryRow(`SELECT MAX(version) FROM schema_migrations WHERE component = 'app'`).Scan(&schema); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.QueryRow(`SELECT value FROM app_meta WHERE key = 'binary_version'`).Scan(&bin); err != nil {
+			t.Fatal(err)
+		}
+		return schema, bin
+	}
+
+	version.Version = "v1.0.0"
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// v1.1.0 adds an app migration.
+	appMigrations = append(slices.Clone(oldMigrations), `CREATE TABLE app_test_v2 (x INTEGER)`)
+	version.Version = "v1.1.0"
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	backups := filepath.Join(a.cfg.DataDir, "backups")
+	copies, _ := filepath.Glob(filepath.Join(backups, "picache-v1.0.0-*.db"))
+	if len(copies) != 1 {
+		t.Fatalf("copies %v", copies)
+	}
+	cp, err := sql.Open("sqlite", copies[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, bin := appState(cp)
+	cp.Close()
+	if schema != len(oldMigrations) || bin != "v1.0.0" {
+		t.Fatalf("the copy has app schema %d and version %s: it was made after the new version's migration", schema, bin)
+	}
+	if schema, bin := appState(a.cdb.R); schema != len(oldMigrations)+1 || bin != "v1.1.0" {
+		t.Fatalf("live database: app schema %d, version %s", schema, bin)
+	}
+
+	// No copy possible: nothing is migrated, the error fails the start.
+	appMigrations = append(slices.Clone(appMigrations), `CREATE TABLE app_test_v3 (x INTEGER)`)
+	version.Version = "v1.2.0"
+	if err := os.RemoveAll(backups); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backups, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.preUpgradeBackup(ctx); err == nil || !strings.Contains(err.Error(), "before the upgrade from v1.1.0") {
+		t.Fatalf("copy failed: %v", err)
+	}
+	if schema, bin := appState(a.cdb.R); schema != len(oldMigrations)+1 || bin != "v1.1.0" {
+		t.Fatalf("migrated without a copy: app schema %d, version %s", schema, bin)
 	}
 }

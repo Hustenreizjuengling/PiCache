@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -39,6 +40,11 @@ func (s *Server) registerSystemRoutes() {
 	// sessions only, and the password is asked again (restorePasswordHeader).
 	s.route("POST /api/v1/system/restore", permSession, s.systemRestore)
 	s.route("POST /api/v1/system/restart", permAdmin, s.systemRestart)
+	s.route("GET /api/v1/system/update", permRead, s.systemUpdate)
+	s.route("POST /api/v1/system/update/check", permAdmin, s.systemUpdateCheck)
+	// Installing replaces the binary: interactive sessions only, and the
+	// password is asked again (like a restore).
+	s.route("POST /api/v1/system/update/apply", permSession, s.systemUpdateApply)
 }
 
 type memoryInfo struct {
@@ -261,4 +267,55 @@ func (s *Server) systemRestart(w http.ResponseWriter, r *http.Request) error {
 	_ = http.NewResponseController(w).Flush()
 	s.d.Runtime.Restart()
 	return nil
+}
+
+var errNoUpdater = apperr.Unavailable("update checks are not available")
+
+func (s *Server) systemUpdate(w http.ResponseWriter, r *http.Request) error {
+	if s.d.Updates == nil {
+		return errNoUpdater
+	}
+	return ok(w, s.d.Updates.UpdateOverview(r.Context()))
+}
+
+func (s *Server) systemUpdateCheck(w http.ResponseWriter, r *http.Request) error {
+	if s.d.Updates == nil {
+		return errNoUpdater
+	}
+	return ok(w, s.d.Updates.CheckUpdate(r.Context()))
+}
+
+// systemUpdateApply queues the update found by the last check for the root
+// helper. It needs the current password, checked before anything else.
+func (s *Server) systemUpdateApply(w http.ResponseWriter, r *http.Request) error {
+	if s.d.Updates == nil {
+		return errNoUpdater
+	}
+	var in struct {
+		Version         string `json:"version"`
+		CurrentPassword string `json:"currentPassword"`
+	}
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	p := principal(r)
+	if err := s.confirmCurrentPassword(r.Context(), p, in.CurrentPassword); err != nil {
+		return err
+	}
+	if err := s.d.Updates.QueueUpdate(r.Context(), in.Version, p.Username); err != nil {
+		return err
+	}
+	s.audit(r, "system.update_queued", in.Version, map[string]string{"from": version.Version})
+	return writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+}
+
+// confirmCurrentPassword re-checks the password like a restore does
+// (throttled, a failure is audited) but reports a missing or wrong password
+// as invalid input of "currentPassword", like the account endpoints.
+func (s *Server) confirmCurrentPassword(ctx context.Context, p *auth.Principal, pw string) error {
+	err := s.d.Auth.ConfirmPassword(ctx, p, pw)
+	if e, ok := apperr.As(err); ok && e.Kind == apperr.KindUnauthorized && e.Field == "password" {
+		return apperr.Invalid("currentPassword", "%s", e.Message)
+	}
+	return err
 }

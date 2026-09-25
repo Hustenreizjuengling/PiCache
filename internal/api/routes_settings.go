@@ -74,8 +74,10 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 		dst, apply = &cur.Logs, func(a *settings.All) error { a.Logs = cur.Logs; return nil }
 	case "web":
 		dst, apply = &cur.Web, func(a *settings.All) error { a.Web = cur.Web; return nil }
+	case "updates":
+		dst, apply = &cur.Updates, func(a *settings.All) error { a.Updates = cur.Updates; return nil }
 	default:
-		return apperr.Invalid("section", "unknown settings section (dns, filter, lancache, cache, logs, web)")
+		return apperr.Invalid("section", "unknown settings section (dns, filter, lancache, cache, logs, web, updates)")
 	}
 	if err := decode(w, r, dst); err != nil {
 		return err

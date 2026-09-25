@@ -64,5 +64,8 @@ func Defaults() All {
 			SessionMaxHours:    168,
 			AllowedHosts:       []string{},
 		},
+		Updates: Updates{
+			CheckEnabled: true,
+		},
 	}
 }

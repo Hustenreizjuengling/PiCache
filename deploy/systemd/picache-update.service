@@ -1,0 +1,75 @@
+# PiCache update helper. Started by picache-update.path only; do not enable
+# it directly. It claims the request the web UI queued, checks the version
+# string (vX.Y.Z[-pre]; nothing else is read from the request) and installs
+# exactly that release of the fixed GitHub repository, never an older one:
+# SHA256SUMS and its signature are verified against the keys compiled into
+# the binary before anything else is trusted, the binary is checked against
+# SHA256SUMS and must report the requested version, then it replaces
+# /usr/local/bin/picache atomically (the old one stays as picache.prev),
+# picache.service is restarted and, if it does not become healthy within
+# 90 s, the old binary and the pre-upgrade database copy are put back.
+# Progress goes to /var/lib/picache/update-requests/status.json, which the
+# web UI shows.
+#
+# Local changes belong in a drop-in (`systemctl edit picache-update`); with
+# a custom PICACHE_DATA_DIR install.sh writes
+# picache-update.service.d/50-picache-paths.conf.
+[Unit]
+Description=PiCache update helper (install an update queued in the web UI)
+Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md
+# Removing this file disables updates from the web UI without uninstalling anything.
+ConditionPathExists=/etc/picache/updater.enabled
+# Downloads need the network; picache.service already pulls in
+# network-online.target, this only orders a run at boot after it.
+After=network-online.target
+# No start rate limit: quick failures (for example no network) must not
+# leave picache-update.path failed with unit-start-limit-hit. The path
+# unit's own trigger limit still applies.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# PICACHE_DATA_DIR and the listen addresses the health check uses.
+EnvironmentFile=-/etc/picache/picache.env
+ExecStart=/usr/local/bin/picache update apply-pending
+# Downloads stop after 15 min and each health wait after 90 s; this is only
+# the last resort. On SIGTERM the helper stops downloading, or rolls back
+# if the new binary is already installed.
+TimeoutStartSec=30min
+# The binary is streamed to disk, never held in memory.
+MemoryMax=256M
+
+# Runs as root. Writable: the binary's directory (the staged download, the
+# atomic rename, picache.prev) and the data directory (the update lock,
+# status.json, and on rollback the pre-upgrade copy of picache.db, which
+# replaces picache.db by rename after its -wal/-shm files are removed).
+# Everything else is read-only.
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin -/var/lib/picache
+# Root needs the DAC and ownership capabilities to work in the picache-owned
+# data directory and to hand status.json and a restored database back to
+# the service user. systemctl only talks to PID 1 and needs none.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# HTTPS to api.github.com, github.com and GitHub's release asset storage
+# (*.githubusercontent.com; host names cannot be restricted here, the
+# signature check makes the source irrelevant), the health probe of the
+# local web and DNS listeners, and systemctl over its Unix socket.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

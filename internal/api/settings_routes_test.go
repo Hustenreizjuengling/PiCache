@@ -85,6 +85,12 @@ func TestSettingsRoutes(t *testing.T) {
 	if !strings.Contains(e.do("PATCH", "/api/v1/settings/cache", `{"maxAgeDays":30}`, session).Body.String(), `"maxAgeDays":30`) {
 		t.Fatal("patch cache section without activeStoreId must succeed")
 	}
+	// The updates section (release checks).
+	w = e.do("PATCH", "/api/v1/settings/updates", `{"includePrereleases":true}`, session)
+	if u := e.set.Get().Updates; w.Code != http.StatusOK || !u.CheckEnabled || !u.IncludePrereleases {
+		t.Fatalf("patch updates: %d %+v", w.Code, u)
+	}
+	coreWantError(t, e.do("PATCH", "/api/v1/settings/updates", `{"checkEnabled":"no"}`, session), http.StatusBadRequest, "invalid", "body")
 }
 
 func TestChangedSettings(t *testing.T) {

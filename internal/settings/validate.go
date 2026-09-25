@@ -351,6 +351,7 @@ func (a *All) Validate() error {
 	default:
 		return apperr.Invalid("web.language", "must be empty, en or de")
 	}
+	// updates: two switches, any combination is valid.
 	return nil
 }
 

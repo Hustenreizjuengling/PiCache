@@ -52,6 +52,9 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 | GET `/system/backup` | A | `?includeSecrets=true` (sealed NAS passwords; useless without the master key) | `application/octet-stream` download `picache-backup-<date>.db`. Never contains accounts: users (password hashes, TOTP secrets), sessions and API tokens are removed; the audit log stays |
 | POST `/system/restore` | S | raw body (`application/octet-stream`, ≤ 512 MiB); header `X-PiCache-Password`: the current password, percent-encoded as UTF-8 (JavaScript `encodeURIComponent`; ASCII passwords without `%` can be sent as they are) | 202 `{staged:true, message:"Restart PiCache to apply"}`; 401 with `field:"password"` for a missing or wrong password (nothing is staged; the session stays valid); 429 throttled; 400 for invalid or newer-version backups and for uploads with triggers, views, virtual tables, generated columns, tables or indexes the running PiCache does not have, indexes defined differently, or changed account tables. On the next start the restore keeps the running instance's accounts, API tokens and audit log and ends all sessions |
 | POST `/system/restart` | A | – | 202; the process exits with code 75 and is restarted by systemd/Docker |
+| GET `/system/update` | R | – | `{current:version.Info, currentIsDevBuild:bool, mode:"helper"|"docker"|"manual", checkEnabled:bool, includePrereleases:bool, latest?:{version, publishedAt, url, notes, prerelease:bool}, updateAvailable:bool, checkedAt?, checkError?:string, status?:{state, step, version, from, startedAt, finishedAt?, message?}, commands:{cli:string, docker?:string}}` (ARCHITECTURE 14). `update.Overview`. `latest` is the newest eligible release of the last check (kept when a later check fails; left out while it is a pre-release and pre-releases are off); `checkedAt`/`checkError` describe the last check. `status` (`update.Status`, left out if no update was ever queued) is the last run of the root helper: `state` one of `running`, `succeeded`, `failed`, `rolled-back`; `step` one of `download`, `verify`, `install`, `restart`, `health`, `rollback`, `done` (the failing step for `failed`, `rollback` for `rolled-back`); every run has a new `startedAt`; a request the helper has not claimed yet is `running`/`download` with a waiting `message` and becomes `failed` after 3 minutes. `commands.cli` is `sudo picache update --version <latest>` when an update is available, else `sudo picache update`; `commands.docker` only in mode `docker`. 503 if the process has no updater |
+| POST `/system/update/check` | A | – | same as GET, after checking GitHub now (at most once per 30 s; faster calls return the last result) |
+| POST `/system/update/apply` | S | `{version, currentPassword}` | 202 `{queued:true}`; 400 with `field:"currentPassword"` for a missing or wrong password (checked first, throttled like restore, audited as `auth.login_failed`; 429 while throttled); 409 if the mode is not `helper`, an update is already running, or `version` is not the available version of the last check. Audited as `system.update_queued` (target: the version, details `{from}`). The request only queues the update; follow it with `GET /system/update` |
 | GET `/metrics` (no `/api/v1` prefix) | A token | – | Prometheus text (404 unless `web.metricsEnabled`) |
 
 ## Settings — `routes_settings.go`
@@ -60,10 +63,12 @@ Ownership column = the `internal/api/routes_*.go` file that implements the endpo
 |---|---|---|---|
 | GET `/settings` | R | – | `settings.All` |
 | PUT `/settings` | A | `settings.All` (full document) | `settings.All`; 400 with `field` on validation errors |
-| PATCH `/settings/{section}` | A | one section object (`dns`, `filter`, `lancache`, `cache`, `logs`, `web`) | `settings.All` |
+| PATCH `/settings/{section}` | A | one section object (`dns`, `filter`, `lancache`, `cache`, `logs`, `web`, `updates`) | `settings.All` |
 | GET `/settings/defaults` | R | – | `settings.All` (defaults, for "reset" buttons) |
 
 Changes to `cache.activeStoreId` via these endpoints are rejected (use `POST /storage/targets/{id}/activate`).
+
+Section `updates` = `settings.Updates` `{checkEnabled:bool, includePrereleases:bool}` (defaults `true`, `false`): the daily release check and whether pre-releases are offered (ARCHITECTURE 14.3). Changing it starts a check (at most once per 30 s).
 
 ## DNS: blocking, lookup, records, forwarders, clients, groups — `routes_dns.go`
 

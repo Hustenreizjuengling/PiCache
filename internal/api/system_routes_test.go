@@ -9,9 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/settings"
+	"github.com/hustenreizjuengling/picache/internal/update"
+	"github.com/hustenreizjuengling/picache/internal/version"
 )
 
 func TestSystemInfoAndHealth(t *testing.T) {
@@ -227,4 +230,92 @@ func TestWriteMetrics(t *testing.T) {
 	if strings.Contains(buf.String(), "picache_cache_store_bytes") || strings.Contains(buf.String(), "picache_upstream_rtt_ms") {
 		t.Fatalf("offline store and missing upstreams must be omitted:\n%s", buf.String())
 	}
+}
+
+func TestSystemUpdateOverviewAndCheck(t *testing.T) {
+	e := newCoreEnv(t)
+	session := e.provisionAndLogin(t)
+	readTok := e.createToken(t, session, "read")
+	adminTok := e.createToken(t, session, "admin")
+	e.upd.overview = update.NewOverview("v0.9.0", update.ModeHelper, true, false,
+		update.CheckResult{Latest: &update.Release{Version: "v0.9.1", URL: "https://github.com/x", Notes: "n"}}, nil)
+
+	w := e.do("GET", "/api/v1/system/update", "", readTok)
+	var got map[string]any
+	coreDecode(t, w, &got)
+	if w.Code != http.StatusOK || got["mode"] != "helper" || got["updateAvailable"] != true || got["currentIsDevBuild"] != false ||
+		got["latest"].(map[string]any)["version"] != "v0.9.1" || got["commands"].(map[string]any)["cli"] != "sudo picache update --version v0.9.1" {
+		t.Fatalf("overview: %d %s", w.Code, w.Body)
+	}
+	for _, member := range []string{"checkedAt", "checkError", "status"} {
+		if _, ok := got[member]; ok {
+			t.Errorf("empty member %q is sent", member)
+		}
+	}
+	coreWantError(t, e.do("GET", "/api/v1/system/update", "", ""), http.StatusUnauthorized, "unauthorized", "")
+
+	// Checking now is an admin action (API tokens included, for automation).
+	coreWantError(t, e.do("POST", "/api/v1/system/update/check", "", readTok), http.StatusForbidden, "forbidden", "")
+	if w := e.do("POST", "/api/v1/system/update/check", "", adminTok); w.Code != http.StatusOK || e.upd.checks != 1 {
+		t.Fatalf("check: %d %s (checks %d)", w.Code, w.Body, e.upd.checks)
+	}
+}
+
+// Installing needs an interactive session and the current password (like
+// a restore); the version must be the available update (409 otherwise).
+func TestSystemUpdateApply(t *testing.T) {
+	e := newCoreEnv(t)
+	session := e.provisionAndLogin(t)
+	adminTok := e.createToken(t, session, "admin")
+	body := func(version, pw string) string {
+		return `{"version":"` + version + `","currentPassword":"` + pw + `"}`
+	}
+
+	coreWantError(t, e.do("POST", "/api/v1/system/update/apply", body("v0.9.1", corePassword), adminTok), http.StatusForbidden, "forbidden", "")
+	coreWantError(t, e.do("POST", "/api/v1/system/update/apply", `{"version":"v0.9.1"}`, session), http.StatusBadRequest, "invalid", "currentPassword")
+	coreWantError(t, e.do("POST", "/api/v1/system/update/apply", body("v0.9.1", "wrong password"), session), http.StatusBadRequest, "invalid", "currentPassword")
+	coreWantError(t, e.do("POST", "/api/v1/system/update/apply", `{"version":"v0.9.1","currentPassword":"x","url":"https://evil"}`, session),
+		http.StatusBadRequest, "invalid", "body")
+	if len(e.upd.queued) != 0 {
+		t.Fatalf("queued without the password: %v", e.upd.queued)
+	}
+	if !slices.Contains(e.auditActions(t), "auth.login_failed") {
+		t.Error("a wrong password confirmation is not audited")
+	}
+	// The session survives a wrong confirmation.
+	if w := e.do("GET", "/api/v1/auth/me", "", session); w.Code != http.StatusOK {
+		t.Fatalf("session after a wrong confirmation: %d", w.Code)
+	}
+
+	for _, msg := range []string{"an update is already running", "the update helper is not installed", "the requested version is not the available update"} {
+		e.upd.queueErr = apperr.Conflict("%s", msg)
+		w := e.do("POST", "/api/v1/system/update/apply", body("v0.9.1", corePassword), session)
+		coreWantError(t, w, http.StatusConflict, "conflict", "")
+		if !strings.Contains(w.Body.String(), msg) {
+			t.Errorf("409 body %s", w.Body)
+		}
+	}
+	e.upd.queueErr = nil
+
+	w := e.do("POST", "/api/v1/system/update/apply", body("v0.9.1", corePassword), session)
+	var out map[string]bool
+	coreDecode(t, w, &out)
+	if w.Code != http.StatusAccepted || !out["queued"] || !slices.Equal(e.upd.queued, []string{"v0.9.1 by admin"}) {
+		t.Fatalf("apply: %d %s, queued %v", w.Code, w.Body, e.upd.queued)
+	}
+	entries, _, err := e.auth.AuditLog(t.Context(), auth.AuditQuery{Search: "system.update_queued"})
+	if err != nil || len(entries) != 1 || entries[0].Target != "v0.9.1" || entries[0].Details != `{"from":"`+version.Version+`"}` {
+		t.Fatalf("audit = %+v, %v", entries, err)
+	}
+	if strings.Contains(entries[0].Details, corePassword) {
+		t.Fatal("the password reached the audit log")
+	}
+}
+
+func TestSystemUpdateWithoutUpdater(t *testing.T) {
+	e := newCoreEnv(t)
+	session := e.provisionAndLogin(t)
+	e.srv.d.Updates = nil
+	coreWantError(t, e.do("GET", "/api/v1/system/update", "", session), http.StatusServiceUnavailable, "unavailable", "")
+	coreWantError(t, e.do("POST", "/api/v1/system/update/check", "", session), http.StatusServiceUnavailable, "unavailable", "")
 }

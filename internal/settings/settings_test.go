@@ -101,3 +101,41 @@ func TestParseUpstream(t *testing.T) {
 		}
 	}
 }
+
+// A document stored by a version without the updates section gets its
+// defaults: daily checks on, stable releases only.
+func TestUpdatesDefaultsForOlderDocuments(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s, err := Open(ctx, d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := s.Get().Updates; !u.CheckEnabled || u.IncludePrereleases {
+		t.Fatalf("defaults: %+v", u)
+	}
+	if _, err := d.W.ExecContext(ctx, `UPDATE settings SET doc = json_remove(doc, '$.updates')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.W.ExecContext(ctx, `UPDATE settings SET doc = json_set(doc, '$.web.language', 'de')`); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(ctx, d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := s.Get().Updates; !u.CheckEnabled || u.IncludePrereleases || s.Get().Web.Language != "de" {
+		t.Fatalf("older document: %+v", s.Get())
+	}
+	if _, err := s.Update(ctx, func(a *All) error { a.Updates = Updates{CheckEnabled: false, IncludePrereleases: true}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if u := s.Get().Updates; u.CheckEnabled || !u.IncludePrereleases {
+		t.Fatalf("after update: %+v", u)
+	}
+}

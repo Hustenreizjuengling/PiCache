@@ -8,6 +8,9 @@
 //	picache storage apply <id>            (root) write a systemd mount unit for a NAS target
 //	picache storage apply-pending         (root) process mount requests queued by the web UI
 //	picache storage remove <id>           (root) remove the mount unit and credentials of a NAS target
+//	picache update --check                check for a newer release
+//	picache update [flags]                (root) install a release (signed, rolled back if unhealthy)
+//	picache update apply-pending          (root) install an update queued by the web UI
 package main
 
 import (
@@ -77,6 +80,8 @@ func run(args []string) int {
 		return setupToken()
 	case "storage":
 		return storageCmd(args)
+	case "update":
+		return updateCmd(args)
 	case "help":
 		fmt.Println(strings.TrimSpace(usage))
 		return 0
@@ -109,6 +114,13 @@ commands:
                                 [--password-stdin] reads the NAS password from stdin
   storage apply-pending         (root) process mount requests queued by the web UI
   storage remove <id>           (root) unmount a NAS storage target and remove its mount unit and credentials
+  update --check [--prerelease] check GitHub for a newer release
+                                (exit code 0: up to date, 10: update available, 1: error)
+  update [flags]                (root) install the newest release: verify its signature,
+                                replace the binary, restart PiCache, roll back if it is not healthy.
+                                [--version vX.Y.Z] [--prerelease] [--allow-downgrade] [--yes];
+                                --from DIR installs from downloaded release files
+  update apply-pending          (root) install an update queued in the web UI (picache-update.service)
 
 Configuration is read from PICACHE_* environment variables and, for all
 commands, from /etc/picache/picache.env (or $PICACHE_ENV_FILE) if present.
@@ -214,22 +226,8 @@ func healthcheck(args []string) int {
 	} else {
 		url, own = localURL(), true
 	}
-	c := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
-		// PiCache's own listener (derived from its configuration) usually
-		// has a self-signed certificate that cannot be verified; the check
-		// only tests liveness and sends nothing secret. An explicit URL is
-		// verified unless it points to the loopback interface.
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: own || isLoopbackURL(url)}, //nolint:gosec
-	}}
-	resp, err := c.Get(url)
-	if err != nil {
+	if err := webCheck(context.Background(), url, own); err != nil {
 		fmt.Fprintln(os.Stderr, "unhealthy (web):", err)
-		return 1
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
-	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "ok" {
-		fmt.Fprintf(os.Stderr, "unhealthy (web): HTTP %d\n", resp.StatusCode)
 		return 1
 	}
 	if len(args) == 0 {
@@ -239,6 +237,45 @@ func healthcheck(args []string) int {
 		}
 	}
 	return 0
+}
+
+// localHealth runs the checks of `picache healthcheck` without arguments:
+// the local web listener and the DNS probe (the health wait of an update).
+func localHealth(ctx context.Context) error {
+	if err := webCheck(ctx, localURL(), true); err != nil {
+		return fmt.Errorf("web: %w", err)
+	}
+	if err := dnsCheck(); err != nil {
+		return fmt.Errorf("dns: %w", err)
+	}
+	return nil
+}
+
+// webCheck expects "ok" from url (/healthz). own: url is PiCache's own
+// listener derived from its configuration.
+func webCheck(ctx context.Context, url string, own bool) error {
+	c := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
+		// PiCache's own listener (derived from its configuration) usually
+		// has a self-signed certificate that cannot be verified; the check
+		// only tests liveness and sends nothing secret. An explicit URL is
+		// verified unless it points to the loopback interface.
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: own || isLoopbackURL(url)}, //nolint:gosec
+		DisableKeepAlives: true,
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "ok" {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // isLoopbackURL reports whether url targets a loopback address or localhost.

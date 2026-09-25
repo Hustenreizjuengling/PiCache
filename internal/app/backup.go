@@ -403,27 +403,31 @@ func (a *App) removePlantedSchema(ctx context.Context) error {
 }
 
 // preUpgradeBackup keeps a copy of picache.db whenever the binary version
-// changes (newest 3 kept in <data>/backups), so a rollback is possible.
+// changes (newest 3 kept in <data>/backups), so a rollback is possible
+// (docs/ARCHITECTURE.md 14.4). The copy is made before this version
+// migrates anything, its own app_meta table included: a rollback puts it
+// back for the previous version, which refuses newer schema versions. An
+// error fails the start, so nothing is migrated without a copy.
 func (a *App) preUpgradeBackup(ctx context.Context) error {
 	var hadSchema int
 	_ = a.cdb.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'schema_migrations'`).Scan(&hadSchema)
-	if err := a.cdb.Migrate(ctx, "app", appMigrations); err != nil {
-		return err
-	}
-	var prev string
+	var prev string // stays "" while app_meta does not exist yet
 	_ = a.cdb.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = 'binary_version'`).Scan(&prev)
 	cur := version.Version
-	if prev == cur {
-		return nil
-	}
-	if hadSchema > 0 && prev != "" && cur != "dev" {
+	if hadSchema > 0 && prev != "" && prev != cur && cur != "dev" {
 		dir := filepath.Join(a.cfg.DataDir, "backups")
 		name := fmt.Sprintf("picache-%s-%s.db", sanitizeFile(prev), time.Now().UTC().Format("20060102T150405"))
 		if _, err := a.cdb.W.ExecContext(ctx, `VACUUM INTO ?`, filepath.Join(dir, name)); err != nil {
-			return err
+			return fmt.Errorf("copy picache.db to %s before the upgrade from %s (is the disk full?): %w", dir, prev, err)
 		}
 		a.log.Info("saved configuration backup before upgrade", slog.String("file", filepath.Join(dir, name)))
 		pruneBackups(dir, 3)
+	}
+	if err := a.cdb.Migrate(ctx, "app", appMigrations); err != nil {
+		return err
+	}
+	if prev == cur {
+		return nil
 	}
 	_, err := a.cdb.W.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES ('binary_version', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, cur)
