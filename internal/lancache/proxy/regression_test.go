@@ -235,8 +235,28 @@ func gatedClients(t *testing.T, h *harness, host, path string, n int, gate chan 
 			bodies[i], _ = io.ReadAll(resp.Body)
 		})
 	}
-	eventually(t, func() bool { return h.s.Stats().Requests >= int64(n) })
-	time.Sleep(100 * time.Millisecond) // let them all reach the fill
+	// Open the gate only when the other n-1 clients read the fill of the
+	// first fetch (its creator waits for the answer instead). A fixed sleep
+	// was not enough on busy CI runners: a client that arrived after the
+	// leader had finished fetched the object once more.
+	id := cachestore.ObjectID(testService, path)
+	eventually(t, func() bool {
+		var fills []*fill
+		h.s.fills.mu.Lock()
+		for k, f := range h.s.fills.m {
+			if k.id == id {
+				fills = append(fills, f)
+			}
+		}
+		h.s.fills.mu.Unlock()
+		attached := 0
+		for _, f := range fills {
+			f.mu.Lock()
+			attached += f.attached
+			f.mu.Unlock()
+		}
+		return attached >= n-1
+	})
 	close(gate)
 	wg.Wait()
 	return bodies
