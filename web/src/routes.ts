@@ -36,6 +36,7 @@ export const routes: RouteDef[] = [
   { path: '/dns/clients', section: 'dns', title: 'common.nav.clients', icon: 'users', load: () => import('./pages/dns/Clients.svelte') },
   { path: '/dns/parental', section: 'dns', title: 'common.nav.parental', icon: 'family', load: () => import('./pages/dns/Parental.svelte') },
   { path: '/dns/network', section: 'dns', title: 'common.nav.network', icon: 'network', load: () => import('./pages/dns/Network.svelte') },
+  { path: '/dns/dhcp', section: 'dns', title: 'common.nav.dhcp', icon: 'tag', load: () => import('./pages/dns/Dhcp.svelte') },
   { path: '/dns/local', section: 'dns', title: 'common.nav.localDns', icon: 'home', load: () => import('./pages/dns/LocalDns.svelte') },
   { path: '/dns/settings', section: 'dns', title: 'common.nav.dnsSettings', icon: 'sliders', load: () => import('./pages/dns/DnsSettings.svelte') },
 

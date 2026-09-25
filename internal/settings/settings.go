@@ -30,6 +30,7 @@ type All struct {
 	Web           Web           `json:"web"`
 	Updates       Updates       `json:"updates"`
 	Backups       Backups       `json:"backups"`
+	DHCP          DHCP          `json:"dhcp"`
 }
 
 // DNS configures the resolver side.
@@ -182,6 +183,52 @@ type Backups struct {
 
 // BackupsLocal is the Backups.Destination of the data directory.
 const BackupsLocal = "local"
+
+// DHCP configures the optional DHCP server (docs/ARCHITECTURE.md 18). It
+// serves only when the process opened the DHCP sockets (PICACHE_DHCP) and
+// no safety gate blocks it. Validate checks the form of the values; the
+// interface, the range and the router are checked against the live
+// interface (dhcp.Service.CheckSettings) when Enabled is true.
+type DHCP struct {
+	Enabled bool `json:"enabled"`
+	// Interface is the one interface served: not virtual, with exactly one
+	// RFC 1918 IPv4 address (the subnet served).
+	Interface  string `json:"interface"`
+	RangeStart string `json:"rangeStart"` // first address of the pool (IPv4 in the subnet)
+	RangeEnd   string `json:"rangeEnd"`   // last address (≥ RangeStart; at most 4096 addresses)
+	// LeaseSeconds is the lease time (300 to 604800).
+	LeaseSeconds int `json:"leaseSeconds"`
+	// Router is the router option: "" = the IPv4 default gateway (it must
+	// be in the subnet), or an IPv4 address in the subnet.
+	Router string `json:"router"`
+	// DNSServer is the DNS server option: "" = PiCache's own address on the
+	// interface, or an IPv4 address.
+	DNSServer string `json:"dnsServer"`
+	// Domain is the domain name option: "" = dns.localDomain.
+	Domain string `json:"domain"`
+	// RegisterHostnames answers <host>.<domain> (and the PTR of the lease
+	// address) for leases with a host name.
+	RegisterHostnames bool `json:"registerHostnames"`
+	// IgnoreOtherServers serves although another DHCP server was detected
+	// (DANGEROUS: two servers hand out conflicting addresses).
+	IgnoreOtherServers bool     `json:"ignoreOtherServers"`
+	IPv6               DHCPIPv6 `json:"ipv6"`
+}
+
+// DHCPIPv6 configures PiCache's IPv6 DNS announcements on the DHCP
+// interface: router advertisements with RDNSS/DNSSL only (router lifetime
+// 0, no prefixes) and stateless DHCPv6.
+type DHCPIPv6 struct {
+	RouterAdvertisements bool `json:"routerAdvertisements"`
+	DHCPv6               bool `json:"dhcpv6"`
+}
+
+// DHCP limits.
+const (
+	DHCPMinLeaseSeconds = 300
+	DHCPMaxLeaseSeconds = 604800
+	DHCPMaxPoolSize     = 4096
+)
 
 // BlockingActive reports whether blocking is effective at t.
 func (f *Filter) BlockingActive(t time.Time) bool {

@@ -34,12 +34,15 @@ die() {
 usage() {
 	cat <<'EOF'
 usage: get-picache.sh [--version vX.Y.Z] [--with-host-apply] [--without-updater]
+                      [--with-dhcp | --without-dhcp]
        get-picache.sh --uninstall [--purge] [--yes] [--version vX.Y.Z]
 
   --version vX.Y.Z    install this release instead of the newest one
   --with-host-apply   also install the root helper for NAS mounts from the web UI
   --without-updater   do not install the update helper (updates only with
                       `sudo picache update`)
+  --with-dhcp         let PiCache serve DHCP (enabled later in the web UI)
+  --without-dhcp      remove the DHCP support again
   --uninstall         stop and remove PiCache; configuration and data are kept
   --purge             with --uninstall: also delete the configuration, the
                       data, the local cache and the picache user
@@ -109,7 +112,7 @@ main() {
 			version=${1#--version=}
 			shift
 			;;
-		--with-host-apply | --without-updater | --purge | --yes)
+		--with-host-apply | --without-updater | --with-dhcp | --without-dhcp | --purge | --yes)
 			pass="$pass $1"
 			shift
 			;;

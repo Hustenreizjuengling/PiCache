@@ -5,6 +5,31 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional DHCP server (**DNS → DHCP**), for routers that cannot hand out
+  another DNS server: IPv4 addresses from a range on one chosen interface,
+  with the router, PiCache as DNS server and the local domain; static
+  leases; the devices' host names become DNS names (`laptop.lan` and the
+  reverse name), shown in the query log and client lists. Off by default:
+  it needs `install.sh --with-dhcp` (Docker: `PICACHE_DHCP` and host
+  networking) and serves only when PiCache's own address is static and no
+  other DHCP server answers (PiCache looks for one before it serves and
+  every 10 minutes, and notices devices that ask another one). New API
+  routes under `/dhcp`, the settings section `dhcp` and the health check
+  `dhcp`.
+- IPv6 DNS announcements of the DHCP server: router advertisements that
+  carry only PiCache's ULA as DNS server and the domain (router lifetime 0,
+  no prefixes: PiCache never becomes a router) and stateless DHCPv6. The
+  raw socket needs `CAP_NET_RAW` at start (`install.sh --with-dhcp`, Docker
+  `cap_add: [NET_RAW]`); PiCache drops it right afterwards on all threads
+  and checks that it is gone.
+- The network check says when PiCache hands out addresses itself (the
+  router's IPv4 DNS steps then do not apply) and when it announces itself
+  as IPv6 DNS server.
+- `install.sh --with-dhcp` / `--without-dhcp` (also through
+  `get-picache.sh`).
+
 ## [0.6.0] - 2026-09-25
 
 ### Added

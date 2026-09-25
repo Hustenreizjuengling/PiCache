@@ -1,7 +1,8 @@
 #!/bin/sh
 # Smoke test for deploy/install.sh. It installs, re-installs, enables
 # host-apply, checks the update helper (default, custom data directory,
-# --without-updater), hits a port-53 conflict and uninstalls PiCache in a throwaway
+# --without-updater), the DHCP support (--with-dhcp, --without-dhcp), hits
+# a port-53 conflict and uninstalls PiCache in a throwaway
 # Debian container. systemd does not run there: systemctl and journalctl are
 # stand-ins that record their arguments, so PiCache itself is never started.
 #
@@ -108,6 +109,31 @@ grep -q "^disable --now picache-update.path" /tmp/systemctl.log || fail "update 
 sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
 [ -e /etc/picache/updater.enabled ] || fail "update helper not installed again"
 
+echo "== DHCP support: --with-dhcp, re-run, --without-dhcp"
+dropin=/etc/systemd/system/picache.service.d/60-dhcp.conf
+sh /src/deploy/install.sh --binary /tmp/picache --with-dhcp >/dev/null
+check_mode "$dropin" 644 root:root
+check_mode /etc/picache/dhcp.enabled 644 root:root
+check_mode /etc/picache/picache.env 640 root:picache
+grep -qx "AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW" "$dropin" || fail "drop-in lacks the ambient capabilities"
+grep -qx "CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW" "$dropin" || fail "drop-in lacks the bounding set"
+grep -qx "SystemCallFilter=capset" "$dropin" || fail "drop-in lacks capset"
+grep -qx "PICACHE_DHCP=on" /etc/picache/picache.env || fail "PICACHE_DHCP not set"
+grep -q '^PICACHE_LOG_LEVEL=debug' /etc/picache/picache.env || fail "other settings lost"
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+[ -e "$dropin" ] || fail "a plain re-run removed the DHCP support"
+[ "$(grep -c '^PICACHE_DHCP=' /etc/picache/picache.env)" = 1 ] || fail "PICACHE_DHCP written twice"
+if sh /src/deploy/install.sh --binary /tmp/picache --with-dhcp --without-dhcp 2>/dev/null; then fail "accepted both DHCP flags"; fi
+sh /src/deploy/install.sh --binary /tmp/picache --without-dhcp >/dev/null
+[ ! -e "$dropin" ] || fail "--without-dhcp left the drop-in"
+[ ! -e /etc/picache/dhcp.enabled ] || fail "--without-dhcp left the marker"
+if grep -q '^PICACHE_DHCP=' /etc/picache/picache.env; then fail "--without-dhcp left PICACHE_DHCP"; fi
+grep -q '^#PICACHE_DHCP=on' /etc/picache/picache.env || fail "the commented example was removed"
+check_mode /etc/picache/picache.env 640 root:picache
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+[ ! -e "$dropin" ] || fail "a plain re-run installed the DHCP support"
+sh /src/deploy/install.sh --binary /tmp/picache --with-dhcp >/dev/null # removed by the uninstall below
+
 echo "== rejects a binary that is not PiCache"
 printf '#!/bin/sh\necho hello\n' >/tmp/other
 if sh /src/deploy/install.sh --binary /tmp/other 2>/dev/null; then fail "accepted a foreign binary"; fi
@@ -138,6 +164,9 @@ for u in picache.service picache-storage.service picache-storage.path picache-up
 done
 [ ! -e /etc/picache/host-apply.enabled ] || fail "host-apply marker left behind"
 [ ! -e /etc/picache/updater.enabled ] || fail "update helper marker left behind"
+[ ! -e /etc/picache/dhcp.enabled ] || fail "DHCP marker left behind"
+[ ! -e /etc/systemd/system/picache.service.d/60-dhcp.conf ] || fail "DHCP drop-in left behind"
+if grep -q '^PICACHE_DHCP=' /etc/picache/picache.env; then fail "PICACHE_DHCP left in the configuration"; fi
 [ ! -e /usr/local/bin/picache.prev ] || fail "picache.prev left behind"
 [ ! -e /usr/share/doc/picache ] || fail "license texts left behind"
 [ -e /etc/picache/picache.env ] || fail "configuration was removed"

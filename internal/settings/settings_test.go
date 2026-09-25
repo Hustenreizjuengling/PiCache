@@ -442,3 +442,76 @@ func TestDNS64AndDisableAAAAValidation(t *testing.T) {
 		})
 	}
 }
+
+// The dhcp section: defaults for older documents, normalisation and the
+// form checks (the live interface is checked by the DHCP service).
+func TestDHCPSection(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	log := slog.New(slog.DiscardHandler)
+	if _, err := Open(ctx, d, log); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.W.ExecContext(ctx, `UPDATE settings SET doc = json_remove(doc, '$.dhcp')`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(ctx, d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DHCP{LeaseSeconds: 86400, RegisterHostnames: true}
+	if got := s.Get().DHCP; got != want {
+		t.Fatalf("defaults of an older document: %+v", got)
+	}
+	on := DHCP{Enabled: true, Interface: "eth0", RangeStart: "192.168.1.100", RangeEnd: "192.168.1.199", LeaseSeconds: 3600}
+	for _, tc := range []struct {
+		name  string
+		fn    func(*DHCP)
+		field string
+	}{
+		{"enabled", func(h *DHCP) {}, ""},
+		{"off without anything", func(h *DHCP) { *h = DHCP{LeaseSeconds: 300} }, ""},
+		{"off, half a range", func(h *DHCP) { h.Enabled = false; h.RangeEnd = "" }, ""},
+		{"spaces", func(h *DHCP) { h.RangeStart, h.Domain, h.Router = " 192.168.1.100 ", " Home.LAN. ", " 192.168.1.1 " }, ""},
+		{"4096 addresses", func(h *DHCP) { h.RangeStart, h.RangeEnd = "10.0.0.0", "10.0.15.255" }, ""},
+		{"all options", func(h *DHCP) { h.Router, h.DNSServer, h.Domain = "192.168.1.1", "192.168.1.2", "home.arpa" }, ""},
+		{"no interface", func(h *DHCP) { h.Interface = "" }, "dhcp.interface"},
+		{"bad interface", func(h *DHCP) { h.Interface = "eth0/../x" }, "dhcp.interface"},
+		{"long interface", func(h *DHCP) { h.Interface = "a-very-long-interface" }, "dhcp.interface"},
+		{"no start", func(h *DHCP) { h.RangeStart = "" }, "dhcp.rangeStart"},
+		{"no end", func(h *DHCP) { h.RangeEnd = "" }, "dhcp.rangeEnd"},
+		{"public start", func(h *DHCP) { h.RangeStart = "8.8.8.8" }, "dhcp.rangeStart"},
+		{"IPv6 end", func(h *DHCP) { h.RangeEnd = "fd00::1" }, "dhcp.rangeEnd"},
+		{"reversed", func(h *DHCP) { h.RangeStart, h.RangeEnd = "192.168.1.199", "192.168.1.100" }, "dhcp.rangeEnd"},
+		{"4097 addresses", func(h *DHCP) { h.RangeStart, h.RangeEnd = "10.0.0.0", "10.0.16.0" }, "dhcp.rangeEnd"},
+		{"lease short", func(h *DHCP) { h.LeaseSeconds = 299 }, "dhcp.leaseSeconds"},
+		{"lease long", func(h *DHCP) { h.LeaseSeconds = 604801 }, "dhcp.leaseSeconds"},
+		{"router", func(h *DHCP) { h.Router = "router" }, "dhcp.router"},
+		{"router broadcast", func(h *DHCP) { h.Router = "255.255.255.255" }, "dhcp.router"},
+		{"dns loopback", func(h *DHCP) { h.DNSServer = "127.0.0.1" }, "dhcp.dnsServer"},
+		{"dns IPv6", func(h *DHCP) { h.DNSServer = "fd00::1" }, "dhcp.dnsServer"},
+		{"domain", func(h *DHCP) { h.Domain = "bad_domain" }, "dhcp.domain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next, err := s.Update(ctx, func(a *All) error { a.DHCP = on; tc.fn(&a.DHCP); return nil })
+			if tc.field == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				h := next.DHCP
+				if strings.TrimSpace(h.RangeStart) != h.RangeStart || strings.Trim(strings.ToLower(h.Domain), ". ") != h.Domain ||
+					strings.TrimSpace(h.Router) != h.Router {
+					t.Fatalf("not normalised: %+v", h)
+				}
+				return
+			}
+			if e, ok := apperr.As(err); !ok || e.Kind != apperr.KindInvalid || e.Field != tc.field {
+				t.Fatalf("err = %v, want invalid %s", err, tc.field)
+			}
+		})
+	}
+}

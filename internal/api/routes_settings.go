@@ -80,8 +80,10 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 		dst, apply = &cur.Updates, func(a *settings.All) error { a.Updates = cur.Updates; return nil }
 	case "backups":
 		dst, apply = &cur.Backups, func(a *settings.All) error { a.Backups = cur.Backups; return nil }
+	case "dhcp":
+		dst, apply = &cur.DHCP, func(a *settings.All) error { a.DHCP = cur.DHCP; return nil }
 	default:
-		return apperr.Invalid("section", "unknown settings section (dns, filter, downloadCache, cache, logs, web, updates, backups)")
+		return apperr.Invalid("section", "unknown settings section (dns, filter, downloadCache, cache, logs, web, updates, backups, dhcp)")
 	}
 	if err := decode(w, r, dst); err != nil {
 		return err
@@ -97,7 +99,10 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(
 		if err := fn(a); err != nil {
 			return err
 		}
-		return s.checkBackupDestination(r, old.Backups.Destination, a.Backups.Destination)
+		if err := s.checkBackupDestination(r, old.Backups.Destination, a.Backups.Destination); err != nil {
+			return err
+		}
+		return s.checkDHCP(old, a)
 	})
 	if err != nil {
 		return err

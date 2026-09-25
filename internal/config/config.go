@@ -51,6 +51,12 @@ type Config struct {
 
 	MountRoot string // PICACHE_MOUNT_ROOT: the only place NAS stores may live, default /srv/picache
 
+	// DHCP (PICACHE_DHCP=on) opens the DHCP sockets at start (UDP 67 and
+	// 547, and the raw ICMPv6 socket for router advertisements when the
+	// process may) before the privilege drop. Off by default: without it
+	// the DHCP settings can be edited but serve nothing.
+	DHCP bool
+
 	Dev bool // PICACHE_DEV: development mode (relaxed platform checks, verbose errors in log)
 }
 
@@ -192,9 +198,10 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 		}
 		c.LogLevel = lvl
 	}
-	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev, "PICACHE_WEB_SECURE_COOKIES": &c.WebSecureCookies} {
+	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev, "PICACHE_WEB_SECURE_COOKIES": &c.WebSecureCookies,
+		"PICACHE_DHCP": &c.DHCP} {
 		if v := getenv(key); v != "" {
-			b, err := strconv.ParseBool(v)
+			b, err := parseSwitch(v)
 			if err != nil {
 				return fmt.Errorf("%s: %w", key, err)
 			}
@@ -259,6 +266,22 @@ func ParseRunAs(s string) (uid, gid int, err error) {
 		return 0, 0, fmt.Errorf("PICACHE_RUN_AS must be numeric non-root uid:gid, got %q", s)
 	}
 	return uid, gid, nil
+}
+
+// parseSwitch parses a boolean variable: on/off, yes/no and everything
+// strconv.ParseBool accepts (1, true, 0, false, …).
+func parseSwitch(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "on", "yes":
+		return true, nil
+	case "off", "no":
+		return false, nil
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(s))
+	if err != nil {
+		return false, fmt.Errorf("must be on or off, got %q", s)
+	}
+	return b, nil
 }
 
 func parseLevel(s string) (slog.Level, error) {

@@ -574,3 +574,16 @@ func TestNetworkRefusedOnLinkAndIgnoredRA(t *testing.T) {
 		t.Fatalf("without own IPv6 addresses: ignoresRA %v, asked %d", g.ignoresRA, asked.Load())
 	}
 }
+
+// The check reports PiCache's own DHCP server and announcements, so the
+// UI replaces the router's IPv4 DNS steps.
+func TestNetworkCheckDHCP(t *testing.T) {
+	in := netInputs{now: time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC),
+		dhcp: api.NetworkDHCP{Serving: true, Interface: "eth0", RouterAdvertisements: true}}
+	if nc := computeNetworkCheck(in); nc.DHCP != in.dhcp {
+		t.Fatalf("dhcp %+v", nc.DHCP)
+	}
+	if nc := computeNetworkCheck(netInputs{now: in.now}); nc.DHCP != (api.NetworkDHCP{}) {
+		t.Fatalf("without DHCP %+v", nc.DHCP)
+	}
+}

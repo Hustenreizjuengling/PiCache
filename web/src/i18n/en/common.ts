@@ -16,6 +16,7 @@ export default {
   'nav.clients': 'Clients & groups',
   'nav.parental': 'Parental controls',
   'nav.network': 'Network check',
+  'nav.dhcp': 'DHCP',
   'nav.localDns': 'Local DNS',
   'nav.dnsSettings': 'DNS settings',
   'nav.cache': 'Cache',

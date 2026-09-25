@@ -22,6 +22,10 @@ type HostAddr struct {
 	Temporary  bool // a temporary (privacy) address, RFC 8981
 	Deprecated bool // its preferred lifetime has ended: not used for new connections
 	Tentative  bool // duplicate address detection is running or failed: not usable yet
+	// Dynamic: the address has a finite valid lifetime (netlink
+	// IFA_CACHEINFO on Linux), i.e. a DHCP client or SLAAC configured it
+	// and it goes away unless it is renewed. Always false elsewhere.
+	Dynamic bool
 }
 
 // HostAddrs returns the unicast addresses of this machine's interfaces: on
@@ -203,25 +207,31 @@ const (
 	ifaMsgLen      = 8 // ifaddrmsg: family u8, prefixlen u8, flags u8, scope u8, index u32
 	ifaAddress     = 1
 	ifaLocal       = 2
+	ifaCacheInfo   = 6 // ifa_cacheinfo: preferred u32, valid u32, cstamp u32, tstamp u32 (seconds)
 	ifaFlags       = 8 // u32, supersedes ifaddrmsg.flags
 	ifaFTemporary  = 0x01
 	ifaFDadFailed  = 0x08
 	ifaFDeprecated = 0x20
 	ifaFTentative  = 0x40
 	maxHostAddrs   = 4096
+	// infiniteLifetime is the valid lifetime of an address that never
+	// expires (INFINITY_LIFE_TIME).
+	infiniteLifetime = 0xffffffff
 )
 
 // addrMsg is one address of a netlink address dump.
 type addrMsg struct {
-	index  int
-	prefix netip.Prefix
-	flags  uint32
+	index   int
+	prefix  netip.Prefix
+	flags   uint32
+	dynamic bool // finite valid lifetime (IFA_CACHEINFO)
 }
 
 // parseAddrDump parses the reply of a netlink RTM_GETADDR dump (at most
 // 4096 unicast addresses). IPv4 uses IFA_LOCAL (the peer's address is in
-// IFA_ADDRESS on point-to-point links), IPv6 IFA_ADDRESS; malformed data
-// ends the parse.
+// IFA_ADDRESS on point-to-point links), IPv6 IFA_ADDRESS; a finite valid
+// lifetime in IFA_CACHEINFO marks a dynamic address; malformed data ends
+// the parse.
 func parseAddrDump(b []byte) []addrMsg {
 	var out []addrMsg
 	for len(b) >= nlmsgHdrLen && len(out) < maxHostAddrs {
@@ -266,6 +276,10 @@ func parseAddrMsg(m []byte) (addrMsg, bool) {
 			if len(v) == 4 {
 				msg.flags = binary.NativeEndian.Uint32(v)
 			}
+		case ifaCacheInfo:
+			if len(v) >= 8 {
+				msg.dynamic = binary.NativeEndian.Uint32(v[4:8]) != infiniteLifetime
+			}
 		}
 		n := (l + 3) &^ 3
 		if n >= len(a) {
@@ -300,6 +314,7 @@ func netlinkHostAddrs(msgs []addrMsg, ifs map[int]net.Interface) []HostAddr {
 			Temporary:  v6 && m.flags&ifaFTemporary != 0, // for IPv4 the same bit means "secondary"
 			Deprecated: m.flags&ifaFDeprecated != 0,
 			Tentative:  m.flags&(ifaFTentative|ifaFDadFailed) != 0,
+			Dynamic:    m.dynamic,
 		})
 	}
 	return out

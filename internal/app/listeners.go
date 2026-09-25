@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/hustenreizjuengling/picache/internal/api"
+	"github.com/hustenreizjuengling/picache/internal/dhcp"
 )
 
 type (
@@ -25,6 +26,10 @@ type listeners struct {
 	web    []net.Listener
 	webTLS []net.Listener
 	failed map[string]string // role → error for non-fatal bind failures
+	// dhcp are the DHCP sockets (UDP 67 and 547, raw ICMPv6), opened only
+	// with PICACHE_DHCP; their failures are reported by the DHCP status
+	// and the health check "dhcp", never fatal.
+	dhcp *dhcp.Sockets
 
 	closeOnce sync.Once
 }
@@ -65,6 +70,16 @@ func (a *App) bindListeners() error {
 	soft("web-tls", "web UI (https)", a.cfg.WebTLSListen, &l.webTLS)
 	if len(l.web) == 0 && len(l.webTLS) == 0 {
 		return errors.New("no web UI listener could be bound: " + fmt.Sprint(l.failed))
+	}
+	l.dhcp = dhcp.DisabledSockets()
+	if a.cfg.DHCP {
+		l.dhcp = dhcp.OpenSockets()
+		v4, v6, raw := l.dhcp.Errors()
+		for _, f := range []struct{ what, err string }{{"DHCPv4", v4}, {"DHCPv6", v6}, {"router advertisements", raw}} {
+			if f.err != "" {
+				a.log.Warn("DHCP socket not opened", slog.String("for", f.what), slog.String("reason", f.err))
+			}
+		}
 	}
 	return nil
 }
@@ -109,6 +124,7 @@ func (l *listeners) info() api.ListenerInfo {
 
 func (l *listeners) closeAll() {
 	l.closeOnce.Do(func() {
+		l.dhcp.Close()
 		for _, pc := range l.dnsUDP {
 			_ = pc.Close()
 		}

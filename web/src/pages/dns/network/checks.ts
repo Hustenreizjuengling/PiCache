@@ -68,6 +68,8 @@ export function stepsFor(check: NetworkCheckItem, net: NetworkCheck): Step[] {
   const reconnect: Step = { key: 'dns.network.step.reconnect' }
   switch (check.id) {
     case 'router-forwarding':
+      // PiCache hands out the addresses itself and names itself as DNS server.
+      if (net.dhcp?.serving) return [{ key: 'dns.network.step.dhcp.serving' }, reconnect]
       return fritz
         ? [
             { key: 'dns.network.step.fritz.ipv4', path: t('dns.network.fritz.ipv4Path') },
@@ -81,10 +83,12 @@ export function stepsFor(check: NetworkCheckItem, net: NetworkCheck): Step[] {
             { key: 'dns.network.step.generic.noForward' },
             reconnect,
           ]
-    case 'ipv6-dns':
+    case 'ipv6-dns': {
       // PiCache cannot answer over IPv6: stop the router announcing itself instead.
       if (!net.self.dnsIpv6) return [{ key: 'dns.network.step.generic.ipv6OffOnly' }, reconnect]
-      return fritz
+      // PiCache announces itself: the router's own announcement must go.
+      const own: Step[] = net.dhcp?.routerAdvertisements ? [{ key: 'dns.network.step.dhcp.ra' }] : []
+      return own.concat(fritz
         ? [
             { key: 'dns.network.step.fritz.ipv6', path: t('dns.network.fritz.ipv6Path') },
             { key: 'dns.network.step.fritz.ula', field: t('dns.network.fritz.ula') },
@@ -97,7 +101,8 @@ export function stepsFor(check: NetworkCheckItem, net: NetworkCheck): Step[] {
             { key: 'dns.network.step.fritz.ra', field: t('dns.network.fritz.ra') },
             reconnect,
           ]
-        : [{ key: 'dns.network.step.generic.ipv6', ...ulaValue(net, check.data.ula) }, { key: 'dns.network.step.generic.ipv6Off' }, reconnect]
+        : [{ key: 'dns.network.step.generic.ipv6', ...ulaValue(net, check.data.ula) }, { key: 'dns.network.step.generic.ipv6Off' }, reconnect])
+    }
     case 'ipv6-address':
       return fritz
         ? [

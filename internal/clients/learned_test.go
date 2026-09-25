@@ -383,3 +383,45 @@ func TestPrimeNewAddress(t *testing.T) {
 		t.Errorf("rate limited: %+v, probed %v", id, probed[n:])
 	}
 }
+
+// A DHCP lease name of PiCache is the first name source of an address (it
+// wins over the PTR name) and names the device's other addresses; a
+// change reaches cached identities with LeaseNamesChanged.
+func TestLeaseNames(t *testing.T) {
+	r := newTestRegistry(t, false)
+	r.gateways = func() []netip.Addr { return nil }
+	setNeighbours(r, map[netip.Addr]string{
+		ip("192.168.1.30"): "aa:00:00:00:00:30", ip("fd00::30"): "aa:00:00:00:00:30",
+	})
+	r.namesMu.Lock()
+	r.names.put(ip("192.168.1.30"), hostName{name: "router-name.fritz.box", at: time.Now()})
+	r.namesMu.Unlock()
+	if got := r.DisplayName(ip("192.168.1.30")); got != "router-name.fritz.box" {
+		t.Fatalf("before: %q", got)
+	}
+	var lease atomic.Value
+	lease.Store("laptop.lan")
+	r.SetLeaseNames(func(a netip.Addr) string {
+		if a == ip("192.168.1.30") {
+			return lease.Load().(string)
+		}
+		return ""
+	})
+	r.LeaseNamesChanged([]netip.Addr{ip("192.168.1.30")})
+	for _, a := range []string{"192.168.1.30", "fd00::30"} {
+		if got := r.DisplayName(ip(a)); got != "laptop.lan" {
+			t.Errorf("DisplayName(%s) = %q, want the lease name", a, got)
+		}
+	}
+	if _, _, hn := r.Describe(ip("fd00::99"), "aa:00:00:00:00:30"); hn != "laptop.lan" {
+		t.Errorf("Describe %q", hn)
+	}
+	lease.Store("Bad Name!")
+	r.LeaseNamesChanged([]netip.Addr{ip("192.168.1.30")})
+	if got := r.DisplayName(ip("192.168.1.30")); got != "router-name.fritz.box" {
+		t.Errorf("an invalid lease name is not shown: %q", got)
+	}
+	if mac, ok := r.NeighbourMAC(ip("fd00::30")); !ok || mac != "aa:00:00:00:00:30" {
+		t.Errorf("NeighbourMAC %q %v", mac, ok)
+	}
+}

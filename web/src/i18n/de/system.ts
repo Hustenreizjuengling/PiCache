@@ -403,6 +403,7 @@ const de: Messages<typeof en> = {
   'health.check.cache-store': 'Cache-Speicher',
   'health.check.logs': 'Logs',
   'health.check.data-disk': 'Datenplatte',
+  'health.check.dhcp': 'DHCP-Server',
 
   'health.about.title': 'Über PiCache',
   'health.about.loadError': 'Die Systeminformationen konnten nicht geladen werden',

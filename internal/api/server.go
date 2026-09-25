@@ -145,6 +145,7 @@ type Deps struct {
 	Backups  ScheduledBackups // nil: the scheduled backup endpoints answer 503
 	Parental *parental.Engine // nil: the parental group endpoints answer 503
 	Network  Network          // nil: the network check endpoints answer 503
+	DHCP     DHCP             // nil: the DHCP endpoints answer 503
 	UI       http.Handler     // embedded web UI
 	Log      *slog.Logger
 }
@@ -185,6 +186,7 @@ func New(d Deps) *Server {
 	s.registerBackupRoutes()
 	s.registerParentalRoutes()
 	s.registerNetworkRoutes()
+	s.registerDHCPRoutes()
 
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, s.log, errNotFoundRoute)

@@ -15,6 +15,10 @@ func (a *App) dropPrivileges() error {
 	return nil
 }
 
+// dropNetRaw has nothing to drop on systems other than Linux (DHCP is
+// Linux-only).
+func dropNetRaw() error { return nil }
+
 func isAddrInUse(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "address already in use") ||
 		err != nil && strings.Contains(err.Error(), "Only one usage of each socket address")

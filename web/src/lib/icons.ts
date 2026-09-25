@@ -68,6 +68,8 @@ export const icons = {
   update: `${circle(10, 10, 7)}M10 13.5v-7M7 9.5l3-3 3 3`,
   bell: 'M5 14V9a5 5 0 0 1 10 0v5l1.5 1.5h-13zM8 15.5a2 2 0 0 0 4 0',
   send: 'M17 3L3 8.5l6 2.5 2.5 6zM17 3l-8 8',
+  /** An address tag: handing out addresses (DHCP). */
+  tag: `M3.5 3.5h6l7 7-6 6-7-7z${circle(7, 7, 1.25)}`,
 } as const
 
 export type IconName = keyof typeof icons

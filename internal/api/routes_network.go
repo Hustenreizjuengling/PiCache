@@ -37,6 +37,17 @@ type NetworkCheck struct {
 	Checks         []NetworkItem   `json:"checks"`
 	Devices        []NetworkDevice `json:"devices"`
 	Scan           NetworkScan     `json:"scan"`
+	// DHCP: PiCache's own DHCP server (the router's DNS steps for IPv4 do
+	// not apply while it serves; its router advertisements announce it as
+	// IPv6 DNS server).
+	DHCP NetworkDHCP `json:"dhcp"`
+}
+
+// NetworkDHCP describes PiCache's own DHCP server for the network check.
+type NetworkDHCP struct {
+	Serving              bool   `json:"serving"`              // PiCache hands out IPv4 addresses
+	Interface            string `json:"interface,omitempty"`  // the interface it serves
+	RouterAdvertisements bool   `json:"routerAdvertisements"` // it sends router advertisements (RDNSS/DNSSL)
 }
 
 // NetworkRouter is the default gateway.

@@ -24,6 +24,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/dhcp"
 	"github.com/hustenreizjuengling/picache/internal/dlcache/proxy"
 	"github.com/hustenreizjuengling/picache/internal/dlcache/services"
 	"github.com/hustenreizjuengling/picache/internal/dlcache/sni"
@@ -76,6 +77,7 @@ type App struct {
 	sni      *sni.Server
 	updates  *updater
 	notify   *notify.Service // nil in tests that build parts of the App (Emit is nil-safe)
+	dhcp     *dhcp.Service   // nil in tests that build parts of the App
 	backups  *backupScheduler
 	network  *netChecker
 	api      *api.Server
@@ -124,10 +126,12 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	defer a.ln.closeAll()
 
-	// 2. Drop privileges (Docker: root → PICACHE_RUN_AS) before touching files.
+	// 2. Drop privileges (Docker: root → PICACHE_RUN_AS) before touching
+	//    files, and CAP_NET_RAW (systemd grants it for the DHCP raw socket).
 	if err := a.dropPrivileges(); err != nil {
 		return err
 	}
+	a.dropRawCapability()
 	if os.Geteuid() == 0 {
 		log.Warn("running as root; use the provided systemd unit or set PICACHE_RUN_AS (Docker)")
 	}
@@ -164,6 +168,25 @@ func newApp(cfg *config.Config, log *slog.Logger) *App {
 	return &App{cfg: cfg, paths: cfg.Paths(), log: log, started: time.Now(),
 		storeKick: make(chan struct{}, 1), evictKick: make(chan struct{}, 1), evictSem: make(chan struct{}, 1),
 		restart: make(chan struct{}, 1)}
+}
+
+// dropRawCapability drops CAP_NET_RAW after the DHCP sockets are open
+// (dropNetRaw). If that fails, the raw socket is closed: without proof
+// that the capability is gone, PiCache sends no router advertisements.
+// DNS keeps running either way.
+func (a *App) dropRawCapability() {
+	err := dropNetRaw()
+	switch {
+	case err == nil:
+		if a.ln.dhcp.HasRaw() {
+			a.log.Info("CAP_NET_RAW is not held after opening the ICMPv6 socket for router advertisements")
+		}
+	case a.ln.dhcp.HasRaw():
+		a.ln.dhcp.DisableRouterAdvertisements("CAP_NET_RAW could not be dropped after start: " + err.Error())
+		a.log.Error("router advertisements disabled: CAP_NET_RAW could not be dropped", slog.Any("err", err))
+	default:
+		a.log.Warn("could not verify that CAP_NET_RAW is not held", slog.Any("err", err))
+	}
 }
 
 func (a *App) prepareDirs() error {
@@ -252,6 +275,16 @@ func (a *App) build(ctx context.Context) error {
 	if a.services, err = services.New(ctx, a.cdb, a.set, fetch, a.paths.CacheDomainsDir, log); err != nil {
 		return fmt.Errorf("services: %w", err)
 	}
+	// The DHCP tables exist on every installation (backups, restores); the
+	// server itself needs PICACHE_DHCP (the sockets bound at start).
+	if a.dhcp, err = dhcp.New(ctx, dhcp.Deps{
+		DB: a.cdb, Settings: a.set, Sockets: a.ln.dhcp,
+		Bridge:    func() bool { return a.dns != nil && a.dns.BridgeNetwork() },
+		Neighbour: a.clients.NeighbourMAC, OnNames: a.clients.LeaseNamesChanged, Log: log,
+	}); err != nil {
+		return fmt.Errorf("dhcp: %w", err)
+	}
+	a.clients.SetLeaseNames(a.dhcp.LeaseName)
 	if a.auth, err = auth.New(ctx, a.cdb, a.set, a.box, a.paths.SetupTokenFile, log); err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}
@@ -304,7 +337,7 @@ func (a *App) build(ctx context.Context) error {
 	if a.dns, err = dnsserver.New(ctx, dnsserver.Deps{
 		DB: a.cdb, Settings: a.set, Upstream: a.up, Filter: a.filter, Clients: a.clients,
 		Services: a.services, Parental: a.parental, Logs: a.logs, ACL: a.acl, DownloadCacheReady: a.downloadCacheReady,
-		Container: a.storage.Capabilities().Container, Neighbours: a.clients.Neighbours, Log: log,
+		Container: a.storage.Capabilities().Container, Neighbours: a.clients.Neighbours, Leases: a.dhcp, Log: log,
 	}); err != nil {
 		return fmt.Errorf("dns: %w", err)
 	}
@@ -322,7 +355,7 @@ func (a *App) build(ctx context.Context) error {
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
 		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
-		Parental: a.parental, Network: a.network, UI: webui.Handler(), Log: log,
+		Parental: a.parental, Network: a.network, DHCP: a.dhcp, UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil
@@ -426,7 +459,7 @@ func (a *App) serve(ctx context.Context) error {
 	for _, fn := range []func(context.Context){
 		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
 		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop, a.updates.run,
-		a.notify.Start, a.backups.Start, a.network.Start,
+		a.notify.Start, a.backups.Start, a.network.Start, a.dhcp.Start,
 		func(ctx context.Context) { a.acl.Run(ctx.Done(), time.Minute) }, // follows prefix changes within a minute
 	} {
 		bg.Go(func() { fn(ctx) })

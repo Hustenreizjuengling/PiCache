@@ -2,6 +2,7 @@
 # PiCache installer for Debian 12/13 (bare metal, VM, Proxmox LXC).
 #
 #   sudo sh deploy/install.sh --binary ./picache-linux-amd64 [--with-host-apply] [--without-updater]
+#                             [--with-dhcp | --without-dhcp]
 #   sudo sh deploy/install.sh --uninstall [--purge [--yes]]
 #
 # Idempotent: run it again with a newer binary to upgrade. It installs only
@@ -17,6 +18,10 @@ ENV_FILE=$CONF_DIR/picache.env
 CRED_DIR=$CONF_DIR/credentials
 HOST_APPLY_MARKER=$CONF_DIR/host-apply.enabled
 UPDATER_MARKER=$CONF_DIR/updater.enabled
+DHCP_MARKER=$CONF_DIR/dhcp.enabled
+# Drop-in of --with-dhcp: CAP_NET_RAW for the router advertisement socket.
+DHCP_DROPIN_DIR=/etc/systemd/system/picache.service.d
+DHCP_DROPIN=60-dhcp.conf
 DEFAULT_DATA_DIR=/var/lib/picache
 DEFAULT_CACHE_DIR=/var/cache/picache
 DEFAULT_MOUNT_ROOT=/srv/picache
@@ -43,6 +48,7 @@ die() {
 usage() {
 	cat <<'EOF'
 usage: install.sh --binary PATH [--with-host-apply] [--without-updater]
+                  [--with-dhcp | --without-dhcp]
        install.sh --uninstall [--purge [--yes]]
 
   --binary PATH       the picache binary to install (for example the
@@ -52,6 +58,11 @@ usage: install.sh --binary PATH [--with-host-apply] [--without-updater]
   --without-updater   do not install (or remove) the root helper that installs
                       updates queued in the web UI; `sudo picache update`
                       keeps working
+  --with-dhcp         let PiCache open the DHCP ports (PICACHE_DHCP=on and a
+                      unit drop-in with CAP_NET_RAW for IPv6 router
+                      advertisements, dropped after start); the DHCP server
+                      itself stays off until it is enabled in the web UI
+  --without-dhcp      remove that again (a plain re-run keeps the current state)
   --uninstall         stop and remove PiCache; configuration and data are kept
   --purge             with --uninstall: also unmount the NAS shares of the
                       web UI and delete the configuration, the data, the
@@ -225,6 +236,11 @@ env_template() {
 # Remove this line and the file after the first start.
 #PICACHE_ADMIN_USER=admin
 #PICACHE_ADMIN_PASSWORD_FILE=/etc/picache/admin-password
+
+# DHCP server (DNS -> DHCP in the web UI): set by install.sh --with-dhcp,
+# which also installs the unit drop-in it needs; remove it with
+# install.sh --without-dhcp rather than by hand.
+#PICACHE_DHCP=on
 
 # Paths. The systemd unit only allows writes to these defaults; change them
 # only together with a matching drop-in (systemctl edit picache).
@@ -417,6 +433,66 @@ remove_updater() {
 	rm -f "$UPDATER_MARKER"
 }
 
+# rewrite_env KEY [VALUE] removes the uncommented assignments of KEY from
+# the env file and, with VALUE, appends KEY=VALUE; owner and mode are kept
+# (root:picache 0640).
+rewrite_env() {
+	tmp=$ENV_FILE.new
+	(
+		umask 077
+		grep -v "^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1=" "$ENV_FILE" >"$tmp" || true
+		if [ $# -ge 2 ]; then
+			printf '%s=%s\n' "$1" "$2" >>"$tmp"
+		fi
+	)
+	chown root:picache "$tmp"
+	chmod 0640 "$tmp"
+	mv -f "$tmp" "$ENV_FILE"
+}
+
+# setup_dhcp lets PiCache open the DHCP sockets: PICACHE_DHCP=on and a
+# drop-in that grants CAP_NET_RAW for the raw ICMPv6 socket of the IPv6
+# router advertisements (PiCache drops it for good right after start and
+# needs capset for that, which ~@privileged forbids otherwise). The DHCP
+# server stays off until it is enabled in the web UI.
+setup_dhcp() {
+	install -d -m 0755 "$DHCP_DROPIN_DIR"
+	cat >"$DHCP_DROPIN_DIR/$DHCP_DROPIN" <<'EOF'
+# Written by install.sh --with-dhcp and rewritten on every run; removed by
+# install.sh --without-dhcp. PiCache opens UDP 67 and 547 and a raw ICMPv6
+# socket (IPv6 router advertisements) at start and then drops CAP_NET_RAW
+# on all threads; capset is re-allowed for exactly that.
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+SystemCallFilter=capset
+EOF
+	chmod 0644 "$DHCP_DROPIN_DIR/$DHCP_DROPIN"
+	case $(env_value PICACHE_DHCP) in
+	on) ;;
+	*) rewrite_env PICACHE_DHCP on ;;
+	esac
+	install -m 0644 -o root -g root /dev/null "$DHCP_MARKER"
+	dhcp_active=1
+	if command -v ss >/dev/null 2>&1 && [ -n "$(listeners_on u 67)" ]; then
+		warn "UDP port 67 is used by another program (another DHCP server on this host,
+for example dnsmasq). PiCache cannot serve DHCP until it is stopped:"
+		listeners_on u 67 | sed 's/^/    /' >&2
+	fi
+	say "DHCP support installed (PICACHE_DHCP=on, $DHCP_DROPIN_DIR/$DHCP_DROPIN);
+    enable the server under DNS -> DHCP in the web UI"
+}
+
+# remove_dhcp removes what setup_dhcp installed (--without-dhcp,
+# --uninstall).
+remove_dhcp() {
+	rm -f "$DHCP_DROPIN_DIR/$DHCP_DROPIN" "$DHCP_MARKER"
+	rmdir "$DHCP_DROPIN_DIR" 2>/dev/null || true
+	if [ -e "$ENV_FILE" ] && [ -n "$(env_value PICACHE_DHCP)" ]; then
+		rewrite_env PICACHE_DHCP
+	fi
+}
+
 # listeners_on u|t PORT prints sockets on PORT that do not belong to PiCache.
 listeners_on() {
 	ss -H -ln"$1"p "sport = :$2" 2>/dev/null | grep -v '"picache"' || true
@@ -532,6 +608,12 @@ print_summary() {
 	say "  Logs:          journalctl -u picache -f"
 	say "  Configuration: $ENV_FILE (then: systemctl restart picache)"
 	say ""
+	if [ "$dhcp_active" -eq 1 ]; then
+		say "Next: finish the setup in the web UI and give this machine a static address."
+		say "To let PiCache hand out addresses, open DNS -> DHCP; it serves only after the"
+		say "router's DHCP server is switched off."
+		return
+	fi
 	say "Next: finish the setup in the web UI, give this machine a static address and"
 	say "point your router's DHCP DNS server option to $host_ip."
 }
@@ -539,6 +621,7 @@ print_summary() {
 do_uninstall() {
 	read_paths
 	remove_updater
+	remove_dhcp
 	for unit in picache-storage.path picache-storage.service picache.service "$SHARED_MOUNTS_UNIT"; do
 		systemctl disable --now "$unit" >/dev/null 2>&1 || true
 	done
@@ -674,6 +757,8 @@ unmount it and run --uninstall --purge again. Nothing else was deleted."
 binary=""
 with_host_apply=0
 without_updater=0
+with_dhcp=0
+without_dhcp=0
 uninstall=0
 purge=0
 assume_yes=0
@@ -694,6 +779,14 @@ while [ $# -gt 0 ]; do
 		;;
 	--without-updater)
 		without_updater=1
+		shift
+		;;
+	--with-dhcp)
+		with_dhcp=1
+		shift
+		;;
+	--without-dhcp)
+		without_dhcp=1
 		shift
 		;;
 	--uninstall)
@@ -725,6 +818,9 @@ umask 022
 
 if [ "$purge" -eq 1 ] && [ "$uninstall" -eq 0 ]; then
 	die "--purge only goes with --uninstall"
+fi
+if [ "$with_dhcp" -eq 1 ] && [ "$without_dhcp" -eq 1 ]; then
+	die "--with-dhcp and --without-dhcp exclude each other"
 fi
 if [ "$uninstall" -eq 1 ]; then
 	if [ "$purge" -eq 1 ]; then
@@ -772,6 +868,13 @@ if [ "$without_updater" -eq 0 ]; then
 elif [ -e "$UPDATER_MARKER" ] || [ -e "$UNIT_DIR/picache-update.path" ]; then
 	remove_updater
 	say "update helper removed (--without-updater); update with: sudo picache update"
+fi
+dhcp_active=0
+if [ "$with_dhcp" -eq 1 ] || { [ "$without_dhcp" -eq 0 ] && [ -e "$DHCP_MARKER" ]; }; then
+	setup_dhcp
+elif [ "$without_dhcp" -eq 1 ]; then
+	remove_dhcp
+	say "DHCP support removed (--without-dhcp)"
 fi
 
 systemctl daemon-reload

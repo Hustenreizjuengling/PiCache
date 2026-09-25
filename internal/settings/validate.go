@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"encoding/binary"
 	"errors"
 	"net"
 	"net/netip"
@@ -156,6 +157,15 @@ func (a *All) normalize() {
 	b.Schedule = strings.ToLower(strings.TrimSpace(b.Schedule))
 	b.Time = strings.TrimSpace(b.Time)
 	b.Destination = strings.ToLower(strings.TrimSpace(b.Destination))
+	h := &a.DHCP
+	h.Interface = strings.TrimSpace(h.Interface)
+	for _, s := range []*string{&h.RangeStart, &h.RangeEnd, &h.Router, &h.DNSServer} {
+		*s = strings.TrimSpace(*s)
+		if ip, err := netip.ParseAddr(*s); err == nil && ip.Unmap().Is4() {
+			*s = ip.Unmap().String()
+		}
+	}
+	h.Domain = strings.Trim(strings.ToLower(strings.TrimSpace(h.Domain)), ".")
 }
 
 // Validate checks all sections and returns an apperr.Invalid error naming
@@ -404,7 +414,86 @@ func (a *All) Validate() error {
 	if b.Destination != BackupsLocal && !targetIDRE.MatchString(b.Destination) {
 		return apperr.Invalid("backups.destination", "must be local or the id of a storage target")
 	}
+	return a.DHCP.validate()
+}
+
+// validate checks the form of the DHCP settings. The interface, the range,
+// the router and PiCache's own address are checked against the live
+// interface elsewhere (dhcp.Service.CheckSettings), and only while the
+// server is enabled: the interface may be absent while it is off.
+func (h *DHCP) validate() error {
+	if h.Interface != "" && !validIfaceName(h.Interface) {
+		return apperr.Invalid("dhcp.interface", "must be the name of a network interface")
+	}
+	if h.Enabled && h.Interface == "" {
+		return apperr.Invalid("dhcp.interface", "choose the interface to serve")
+	}
+	var start, end netip.Addr
+	for _, f := range []struct {
+		field string
+		v     string
+		dst   *netip.Addr
+	}{{"dhcp.rangeStart", h.RangeStart, &start}, {"dhcp.rangeEnd", h.RangeEnd, &end}} {
+		if f.v == "" {
+			if h.Enabled {
+				return apperr.Invalid(f.field, "required while the DHCP server is enabled")
+			}
+			continue
+		}
+		ip, err := netip.ParseAddr(f.v)
+		if err != nil || !ip.Is4() || !inPrefixes(ip, "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16") {
+			return apperr.Invalid(f.field, "must be a private IPv4 address (10/8, 172.16/12, 192.168/16)")
+		}
+		*f.dst = ip
+	}
+	if start.IsValid() && end.IsValid() {
+		if end.Less(start) {
+			return apperr.Invalid("dhcp.rangeEnd", "must not be lower than the range start")
+		}
+		if n := IPv4Distance(start, end) + 1; n > DHCPMaxPoolSize {
+			return apperr.Invalid("dhcp.rangeEnd", "the range may hold at most %d addresses (it holds %d)", DHCPMaxPoolSize, n)
+		}
+	}
+	if h.LeaseSeconds < DHCPMinLeaseSeconds || h.LeaseSeconds > DHCPMaxLeaseSeconds {
+		return apperr.Invalid("dhcp.leaseSeconds", "must be between %d (5 minutes) and %d (7 days)", DHCPMinLeaseSeconds, DHCPMaxLeaseSeconds)
+	}
+	for _, f := range []struct{ field, v string }{{"dhcp.router", h.Router}, {"dhcp.dnsServer", h.DNSServer}} {
+		if f.v == "" {
+			continue
+		}
+		ip, err := netip.ParseAddr(f.v)
+		if err != nil || !ip.Is4() || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || ip == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			return apperr.Invalid(f.field, "must be empty or a unicast IPv4 address")
+		}
+	}
+	if h.Domain != "" && !validHostname(h.Domain) {
+		return apperr.Invalid("dhcp.domain", "must be empty or a domain name")
+	}
 	return nil
+}
+
+// IPv4Distance returns b − a for IPv4 addresses a ≤ b (0 otherwise).
+func IPv4Distance(a, b netip.Addr) int64 {
+	if !a.Is4() || !b.Is4() || b.Less(a) {
+		return 0
+	}
+	x, y := a.As4(), b.As4()
+	return int64(binary.BigEndian.Uint32(y[:])) - int64(binary.BigEndian.Uint32(x[:]))
+}
+
+// validIfaceName reports whether s can be a Linux interface name: 1–15
+// bytes, printable ASCII without whitespace, "/" or ":" (netutil has the
+// same rule for paths; settings cannot import it).
+func validIfaceName(s string) bool {
+	if s == "" || len(s) > 15 || s == "." || s == ".." {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c <= ' ' || c >= 0x7f || c == '/' || c == ':' {
+			return false
+		}
+	}
+	return true
 }
 
 // targetIDRE matches storage target ids other than the built-in one

@@ -16,8 +16,49 @@ type hostName struct {
 	at   time.Time
 }
 
-// hostname returns the cached PTR name of ip ("" if unknown).
+// LeaseNameFunc returns the name of the active DHCP lease of an address
+// ("" if none).
+type LeaseNameFunc func(ip netip.Addr) string
+
+// SetLeaseNames sets the source of DHCP lease names, the first name source
+// of an address (before its PTR name). Call LeaseNamesChanged when names
+// change.
+func (r *Registry) SetLeaseNames(fn LeaseNameFunc) {
+	if fn == nil {
+		r.leaseName.Store(nil)
+		return
+	}
+	r.leaseName.Store(&fn)
+}
+
+// LeaseNamesChanged drops the cached identities of addresses whose lease
+// name changed, and of the other addresses of their devices (their name
+// fallback).
+func (r *Registry) LeaseNamesChanged(ips []netip.Addr) {
+	arp := *r.arp.Load()
+	for _, ip := range ips {
+		ip = netutil.Canon(ip)
+		r.invalidateIP(ip)
+		if mac := arp[ip]; mac != "" {
+			r.invalidateMAC(mac)
+		}
+	}
+}
+
+// lease returns the lease name of ip ("" if none or no source is set).
+func (r *Registry) lease(ip netip.Addr) string {
+	if fn := r.leaseName.Load(); fn != nil {
+		return sanitizeHostname((*fn)(ip))
+	}
+	return ""
+}
+
+// hostname returns the lease name of ip, else its cached PTR name ("" if
+// unknown).
 func (r *Registry) hostname(ip netip.Addr) string {
+	if n := r.lease(ip); n != "" {
+		return n
+	}
 	r.namesMu.Lock()
 	h, _ := r.names.peek(ip)
 	r.namesMu.Unlock()
@@ -36,10 +77,18 @@ func (r *Registry) name(ip netip.Addr, mac string) string {
 	return ""
 }
 
-// macName picks the name of one of addrs (except the address except): an
-// IPv4 address's name first (typically the name its DHCPv4 lease gave the
-// device), then the most recently resolved one.
+// macName picks the name of one of addrs (except the address except): the
+// name of a DHCP lease of PiCache first, then an IPv4 address's name
+// (typically the name its DHCPv4 lease gave the device), then the most
+// recently resolved one.
 func (r *Registry) macName(addrs []netip.Addr, except netip.Addr) string {
+	for _, a := range addrs {
+		if a != except {
+			if n := r.lease(a); n != "" {
+				return n
+			}
+		}
+	}
 	var best hostName
 	bestV4 := false
 	r.namesMu.Lock()

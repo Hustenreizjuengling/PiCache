@@ -202,6 +202,29 @@ const network = {
   scan: (o?: ReqOpts) => http.post<T.NetworkScanStarted>('/network/scan', undefined, o),
 }
 
+// ---------------------------------------------------------------- dhcp server
+
+/** The optional DHCP server (settings: PATCH /settings/dhcp). */
+const dhcp = {
+  status: (o?: ReqOpts) => http.get<T.DhcpStatus>('/dhcp', o),
+  /** Interfaces of this machine with their addresses (virtual ones marked). */
+  interfaces: (o?: ReqOpts) => http.get<T.DhcpInterface[]>('/dhcp/interfaces', o),
+  /** Looks for other DHCP servers for 3 s. 429 within 10 s of the last search, 503 when unavailable. */
+  probe: (o?: ReqOpts) => http.post<T.DhcpProbeResult>('/dhcp/probe', undefined, { ...o, timeoutMs: 30_000 }),
+  /** Active and recently expired leases, newest first. */
+  leases: (o?: ReqOpts) => http.get<T.DhcpLease[]>('/dhcp/leases', o),
+  /** Ends a dynamic lease; the device gets a new one when it renews. */
+  endLease: (mac: string, o?: ReqOpts) => http.del(`/dhcp/leases/${seg(mac)}`, o),
+  static: {
+    list: (o?: ReqOpts) => http.get<T.DhcpStaticLease[]>('/dhcp/static', o),
+    /** 400 with field mac, ip, hostname or comment. */
+    create: (s: T.DhcpStaticLeaseInput, o?: ReqOpts) => http.post<T.DhcpStaticLease>('/dhcp/static', s, o),
+    update: (mac: string, s: Omit<T.DhcpStaticLeaseInput, 'mac'>, o?: ReqOpts) =>
+      http.put<T.DhcpStaticLease>(`/dhcp/static/${seg(mac)}`, s, o),
+    remove: (mac: string, o?: ReqOpts) => http.del(`/dhcp/static/${seg(mac)}`, o),
+  },
+}
+
 // ---------------------------------------------------------------- filtering
 
 const filter = {
@@ -385,6 +408,7 @@ export const api = {
   groups,
   parental,
   network,
+  dhcp,
   filter,
   downloadCache,
   cache,

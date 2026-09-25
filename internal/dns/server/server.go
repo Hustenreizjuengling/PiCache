@@ -1,6 +1,7 @@
 // Package dnsserver serves DNS over UDP and TCP and implements the request
 // pipeline of docs/ARCHITECTURE.md 7.1: ACL, rate limit, hardening, client
-// identity, special-use names, local records, parental controls, download
+// identity, special-use names, local records (and the names of DHCP
+// leases, Deps.Leases), parental controls, download
 // cache answers, special domains, filtering, conditional forwarding / router
 // resolver, upstream resolution, CNAME inspection, reply shaping and
 // logging. It also owns local DNS records and conditional forwarders.
@@ -143,7 +144,17 @@ type Deps struct {
 	// .Neighbours): the router's other addresses and its address over IPv6.
 	// nil: only the gateway addresses are known.
 	Neighbours func(ctx context.Context) ([]clients.Neighbour, error)
-	Log        *slog.Logger
+	// Leases answers the DNS names of DHCP leases in step 7 (nil: none).
+	Leases LeaseNames
+	Log    *slog.Logger
+}
+
+// LeaseNames is the part of the DHCP server (package dhcp) the server
+// uses: the names of active leases, <host>.<domain> → address and the
+// address's PTR, each with the TTL to answer with. Local records win.
+type LeaseNames interface {
+	LeaseAddr(name string) (ip netip.Addr, ttl uint32, ok bool)
+	LeasePTR(ip netip.Addr) (name string, ttl uint32, ok bool)
 }
 
 // Record is a local DNS record.

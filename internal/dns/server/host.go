@@ -233,6 +233,10 @@ type HostNetwork struct {
 	Prefixes []netip.Prefix
 }
 
+// BridgeNetwork reports whether PiCache runs in a container bridge
+// network (as detected for the cache IP, refreshed every minute).
+func (s *Server) BridgeNetwork() bool { return s.cacheIPs.Load().bridge }
+
 // HostNetwork reads the interface addresses now.
 func (s *Server) HostNetwork() HostNetwork {
 	out := HostNetwork{Bridge: s.cacheIPs.Load().bridge}

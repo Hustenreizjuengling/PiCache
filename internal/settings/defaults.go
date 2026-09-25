@@ -74,5 +74,9 @@ func Defaults() All {
 			Keep:        7,
 			Destination: BackupsLocal,
 		},
+		DHCP: DHCP{
+			LeaseSeconds:      86400,
+			RegisterHostnames: true,
+		},
 	}
 }

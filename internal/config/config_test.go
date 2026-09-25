@@ -29,3 +29,30 @@ func TestWebSecureCookies(t *testing.T) {
 		}
 	}
 }
+
+// PICACHE_DHCP opens the DHCP sockets at start; off by default, on with
+// on/1/true.
+func TestDHCPSwitch(t *testing.T) {
+	for _, tc := range []struct {
+		val     string
+		want    bool
+		wantErr bool
+	}{
+		{"", false, false},
+		{"on", true, false},
+		{"ON", true, false},
+		{"1", true, false},
+		{"true", true, false},
+		{"off", false, false},
+		{"0", false, false},
+		{"enabled", false, true},
+	} {
+		c, err := Load(nil, envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(), "PICACHE_DHCP": tc.val}))
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("%q: err = %v", tc.val, err)
+		}
+		if err == nil && c.DHCP != tc.want {
+			t.Fatalf("%q: DHCP = %v", tc.val, c.DHCP)
+		}
+	}
+}

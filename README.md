@@ -42,6 +42,12 @@ unprivileged Proxmox LXC container.
   detects a router that forwards every query or announces itself as IPv6
   DNS server, and gives the steps to fix it (including the FRITZ!Box
   settings). An optional scan finds devices that are switched on.
+- Optional DHCP server for routers that cannot hand out another DNS server:
+  addresses, static leases and DNS names for the devices' host names, plus
+  IPv6 DNS announcements (router advertisements with DNS server and domain
+  only, never as router; stateless DHCPv6). Off by default, and it refuses
+  to serve while another DHCP server answers or PiCache's own address is
+  dynamic.
 - Blocking modes (null IP, NXDOMAIN, NODATA, REFUSED, custom IP), a timed
   pause, CNAME inspection, and blocking of the Firefox DoH canary and iCloud
   Private Relay.

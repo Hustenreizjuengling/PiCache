@@ -65,6 +65,14 @@ func (r *Registry) Neighbours(ctx context.Context) ([]Neighbour, error) {
 	return out, err
 }
 
+// NeighbourMAC reads the kernel's neighbour table now and returns the MAC
+// of ip (entries that are not incomplete or failed). ok is false when ip
+// is not listed (always on systems other than Linux).
+func (r *Registry) NeighbourMAC(ip netip.Addr) (mac string, ok bool) {
+	mac = r.readARP()[netutil.Canon(ip)]
+	return mac, mac != ""
+}
+
 // arpLoop refreshes the neighbour table now, every 30 s and when an early
 // read is requested (kickARP), but then at most once per second.
 func (r *Registry) arpLoop(ctx context.Context) {

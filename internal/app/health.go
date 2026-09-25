@@ -177,6 +177,13 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 		add("data-disk", "fail", fmt.Sprintf("only %d MiB free in %s", free>>20, a.cfg.DataDir), "free space on the data disk")
 	}
 
+	// DHCP server (only when it is enabled or available)
+	if a.dhcp != nil {
+		if st, msg, hint, show := a.dhcp.Health(); show {
+			add("dhcp", st, msg, hint)
+		}
+	}
+
 	// Network check (the cached check of DNS → Network check)
 	if a.network != nil {
 		st, msg, hint := networkHealth(a.network.Check(ctx))

@@ -21,8 +21,9 @@
 // is cached for at most 2 s and asks for an early neighbour-table read (at
 // most one extra read per second).
 //
-// Names: the PTR name of the address, else the name of another address
-// with the same MAC (an IPv4 address's name first, then the most recently
+// Names: the name of PiCache's DHCP lease of the address (SetLeaseNames),
+// else its PTR name, else the name of another address with the same MAC (a
+// lease name first, then an IPv4 address's name, then the most recently
 // resolved one), e.g. the router's DHCPv4 name for a device's IPv6
 // addresses.
 //
@@ -193,6 +194,8 @@ type Registry struct {
 	queued  map[netip.Addr]struct{}
 	queue   chan netip.Addr
 	ptr     atomic.Pointer[PTRResolver]
+	// leaseName returns the DHCP lease name of an address (nil: none).
+	leaseName atomic.Pointer[LeaseNameFunc]
 
 	cbMu     sync.Mutex
 	onChange []func()

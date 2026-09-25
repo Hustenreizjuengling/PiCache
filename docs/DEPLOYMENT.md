@@ -112,6 +112,7 @@ the setup token at the end. Options go after `sh -s --`:
 curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh -s -- --version v0.1.0      # a specific release
 curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh -s -- --with-host-apply     # NAS mounts from the web UI
 curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh -s -- --without-updater     # no update helper
+curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh -s -- --with-dhcp           # let PiCache serve DHCP (see DHCP server)
 ```
 
 To read the script before running it, download it first:
@@ -138,6 +139,8 @@ Then run the installer as root:
 sudo sh deploy/install.sh --binary ./picache-linux-amd64
 # optional: let the web UI mount SMB/NFS shares through a root helper
 sudo sh deploy/install.sh --binary ./picache-linux-amd64 --with-host-apply
+# optional: let PiCache serve DHCP (see DHCP server; --without-dhcp removes it)
+sudo sh deploy/install.sh --binary ./picache-linux-amd64 --with-dhcp
 ```
 
 The installer is idempotent; running it again upgrades an existing
@@ -178,11 +181,18 @@ installation. It never downloads anything. It:
    `--without-updater` skips both and removes a helper that an earlier run
    installed. With a custom `PICACHE_DATA_DIR` it writes
    a path drop-in for the helper, as for host-apply;
-8. checks ports 53, 80, 443, 8080 and 8443 for other programs. If port 53 is
+8. with `--with-dhcp`: sets `PICACHE_DHCP=on` in `picache.env`, writes the
+   drop-in `/etc/systemd/system/picache.service.d/60-dhcp.conf`
+   (`CAP_NET_RAW` for the IPv6 router advertisements, which PiCache drops
+   right after start; see [DHCP server](#dhcp-server)), creates
+   `/etc/picache/dhcp.enabled` and warns when another program uses UDP
+   port 67. Later runs keep it as long as the marker exists;
+   `--without-dhcp` removes all three;
+9. checks ports 53, 80, 443, 8080 and 8443 for other programs. If port 53 is
    taken it prints the fix and does **not** start PiCache
    ([Port 53 conflicts](#port-53-conflicts)); it never reconfigures
    systemd-resolved or other services;
-9. enables and (re)starts `picache.service` and prints the web UI address and
+10. enables and (re)starts `picache.service` and prints the web UI address and
    the setup-token command.
 
 `/var/lib/picache` and `/var/cache/picache` are created by systemd
@@ -291,8 +301,15 @@ has limits: you **must** set the cache IPv4 address
 (`downloadCache.cacheIpv4`) to the host's LAN IP, because PiCache cannot
 detect it; traffic that passes docker-proxy (IPv6, loopback, hairpin)
 appears to come from the Docker gateway; clients cannot be identified by
-MAC; and the router resolver must be set explicitly. Use host networking
+MAC; the router resolver must be set explicitly; and the DHCP server is not
+available (DHCP broadcasts do not cross the bridge). Use host networking
 whenever you can.
+
+**DHCP server** (optional, [DHCP server](#dhcp-server)): uncomment
+`PICACHE_DHCP: "on"` in `docker-compose.yml` (host networking is required),
+and add `NET_RAW` to `cap_add` if PiCache should also announce itself as IPv6
+DNS server. PiCache opens its DHCP sockets as root at start; the switch to
+65532 clears `NET_RAW` like every other capability.
 
 Docker Desktop (macOS/Windows) is not a deployment target: containers run in
 a VM, so PiCache cannot see real client addresses, and bind-mount
@@ -367,6 +384,11 @@ PiCache's address for larger networks) so that devices that are switched on
 show up; it is not needed for normal operation. Devices only appear after
 they talked on the network recently, and devices with hard-coded DNS servers
 or encrypted DNS never ask PiCache.
+
+If your router cannot hand out another DNS server at all, PiCache can do it
+itself: see [DHCP server](#dhcp-server). While PiCache serves DHCP, the page
+says so instead of showing the router's IPv4 DNS steps, and it mentions
+PiCache's own IPv6 announcements when they are on.
 
 ### Router set-up: FRITZ!Box
 
@@ -464,6 +486,134 @@ IPv6:
   of Quad9 and Cloudflare (`2620:fe::fe`, `2606:4700:4700::1111`), so
   encrypted upstreams also work on IPv6-only hosts; IPv4 is tried first.
   An unchanged default list gets them with the update to 0.6.0.
+
+---
+
+## DHCP server
+
+PiCache can hand out IPv4 addresses itself and announce itself as IPv6 DNS
+server, for routers that cannot hand out another DNS server (many provider
+routers). If your router can, prefer that ([Network check](#network-check)):
+one DHCP server less to look after. The DHCP server is off by default and
+serves only on the interface you choose.
+
+It hands out addresses from a range, with the router (the default gateway),
+PiCache as DNS server and your local domain, and registers the devices'
+host names in DNS (`laptop.lan`, and the reverse name of the address), so
+the query log and client lists show names. Static leases give a device a
+fixed address (and name). For IPv6 it sends router advertisements that carry
+only the DNS server (PiCache's ULA) and the domain, never a prefix and never
+itself as router (router lifetime 0): the router keeps doing addresses and
+routing. Optionally it answers stateless DHCPv6 information requests with
+the same DNS server. It hands out no IPv6 addresses.
+
+### Before you start
+
+1. **Give PiCache a fixed address.** A static IPv4 address configured on
+   the machine (or container) itself; a reservation in the router is not
+   enough, because the router's DHCP server will be off. PiCache refuses to
+   serve while its own address comes from a DHCP client. Examples:
+   - Debian with ifupdown (`/etc/network/interfaces`):
+     `iface eth0 inet static` with `address 192.168.178.10/24` and
+     `gateway 192.168.178.1`;
+   - NetworkManager: `nmcli con mod <connection> ipv4.method manual
+     ipv4.addresses 192.168.178.10/24 ipv4.gateway 192.168.178.1`;
+   - Proxmox LXC: `pct set <ctid> -net0 name=eth0,bridge=vmbr0,ip=192.168.178.10/24,gw=192.168.178.1`.
+   Pick an address outside the range PiCache will hand out.
+2. **For IPv6 announcements** PiCache needs a stable ULA (`fd…`). On a
+   FRITZ!Box turn on *Heimnetz → Netzwerk → Netzwerkeinstellungen →
+   IPv6-Einstellungen → Unique Local Addresses (ULA) immer zuweisen*
+   (*Home Network → Network → Network Settings → IPv6 settings → Always
+   assign unique local addresses (ULA)*). Turn off the router's own IPv6
+   DNS announcement where possible, otherwise devices may keep asking the
+   router.
+
+### Enabling it
+
+- **Bare metal, VM, LXC:** `sudo sh deploy/install.sh --binary … --with-dhcp`
+  (or `get-picache.sh … --with-dhcp`). It sets `PICACHE_DHCP=on` and
+  installs a drop-in that gives PiCache `CAP_NET_RAW` for the IPv6 router
+  advertisements; PiCache opens that one socket at start and then drops the
+  capability for good (it checks that it is gone). `--without-dhcp` removes
+  both again; a plain re-run keeps the current state.
+- **Docker:** host networking (`docker-compose.yml`), `PICACHE_DHCP: "on"`,
+  and `NET_RAW` in `cap_add` for the IPv6 announcements (see the comments in
+  the compose file). Not available with bridge networking.
+
+Then open **DNS → DHCP**:
+
+1. Choose the interface (the page shows its address and warns when it is
+   dynamic), the range, the lease time, and optionally the router, DNS
+   server and domain (defaults: the default gateway, PiCache, the local
+   domain).
+2. **Find other DHCP servers**: PiCache asks the network for DHCP servers
+   (5 s) and lists the ones that answered.
+3. **Switch off the router's DHCP server.** FRITZ!Box: *Heimnetz → Netzwerk
+   → Netzwerkeinstellungen → IPv4-Einstellungen* → *DHCP-Server aktivieren*
+   off (*Home Network → Network → Network Settings → IPv4 settings →
+   Enable the DHCP server*). Other routers: the DHCP server switch of the
+   LAN settings.
+4. Enable PiCache's DHCP server. It searches for other DHCP servers again
+   and starts serving when none answers. Devices move over when their lease
+   from the router runs out or when they reconnect (switch Wi-Fi off and
+   on); a device keeps its address when it is free and inside PiCache's
+   range.
+
+PiCache refuses to serve (status **Blocked**) while its own address is
+dynamic, while another DHCP server answered its search within the last 10
+minutes or a device asked another DHCP server within the last 24 hours,
+while the interface has no single private IPv4 address, or while the range
+does not fit the subnet. The page names the reason and what to do. After
+switching off the router's DHCP server, click **Search again**: a search
+that finds no other server lifts the earlier detections at once. Only if
+another server must stay on (for example one that serves other devices
+only), **Serve although another DHCP server answers** overrides that check;
+two servers handing out addresses in the same network cause address
+conflicts. While PiCache serves, a newly seen DHCP server does not stop it,
+but raises a health warning (and a notification).
+
+### IPv6 announcements
+
+Under **DNS → DHCP → IPv6**:
+
+- **Router advertisements** announce PiCache's ULA as DNS server (RDNSS)
+  and the domain (DNSSL) with a lifetime of 30 minutes: three at the start,
+  then one every 200 to 600 seconds, and one shortly after a device asks
+  (a router solicitation). They never make PiCache a router. Switching them
+  off, a new address and stopping PiCache send one last announcement that
+  withdraws the DNS server.
+- **DHCPv6** answers information requests (stateless DHCPv6) with the same
+  DNS server and domain; the router advertisements then tell devices to
+  ask (the O flag).
+
+They need a stable ULA on the interface and, for the router advertisements,
+the raw socket (`--with-dhcp`, Docker `NET_RAW`); the page says what is
+missing.
+
+### Troubleshooting
+
+- **Unavailable:** `PICACHE_DHCP` is not set (run the installer with
+  `--with-dhcp`), PiCache runs in a Docker bridge network, or UDP port 67 is
+  used by another program on the same host (`ss -ulnp 'sport = :67'`; stop
+  dnsmasq or the other DHCP server). The health check `dhcp` fails in the
+  last case.
+- **Blocked, "another DHCP server answers":** the router's DHCP server (or
+  another one) is still on. Switch it off and search again. A server a
+  device asked within the last 24 hours keeps blocking until then; if you
+  are sure it is off, use the override once and switch it off again later.
+- **Blocked, "comes from a DHCP client":** the machine's address is
+  dynamic; configure a static address (above).
+- **Devices get no address:** check that a firewall on the host lets UDP
+  port 67 in and 68 out (`nft list ruleset`), and look at the counters on
+  the page (`dropped` counts malformed and rate-limited packets). Devices
+  behind another router or a DHCP relay are not served.
+- **No IPv6 announcements:** "no-ula" means PiCache has no stable ULA on
+  the interface; "no-raw-socket" means it started without `CAP_NET_RAW`
+  (run the installer with `--with-dhcp` again, or add `NET_RAW` in Docker).
+- **Names:** a device's DNS name is its host name plus the domain
+  (`laptop.lan`). Two devices with the same host name: the second gets no
+  DNS name (the lease list shows this); give it a static lease with another
+  name. Local DNS records with the same name win.
 
 ---
 
@@ -948,7 +1098,9 @@ previous image tag in the compose file and restore the copy from the
   disables the units and removes the binary, the unit files (including the
   update helper's), the license texts in `/usr/share/doc/picache/`, the
   installer's drop-ins, `/etc/picache/host-apply.enabled` and
-  `/etc/picache/updater.enabled`. Configuration and data are kept. The
+  `/etc/picache/updater.enabled`, and the DHCP support of `--with-dhcp`
+  (drop-in, `/etc/picache/dhcp.enabled` and `PICACHE_DHCP` in
+  `picache.env`). Configuration and data are kept. The
   script lists what remains, including NAS mount units written by the helper
   (`/etc/systemd/system/srv-picache-*.mount`) with the commands that remove
   them and their credentials. Before uninstalling you can instead run
@@ -1188,6 +1340,7 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_WEB_TLS_KEY` | – | PEM private key; set together with the certificate. Both files must be readable by the service user. |
 | `PICACHE_WEB_HOSTS` | – | Comma-separated extra host names allowed for the web UI (DNS-rebinding protection), e.g. a reverse-proxy name. Can also be set in the web settings. |
 | `PICACHE_WEB_SECURE_COOKIES` | `false` | Set to `true` when a TLS-terminating reverse proxy forwards to the plain-HTTP listener: the session and device cookies then get the `Secure` flag although the request reaches PiCache over HTTP. Requests on PiCache's own HTTPS listener always get `Secure` cookies named `__Host-picache_session` and `__Host-picache_device`. With this set, signing in directly over plain HTTP no longer works (browsers drop `Secure` cookies there). |
+| `PICACHE_DHCP` | off | `on` (`1`, `true`): open the DHCP sockets at start (UDP 67 and 547; the raw ICMPv6 socket for IPv6 router advertisements when the process has `CAP_NET_RAW`, which it then drops). The DHCP server itself is switched on under DNS → DHCP ([DHCP server](#dhcp-server)). Set by `install.sh --with-dhcp`, which also installs the unit drop-in it needs. |
 | `PICACHE_RUN_AS` | – · `65532:65532` | Numeric non-root `uid:gid`. When PiCache starts as root it binds the listeners and then switches to this user before touching files. Linux only. Not needed with the systemd unit. |
 | `PICACHE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `PICACHE_LOG_FORMAT` | `text` | `text` or `json` (logs go to stderr / the journal). |
@@ -1233,7 +1386,9 @@ process).
 
 - **Health:** **System → Health & about** lists every check with a hint:
   listeners, upstreams (including the clock guard), blocklists, rate limiting, cache-domains,
-  download cache (cache IP), SNI, cache storage, logs and free space on the data disk.
+  download cache (cache IP), SNI, cache storage, logs, free space on the data disk
+  and the DHCP server (when enabled; see [DHCP server](#dhcp-server) for its
+  troubleshooting).
 - **Logs:** `journalctl -u picache -f` (bare metal/LXC),
   `docker compose logs -f picache` (Docker). Set `PICACHE_LOG_LEVEL=debug`
   for more detail.

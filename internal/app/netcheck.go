@@ -126,7 +126,10 @@ type netSources struct {
 	ignoresRA func() bool
 	// scanSupported: the neighbour table can be read (Linux).
 	scanSupported bool
-	send          func(ctx context.Context, addrs []netip.Addr) // sends the scan's datagrams
+	// dhcp reports whether PiCache serves DHCP and announces itself as
+	// IPv6 DNS server (nil: it does not).
+	dhcp func() api.NetworkDHCP
+	send func(ctx context.Context, addrs []netip.Addr) // sends the scan's datagrams
 }
 
 // netInputs are the facts one check is computed from.
@@ -150,6 +153,7 @@ type netInputs struct {
 	// ignores router advertisements (read only without a ULA or global
 	// address).
 	trustConnected, ignoresRA bool
+	dhcp                      api.NetworkDHCP
 }
 
 // netChecker computes and caches the network check and runs the discovery
@@ -210,6 +214,17 @@ func (a *App) netSources() netSources {
 		trustConnected: func() bool { return a.set.Get().DNS.TrustConnectedNetworks },
 		ignoresRA:      hostIgnoresRA,
 		scanSupported:  runtime.GOOS == "linux",
+		dhcp: func() api.NetworkDHCP {
+			if a.dhcp == nil {
+				return api.NetworkDHCP{}
+			}
+			serving, iface, ra := a.dhcp.Serving()
+			out := api.NetworkDHCP{Serving: serving, RouterAdvertisements: ra}
+			if serving {
+				out.Interface = iface
+			}
+			return out
+		},
 	}
 }
 
@@ -318,6 +333,9 @@ func (n *netChecker) gather(ctx context.Context, now time.Time) netInputs {
 	if s.trustConnected != nil {
 		in.trustConnected = s.trustConnected()
 	}
+	if s.dhcp != nil {
+		in.dhcp = s.dhcp()
+	}
 	if s.ignoresRA != nil && !in.host.Bridge && !slices.ContainsFunc(in.host.Prefixes, func(p netip.Prefix) bool {
 		c := addrClass(netutil.Canon(p.Addr()))
 		return c == classULA || c == classGlobal
@@ -422,6 +440,7 @@ func computeNetworkCheck(in netInputs) api.NetworkCheck {
 		}
 	}
 	nc.Queries24h = q
+	nc.DHCP = in.dhcp
 
 	nc.Checks = append(nc.Checks, forwardingCheck(q, router, routerQueries, in.host.Bridge))
 	lanV6 := len(nc.Self.ULA)+len(nc.Self.Global) > 0

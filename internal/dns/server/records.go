@@ -58,6 +58,7 @@ type localRR struct {
 	value string // A/AAAA: address; CNAME/PTR: target name (normalised); TXT: text
 	ip    netip.Addr
 	ttl   uint32
+	lease bool // the name of a DHCP lease, not a configured record
 }
 
 // zone is the immutable snapshot of enabled local records. Wildcards are
@@ -359,13 +360,14 @@ func (s *Server) reloadConfig(ctx context.Context) error {
 
 // --- answering ---
 
-// localAnswer answers qc from local records (ARCHITECTURE 7.1 step 7): a
-// CNAME is answered with its target resolved (local records first, then
-// forwarded, at most 8 hops); a name without records of the requested type
-// gets an authoritative NODATA. ok is false when no record matches.
+// localAnswer answers qc from local records (ARCHITECTURE 7.1 step 7),
+// else from the names of DHCP leases: a CNAME is answered with its target
+// resolved (local records and lease names first, then forwarded, at most
+// 8 hops); a name without records of the requested type gets an
+// authoritative NODATA. ok is false when nothing matches.
 func (s *Server) localAnswer(qc *qctx) (result, bool) {
 	z := s.zone.Load()
-	rrs, ok := z.lookup(qc.qname)
+	rrs, ok := s.lookupLocal(qc, z, qc.qname)
 	if !ok {
 		return result{}, false
 	}
@@ -377,7 +379,7 @@ func (s *Server) localAnswer(qc *qctx) (result, bool) {
 	for hops := 0; ; hops++ {
 		cname := slices.IndexFunc(rrs, func(rr localRR) bool { return rr.typ == dns.TypeCNAME })
 		if cname < 0 {
-			if qc.tracing() {
+			if qc.tracing() && (len(rrs) == 0 || !rrs[0].lease) {
 				qc.note(fmt.Sprintf("local records for %s", name))
 			}
 			chain := len(m.Answer)
@@ -408,13 +410,43 @@ func (s *Server) localAnswer(qc *qctx) (result, bool) {
 			return s.servfail(qc, "local CNAME loop or chain longer than 8 hops"), true
 		}
 		visited[target] = true
-		next, ok := z.lookup(target)
+		next, ok := s.lookupLocal(qc, z, target)
 		if !ok {
 			s.resolveCNAMETarget(qc, &res, target, hops+1)
 			return res, true
 		}
 		owner, name, rrs = fqdn(target), target, next
 	}
+}
+
+// lookupLocal returns the local records of name, else the name of a DHCP
+// lease: <host>.<domain> → A, or the PTR of a lease address (TTL
+// min(300 s, remaining lease)). Local records win over lease names.
+func (s *Server) lookupLocal(qc *qctx, z *zone, name string) ([]localRR, bool) {
+	if rrs, ok := z.lookup(name); ok {
+		return rrs, true
+	}
+	if s.d.Leases == nil {
+		return nil, false
+	}
+	if ip, ok := parseReverse(name); ok {
+		host, ttl, ok := s.d.Leases.LeasePTR(ip)
+		if !ok {
+			return nil, false
+		}
+		if qc.tracing() {
+			qc.note(fmt.Sprintf("DHCP lease name: %s is %s", ip, host))
+		}
+		return []localRR{{typ: dns.TypePTR, value: host, ttl: ttl, lease: true}}, true
+	}
+	ip, ttl, ok := s.d.Leases.LeaseAddr(name)
+	if !ok {
+		return nil, false
+	}
+	if qc.tracing() {
+		qc.note(fmt.Sprintf("DHCP lease name: %s is %s", name, ip))
+	}
+	return []localRR{{typ: dns.TypeA, value: ip.String(), ip: ip, ttl: ttl, lease: true}}, true
 }
 
 // resolveCNAMETarget appends the answer for a local CNAME target that has no

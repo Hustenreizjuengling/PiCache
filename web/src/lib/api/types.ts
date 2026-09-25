@@ -412,6 +412,40 @@ export interface BackupsSettings {
   includeSecrets: boolean
 }
 
+/** settings.DHCPIPv6: IPv6 DNS announcements of the DHCP server. */
+export interface DhcpIpv6Settings {
+  /** Router advertisements with RDNSS/DNSSL only (router lifetime 0, no prefixes). */
+  routerAdvertisements: boolean
+  /** Stateless DHCPv6: answers information requests with the DNS server and domain. */
+  dhcpv6: boolean
+}
+
+/**
+ * settings.DHCP (PATCH /settings/dhcp; field errors "dhcp.<member>" and
+ * "dhcp.ipv6.<member>"). Interface and range are checked against the live
+ * interface only while `enabled` is true.
+ */
+export interface DhcpSettings {
+  enabled: boolean
+  /** A non-virtual interface with exactly one RFC 1918 IPv4 address (the subnet served). */
+  interface: string
+  rangeStart: string
+  rangeEnd: string
+  /** 300..604800 (default 86400). */
+  leaseSeconds: number
+  /** "" = the IPv4 default gateway. */
+  router: string
+  /** "" = PiCache's own address on the interface. */
+  dnsServer: string
+  /** "" = dns.localDomain. */
+  domain: string
+  /** Lease host names become DNS names. */
+  registerHostnames: boolean
+  /** Serve although another DHCP server answers. */
+  ignoreOtherServers: boolean
+  ipv6: DhcpIpv6Settings
+}
+
 /** settings.All */
 export interface Settings {
   dns: DnsSettings
@@ -422,6 +456,7 @@ export interface Settings {
   web: WebSettings
   updates: UpdatesSettings
   backups: BackupsSettings
+  dhcp: DhcpSettings
 }
 
 /** Sections accepted by PATCH /settings/{section}. */
@@ -866,12 +901,183 @@ export interface NetworkCheck {
   checks: NetworkCheckItem[]
   devices: NetworkDevice[]
   scan: NetworkScanState
+  /** PiCache's own DHCP server (DNS → DHCP). */
+  dhcp?: { serving: boolean; interface?: string; routerAdvertisements: boolean }
 }
 
 /** 202 of POST /network/scan */
 export interface NetworkScanStarted {
   started: boolean
   addresses: number
+}
+
+// ---------------------------------------------------------------- dhcp server
+
+/** unavailable: PICACHE_DHCP off, bridge mode, non-Linux or sockets failed; blocked: enabled, but a blocker applies. */
+export type DhcpState = 'unavailable' | 'off' | 'blocked' | 'serving' | 'error'
+
+/** Why an enabled DHCP server does not serve (docs/ARCHITECTURE.md §18). */
+export type DhcpBlocker = 'dynamic-address' | 'other-server' | 'no-interface' | 'range'
+
+/** The served interface: PiCache's own IPv4 address on it. */
+export interface DhcpInterfaceState {
+  name: string
+  mac: string
+  ipv4: string
+  prefixLen: number
+  /** The address came from a DHCP client (finite lifetime). */
+  dynamic: boolean
+}
+
+export interface DhcpPool {
+  start: string
+  end: string
+  /** Usable addresses in the range. */
+  size: number
+  used: number
+  static: number
+}
+
+/** Another DHCP server: answered a probe, or a device's request named it. */
+export interface DhcpOtherServer {
+  address: string
+  serverId: string
+  source: 'probe' | 'request'
+  lastSeen: Timestamp
+}
+
+export interface DhcpCounters {
+  received: number
+  offers: number
+  acks: number
+  naks: number
+  declines: number
+  releases: number
+  informs: number
+  dropped: number
+}
+
+export type DhcpRaState = 'off' | 'blocked' | 'sending' | 'error'
+
+/** Why IPv6 announcements wait: no stable ULA, no usable interface, no raw ICMPv6 socket (RAs) or no UDP port 547 (DHCPv6). */
+export type DhcpIpv6Blocker = 'no-ula' | 'no-interface' | 'no-raw-socket' | 'no-socket' | (string & {})
+
+export interface DhcpRaStatus {
+  enabled: boolean
+  /** false without the raw ICMPv6 socket (CAP_NET_RAW). */
+  available: boolean
+  reason?: string
+  state: DhcpRaState
+  blockers: DhcpIpv6Blocker[]
+  /** The announced ULA. */
+  address?: string
+  lastSent?: Timestamp
+  sent: number
+  solicitations: number
+  error?: string
+}
+
+export interface Dhcpv6Status {
+  enabled: boolean
+  state: 'off' | 'blocked' | 'serving' | 'error'
+  /** While blocked. */
+  blockers?: DhcpIpv6Blocker[]
+  replies: number
+  /** Other message types and malformed packets. */
+  ignored?: number
+  error?: string
+}
+
+/** GET /dhcp */
+export interface DhcpStatus {
+  available: boolean
+  /** Why the DHCP server is unavailable. */
+  reason?: string
+  state: DhcpState
+  blockers: DhcpBlocker[]
+  error?: string
+  interface?: DhcpInterfaceState
+  pool?: DhcpPool
+  router?: string
+  dnsServer?: string
+  domain?: string
+  otherServers: DhcpOtherServer[]
+  lastProbe?: { time: Timestamp; servers: number }
+  counters: DhcpCounters
+  ipv6: {
+    routerAdvertisements: DhcpRaStatus
+    dhcpv6: Dhcpv6Status
+  }
+}
+
+export interface DhcpIpv6Address {
+  address: string
+  kind: 'ula' | 'global' | 'link-local'
+  temporary: boolean
+  deprecated: boolean
+}
+
+/** An entry of GET /dhcp/interfaces. */
+export interface DhcpInterface {
+  name: string
+  mac: string
+  /** CIDR notation, e.g. "192.168.178.10/24". */
+  ipv4: string[]
+  ipv6: DhcpIpv6Address[]
+  /** The IPv4 address came from a DHCP client. */
+  dynamic4: boolean
+  /** Bridges, veth, tunnels and the like: not offered for serving. */
+  virtual: boolean
+}
+
+export interface DhcpProbeServer {
+  address: string
+  serverId: string
+  /** The address it offered. */
+  offer?: string
+  mac?: string
+}
+
+/** POST /dhcp/probe (429 within 10 s of the last probe, 503 when unavailable). */
+export interface DhcpProbeResult {
+  servers: DhcpProbeServer[]
+  durationMs: number
+}
+
+/** GET /dhcp/leases: active and recently expired leases, newest first. */
+export interface DhcpLease {
+  mac: string
+  ip: string
+  hostname?: string
+  clientId?: string
+  expires: Timestamp
+  active: boolean
+  static: boolean
+  /** Name of the configured client this device belongs to. */
+  clientName?: string
+  /** The DNS name the lease answers (with registerHostnames). */
+  dnsName?: string
+  /** Another active lease holds the host name: this one gets no DNS name. */
+  nameConflict?: boolean
+}
+
+export interface DhcpStaticLease {
+  mac: string
+  ip: string
+  hostname?: string
+  comment?: string
+  createdAt: Timestamp
+  updatedAt: Timestamp
+  /** A device uses it right now. */
+  active: boolean
+}
+
+/** POST /dhcp/static (PUT /dhcp/static/{mac} ignores mac). 400 with field mac, ip, hostname or comment. */
+export interface DhcpStaticLeaseInput {
+  mac: string
+  ip: string
+  hostname?: string
+  comment?: string
 }
 
 // ---------------------------------------------------------------- filter

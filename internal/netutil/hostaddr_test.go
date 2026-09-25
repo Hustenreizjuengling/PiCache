@@ -61,6 +61,24 @@ func nlAddr(index int, prefix netip.Prefix, flags uint32, local netip.Addr) []by
 	var f [4]byte
 	binary.NativeEndian.PutUint32(f[:], flags)
 	body = append(body, attr(ifaFlags, f[:])...)
+	return nlMsg(body)
+}
+
+// nlAddrLifetime encodes an RTM_NEWADDR message with an IFA_CACHEINFO
+// attribute (valid lifetime in seconds; infiniteLifetime for a static
+// address).
+func nlAddrLifetime(index int, prefix netip.Prefix, valid uint32) []byte {
+	b := nlAddr(index, prefix, 0x80, netip.Addr{})
+	ci := make([]byte, 4+16)
+	binary.NativeEndian.PutUint16(ci[0:2], uint16(len(ci)))
+	binary.NativeEndian.PutUint16(ci[2:4], ifaCacheInfo)
+	binary.NativeEndian.PutUint32(ci[4:8], valid) // preferred
+	binary.NativeEndian.PutUint32(ci[8:12], valid)
+	return nlMsg(append(b[nlmsgHdrLen:], ci...))
+}
+
+// nlMsg wraps an address message body into a netlink RTM_NEWADDR message.
+func nlMsg(body []byte) []byte {
 	msg := make([]byte, nlmsgHdrLen, nlmsgHdrLen+len(body))
 	binary.NativeEndian.PutUint32(msg[0:4], uint32(nlmsgHdrLen+len(body)))
 	binary.NativeEndian.PutUint16(msg[4:6], rtmNewAddr)
@@ -82,8 +100,10 @@ func TestParseAddrDump(t *testing.T) {
 	dump = append(dump, nlAddr(2, p("2001:db8::99/64"), ifaFTentative, netip.Addr{})...)               // DAD running
 	dump = append(dump, nlAddr(2, p("2001:db8::98/64"), ifaFDadFailed|ifaFTentative, netip.Addr{})...) // duplicate
 	dump = append(dump, nlAddr(9, p("fd00::99/64"), 0, netip.Addr{})...)                               // unknown interface
+	dump = append(dump, nlAddrLifetime(2, p("192.168.1.12/24"), 86400)...)                             // from a DHCP client
+	dump = append(dump, nlAddrLifetime(2, p("192.168.1.13/24"), infiniteLifetime)...)                  // static
 	msgs := parseAddrDump(dump)
-	if len(msgs) != 10 {
+	if len(msgs) != 12 {
 		t.Fatalf("parsed %d messages: %+v", len(msgs), msgs)
 	}
 	ifs := map[int]net.Interface{
@@ -102,6 +122,8 @@ func TestParseAddrDump(t *testing.T) {
 		{Iface: "eth0", Prefix: p("2001:db8:0:1::10/64"), Up: true, Deprecated: true},
 		{Iface: "eth0", Prefix: p("2001:db8::99/64"), Up: true, Tentative: true},
 		{Iface: "eth0", Prefix: p("2001:db8::98/64"), Up: true, Tentative: true},
+		{Iface: "eth0", Prefix: p("192.168.1.12/24"), Up: true, Dynamic: true},
+		{Iface: "eth0", Prefix: p("192.168.1.13/24"), Up: true},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("host addresses\n%+v\nwant\n%+v", got, want)

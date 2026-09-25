@@ -389,6 +389,7 @@ export default {
   'health.check.cache-store': 'Cache storage',
   'health.check.logs': 'Logs',
   'health.check.data-disk': 'Data disk',
+  'health.check.dhcp': 'DHCP server',
 
   'health.about.title': 'About PiCache',
   'health.about.loadError': 'The system information could not be loaded',

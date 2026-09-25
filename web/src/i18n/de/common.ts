@@ -17,6 +17,7 @@ const de: Messages<typeof en> = {
   'nav.clients': 'Clients & Gruppen',
   'nav.parental': 'Jugendschutz',
   'nav.network': 'Netzwerkprüfung',
+  'nav.dhcp': 'DHCP',
   'nav.localDns': 'Lokales DNS',
   'nav.dnsSettings': 'DNS-Einstellungen',
   'nav.cache': 'Cache',
