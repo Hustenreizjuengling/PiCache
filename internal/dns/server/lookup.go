@@ -60,6 +60,9 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 
 	var res result
 	switch rcode, reason := validate(msg); {
+	case s.healthProbe(msg, client):
+		qc.note("health probe from this machine: answered like localhost, never counted or logged")
+		res = s.addrAnswer(qc, localhostV4, localhostV6)
 	case rcode >= 0:
 		qc.note("refused: " + reason)
 		res = s.refusal(qc, rcode, reason)

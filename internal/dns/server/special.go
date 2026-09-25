@@ -14,6 +14,12 @@ import (
 // specialTTL is the TTL of locally generated special-use answers.
 const specialTTL uint32 = 60
 
+// localhostV4 and localhostV6 answer localhost and health probes (read-only).
+var (
+	localhostV4 = []netip.Addr{netip.AddrFrom4([4]byte{127, 0, 0, 1})}
+	localhostV6 = []netip.Addr{netip.IPv6Loopback()}
+)
+
 // serverName reports whether name is one of this server's names
 // (dns.serverNames, also below the local domain).
 func serverName(set *settings.All, name string) bool {
@@ -66,7 +72,7 @@ func (s *Server) specialUse(qc *qctx) (result, bool) {
 func (s *Server) specialAddrs(qc *qctx, name string) (v4, v6 []netip.Addr, what string, ok bool) {
 	switch {
 	case inZone(name, "localhost"):
-		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, []netip.Addr{netip.IPv6Loopback()}, "localhost", true
+		return localhostV4, localhostV6, "localhost", true
 	case serverName(qc.set, name):
 		if st := s.cacheIPs.Load(); st.bridge && !qc.client.IsLoopback() {
 			// Bridge addresses are unreachable for clients: answer with the

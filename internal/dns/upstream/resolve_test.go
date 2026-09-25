@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -319,4 +320,99 @@ func TestResolveRejectsBadRequestsAndClosedResolver(t *testing.T) {
 	if _, _, err := r.Resolve(context.Background(), query("a.example.", dns.TypeA, 1, false)); !errors.Is(err, errClosed) {
 		t.Errorf("after close: %v", err)
 	}
+}
+
+// Duplicate records (RFC 2181 5; Docker's embedded DNS repeats every A and
+// AAAA record) are removed before the answer is cached and returned, keeping
+// the first copy with the lowest TTL.
+func TestDuplicateRecordsAreRemoved(t *testing.T) {
+	st := newStore(t, oneUpstream(nil))
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeTransport{fn: func(_ context.Context, q *dns.Msg) (*dns.Msg, error) {
+			m := new(dns.Msg)
+			m.SetReply(q)
+			for _, s := range []string{
+				"www.example.com. 300 IN CNAME example.com.",
+				"example.com. 300 IN A 192.0.2.1",
+				"example.com. 300 IN A 192.0.2.2",
+				"www.example.com. 300 IN CNAME example.com.",
+				"EXAMPLE.com. 120 IN A 192.0.2.1",
+				"example.com. 300 IN A 192.0.2.2",
+			} {
+				m.Answer = append(m.Answer, mustRR(s))
+			}
+			return m, nil
+		}}
+		r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f})
+		defer r.Close()
+
+		want := []string{
+			"www.example.com.\t300\tIN\tCNAME\texample.com.",
+			"example.com.\t120\tIN\tA\t192.0.2.1",
+			"example.com.\t300\tIN\tA\t192.0.2.2",
+		}
+		m, _, err := r.Resolve(context.Background(), query("www.example.com.", dns.TypeA, 1, false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rrStrings(m.Answer); !slices.Equal(got, want) {
+			t.Fatalf("answer %q, want %q", got, want)
+		}
+		m, info, err := r.Resolve(context.Background(), query("www.example.com.", dns.TypeA, 2, false))
+		if err != nil || !info.Cached {
+			t.Fatalf("second answer: %v %+v", err, info)
+		}
+		if got := rrStrings(m.Answer); !slices.Equal(got, want) {
+			t.Errorf("cached answer %q, want %q", got, want)
+		}
+	})
+}
+
+func TestDedupSection(t *testing.T) {
+	rrs := func(ss ...string) []dns.RR {
+		var out []dns.RR
+		for _, s := range ss {
+			out = append(out, mustRR(s))
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		in, out []dns.RR
+	}{
+		{"single", rrs("a.example. 60 IN A 192.0.2.1"), rrs("a.example. 60 IN A 192.0.2.1")},
+		{"owner case", rrs("a.example. 60 IN A 192.0.2.1", "A.EXAMPLE. 30 IN A 192.0.2.1"), rrs("a.example. 30 IN A 192.0.2.1")},
+		{"interleaved", rrs("a.example. 60 IN AAAA 2001:db8::1", "a.example. 60 IN AAAA 2001:db8::2", "a.example. 60 IN AAAA 2001:db8::1", "a.example. 60 IN AAAA 2001:db8::2"),
+			rrs("a.example. 60 IN AAAA 2001:db8::1", "a.example. 60 IN AAAA 2001:db8::2")},
+		{"distinct owners", rrs("a.example. 60 IN A 192.0.2.1", "b.example. 60 IN A 192.0.2.1"), rrs("a.example. 60 IN A 192.0.2.1", "b.example. 60 IN A 192.0.2.1")},
+		{"distinct types", rrs("a.example. 60 IN A 192.0.2.1", "a.example. 60 IN AAAA ::ffff:192.0.2.1"), rrs("a.example. 60 IN A 192.0.2.1", "a.example. 60 IN AAAA ::ffff:192.0.2.1")},
+		{"TXT is case-sensitive", rrs(`a.example. 60 IN TXT "x"`, `a.example. 60 IN TXT "X"`, `a.example. 60 IN TXT "x"`), rrs(`a.example. 60 IN TXT "x"`, `a.example. 60 IN TXT "X"`)},
+	} {
+		if got, want := rrStrings(dedupSection(tc.in)), rrStrings(tc.out); !slices.Equal(got, want) {
+			t.Errorf("%s: got %q, want %q", tc.name, got, want)
+		}
+	}
+	big := make([]dns.RR, maxDedupRRs+1)
+	for i := range big {
+		big[i] = mustRR("a.example. 60 IN A 192.0.2.1")
+	}
+	if got := dedupSection(big); len(got) != len(big) {
+		t.Errorf("sections above the bound must be passed on unchanged, got %d records", len(got))
+	}
+}
+
+func rrStrings(rrs []dns.RR) []string {
+	out := make([]string, len(rrs))
+	for i, rr := range rrs {
+		out[i] = rr.String()
+	}
+	return out
+}
+
+func mustRR(s string) dns.RR {
+	rr, err := dns.NewRR(s)
+	if err != nil {
+		panic(err)
+	}
+	return rr
 }

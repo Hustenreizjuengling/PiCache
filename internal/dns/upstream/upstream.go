@@ -9,8 +9,9 @@
 // Reply contract: the returned message's Question equals req.Question byte
 // for byte (original case) and its Id equals req.Id; every RR TTL in Answer,
 // Ns and Extra (except OPT) is reduced by the seconds since the entry was
-// cached (minimum 0; stale answers use 30). De-duplicated waiters each get
-// their own copy. The cache key uses the DO bit sent upstream.
+// cached (minimum 0; stale answers use 30). Duplicate records (RFC 2181 5)
+// are removed before a reply is cached or returned. De-duplicated waiters
+// each get their own copy. The cache key uses the DO bit sent upstream.
 //
 // Upstream queries are built fresh for every exchange: random ID (0 for
 // DoH), RD=1, AD=1, our OPT with a 1232-byte buffer and DO=1 if the client
@@ -29,7 +30,8 @@
 // (responses above 16 KiB are not cached; TTLs capped at 7 days), 4096
 // distinct in-flight queries, 16 upstreams per set, 64 ResolveVia sets,
 // 256 queued stale refreshes, 4 idle DoT connections per upstream, DoH
-// bodies ≤ 64 KiB, 64 bootstrap hostnames, 1024 LookupIP results.
+// bodies ≤ 64 KiB, 64 bootstrap hostnames, 1024 LookupIP results; the
+// duplicate check covers sections of at most 256 records.
 package upstream
 
 import (

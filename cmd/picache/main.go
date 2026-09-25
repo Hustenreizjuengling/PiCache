@@ -38,6 +38,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/storage"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
@@ -285,7 +286,9 @@ func localURL() string {
 	return "http://127.0.0.1:8080/healthz"
 }
 
-// dnsCheck asks the local DNS listener for "localhost." (answered without upstreams).
+// dnsCheck asks the local DNS listener for the health probe name, which
+// PiCache answers with 127.0.0.1 without upstreams and without counting or
+// logging the query (a different server on the port answers NXDOMAIN).
 func dnsCheck() error {
 	listen := os.Getenv("PICACHE_DNS_LISTEN")
 	if listen == "" {
@@ -295,7 +298,7 @@ func dnsCheck() error {
 	if !ok {
 		return fmt.Errorf("cannot parse PICACHE_DNS_LISTEN %q", listen)
 	}
-	m := new(dns.Msg).SetQuestion("localhost.", dns.TypeA)
+	m := new(dns.Msg).SetQuestion(dnsserver.HealthProbeName, dns.TypeA)
 	c := &dns.Client{Timeout: 2 * time.Second}
 	r, _, err := c.Exchange(m, net.JoinHostPort(h, p))
 	if err != nil {

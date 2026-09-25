@@ -1,15 +1,24 @@
 package main
 
 import (
+	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/miekg/dns"
+
+	"github.com/hustenreizjuengling/picache/internal/db"
+	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
+	"github.com/hustenreizjuengling/picache/internal/logs"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // capture runs fn with stdout and stderr redirected and returns both.
@@ -78,8 +87,9 @@ func TestStorageRemoveUsage(t *testing.T) {
 	}
 }
 
-// localDNS answers "localhost." like PiCache and returns its address.
-func localDNS(t *testing.T) string {
+// localDNS answers the health probe like PiCache (probe) or, like any other
+// DNS server, with NXDOMAIN, and returns its address.
+func localDNS(t *testing.T, probe bool) string {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -87,13 +97,75 @@ func localDNS(t *testing.T) string {
 	}
 	srv := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
 		m := new(dns.Msg).SetReply(r)
-		m.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET},
-			A: net.IPv4(127, 0, 0, 1)}}
+		if q := r.Question[0]; probe && q.Name == dnsserver.HealthProbeName && q.Qtype == dns.TypeA {
+			m.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET},
+				A: net.IPv4(127, 0, 0, 1)}}
+		} else {
+			m.Rcode = dns.RcodeNameError
+		}
 		_ = w.WriteMsg(m)
 	})}
 	go func() { _ = srv.ActivateAndServe() }()
 	t.Cleanup(func() { _ = srv.Shutdown() })
 	return pc.LocalAddr().String()
+}
+
+type countingQueryLog struct{ n atomic.Int64 }
+
+func (c *countingQueryLog) LogQuery(logs.QueryEvent) { c.n.Add(1) }
+
+// The DNS check asks PiCache's DNS server for the health probe name, which
+// is answered but never counted or logged (Docker runs it every 30 s); a
+// different DNS server on the port fails the check.
+func TestDNSCheck(t *testing.T) {
+	t.Setenv("PICACHE_ENV_FILE", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	d, err := db.Open(filepath.Join(t.TempDir(), "picache.db"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	set, err := settings.Open(ctx, d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ql := &countingQueryLog{}
+	srv, err := dnsserver.New(ctx, dnsserver.Deps{DB: d, Settings: set, Logs: ql, Log: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx, []net.PacketConn{pc}, []net.Listener{ln}) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Serve: %v", err)
+		}
+	}()
+
+	t.Setenv("PICACHE_DNS_LISTEN", pc.LocalAddr().String())
+	for range 3 {
+		if err := dnsCheck(); err != nil {
+			t.Fatalf("dnsCheck: %v", err)
+		}
+	}
+	if st := srv.Stats(); st.Queries != 0 || ql.n.Load() != 0 {
+		t.Errorf("health probes were counted (%d) or logged (%d)", st.Queries, ql.n.Load())
+	}
+
+	t.Setenv("PICACHE_DNS_LISTEN", localDNS(t, false))
+	if err := dnsCheck(); err == nil {
+		t.Error("dnsCheck succeeded against a DNS server that is not PiCache")
+	}
 }
 
 // With plain HTTP off, the healthcheck talks to PiCache's own HTTPS
@@ -115,7 +187,7 @@ func TestHealthcheckOwnTLSListenerOnSpecificAddress(t *testing.T) {
 
 	t.Setenv("PICACHE_WEB_LISTEN", "off")
 	t.Setenv("PICACHE_WEB_TLS_LISTEN", ln.Addr().String())
-	t.Setenv("PICACHE_DNS_LISTEN", localDNS(t))
+	t.Setenv("PICACHE_DNS_LISTEN", localDNS(t, true))
 	if code, _, errOut := capture(t, func() int { return healthcheck(nil) }); code != 0 {
 		t.Fatalf("healthcheck: exit %d: %s", code, errOut)
 	}

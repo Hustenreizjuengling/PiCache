@@ -3,7 +3,9 @@
 // identity, special-use names, local records, LanCache overrides, special
 // domains, filtering, conditional forwarding / router resolver, upstream
 // resolution, CNAME inspection, reply shaping and logging. It also owns local
-// DNS records and conditional forwarders.
+// DNS records and conditional forwarders. Health probes from this machine
+// (HealthProbeName) are answered before the pipeline and never counted or
+// logged.
 //
 // Serving: UDP with (&dns.Server{PacketConn: pc, Handler: h}).ActivateAndServe()
 // (miekg replies from the query's destination address via IP_PKTINFO) and TCP

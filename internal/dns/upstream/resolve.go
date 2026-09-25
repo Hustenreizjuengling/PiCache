@@ -62,8 +62,9 @@ func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, set *upstreamSet) 
 	return m, Info{Upstream: res.upstream, RTT: res.rtt}, nil
 }
 
-// fetch queries the upstreams for k and caches the answer. It owns the
-// reply until it returns; afterwards the reply is shared read-only.
+// fetch queries the upstreams for k, removes duplicate records and caches
+// the answer. It owns the reply until it returns; afterwards the reply is
+// shared read-only.
 func (r *Resolver) fetch(ctx context.Context, k cacheKey, set *upstreamSet) (exchangeResult, error) {
 	d := r.set.Get().DNS
 	q := newQuery(k.name, k.qtype, k.qclass, k.do)
@@ -71,8 +72,41 @@ func (r *Resolver) fetch(ctx context.Context, k cacheKey, set *upstreamSet) (exc
 	if err != nil {
 		return res, err
 	}
+	dedupRRs(res.msg)
 	r.cache.store(k, res.msg, time.Now(), policy(d))
 	return res, nil
+}
+
+// maxDedupRRs bounds the pairwise duplicate check per section; larger
+// sections are passed on unchanged.
+const maxDedupRRs = 256
+
+// dedupRRs removes duplicate records (same owner name, class, type and
+// RDATA; RFC 2181 5) from every section of m in place, e.g. from resolvers
+// such as Docker's embedded DNS that repeat every A/AAAA record. The first
+// copy is kept with the lowest TTL of its copies (RFC 2181 5.2).
+func dedupRRs(m *dns.Msg) {
+	m.Answer = dedupSection(m.Answer)
+	m.Ns = dedupSection(m.Ns)
+	m.Extra = dedupSection(m.Extra)
+}
+
+func dedupSection(rrs []dns.RR) []dns.RR {
+	if len(rrs) < 2 || len(rrs) > maxDedupRRs {
+		return rrs
+	}
+	out := rrs[:1]
+next:
+	for _, rr := range rrs[1:] {
+		for _, kept := range out {
+			if dns.IsDuplicate(kept, rr) {
+				kept.Header().Ttl = min(kept.Header().Ttl, rr.Header().Ttl)
+				continue next
+			}
+		}
+		out = append(out, rr)
+	}
+	return out
 }
 
 func policy(d settings.DNS) cachePolicy {

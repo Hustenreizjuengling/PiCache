@@ -42,13 +42,21 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			s.log.Error("panic while answering a DNS query", slog.Any("panic", v), slog.String("stack", string(debug.Stack())))
 		}
 	}()
-	s.queries.Add(1)
 	_, isTCP := w.RemoteAddr().(*net.TCPAddr)
 	proto := "udp"
 	if isTCP {
 		proto = "tcp"
 	}
 	ip := netutil.AddrFromNet(w.RemoteAddr())
+
+	// Health probes are answered like localhost before anything is counted,
+	// limited, recorded or logged.
+	if s.healthProbe(req, ip) {
+		qc := newQuery(h.ctx, req, ip, proto, s.d.Settings.Get())
+		_ = w.WriteMsg(s.shape(qc, s.addrAnswer(qc, localhostV4, localhostV6), isTCP))
+		return
+	}
+	s.queries.Add(1)
 
 	// 2. ACL first, so nothing is ever sent to disallowed sources (UDP is
 	// additionally filtered before parsing, TCP at accept).
@@ -128,6 +136,26 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	defer cancel()
 	qc.ctx = ctx
 	s.reply(w, qc, s.process(qc), isTCP)
+}
+
+// HealthProbeName is the name `picache healthcheck` (the Docker
+// HEALTHCHECK) asks for. From this machine it is answered like localhost;
+// from anywhere else it is an ordinary name below "invalid" (NXDOMAIN).
+const HealthProbeName = "healthcheck.picache.invalid."
+
+// healthProbe reports whether req is a health probe: a class IN query for
+// HealthProbeName from a loopback address or one of this machine's own
+// addresses (a listener bound to a specific address) that the ACL allows.
+// Probes are never counted, rate limited, recorded as client activity or
+// logged. The name is answered locally and carries nothing, so no client
+// can hide a real query this way.
+func (s *Server) healthProbe(req *dns.Msg, ip netip.Addr) bool {
+	if req.Opcode != dns.OpcodeQuery || len(req.Question) != 1 {
+		return false
+	}
+	q := req.Question[0]
+	return q.Qclass == dns.ClassINET && strings.EqualFold(q.Name, HealthProbeName) &&
+		(ip.IsLoopback() || s.host.Load().isOwn(ip)) && s.allowed(ip)
 }
 
 // reply shapes, sends and logs the result.

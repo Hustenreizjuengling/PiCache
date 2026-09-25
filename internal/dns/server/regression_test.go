@@ -1,6 +1,7 @@
 package dnsserver
 
 import (
+	"context"
 	"net/netip"
 	"slices"
 	"strings"
@@ -166,7 +167,7 @@ func TestServerNameAddrsFor(t *testing.T) {
 	}{
 		{"192.168.1.50", []string{"192.168.1.248"}, []string{"fd00::248", "2001:db8:1::248"}},
 		{"10.8.0.9", []string{"192.168.1.248"}, []string{"2001:db8:1::248"}}, // routed client: primary only
-		{"172.29.5.5", []string{"172.29.0.1"}, []string{"2001:db8:1::248"}},    // on the virtual switch
+		{"172.29.5.5", []string{"172.29.0.1"}, []string{"2001:db8:1::248"}},  // on the virtual switch
 		{"172.17.0.5", []string{"172.17.0.1"}, []string{"2001:db8:1::248"}},
 		{"127.0.0.1", []string{"127.0.0.1"}, []string{"::1"}},
 		{"::1", []string{"127.0.0.1"}, []string{"::1"}},
@@ -302,5 +303,74 @@ func TestServerNameInBridge(t *testing.T) {
 	}
 	if got := answer("127.0.0.1"); !slices.Equal(got, []string{"172.18.0.2"}) {
 		t.Errorf("loopback client got %v, want the container's own address", got)
+	}
+}
+
+// Health probes (picache healthcheck: the Docker HEALTHCHECK every 30 s)
+// from this machine are answered like localhost but never counted, recorded
+// as client activity or logged. From any other client the probe name is an
+// ordinary query (special-use zone "invalid": NXDOMAIN, counted, logged).
+func TestHealthProbe(t *testing.T) {
+	e := newEnv(t, nil).serve()
+	for _, network := range []string{"udp", "tcp"} {
+		r := e.query(network, HealthProbeName, dns.TypeA, withEDNS(1232, false))
+		if r.Rcode != dns.RcodeSuccess || !slices.Equal(answerIPs(r.Answer), []string{"127.0.0.1"}) || r.IsEdns0() == nil {
+			t.Errorf("%s probe: %v", network, r)
+		}
+	}
+	for _, tc := range []struct {
+		client, name string
+		qtype        uint16
+		want         []string
+	}{
+		{"127.0.0.1", "HealthCheck.PiCache.Invalid", dns.TypeA, []string{"127.0.0.1"}},
+		{"::1", HealthProbeName, dns.TypeAAAA, []string{"::1"}},
+		{testCacheIP.String(), HealthProbeName, dns.TypeA, []string{"127.0.0.1"}}, // listener on a specific address
+	} {
+		w := udpFrom(tc.client)
+		e.handle(w, tc.name, tc.qtype)
+		if len(w.msgs) != 1 || w.msgs[0].Rcode != dns.RcodeSuccess || !slices.Equal(answerIPs(w.msgs[0].Answer), tc.want) {
+			t.Errorf("probe %s %s from %s: %v", tc.name, dns.TypeToString[tc.qtype], tc.client, w.msgs)
+		}
+	}
+	e.query("udp", "localhost", dns.TypeA) // an ordinary query from loopback is still logged
+	e.logs.waitEvent(t, "localhost", 0)
+	if n := e.logs.count("healthcheck.picache.invalid"); n != 0 {
+		t.Errorf("health probes were logged %d times", n)
+	}
+	if st := e.srv.Stats(); st.Queries != 1 {
+		t.Errorf("queries = %d, want 1 (health probes are not counted)", st.Queries)
+	}
+	e.cl.mu.Lock()
+	seen := map[netip.Addr]int{}
+	for ip, n := range e.cl.seen {
+		seen[ip] = n
+	}
+	e.cl.mu.Unlock()
+	if len(seen) != 1 || seen[netip.MustParseAddr("127.0.0.1")] != 1 {
+		t.Errorf("client activity %v, want only the ordinary query from 127.0.0.1", seen)
+	}
+
+	w := udpFrom("192.168.1.50")
+	e.handle(w, HealthProbeName, dns.TypeA)
+	if len(w.msgs) != 1 || w.msgs[0].Rcode != dns.RcodeNameError {
+		t.Fatalf("probe name from a LAN client: %v", w.msgs)
+	}
+	if ev := e.logs.waitEvent(t, "healthcheck.picache.invalid", 0); ev.Status != StatusSpecial || ev.ClientIP != "192.168.1.50" {
+		t.Errorf("probe name from a LAN client must be logged like any query: %+v", ev)
+	}
+	if st := e.srv.Stats(); st.Queries != 2 {
+		t.Errorf("queries = %d, want 2", st.Queries)
+	}
+	if c := e.up.callsFor("healthcheck.picache.invalid"); len(c) != 0 {
+		t.Errorf("the probe name must never be sent upstream: %v", c)
+	}
+
+	// The lookup tool shows what the server answers for each client.
+	for client, want := range map[string]string{"127.0.0.1": "NOERROR", "192.168.1.50": "NXDOMAIN"} {
+		res, err := e.srv.Lookup(context.Background(), LookupRequest{Name: HealthProbeName, ClientIP: client}, netip.Addr{})
+		if err != nil || res.RCode != want || (want == "NOERROR") != (len(res.Answers) == 1) {
+			t.Errorf("lookup of the probe name for %s: %+v %v", client, res, err)
+		}
 	}
 }
