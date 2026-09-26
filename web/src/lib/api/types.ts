@@ -35,7 +35,7 @@ export interface Page<T> {
 }
 
 /** Time range presets accepted by `range=` (docs/API.md "Lists"). */
-export type RangePreset = '15m' | '1h' | '6h' | '24h' | '7d' | '30d' | '90d'
+export type RangePreset = '15m' | '1h' | '6h' | '24h' | '7d' | '30d' | '90d' | '180d' | '365d'
 
 /** Either a preset range or explicit bounds (RFC 3339 or unix seconds). */
 export interface TimeQuery {
@@ -148,6 +148,8 @@ export interface SystemOverview {
   upstreams: UpstreamStat[]
   clockGuard: boolean
   health: { ok: boolean; warnings: number; failures: number }
+  /** Unacknowledged warning and error entries of the warning history the caller may see. */
+  events: { unacknowledged: number }
 }
 
 /** POST /system/restart (the process exits and is restarted by systemd/Docker) */
@@ -506,8 +508,17 @@ export interface CacheSettings {
   activeStoreId: string
 }
 
-/** settings.Logs */
+/**
+ * Privacy level derived from the four switches (queryLogEnabled,
+ * anonymizeClientIps, hideDomains, statsEnabled): full = (on, off, off, on),
+ * hide-domains = (on, off, on, on), anonymous = (on, on, on, on),
+ * off = (off, on, on, off), any other combination custom.
+ */
+export type PrivacyLevel = 'full' | 'hide-domains' | 'anonymous' | 'off' | 'custom'
+
+/** settings.Logs (field errors "logs.<member>", "logs.ignoredDomains[i]"). */
 export interface LogsSettings {
+  /** Query rows and the live query feed (statistics are counted either way). */
   queryLogEnabled: boolean
   queryLogRetentionHours: number
   cacheLogRetentionHours: number
@@ -515,6 +526,28 @@ export interface LogsSettings {
   statsRetentionDays: number
   anonymizeClientIps: boolean
   maxDbSizeMiB: number
+  /** Query names become "hidden" and answers are dropped before storage; the top kinds domain and blocked are not recorded. */
+  hideDomains: boolean
+  /** DNS statistics (counts, top lists, query types, unique domains); the download-cache statistics are always counted. */
+  statsEnabled: boolean
+  /** Domains (with subdomains) whose queries are answered but neither logged nor counted (at most 256; ASCII, no wildcards). */
+  ignoredDomains: string[]
+  /** DNS statistics count only A, AAAA and HTTPS queries (the query-type chart keeps every type). */
+  statsOnlyAddressQueries: boolean
+  /** Seconds between writes of new log rows and counts (5..300). */
+  flushSeconds: number
+  /** Read-only: derived from the four switches; a value sent is ignored. */
+  privacyLevel: PrivacyLevel
+}
+
+/** settings.Health: thresholds of the health check `host` (warnings only). */
+export interface HealthSettings {
+  /** Warn when less memory than this is available (1..50 %; the lower of the host and the container limit). */
+  memoryAvailableMinPercent: number
+  /** Warn when the 15-minute load exceeds this per CPU (1..16). */
+  loadPerCpuMax: number
+  /** Warn when a temperature sensor reaches this (50..110 °C). */
+  temperatureMaxCelsius: number
 }
 
 /** settings.Web */
@@ -629,6 +662,7 @@ export interface Settings {
   updates: UpdatesSettings
   backups: BackupsSettings
   dhcp: DhcpSettings
+  health: HealthSettings
 }
 
 /** Sections accepted by PATCH /settings/{section}. */
@@ -854,6 +888,14 @@ export interface UpstreamCacheStat {
   hits: number
   misses: number
   staleHits: number
+  /** Answers stored since the start. */
+  insertions: number
+  /** Entries removed for capacity. */
+  evictions: number
+  /** Entries removed after their TTL plus the serve-stale window. */
+  expired: number
+  /** Current entries by record type: the 16 largest, then OTHER for the rest (entries desc). */
+  types: { type: string; entries: number }[]
 }
 
 /** GET /dns/upstreams */
@@ -903,12 +945,19 @@ export interface Client {
   groupIds: number[]
   comment: string
   downloadCacheBypass: boolean
+  /** Its raw data is not recorded: query rows, the live feeds, cache requests, SNI rows, downloads, seen addresses. */
   ignoreLogs: boolean
+  /** It is not counted in the DNS and cache statistics. */
+  ignoreStats: boolean
   createdAt: Timestamp
   updatedAt: Timestamp
 }
 
-/** clients.ClientInput */
+/**
+ * clients.ClientInput. `ignoreStats` absent or null means "the value of
+ * ignoreLogs" (the meaning of the single flag before 0.12); the UI always
+ * sends both.
+ */
 export interface ClientInput {
   name: string
   identifiers: string[]
@@ -916,6 +965,7 @@ export interface ClientInput {
   comment: string
   downloadCacheBypass: boolean
   ignoreLogs: boolean
+  ignoreStats?: boolean
 }
 
 /** clients.Known: an address seen recently. */
@@ -1630,6 +1680,8 @@ export interface FilterMatch {
   groupIds: number[]
   applies: boolean
   decisive: boolean
+  /** The list's category ("" for rules); `privacy` marks a known tracker. */
+  category: string
 }
 
 /** filter.Stats */
@@ -2215,6 +2267,8 @@ export interface QueryEvent {
   upstream?: string
   durationUs: number
   answer?: string
+  /** The upstream's answer where it differs from the final one (CNAME, upstream and rebinding blocks, bogus NXDOMAIN, DNS64, a removed ipv6hint). */
+  upstreamAnswer?: string
   dnssec?: boolean
   protocol: 'udp' | 'tcp'
   /** Extended DNS error of the upstream's reply (text bounded and cleaned by the server). */
@@ -2300,6 +2354,15 @@ export interface Summary {
   activeClients: number
   activeDownloads: number
   droppedLogEvents: number
+  /**
+   * Where the top tables start for this range: `from` aligned down to the
+   * hour, or to the UTC day for ranges longer than 7 days. Top lists, client
+   * statistics, activeClients and uniqueDomains cover [topFrom, to).
+   */
+  topFrom: Timestamp
+  /** Distinct query names (an estimate: shown as "about"). */
+  uniqueDomains: number
+  uniqueDomainsEstimated: boolean
 }
 
 /** DNS series keys (disjoint, sum to all queries). */
@@ -2322,9 +2385,28 @@ export type Purpose = ListCategory | 'rule' | 'service' | 'schedule' | 'upstream
 
 /** logs.PurposeStats (GET /stats/purposes): sorted by count, then purpose. */
 export interface PurposeStats {
-  /** Hour-aligned start actually covered. */
+  /** Start actually covered (like Summary.topFrom). */
   from: Timestamp
   purposes: { purpose: Purpose; count: number }[]
+}
+
+/** logs.QTypeStats (GET /stats/qtypes): most first, then by name; at most 32 types per hour, the rest as OTHER. */
+export interface QTypeStats {
+  /** Start actually covered (like Summary.topFrom). */
+  from: Timestamp
+  qtypes: { qtype: string; count: number }[]
+}
+
+/**
+ * logs.ClientSeries (GET /stats/clients/{key}/series): queries and cache
+ * bytes of one client per step (unix seconds, bucket start).
+ */
+export interface ClientSeries {
+  step: number
+  timestamps: number[]
+  values: { allowed: number[]; blocked: number[]; cacheBytes: number[] }
+  /** The addresses a device key resolved to (at most 256, most recently seen). */
+  addresses: string[]
 }
 
 export type TopKind = 'domains' | 'blocked' | 'clients' | 'cache-clients' | 'content' | 'upstreams'
@@ -2343,7 +2425,10 @@ export interface TopItem {
   /** Grouped by device: the device name. */
   label?: string
   count: number
+  /** Upstreams: the average response time in µs, as avgDurationUs (kept for older clients). */
   bytes?: number
+  /** Upstreams: the average response time in µs. */
+  avgDurationUs?: number
   extra?: string
   /** Grouped by device (clients, cache-clients): every address of the device in the range. */
   addresses?: string[]
@@ -2412,9 +2497,18 @@ export interface QueryLogQuery extends TimeQuery {
   status?: QueryStatus[]
   qtype?: string
   upstream?: string
+  /** Reply codes, ORed (at most 16). */
+  rcode?: string[]
+  /** true: validated answers (the AD flag); false: the others. */
+  dnssec?: boolean
   cursor?: string
   limit?: number
 }
+
+/** GET /logs/queries/export: the query-log filters without paging. */
+export type QueryExportQuery = Omit<QueryLogQuery, 'cursor' | 'limit'>
+
+export type QueryExportFormat = 'ndjson' | 'csv'
 
 /** GET /cache/downloads filter */
 export interface DownloadQuery extends TimeQuery {
@@ -2435,4 +2529,125 @@ export interface EventQuery extends TimeQuery {
   status?: string
   cursor?: string
   limit?: number
+}
+
+// ---------------------------------------------------------------- diagnostics
+
+/** Level of an application log record. */
+export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
+
+/** api.LogRecord: one record of the application log (attributes flattened as "group.key"). */
+export interface LogRecord {
+  seq: number
+  time: Timestamp
+  level: LogLevel
+  /** One of SystemLog.components ("app" for records without a component). */
+  component: string
+  msg: string
+  attrs: { key: string; value: string }[]
+}
+
+/** A temporary debug level (memory only; ends at `until` or with a restart). */
+export interface LogOverride {
+  level: string
+  /** Absent: all components. */
+  component?: string
+  until: Timestamp
+}
+
+/** GET /system/log */
+export interface SystemLog {
+  /** Newest first. */
+  records: LogRecord[]
+  /** The level PICACHE_LOG_LEVEL sets. */
+  baseLevel: string
+  override?: LogOverride
+  components: string[]
+  /** Records the ring keeps. */
+  capacity: number
+  /** Records live subscribers missed because they were too slow. */
+  dropped: number
+}
+
+/** Minimum level of GET /system/log and the log stream. */
+export type LogLevelFilter = 'debug' | 'info' | 'warn' | 'error'
+
+/** PUT /system/log/level (400 with field level, component or minutes). */
+export interface LogLevelInput {
+  level: 'debug' | 'info'
+  /** Absent: all components. */
+  component?: string
+  /** 1..240 */
+  minutes: number
+}
+
+/** Answer of PUT /system/log/level. */
+export interface LogLevelState {
+  baseLevel: string
+  override: LogOverride
+}
+
+/** api.HostInfo: the cached host sample (values that cannot be read are absent). */
+export interface HostInfo {
+  sampledAt: Timestamp
+  /** Docker or LXC: load, uptime and memory are the host's. */
+  container: boolean
+  model?: string
+  cpus: number
+  load?: { one: number; five: number; fifteen: number }
+  uptimeSec?: number
+  memory?: { totalBytes: number; availableBytes: number; usedBytes: number; swapTotalBytes: number; swapUsedBytes: number }
+  /** The container's memory limit (cgroup v2), when one is set. */
+  cgroup?: { limitBytes: number; usageBytes: number; availableBytes: number }
+  temperatures: { zone: string; type: string; celsius: number }[]
+  disks: { path: string; role: 'data' | 'cache'; totalBytes: number; freeBytes: number }[]
+}
+
+/** api.DatabaseInfo: file sizes of the databases. */
+export interface DatabaseInfo {
+  picache: { bytes: number; walBytes: number }
+  logs: {
+    bytes: number
+    walBytes: number
+    /** logs.maxDbSizeMiB in bytes (0 = no cap). */
+    capBytes: number
+    /** 0 without a cap. */
+    fillPercent: number
+    /** Why logs.db is not used. */
+    disabled?: string
+    /** Raw rows are not written while the data disk has less than 1 GiB free. */
+    rawPaused: boolean
+  }
+  cacheIndexes: { storeId: string; bytes: number; walBytes: number }[]
+}
+
+/** logs.Event: an entry of the warning history (repeats of an unacknowledged entry are merged). */
+export interface HistoryEvent {
+  id: number
+  /** First occurrence. */
+  time: Timestamp
+  lastTime: Timestamp
+  count: number
+  /** Notification event key, e.g. "health.warning". */
+  event: string
+  severity: NotifySeverity
+  title: string
+  message: string
+  acknowledgedAt?: Timestamp
+  /** Only for admins. */
+  acknowledgedBy?: string
+}
+
+/** GET /system/events query (limit 1..200, default 50). */
+export interface HistoryQuery {
+  unacknowledged?: boolean
+  limit?: number
+  cursor?: string
+}
+
+/** POST /system/support-bundle */
+export interface SupportBundleInput {
+  currentPassword: string
+  /** Keep host names, client names, MAC and private addresses (replaced by placeholders otherwise). */
+  includeClientNames?: boolean
 }

@@ -1,24 +1,48 @@
 <!--
   @component
-  Health & about: the health checks with hints, then what is running:
-  version and build, uptime, listeners (including failed ones), directories,
-  the master key source, memory, and links to the documentation.
+  Health & about: the health checks with hints, the warning history, host
+  resources with their warning thresholds, database sizes, then what is
+  running: version and build, uptime, listeners (including failed ones),
+  directories, the master key source, memory, the support bundle (admins)
+  and links to the documentation.
+  Query: ?section=warnings|host|databases|thresholds|support (scrolls there), ?warnings=open
 -->
 <script lang="ts">
+  import { tick, untrack } from 'svelte'
   import { t } from '$i18n/index.svelte'
   import { api, resource } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatDateTime, formatDuration, formatNumber } from '$lib/format'
-  import { href } from '$lib/router.svelte'
+  import { href, router } from '$lib/router.svelte'
+  import { session } from '$lib/session.svelte'
+  import { settingsForm } from '$lib/settings.svelte'
   import { appStatus } from '$lib/status.svelte'
   import { Icon, KeyValue, Notice, Panel, Skeleton, type KeyValueItem } from '$lib/ui'
   import RestartButton from './RestartButton.svelte'
   import ChecksPanel from './health/ChecksPanel.svelte'
+  import DatabasesPanel from './health/DatabasesPanel.svelte'
+  import HostPanel from './health/HostPanel.svelte'
   import ListenersPanel from './health/ListenersPanel.svelte'
+  import SupportBundle from './health/SupportBundle.svelte'
+  import ThresholdsPanel from './health/ThresholdsPanel.svelte'
+  import WarningsPanel from './health/WarningsPanel.svelte'
   import { DOCS, masterKeyKind } from './health/about'
 
   const health = resource((signal) => api.system.health({ signal }), { interval: 60_000 })
   const info = resource((signal) => api.system.info({ signal }), { interval: 60_000 })
+  const host = resource((signal) => api.system.host({ signal }), { interval: 60_000 })
+  const databases = resource((signal) => api.system.databases({ signal }), { interval: 60_000 })
+  const thresholds = settingsForm('health')
+
+  // ?section=… (e.g. the warnings badge in the top bar) scrolls there once the panels above have loaded.
+  const SECTIONS = ['warnings', 'host', 'databases', 'thresholds', 'support']
+  const section = $derived(router.param('section'))
+  const settled = $derived((health.loaded || !!health.error) && (host.loaded || !!host.error))
+  $effect(() => {
+    const s = section
+    if (!settled || !SECTIONS.includes(s)) return
+    untrack(() => void tick().then(() => document.getElementById(s)?.scrollIntoView({ block: 'start' })))
+  })
 
   function buildDate(s: string): string {
     return Number.isNaN(Date.parse(s)) ? s : formatDateTime(s)
@@ -86,6 +110,16 @@
     onrefresh={() => health.refresh()}
   />
 
+  <WarningsPanel />
+
+  <div class="cols-2">
+    <HostPanel host={host.data} error={host.error} thresholds={thresholds.saved} />
+    <div class="stack">
+      <DatabasesPanel info={databases.data} error={databases.error} />
+      <ThresholdsPanel form={thresholds} />
+    </div>
+  </div>
+
   {#if info.error && !info.data}
     <Notice tone="fail" title={t('system.health.about.loadError')}>{errorText(info.error)}</Notice>
   {/if}
@@ -130,6 +164,10 @@
 
   <ListenersPanel listeners={info.data?.listeners} />
 
+  {#if session.canOperate}
+    <SupportBundle />
+  {/if}
+
   <Panel title={t('system.health.docs.title')} description={t('system.health.docs.description')}>
     <ul class="docs">
       {#each DOCS as d (d.url)}
@@ -148,6 +186,9 @@
 <style>
   .cols-2 {
     align-items: start;
+  }
+  .page :global(section[id]) {
+    scroll-margin-top: var(--sp-4);
   }
   .grow {
     flex: 1 1 240px;

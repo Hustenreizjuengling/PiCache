@@ -1,15 +1,16 @@
 <!--
   @component
-  Page title, live status (DNS, blocking + pause menu, cache store), global
-  search, theme and language switchers and the account menu.
+  Page title, live status (DNS, blocking + pause menu, cache store, the
+  unacknowledged warnings linking to the warning history), global search,
+  theme and language switchers and the account menu.
 -->
 <script lang="ts">
-  import { LOCALES, i18n, setLocale, t } from '../i18n/index.svelte'
+  import { LOCALES, i18n, setLocale, t, tn } from '../i18n/index.svelte'
   import { href } from '../lib/router.svelte'
   import { session } from '../lib/session.svelte'
   import { appStatus } from '../lib/status.svelte'
   import { theme, type ThemeChoice } from '../lib/theme.svelte'
-  import { IconButton, Menu, type MenuItem, type Tone } from '../lib/ui'
+  import { Icon, IconButton, Menu, type MenuItem, type Tone } from '../lib/ui'
   import BlockingControl from './BlockingControl.svelte'
   import GlobalSearch from './GlobalSearch.svelte'
 
@@ -40,6 +41,9 @@
     if (s.lowSpace) return { tone: 'warn', text: t('common.status.cacheLow'), link: href('/cache/storage') }
     return { tone: 'ok', text: t('common.status.cache'), link: href('/cache/storage') }
   })
+
+  /** Unacknowledged warnings and errors of the warning history (0 from servers without it). */
+  const warnings = $derived(ov?.events?.unacknowledged ?? 0)
 
   const themeIcon = $derived(theme.choice === 'light' ? 'sun' : theme.choice === 'dark' ? 'moon' : 'monitor')
   const themeItems = $derived(
@@ -75,6 +79,12 @@
     <a class={['ind', dns.tone]} href={href('/dns/settings')}><span class="dot" aria-hidden="true"></span>{dns.text}</a>
     <BlockingControl />
     <a class={['ind', cache.tone]} href={cache.link}><span class="dot" aria-hidden="true"></span>{cache.text}</a>
+    {#if warnings > 0}
+      {@const label = tn('common.status.warnings', warnings)}
+      <a class="ind warn badge" href={href('/system/health', { section: 'warnings', warnings: 'open' })} title={label} aria-label={label}>
+        <Icon name="bell" size={16} /><span class="count">{warnings > 99 ? '99+' : warnings}</span>
+      </a>
+    {/if}
   </div>
 
   <div class="tools">
@@ -153,6 +163,19 @@
   }
   .fail {
     --c: var(--fail);
+  }
+  .badge :global(.icon) {
+    color: var(--c);
+  }
+  .count {
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: var(--r-pill);
+    background: var(--c);
+    color: var(--on-accent);
+    font-size: var(--fs-xs);
+    line-height: 18px;
+    text-align: center;
   }
   .neutral .dot {
     background: transparent;

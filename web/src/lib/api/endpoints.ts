@@ -76,6 +76,29 @@ const system = {
    */
   applyUpdate: (body: { version: string; currentPassword: string }, o?: ReqOpts) =>
     http.post<T.UpdateQueued>('/system/update/apply', body, o),
+  /** The host sample of the last health evaluation (every 60 s). */
+  host: (o?: ReqOpts) => http.get<T.HostInfo>('/system/host', o),
+  /** Sizes of picache.db, logs.db and the cache indexes. */
+  databases: (o?: ReqOpts) => http.get<T.DatabaseInfo>('/system/databases', o),
+  /** Application log (admins): records newest first (400 with field level, component or limit). */
+  log: (q: { level?: T.LogLevelFilter; component?: string; limit?: number } = {}, o?: ReqOpts) =>
+    http.get<T.SystemLog>('/system/log', { ...o, query: q }),
+  /** Turns on a more verbose level for a while (replaces an active one). */
+  setLogLevel: (body: T.LogLevelInput, o?: ReqOpts) => http.put<T.LogLevelState>('/system/log/level', body, o),
+  /** Ends the temporary level at once (also without one). */
+  clearLogLevel: (o?: ReqOpts) => http.del('/system/log/level', o),
+  /** Warning history, newest lastTime first (viewers never see security.* entries). */
+  events: (q: T.HistoryQuery = {}, o?: ReqOpts) => http.get<T.Page<T.HistoryEvent>>('/system/events', { ...o, query: { ...q } }),
+  /** Idempotent; 404 for an unknown id. */
+  ackEvent: (id: number, o?: ReqOpts) => http.post<T.HistoryEvent>(`/system/events/${seg(id)}/ack`, undefined, o),
+  ackAllEvents: (o?: ReqOpts) => http.post<{ acknowledged: number }>('/system/events/ack-all', undefined, o),
+  /**
+   * A zip of redacted diagnostics (built in memory within 30 s). 400 with
+   * field "currentPassword" for a missing or wrong password; 429 while
+   * another bundle is built or after too many wrong passwords.
+   */
+  supportBundle: (body: T.SupportBundleInput, o?: ReqOpts) =>
+    http.postFile('/system/support-bundle', body, { ...o, timeoutMs: 90_000 }),
 }
 
 /** Scheduled backups (settings: PATCH /settings/backups). */
@@ -425,10 +448,17 @@ const storage = {
 
 // ---------------------------------------------------------------- logs & statistics
 
+// DELETE /logs/queries and /stats wait for the log writer (up to 2 minutes).
+const CLEAR_MS = 150_000
+
 const logs = {
   /** Cursor page of the query log (default range 1h, newest first); several `client` values match any of them. */
   queries: (q: T.QueryLogQuery = {}, o?: ReqOpts) =>
     http.get<T.Page<T.QueryEvent>>('/logs/queries', { ...o, query: { ...q } }),
+  /** URL for a plain <a href> download of the filtered query log (newest first; one export at a time). */
+  exportUrl: (format: T.QueryExportFormat, q: T.QueryExportQuery = {}) => apiUrl('/logs/queries/export', { ...q, format }),
+  /** Deletes every query-log entry (statistics stay); 503 while logs.db is disabled. */
+  clear: (o?: ReqOpts) => http.del<{ deleted: number }>('/logs/queries', { ...o, timeoutMs: CLEAR_MS }),
 }
 
 function rangeQuery(r: T.RangeArg): T.TimeQuery {
@@ -460,6 +490,18 @@ const stats = {
   /** Blocked (and safe-search) queries by purpose, counted per hour. */
   purposes: (range: T.RangeArg = '24h', o?: ReqOpts) =>
     http.get<T.PurposeStats>('/stats/purposes', { ...o, query: { ...rangeQuery(range) } }),
+  /** Queries by record type, counted per hour. */
+  qtypes: (range: T.RangeArg = '24h', o?: ReqOpts) =>
+    http.get<T.QTypeStats>('/stats/qtypes', { ...o, query: { ...rangeQuery(range) } }),
+  /**
+   * Activity of one client per step (≥ 3600 s; default range 7d). `key`: an
+   * address, "ip:<address>", "client:<id>" or "mac:<MAC>" (device keys are
+   * refused with field "key" while client addresses are anonymised).
+   */
+  clientSeries: (key: string, range: T.RangeArg, step?: number, o?: ReqOpts) =>
+    http.get<T.ClientSeries>(`/stats/clients/${seg(key)}/series`, { ...o, query: { ...rangeQuery(range), step } }),
+  /** Deletes the DNS and cache statistics (the query log stays); 503 while logs.db is disabled. */
+  reset: (o?: ReqOpts) => http.del<{ deleted: number }>('/stats', { ...o, timeoutMs: CLEAR_MS }),
 }
 
 /** The complete typed API. */

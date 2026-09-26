@@ -126,6 +126,17 @@ var events = []EventInfo{
 // Events returns the events a channel can subscribe to.
 func Events() []EventInfo { return slices.Clone(events) }
 
+// Defaults returns the default severity and title of an event the app
+// emits (false for unknown events and for notify.test and notify.dropped,
+// which are never emitted through Emit).
+func Defaults(event string) (Severity, string, bool) {
+	info, ok := eventInfo(event)
+	if !ok || event == EventTest || event == EventDropped {
+		return "", "", false
+	}
+	return info.Severity, info.Title, true
+}
+
 func eventInfo(key string) (EventInfo, bool) {
 	if key == EventDropped {
 		return EventInfo{Key: EventDropped, Severity: SeverityWarning, Title: "Notifications dropped"}, true

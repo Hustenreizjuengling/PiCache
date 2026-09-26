@@ -1,7 +1,8 @@
 <!--
   @component
-  Query log toolbar: time range, client, domain, status, record type and
-  upstream. Text filters apply after a short pause in typing (or Enter) once
+  Query log toolbar: time range (presets up to the retention, a custom
+  window), client, domain, status, record type, upstream, reply code and
+  DNSSEC. Text filters apply after a short pause in typing (or Enter) once
   they are long enough for the server; everything lives in the URL. A
   device filter (several client addresses, from the overview or the clients
   page) shows as "Device with N addresses" with a button to remove it.
@@ -10,18 +11,21 @@
   import { untrack } from 'svelte'
   import { t, tn } from '$i18n/index.svelte'
   import type { QueryStatus, RangePreset } from '$lib/api'
+  import { isCustom, rangeParams, type CustomRange } from '$lib/range'
   import type { QueryPatch } from '$lib/router.svelte'
-  import { Button, Field, Icon, IconButton, Input, Select, TimeRangePicker } from '$lib/ui'
+  import { Button, CustomRangeDialog, Field, Icon, IconButton, Input, Select, TimeRangePicker } from '$lib/ui'
   import {
+    CLEAR_FILTERS,
     DEFAULT_RANGE,
     hasFilters,
-    LOG_RANGES,
+    logRanges,
     MIN_SEARCH,
     QTYPES,
     validClient,
     validDomain,
     type QueryFilters,
   } from './filters'
+  import RcodeFilter from './RcodeFilter.svelte'
   import StatusFilter from './StatusFilter.svelte'
 
   interface Props {
@@ -30,22 +34,35 @@
     live: boolean
     /** Upstreams offered by the upstream filter. */
     upstreams: readonly string[]
+    /** Reply codes of the loaded page (offered by the reply-code filter). */
+    rcodes?: readonly string[]
+    /** logs.queryLogRetentionHours (limits the presets and the custom range); undefined while unknown. */
+    retentionHours?: number
     /** Validation messages from the server, by filter. */
     errors?: { client?: string; domain?: string }
     onchange: (patch: QueryPatch) => void
   }
 
-  let { filters, live, upstreams, errors = {}, onchange }: Props = $props()
+  let { filters, live, upstreams, rcodes = [], retentionHours, errors = {}, onchange }: Props = $props()
 
   const DEBOUNCE = 450
 
   /** Narrow screens: filters are collapsed unless opened (open at first when some are set). */
   let expanded = $state(untrack(() => hasFilters(filters)))
   const active = $derived(
-    [filters.domain, filters.qtype, filters.upstream].filter(Boolean).length +
+    [filters.domain, filters.qtype, filters.upstream, filters.dnssec].filter(Boolean).length +
       (filters.client.length > 0 ? 1 : 0) +
-      (filters.status.length > 0 ? 1 : 0),
+      (filters.status.length > 0 ? 1 : 0) +
+      (filters.rcode.length > 0 ? 1 : 0),
   )
+
+  const ranges = $derived(logRanges(retentionHours))
+  const custom = $derived(isCustom(filters.range) ? filters.range : null)
+  let customOpen = $state(false)
+
+  function setRange(r: RangePreset | CustomRange) {
+    onchange(rangeParams(r, DEFAULT_RANGE))
+  }
 
   /** Several client values: the addresses of one device (not editable as text). */
   const device = $derived(filters.client.length > 1)
@@ -104,6 +121,12 @@
     })),
   ])
 
+  const dnssecOptions = $derived([
+    { value: '', label: t('dns.queryLog.filter.dnssecAny') },
+    { value: 'true', label: t('dns.queryLog.filter.dnssecYes') },
+    { value: 'false', label: t('dns.queryLog.filter.dnssecNo') },
+  ])
+
   const upstreamOptions = $derived([
     { value: '', label: t('dns.queryLog.filter.allUpstreams') },
     ...[...new Set([...upstreams, ...(filters.upstream ? [filters.upstream] : [])])].map((u) => ({ value: u, label: u })),
@@ -113,7 +136,7 @@
     clearTimeout(timer)
     clientText = ''
     domainText = ''
-    onchange({ client: null, domain: null, status: null, qtype: null, upstream: null })
+    onchange(CLEAR_FILTERS)
   }
 </script>
 
@@ -121,10 +144,13 @@
   {#if !live}
     <div class="range">
       <TimeRangePicker
-        value={filters.range}
-        options={LOG_RANGES}
+        value={custom ? null : (filters.range as RangePreset)}
+        options={ranges.segments}
+        more={ranges.more}
+        {custom}
+        oncustom={() => (customOpen = true)}
         label={t('dns.queryLog.filter.range')}
-        onchange={(r: RangePreset) => onchange({ range: r === DEFAULT_RANGE ? null : r })}
+        onchange={setRange}
       />
     </div>
   {/if}
@@ -198,11 +224,33 @@
         />
       </Field>
     </div>
+    <div class="f small-f">
+      <Field label={t('dns.queryLog.rcode.label')}>
+        <RcodeFilter value={filters.rcode} seen={rcodes} onchange={(c: string[]) => onchange({ rcode: c })} />
+      </Field>
+    </div>
+    <div class="f small-f">
+      <Field label={t('dns.queryLog.filter.dnssec')}>
+        <Select
+          size="sm"
+          value={filters.dnssec}
+          options={dnssecOptions}
+          onchange={(e) => onchange({ dnssec: e.currentTarget.value })}
+        />
+      </Field>
+    </div>
     {#if hasFilters(filters)}
       <Button size="sm" variant="ghost" icon="close" onclick={clearAll}>{t('dns.queryLog.filter.clear')}</Button>
     {/if}
   </div>
 </div>
+
+<CustomRangeDialog
+  bind:open={customOpen}
+  value={custom}
+  earliest={retentionHours ? Math.floor(Date.now() / 1000) - retentionHours * 3600 : undefined}
+  onapply={setRange}
+/>
 
 <style>
   .filters {

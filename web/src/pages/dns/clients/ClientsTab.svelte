@@ -89,7 +89,8 @@
   <span class="row">
     {#if c.downloadCacheBypass}<Badge title={t('dns.clients.bypassHelp')}>{t('dns.clients.bypassShort')}</Badge>{/if}
     {#if c.ignoreLogs}<Badge title={t('dns.clients.ignoreLogsHelp')}>{t('dns.clients.ignoreLogsShort')}</Badge>{/if}
-    {#if !c.downloadCacheBypass && !c.ignoreLogs}<span class="subtle">–</span>{/if}
+    {#if c.ignoreStats}<Badge title={t('dns.clients.ignoreStatsHelp')}>{t('dns.clients.ignoreStatsShort')}</Badge>{/if}
+    {#if !c.downloadCacheBypass && !c.ignoreLogs && !c.ignoreStats}<span class="subtle">–</span>{/if}
   </span>
 {/snippet}
 

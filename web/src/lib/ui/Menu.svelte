@@ -169,7 +169,14 @@
     {:else if 'note' in it}
       <p id="{menuId}-note-{i}" class="note" role="none">{it.note}</p>
     {:else if it.href}
-      <a role="menuitem" class={['item', it.danger && 'danger']} href={it.href} tabindex="-1" onclick={() => select(it.onselect)}>
+      <a
+        role="menuitem"
+        class={['item', it.danger && 'danger']}
+        href={it.href}
+        download={it.download === true ? '' : it.download || undefined}
+        tabindex="-1"
+        onclick={() => select(it.onselect)}
+      >
         {#if it.icon}<Icon name={it.icon} size={18} />{/if}<span>{it.label}</span>
       </a>
     {:else}

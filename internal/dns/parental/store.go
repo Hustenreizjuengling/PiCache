@@ -474,3 +474,7 @@ func knownServices(in []string) []string {
 	slices.Sort(out)
 	return out
 }
+
+// Migrations returns the schema steps of component "parental" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

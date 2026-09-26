@@ -248,12 +248,13 @@ func (s *Server) logEvent(start time.Time, ip netip.Addr, name, service string, 
 		return
 	}
 	var clientName string
+	var noLog, noStats bool // clients ignoreLogs, ignoreStats
 	if s.d.Clients != nil {
 		if id := s.d.Clients.Identify(ip); id != nil {
-			if id.IgnoreLogs {
+			if id.IgnoreLogs && id.IgnoreStats {
 				return
 			}
-			clientName = id.Name
+			clientName, noLog, noStats = id.Name, id.IgnoreLogs, id.IgnoreStats
 		}
 	}
 	s.d.Logs.LogSNI(logs.SNIEvent{
@@ -265,6 +266,8 @@ func (s *Server) logEvent(start time.Time, ip netip.Addr, name, service string, 
 		BytesUp:    up,
 		BytesDown:  down,
 		DurationMs: time.Since(start).Milliseconds(),
+		NoLog:      noLog,
+		NoStats:    noStats,
 	})
 }
 

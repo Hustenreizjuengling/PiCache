@@ -2,15 +2,31 @@
 // other pages link here with range, status, domain and client), turned into
 // API queries and applied to live events (the stream filters only by client
 // and status on the server). `client` may be repeated: all addresses of one
-// device, matched as "any of them".
+// device, matched as "any of them"; so may `rcode` (any of the codes).
 
-import { BLOCKED_STATUSES, type QueryEvent, type QueryLogQuery, type QueryStatus, type RangePreset } from '$lib/api'
+import {
+  BLOCKED_STATUSES,
+  type QueryEvent,
+  type QueryExportQuery,
+  type QueryLogQuery,
+  type QueryStatus,
+  type RangePreset,
+} from '$lib/api'
+import { isCustom, readRange, withinRetention, type Range } from '$lib/range'
 import { router } from '$lib/router.svelte'
 import { isIP } from '../shared/input'
 
-/** Time ranges offered by the query log (bounded by its retention, 7 days by default). */
+/** Time ranges shown as segments (bounded by the query log's retention, 7 days by default). */
 export const LOG_RANGES: RangePreset[] = ['15m', '1h', '6h', '24h', '7d']
+/** Longer ranges under "More", offered when the retention keeps that much. */
+export const LOG_MORE: RangePreset[] = ['30d', '90d', '180d', '365d']
 export const DEFAULT_RANGE: RangePreset = '1h'
+
+/** The presets of the segments and of "More" that fit a retention of `hours` (the segments while it is unknown). */
+export function logRanges(hours: number | undefined): { segments: RangePreset[]; more: RangePreset[] } {
+  const max = hours ? hours * 3600 : undefined
+  return { segments: withinRetention(LOG_RANGES, max), more: max ? withinRetention(LOG_MORE, max) : [] }
+}
 
 /** Every query status in display order. */
 export const ALL_STATUSES: readonly QueryStatus[] = [
@@ -32,6 +48,12 @@ export const ALLOWED_STATUSES: readonly QueryStatus[] = ['forwarded', 'cached', 
 /** Record types offered by the type filter (others can still come from a link). */
 export const QTYPES = ['A', 'AAAA', 'CNAME', 'HTTPS', 'SVCB', 'MX', 'TXT', 'PTR', 'SRV', 'NS', 'SOA', 'DS', 'DNSKEY', 'ANY']
 
+/** Reply codes the filter always offers (the codes of the loaded page are added). */
+export const RCODES = ['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED', 'NOTIMP', 'FORMERR']
+
+/** Most reply codes the server accepts in one filter. */
+export const MAX_RCODES = 16
+
 /** Minimum length of substring searches (the server rejects shorter ones). */
 export const MIN_SEARCH = 3
 
@@ -39,29 +61,44 @@ export const MIN_SEARCH = 3
 export const MAX_CLIENTS = 32
 
 export interface QueryFilters {
-  range: RangePreset
+  /** A preset or a custom window (?from&to). */
+  range: Range
   /** One address or part of a name; several values are the addresses of one device. */
   client: string[]
   domain: string
   status: QueryStatus[]
   qtype: string
   upstream: string
+  /** Reply codes, upper case (any of them). */
+  rcode: string[]
+  /** '' any, 'true' validated (the AD flag), 'false' not validated. */
+  dnssec: '' | 'true' | 'false'
 }
+
+/** URL patch that removes every filter besides the time range. */
+export const CLEAR_FILTERS = { client: null, domain: null, status: null, qtype: null, upstream: null, rcode: null, dnssec: null }
 
 function isStatus(s: string): s is QueryStatus {
   return (ALL_STATUSES as readonly string[]).includes(s)
 }
 
-/** The filters in the current URL (unknown statuses and ranges are ignored). */
+/** Whether s is a reply code as the filter accepts it (1–16 of A–Z and 0–9). */
+export function isRcode(s: string): boolean {
+  return /^[A-Z0-9]{1,16}$/.test(s)
+}
+
+/** The filters in the current URL (unknown statuses, codes and ranges are ignored). */
 export function readFilters(): QueryFilters {
-  const r = router.param('range') as RangePreset
+  const dnssec = router.param('dnssec')
   return {
-    range: LOG_RANGES.includes(r) ? r : DEFAULT_RANGE,
+    range: readRange([...LOG_RANGES, ...LOG_MORE], DEFAULT_RANGE),
     client: clientValues(router.all('client')),
     domain: router.param('domain').trim(),
     status: router.list('status').filter(isStatus),
     qtype: router.param('qtype').trim().toUpperCase(),
     upstream: router.param('upstream').trim(),
+    rcode: [...new Set(router.list('rcode').map((c) => c.trim().toUpperCase()))].filter(isRcode).slice(0, MAX_RCODES),
+    dnssec: dnssec === 'true' || dnssec === 'false' ? dnssec : '',
   }
 }
 
@@ -86,18 +123,23 @@ function isExact(s: string): boolean {
   return s.length > 2 && s.startsWith('"') && s.endsWith('"')
 }
 
-/** API query for the filters (optionally one page further). */
-export function apiQuery(f: QueryFilters, cursor?: string): QueryLogQuery {
+/** The filters as API parameters without paging (also those of the export). */
+export function exportQuery(f: QueryFilters): QueryExportQuery {
   return {
-    range: f.range,
+    ...(isCustom(f.range) ? { from: f.range.from, to: f.range.to } : { range: f.range }),
     client: f.client.length > 1 ? f.client : f.client[0] || undefined,
     domain: f.domain || undefined,
     status: f.status.length > 0 ? f.status : undefined,
     qtype: f.qtype || undefined,
     upstream: f.upstream || undefined,
-    cursor: cursor || undefined,
-    limit: 100,
+    rcode: f.rcode.length > 0 ? f.rcode : undefined,
+    dnssec: f.dnssec ? f.dnssec === 'true' : undefined,
   }
+}
+
+/** API query for the filters (optionally one page further). */
+export function apiQuery(f: QueryFilters, cursor?: string): QueryLogQuery {
+  return { ...exportQuery(f), cursor: cursor || undefined, limit: 100 }
 }
 
 /** The client filter the live stream applies on the server (it takes one value). */
@@ -115,11 +157,16 @@ function matchesClients(e: QueryEvent, clients: readonly string[]): boolean {
   })
 }
 
-/** Applies the filters the live stream cannot apply on the server (several clients, domain, type, upstream). */
+/**
+ * Applies the filters the live stream cannot apply on the server (several
+ * clients, domain, type, upstream, reply code, DNSSEC).
+ */
 export function matchesLocally(e: QueryEvent, f: QueryFilters): boolean {
   if (f.client.length > 1 && !matchesClients(e, f.client)) return false
   if (f.qtype && e.qtype.toUpperCase() !== f.qtype) return false
   if (f.upstream && e.upstream !== f.upstream) return false
+  if (f.rcode.length > 0 && !f.rcode.includes(e.rcode.toUpperCase())) return false
+  if (f.dnssec && !!e.dnssec !== (f.dnssec === 'true')) return false
   if (f.domain) {
     const d = f.domain.toLowerCase()
     const name = e.qname.toLowerCase()
@@ -134,5 +181,5 @@ export function matchesLocally(e: QueryEvent, f: QueryFilters): boolean {
 
 /** Whether any filter besides the time range is set. */
 export function hasFilters(f: QueryFilters): boolean {
-  return !!(f.client.length || f.domain || f.status.length || f.qtype || f.upstream)
+  return !!(f.client.length || f.domain || f.status.length || f.qtype || f.upstream || f.rcode.length || f.dnssec)
 }

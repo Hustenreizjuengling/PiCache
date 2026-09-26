@@ -70,7 +70,7 @@ func TestSummaryReportsTopListStart(t *testing.T) {
 		if !sum.TopFrom.Equal(tc.want) || !sum.From.Equal(tc.from) {
 			t.Errorf("range from %v: topFrom %v, from %v", tc.from, sum.TopFrom, sum.From)
 		}
-		if got := TopFrom(tc.from); !got.Equal(tc.want) {
+		if got := TopFrom(tc.from, to); !got.Equal(tc.want) {
 			t.Errorf("TopFrom(%v) = %v", tc.from, got)
 		}
 	}

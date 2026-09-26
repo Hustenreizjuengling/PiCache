@@ -60,7 +60,7 @@ func (a *App) watchStore(ctx context.Context, w *storeWatch, now time.Time) {
 		name = t.Name
 	}
 	if m, ok := w.observe(st.Online, name, st.Reason, now); ok {
-		a.notify.Emit(m)
+		a.emit(m)
 	}
 }
 

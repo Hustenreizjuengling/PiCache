@@ -206,7 +206,10 @@ func (a *App) netSources() netSources {
 		neighbours: a.clients.Neighbours, known: a.clients.Known, describe: a.clients.Describe,
 		lookupNames: a.clients.LookupNames,
 		stats: func(ctx context.Context, from, to time.Time) ([]logs.ClientStat, bool) {
-			if a.logs.Metrics().Disabled != "" || a.set.Get().Logs.AnonymizeClientIPs {
+			// The statistics hold no usable client counts while logs.db
+			// is disabled, client addresses are anonymised or the DNS
+			// statistics are off: the in-memory activity is used.
+			if lg := a.set.Get().Logs; a.logs.Metrics().Disabled != "" || lg.AnonymizeClientIPs || !lg.StatsEnabled {
 				return nil, false
 			}
 			st, err := a.logs.ClientStats(ctx, from, to)

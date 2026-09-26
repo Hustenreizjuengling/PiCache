@@ -11,6 +11,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
+	"github.com/hustenreizjuengling/picache/internal/dhcp"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/update"
@@ -233,6 +234,53 @@ func TestWriteMetrics(t *testing.T) {
 	writeMetrics(&buf, metricsSnapshot{Version: "dev"})
 	if strings.Contains(buf.String(), "picache_cache_store_bytes") || strings.Contains(buf.String(), "picache_upstream_rtt_ms") {
 		t.Fatalf("offline store and missing upstreams must be omitted:\n%s", buf.String())
+	}
+}
+
+// The DNS cache and DHCP families (golden excerpt): the DHCP families only
+// while a DHCP service exists.
+func TestWriteMetricsCacheAndDHCP(t *testing.T) {
+	var buf bytes.Buffer
+	writeMetrics(&buf, metricsSnapshot{Version: "dev",
+		DNSCache: upstream.CacheStat{Entries: 12, Hits: 100, Misses: 20, StaleHits: 3, Insertions: 25, Evictions: 4, Expired: 9},
+		DHCP: &dhcpMetrics{Counters: dhcp.Counters{Received: 50, Offers: 10, Acks: 9, Naks: 1, Declines: 2, Releases: 3, Informs: 4, Dropped: 5},
+			ActiveLeases: 7}})
+	want := `# HELP picache_dns_cache_entries Answers in the DNS response cache.
+# TYPE picache_dns_cache_entries gauge
+picache_dns_cache_entries 12
+# HELP picache_dns_cache_hits_total DNS answers served from the response cache (stale ones included) since start.
+# TYPE picache_dns_cache_hits_total counter
+picache_dns_cache_hits_total 100
+# HELP picache_dns_cache_misses_total DNS response cache lookups without a usable answer since start.
+# TYPE picache_dns_cache_misses_total counter
+picache_dns_cache_misses_total 20
+# HELP picache_dns_cache_stale_hits_total Stale DNS answers served from the response cache since start.
+# TYPE picache_dns_cache_stale_hits_total counter
+picache_dns_cache_stale_hits_total 3
+# HELP picache_dns_cache_insertions_total Answers stored in the DNS response cache since start.
+# TYPE picache_dns_cache_insertions_total counter
+picache_dns_cache_insertions_total 25
+# HELP picache_dns_cache_evictions_total DNS response cache entries removed for the capacity since start.
+# TYPE picache_dns_cache_evictions_total counter
+picache_dns_cache_evictions_total 4
+# HELP picache_dns_cache_expired_total DNS response cache entries removed after their TTL and the serve-stale window since start.
+# TYPE picache_dns_cache_expired_total counter
+picache_dns_cache_expired_total 9
+`
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("cache families:\n%s", buf.String())
+	}
+	for _, line := range []string{"picache_dhcp_received_total 50", "picache_dhcp_offers_total 10", "picache_dhcp_acks_total 9",
+		"picache_dhcp_naks_total 1", "picache_dhcp_declines_total 2", "picache_dhcp_releases_total 3", "picache_dhcp_informs_total 4",
+		"picache_dhcp_dropped_total 5", "# TYPE picache_dhcp_leases_active gauge", "picache_dhcp_leases_active 7"} {
+		if !slices.Contains(strings.Split(buf.String(), "\n"), line) {
+			t.Errorf("missing %q", line)
+		}
+	}
+	buf.Reset()
+	writeMetrics(&buf, metricsSnapshot{Version: "dev"})
+	if strings.Contains(buf.String(), "picache_dhcp_") || !strings.Contains(buf.String(), "picache_dns_cache_entries 0") {
+		t.Fatalf("without DHCP:\n%s", buf.String())
 	}
 }
 

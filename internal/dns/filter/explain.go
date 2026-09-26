@@ -76,16 +76,17 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 	}
 
 	type job struct {
-		id     int64
-		name   string
-		format listFormat
-		groups []int64
+		id       int64
+		name     string
+		category string
+		format   listFormat
+		groups   []int64
 	}
 	var jobs []job
 	e.mu.Lock()
 	for _, rt := range sortedLists(e.lists) {
 		if rt.Enabled && rt.parsed != nil {
-			jobs = append(jobs, job{rt.ID, rt.Name, rt.format(), slices.Clone(nonNil(rt.GroupIDs))})
+			jobs = append(jobs, job{rt.ID, rt.Name, rt.Category, rt.format(), slices.Clone(nonNil(rt.GroupIDs))})
 		}
 	}
 	e.mu.Unlock()
@@ -104,7 +105,7 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 			}
 			m := Match{
 				Action: "block", Source: "list", Kind: kind, ListID: j.id, Name: j.name, Pattern: line,
-				Important: tier < tierAllow, GroupIDs: slices.Clone(j.groups),
+				Important: tier < tierAllow, GroupIDs: slices.Clone(j.groups), Category: j.category,
 			}
 			if tier == tierImpAllow || tier == tierAllow {
 				m.Action = "allow"

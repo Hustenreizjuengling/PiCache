@@ -1,9 +1,10 @@
 <!--
   @component
   Adds or edits a client: name, identifiers (IP, CIDR or MAC, one per line),
-  groups, download cache bypass and "don't log". In edit mode it also shows the
-  client's statistics with the addresses they came from (IPv6 addresses the
-  server recognised through the device's MAC address included) and links to
+  groups, download cache bypass, "don't log" (raw data) and "don't count"
+  (statistics). In edit mode it also shows the client's statistics with the
+  addresses they came from (IPv6 addresses the server recognised through the
+  device's MAC address included), its activity over the range and links to
   its queries (all those addresses) and downloads.
 -->
 <script lang="ts">
@@ -26,6 +27,7 @@
   import { isV4 } from '../network/checks'
   import { clientValues } from '../querylog/filters'
   import AddressList from '../shared/AddressList.svelte'
+  import ActivityChart from './ActivityChart.svelte'
   import { lineError } from '../shared/errors'
   import { isIP } from '../shared/input'
   import FormPanel from '../shared/FormPanel.svelte'
@@ -50,7 +52,15 @@
   let { open = $bindable(false), client, preset, groups, totals, range, onsaved, ondeleted }: Props = $props()
 
   function blank(): ClientInput {
-    return { name: '', identifiers: [], groupIds: [DEFAULT_GROUP_ID], comment: '', downloadCacheBypass: false, ignoreLogs: false }
+    return {
+      name: '',
+      identifiers: [],
+      groupIds: [DEFAULT_GROUP_ID],
+      comment: '',
+      downloadCacheBypass: false,
+      ignoreLogs: false,
+      ignoreStats: false,
+    }
   }
 
   let draft = $state<ClientInput>(blank())
@@ -73,6 +83,7 @@
             comment: c.comment,
             downloadCacheBypass: c.downloadCacheBypass,
             ignoreLogs: c.ignoreLogs,
+            ignoreStats: c.ignoreStats,
           }
         : { ...blank(), ...p, identifiers: [...(p?.identifiers ?? [])], groupIds: [...(p?.groupIds ?? [DEFAULT_GROUP_ID])] }
       err = undefined
@@ -179,6 +190,9 @@
         </div>
       </section>
     {/if}
+    {#if client}
+      <ActivityChart key="client:{client.id}" {range} excluded={client.ignoreStats} />
+    {/if}
   {/snippet}
 
   <Field label={t('common.label.name')} required error={nameError}>
@@ -196,6 +210,7 @@
   />
   <Checkbox bind:checked={draft.downloadCacheBypass} label={t('dns.clients.bypass')} description={t('dns.clients.bypassHelp')} />
   <Checkbox bind:checked={draft.ignoreLogs} label={t('dns.clients.ignoreLogs')} description={t('dns.clients.ignoreLogsHelp')} />
+  <Checkbox bind:checked={draft.ignoreStats} label={t('dns.clients.ignoreStats')} description={t('dns.clients.ignoreStatsHelp')} />
   <Field label={t('common.label.comment')} optional error={fieldError(err, 'comment')}>
     <Input bind:value={draft.comment} maxlength={512} />
   </Field>

@@ -130,9 +130,9 @@ async function readError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, fallback, `HTTP ${res.status}`)
 }
 
-/** Performs one API request. Resolves with the decoded JSON body (undefined for 204). */
-export async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = { ...opts.headers, Accept: 'application/json' }
+/** Sends one API request and returns the successful response (errors are thrown as ApiError). */
+async function send(method: string, path: string, opts: RequestOptions, accept: string): Promise<Response> {
+  const headers: Record<string, string> = { ...opts.headers, Accept: accept }
   let body: BodyInit | undefined
   if (opts.raw !== undefined) {
     headers['Content-Type'] = 'application/octet-stream'
@@ -175,6 +175,12 @@ export async function request<T>(method: string, path: string, opts: RequestOpti
     if (res.status === 403) hooks.forbidden?.()
     throw err
   }
+  return res
+}
+
+/** Performs one API request. Resolves with the decoded JSON body (undefined for 204). */
+export async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
+  const res = await send(method, path, opts, 'application/json')
   const ct = res.headers.get('Content-Type') ?? ''
   if (res.status === 204 || !ct.includes('application/json')) return undefined as T
   try {
@@ -184,6 +190,33 @@ export async function request<T>(method: string, path: string, opts: RequestOpti
   }
 }
 
+/** A file fetched from the API (for downloads that need a request body, such as a password). */
+export interface FetchedFile {
+  blob: Blob
+  /** The name from Content-Disposition, if the server sent one. */
+  filename?: string
+}
+
+/** The file name of a Content-Disposition header (`attachment; filename="x.zip"`), without any path. */
+function dispositionName(header: string | null): string | undefined {
+  const m = /filename="?([^";]+)"?/i.exec(header ?? '')
+  const name = m?.[1].split(/[/\\]/).pop()?.trim()
+  return name || undefined
+}
+
+/** Performs one API request whose answer is a file (errors are JSON as usual). */
+export async function requestFile(method: string, path: string, opts: RequestOptions = {}): Promise<FetchedFile> {
+  const res = await send(method, path, opts, '*/*')
+  let blob: Blob
+  try {
+    blob = await res.blob()
+  } catch {
+    if (opts.signal?.aborted) throw new ApiError(0, 'aborted', 'request aborted')
+    throw new ApiError(0, 'network', 'the download was interrupted')
+  }
+  return { blob, filename: dispositionName(res.headers.get('Content-Disposition')) }
+}
+
 /** Shorthands used by the endpoint modules. */
 export const http = {
   get: <T>(path: string, opts?: RequestOptions) => request<T>('GET', path, opts),
@@ -191,6 +224,8 @@ export const http = {
   put: <T>(path: string, body?: unknown, opts?: RequestOptions) => request<T>('PUT', path, { ...opts, body }),
   patch: <T>(path: string, body?: unknown, opts?: RequestOptions) => request<T>('PATCH', path, { ...opts, body }),
   del: <T = void>(path: string, opts?: RequestOptions) => request<T>('DELETE', path, opts),
+  /** POST with a JSON body whose answer is a file. */
+  postFile: (path: string, body?: unknown, opts?: RequestOptions) => requestFile('POST', path, { ...opts, body }),
 }
 
 /** Encodes one path segment (ids, hosts, service ids). */

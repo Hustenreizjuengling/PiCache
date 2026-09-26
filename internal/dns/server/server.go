@@ -372,7 +372,7 @@ func New(ctx context.Context, d Deps) (*Server, error) {
 		return nil, err
 	}
 	set := d.Settings.Get()
-	s.lists.Store(newDNSLists(&set.DNS))
+	s.lists.Store(newDNSLists(set))
 	s.host.Store(s.env.host())
 	s.router.Store(s.startRouter(set))
 	s.updateCacheIPs(set)
@@ -383,11 +383,11 @@ func New(ctx context.Context, d Deps) (*Server, error) {
 	return s, nil
 }
 
-// settingsChanged applies settings live: the compiled DNS lists, rate
-// limits, cache IPs and the router resolver. Everything else is read per
-// query.
+// settingsChanged applies settings live: the compiled DNS lists (with
+// logs.ignoredDomains), rate limits, cache IPs and the router resolver.
+// Everything else is read per query.
 func (s *Server) settingsChanged(old, cur *settings.All) {
-	s.lists.Store(newDNSLists(&cur.DNS))
+	s.lists.Store(newDNSLists(cur))
 	routerChanged := old.DNS.RouterResolver != cur.DNS.RouterResolver
 	if routerChanged {
 		// Until the detection has run again, the router's known addresses

@@ -9,7 +9,8 @@ import (
 	"sync/atomic"
 )
 
-// topKeysPerHour is the number of keys kept per hour and kind.
+// topKeysPerHour is the number of keys kept per hour and kind (and per day
+// and kind in the daily top tables).
 const topKeysPerHour = 1000
 
 // DNS top kinds (logs_dns_top_hourly.kind).
@@ -21,15 +22,28 @@ const (
 	dnsTopClient                  // queries (and blocked) per client
 	dnsTopUpstream                // queries and duration per upstream
 	dnsTopPurpose                 // blocked and safe-search queries per purpose (QueryEvent.Purpose)
+	dnsTopQType                   // queries per query type (at most maxQTypeKeys types, the others under qtypeOther)
 	numDNSKinds
 )
 
 var (
 	// dnsKindNames are stored in logs_dns_top_hourly.kind; a version that
 	// does not know a kind ignores its rows.
-	dnsKindNames = [numDNSKinds]string{"domain", "blocked", "client", "upstream", "purpose"}
-	// dnsKindCaps bound the distinct keys counted per hour in memory.
-	dnsKindCaps = [numDNSKinds]int{16384, 16384, 4096, 256, 64}
+	dnsKindNames = [numDNSKinds]string{"domain", "blocked", "client", "upstream", "purpose", "qtype"}
+	// dnsKindCaps bound the distinct keys counted per hour in memory
+	// (qtype: maxQTypeKeys types plus qtypeOther).
+	dnsKindCaps = [numDNSKinds]int{16384, 16384, 4096, 256, 64, maxQTypeKeys + 1}
+)
+
+// Kind "unique" of the DNS top tables holds the hour's (day's) sketch of
+// the distinct query names (hll.go); it has one row with key "".
+const uniqueKind = "unique"
+
+// Query types: at most maxQTypeKeys distinct types per hour (and per range
+// in GET /stats/qtypes); further types are counted under qtypeOther.
+const (
+	maxQTypeKeys = 32
+	qtypeOther   = "OTHER"
 )
 
 // Cache top kinds (logs_cache_top_hourly.kind).
@@ -79,15 +93,20 @@ type topSet struct {
 	hour     int64 // bucket (unix ms) the counters belong to
 	dns      [numDNSKinds]map[string]*dnsTopRow
 	cache    [numCacheKinds]map[contentKey]*cacheTopRow
+	uniq     *hll // distinct query names of the hour
 	overflow atomic.Uint64
 	changed  bool // counted since the last checkpoint
 }
 
-// replace installs the counters of hour (loaded from the database).
-func (t *topSet) replace(hour int64, dns [numDNSKinds]map[string]*dnsTopRow, cache [numCacheKinds]map[contentKey]*cacheTopRow) {
+// replace installs the counters of hour (loaded from the database; uniq
+// nil = none yet).
+func (t *topSet) replace(hour int64, dns [numDNSKinds]map[string]*dnsTopRow, cache [numCacheKinds]map[contentKey]*cacheTopRow, uniq *hll) {
+	if uniq == nil {
+		uniq = &hll{}
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.hour, t.dns, t.cache, t.changed = hour, dns, cache, false
+	t.hour, t.dns, t.cache, t.uniq, t.changed = hour, dns, cache, uniq, false
 }
 
 // setChanged records whether the counters differ from the stored rows and
@@ -140,20 +159,32 @@ func (t *topSet) cacheEntry(k cacheKind, key contentKey) *cacheTopRow {
 	return e
 }
 
-// addQuery counts a query in the current hour.
-func (t *topSet) addQuery(e *QueryEvent) {
+// addQuery counts a query in the current hour: per domain (unless the
+// domains are hidden: domains false), client, upstream and purpose, and in
+// the sketch of distinct names (name: the normalised query name, "" = not
+// counted). Query types are counted by addQType.
+func (t *topSet) addQuery(e *QueryEvent, name string, domains bool) {
 	ts := e.Time.UnixMilli()
 	blocked := isBlocked(e.Status)
+	var h uint64
+	if name != "" {
+		h = hashName(name)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.changed = true
+	if name != "" {
+		t.uniq.add(h)
+	}
 	kind := dnsTopDomain
 	if blocked {
 		kind = dnsTopBlocked
 	}
-	if d := t.dnsEntry(kind, e.QName); d != nil {
-		d.Count++
-		d.LastSeen = max(d.LastSeen, ts)
+	if domains {
+		if d := t.dnsEntry(kind, e.QName); d != nil {
+			d.Count++
+			d.LastSeen = max(d.LastSeen, ts)
+		}
 	}
 	if c := t.dnsEntry(dnsTopClient, e.ClientIP); c != nil {
 		c.Count++
@@ -174,6 +205,42 @@ func (t *topSet) addQuery(e *QueryEvent) {
 		p.Count++
 		p.LastSeen = max(p.LastSeen, ts)
 	}
+}
+
+// addQType counts a query by its type; beyond maxQTypeKeys types of the
+// hour it is counted under qtypeOther.
+func (t *topSet) addQType(e *QueryEvent) {
+	key := e.QType
+	if key == "" {
+		key = qtypeOther
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.changed = true
+	m := t.dns[dnsTopQType]
+	if _, ok := m[key]; !ok && key != qtypeOther {
+		n := len(m)
+		if _, other := m[qtypeOther]; other {
+			n--
+		}
+		if n >= maxQTypeKeys {
+			key = qtypeOther
+		}
+	}
+	if q := t.dnsEntry(dnsTopQType, key); q != nil {
+		q.Count++
+		q.LastSeen = max(q.LastSeen, e.Time.UnixMilli())
+	}
+}
+
+// uniqSnapshot returns the current hour and a copy of its sketch.
+func (t *topSet) uniqSnapshot() (int64, hll) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.uniq == nil { // the Discard store
+		return t.hour, hll{}
+	}
+	return t.hour, *t.uniq
 }
 
 // addCache counts a cache request in the current hour.
@@ -254,6 +321,7 @@ func emptyTopMaps() (dns [numDNSKinds]map[string]*dnsTopRow, cache [numCacheKind
 // stored for it (a checkpoint before a restart).
 func (s *Store) loadTop(ctx context.Context, hour int64) error {
 	dns, cache := emptyTopMaps()
+	var uniq *hll
 	rows, err := s.d.R.QueryContext(ctx, `SELECT kind, key, label, count, blocked, duration_us, last_seen
 		FROM logs_dns_top_hourly WHERE bucket = ?`, hour)
 	if err != nil {
@@ -268,6 +336,8 @@ func (s *Store) loadTop(ctx context.Context, hour int64) error {
 		}
 		if k := slices.Index(dnsKindNames[:], kind); k >= 0 {
 			dns[k][r.Key] = &r
+		} else if kind == uniqueKind && r.Key == "" {
+			uniq, _ = decodeHLL(r.Label)
 		}
 	}
 	if err := rows.Close(); err != nil {
@@ -292,7 +362,7 @@ func (s *Store) loadTop(ctx context.Context, hour int64) error {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	s.top.replace(hour, dns, cache)
+	s.top.replace(hour, dns, cache, uniq)
 	return nil
 }
 
@@ -312,6 +382,7 @@ func (s *Store) writeTop(ctx context.Context) error {
 	for k := range cache {
 		_, cache[k] = s.top.cacheSnapshot(cacheKind(k))
 	}
+	_, uniq := s.top.uniqSnapshot()
 	err := s.d.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM logs_dns_top_hourly WHERE bucket = ?`, hour); err != nil {
 			return err
@@ -330,6 +401,11 @@ func (s *Store) writeTop(ctx context.Context) error {
 				if _, err := ins.ExecContext(ctx, hour, dnsKindNames[k], r.Key, r.Label, r.Count, r.Blocked, r.DurationUs, r.LastSeen); err != nil {
 					return err
 				}
+			}
+		}
+		if !uniq.empty() {
+			if _, err := ins.ExecContext(ctx, hour, uniqueKind, "", uniq.encode(), uniq.estimate(), 0, 0, 0); err != nil {
+				return err
 			}
 		}
 		insC, err := tx.PrepareContext(ctx, `INSERT INTO logs_cache_top_hourly

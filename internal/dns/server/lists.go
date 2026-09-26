@@ -21,6 +21,7 @@ import (
 type dnsLists struct {
 	blocked  *netutil.ClientList       // dns.blockedClients
 	dropped  map[string][]droppedEntry // dns.droppedDomains by domain
+	ignored  map[string]bool           // logs.ignoredDomains
 	bogus    []netip.Prefix            // dns.bogusNxdomain
 	revZones map[string]bool           // reverse zones of dns.privateReverseNetworks
 	trusted  []netip.Addr              // dns.ednsClientTrusted
@@ -33,8 +34,15 @@ type droppedEntry struct {
 	entry string // the normalised entry (traces)
 }
 
-func newDNSLists(d *settings.DNS) *dnsLists {
-	l := &dnsLists{blocked: netutil.NewClientList(d.BlockedClients), dropped: map[string][]droppedEntry{}, revZones: map[string]bool{}}
+func newDNSLists(set *settings.All) *dnsLists {
+	d := &set.DNS
+	l := &dnsLists{blocked: netutil.NewClientList(d.BlockedClients), dropped: map[string][]droppedEntry{}, revZones: map[string]bool{},
+		ignored: make(map[string]bool, len(set.Logs.IgnoredDomains))}
+	for _, s := range set.Logs.IgnoredDomains {
+		if settings.ValidIgnoredDomain(s) {
+			l.ignored[s] = true
+		}
+	}
 	for _, s := range d.DroppedDomains {
 		if e, err := settings.ParseDroppedDomain(s); err == nil {
 			l.dropped[e.Domain] = append(l.dropped[e.Domain], droppedEntry{qtype: e.Type, entry: e.String()})
@@ -419,6 +427,24 @@ func (s *Server) ecsFor(qc *qctx) netip.Prefix {
 		return s.lists.Load().ecs
 	}
 	return netip.Prefix{}
+}
+
+// --- logs.ignoredDomains ---
+
+// ignoredDomain reports whether the query name is in logs.ignoredDomains
+// (the domain or one of its subdomains): such queries are answered and
+// filtered as usual but never logged or counted in the statistics.
+func (s *Server) ignoredDomain(qname string) bool {
+	l := s.lists.Load()
+	if len(l.ignored) == 0 {
+		return false
+	}
+	for n := qname; n != ""; n = parent(n) {
+		if l.ignored[n] {
+			return true
+		}
+	}
+	return false
 }
 
 // --- 7b: dropped domains ---

@@ -449,3 +449,7 @@ func clip(s string, n int) string {
 	}
 	return string([]rune(s)[:n]) + "…"
 }
+
+// Migrations returns the schema steps of component "notify" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

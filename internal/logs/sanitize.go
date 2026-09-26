@@ -2,6 +2,7 @@ package logs
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -75,15 +76,69 @@ const maxEDETextLen = 200
 // boundary, valid UTF-8, without C0 controls, DEL, C1 controls and the
 // bidi controls U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069.
 func cleanEDEText(s string) string {
-	s = clean(strings.ToValidUTF8(s, ""), maxEDETextLen)
+	return stripControls(clean(strings.ToValidUTF8(s, ""), maxEDETextLen))
+}
+
+// maxUpstreamAnswerLen bounds QueryEvent.UpstreamAnswer.
+const maxUpstreamAnswerLen = 512
+
+// cleanUpstreamAnswer bounds the upstream's answer (untrusted data): valid
+// UTF-8 without control and bidi characters (as cleanEDEText), cut to 512
+// bytes at a rune boundary.
+func cleanUpstreamAnswer(s string) string {
+	return clean(stripControls(strings.ToValidUTF8(s, "")), maxUpstreamAnswerLen)
+}
+
+// stripControls removes C0 controls, DEL, C1 controls and the bidi
+// controls U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069.
+func stripControls(s string) string {
 	return strings.Map(func(r rune) rune {
-		switch {
-		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f,
-			r == 0x061c, r == 0x200e, r == 0x200f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		if isControlOrBidi(r) {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+// isControlOrBidi reports the characters stripControls removes.
+func isControlOrBidi(r rune) bool {
+	switch {
+	case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f,
+		r == 0x061c, r == 0x200e, r == 0x200f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		return true
+	}
+	return false
+}
+
+// hiddenName replaces the query name while logs.hideDomains is on.
+const hiddenName = "hidden"
+
+// reasonKeptWhenHidden are the statuses whose reason names a list, a
+// service, a schedule, a special-use name, an upstream or a search engine,
+// never the queried domain: kept while domains are hidden.
+var reasonKeptWhenHidden = []string{
+	"blocked-list", "blocked-service", "blocked-schedule", "blocked-special", "blocked-upstream", statusSafeSearch,
+}
+
+// hideDomain applies logs.hideDomains to a cleaned event: the query name
+// becomes "hidden", the answers are removed and the reason is kept only
+// when it cannot be a domain name (reasonKeptWhenHidden, or neither "."
+// nor ":" in it). The text of the upstream's EDE often names the query
+// ("validation failure <example.org. A IN>"): it is removed when it
+// contains "." or ":" or the query name (a single label); the code stays.
+func hideDomain(e *QueryEvent) {
+	name := e.QName
+	e.QName = hiddenName
+	e.Answer, e.UpstreamAnswer = "", ""
+	if !slices.Contains(reasonKeptWhenHidden, e.Status) && strings.ContainsAny(e.Reason, ".:") {
+		e.Reason = ""
+	}
+	if ede := e.UpstreamEDE; ede != nil && ede.Text != "" &&
+		(strings.ContainsAny(ede.Text, ".:") || (name != "" && strings.Contains(strings.ToLower(ede.Text), name))) {
+		c := *ede // never modify the producer's value
+		c.Text = ""
+		e.UpstreamEDE = &c
+	}
 }
 
 // cleanECS returns the canonical masked form of a client subnet ("" if it
@@ -137,7 +192,10 @@ func nonNeg(v int64) int64 { return max(v, 0) }
 // spanMs bounds a duration in milliseconds to [0, maxEventSpan].
 func spanMs(d int64) int64 { return min(max(d, 0), maxEventSpan.Milliseconds()) }
 
-func cleanQuery(e QueryEvent, anon bool, now time.Time) QueryEvent {
+// cleanQuery bounds and normalises a query event before it is counted,
+// stored or published; anon masks the client (logs.anonymizeClientIps),
+// hide the domain names (logs.hideDomains, hideDomain).
+func cleanQuery(e QueryEvent, anon, hide bool, now time.Time) QueryEvent {
 	e.ID = 0
 	e.Time = eventTime(e.Time, now)
 	e.ClientIP = cleanClientIP(e.ClientIP, anon)
@@ -162,7 +220,11 @@ func cleanQuery(e QueryEvent, anon bool, now time.Time) QueryEvent {
 		e.UpstreamEDE = &ede
 	}
 	e.ECS = cleanECS(e.ECS, anon)
+	e.UpstreamAnswer = cleanUpstreamAnswer(e.UpstreamAnswer)
 	e.Purpose = strings.ToLower(clean(e.Purpose, maxShortLen))
+	if hide {
+		hideDomain(&e)
+	}
 	return e
 }
 

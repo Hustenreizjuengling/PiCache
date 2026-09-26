@@ -75,6 +75,10 @@ func Defaults() All {
 			SessionRetentionDays:   90,
 			StatsRetentionDays:     365,
 			MaxDBSizeMiB:           2048,
+			StatsEnabled:           true,
+			IgnoredDomains:         []string{},
+			FlushSeconds:           5,
+			PrivacyLevel:           PrivacyFull,
 		},
 		Web: Web{
 			SessionIdleMinutes: 60,
@@ -101,6 +105,11 @@ func Defaults() All {
 			RegisterHostnames: true,
 			GenerateNames:     true,
 			Options:           DHCPOptions{NTPServers: []string{}, ExtraSearchDomains: []string{}},
+		},
+		Health: Health{
+			MemoryAvailableMinPercent: 5,
+			LoadPerCPUMax:             2,
+			TemperatureMaxCelsius:     80,
 		},
 	}
 }

@@ -1,8 +1,11 @@
 package upstream
 
 import (
+	"cmp"
 	"container/list"
 	"net/netip"
+	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,13 +14,15 @@ import (
 )
 
 const (
-	staleTTL       = 30              // TTL of answers served stale (RFC 8767)
-	servfailTTL    = 5               // seconds a SERVFAIL is cached (RFC 2308 7.1 allows ≤ 5 min)
-	maxNegativeTTL = 3600            // RFC 2308 5: negative answers ≤ 1 h (we use it as the cap)
-	maxEntryBytes  = 16 << 10        // larger responses are answered but not cached
-	maxCacheBytes  = 64 << 20        // total wire bytes in the cache
-	refreshBackoff = 5 * time.Second // after a stale refresh, before the next one for the key
-	hardMaxTTL     = 7 * 86400       // cap for every cached TTL (RFC 8767 4 suggests 7 days)
+	staleTTL        = 30              // TTL of answers served stale (RFC 8767)
+	servfailTTL     = 5               // seconds a SERVFAIL is cached (RFC 2308 7.1 allows ≤ 5 min)
+	maxNegativeTTL  = 3600            // RFC 2308 5: negative answers ≤ 1 h (we use it as the cap)
+	maxEntryBytes   = 16 << 10        // larger responses are answered but not cached
+	maxCacheBytes   = 64 << 20        // total wire bytes in the cache
+	refreshBackoff  = 5 * time.Second // after a stale refresh, before the next one for the key
+	hardMaxTTL      = 7 * 86400       // cap for every cached TTL (RFC 8767 4 suggests 7 days)
+	maxCacheTypes   = 64              // record types counted by name; further types count as OTHER
+	shownCacheTypes = 16              // CacheStat.Types lists the largest types, the rest as OTHER
 )
 
 // cacheKey identifies a cached answer. set is the upstream-set namespace;
@@ -51,6 +56,7 @@ type cacheEntry struct {
 	servfail    bool
 	refreshing  bool
 	nextRefresh time.Time
+	otherType   bool // counted as OTHER in respCache.types
 }
 
 // cachePolicy is the part of the settings that shapes what is cached.
@@ -69,11 +75,41 @@ type respCache struct {
 	m     map[cacheKey]*list.Element // values: *cacheEntry
 	lru   list.List                  // front = most recently used
 	bytes int
+	// types counts the entries by record type (at most maxCacheTypes
+	// types); otherTypes counts the entries of further types.
+	types      map[uint16]int
+	otherTypes int
 
 	hits, misses, staleHits atomic.Int64
+	// insertions: answers stored; evictions: entries removed for the
+	// capacity (count or bytes); expired: entries removed after their TTL
+	// and the serve-stale window.
+	insertions, evictions, expired atomic.Int64
 }
 
-func (c *respCache) init() { c.m = map[cacheKey]*list.Element{} }
+func (c *respCache) init() {
+	c.m = map[cacheKey]*list.Element{}
+	c.types = map[uint16]int{}
+}
+
+// countType adds delta to the entry count of e's record type (c.mu held).
+func (c *respCache) countType(e *cacheEntry, delta int) {
+	t := e.key.qtype
+	if delta > 0 {
+		if _, ok := c.types[t]; !ok && len(c.types) >= maxCacheTypes {
+			e.otherType = true
+		}
+	}
+	if e.otherType {
+		c.otherTypes += delta
+		return
+	}
+	if n := c.types[t] + delta; n > 0 {
+		c.types[t] = n
+	} else {
+		delete(c.types, t)
+	}
+}
 
 // cacheHit is a snapshot of an entry taken under the lock.
 type cacheHit struct {
@@ -100,6 +136,7 @@ func (c *respCache) get(k cacheKey, now time.Time, staleWindow time.Duration) (c
 		c.removeLocked(el)
 		c.mu.Unlock()
 		c.misses.Add(1)
+		c.expired.Add(1)
 		return cacheHit{}, false
 	}
 	c.lru.MoveToFront(el)
@@ -153,6 +190,8 @@ func (c *respCache) store(k cacheKey, m *dns.Msg, now time.Time, p cachePolicy, 
 	e := &cacheEntry{key: k, wire: wire, meta: meta, stored: now, expires: now.Add(time.Duration(ttl) * time.Second), servfail: servfail}
 	c.m[k] = c.lru.PushFront(e)
 	c.bytes += len(wire)
+	c.countType(e, 1)
+	c.insertions.Add(1)
 	c.evictLocked(p.capacity)
 }
 
@@ -299,6 +338,7 @@ func (c *respCache) trim(capacity int) {
 func (c *respCache) evictLocked(capacity int) {
 	for c.lru.Len() > 0 && (c.lru.Len() > capacity || c.bytes > maxCacheBytes) {
 		c.removeLocked(c.lru.Back())
+		c.evictions.Add(1)
 	}
 }
 
@@ -306,14 +346,50 @@ func (c *respCache) removeLocked(el *list.Element) {
 	e := c.lru.Remove(el).(*cacheEntry)
 	delete(c.m, e.key)
 	c.bytes -= len(e.wire)
+	c.countType(e, -1)
 }
 
 func (c *respCache) flush() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	clear(c.m)
+	clear(c.types)
+	c.otherTypes = 0
 	c.lru.Init()
 	c.bytes = 0
+}
+
+// typeStats returns the entries by record type: the shownCacheTypes
+// largest, most entries first, then the rest as OTHER.
+func (c *respCache) typeStats() []CacheTypeStat {
+	c.mu.Lock()
+	all := make([]CacheTypeStat, 0, len(c.types))
+	for t, n := range c.types {
+		all = append(all, CacheTypeStat{Type: typeName(t), Entries: n})
+	}
+	other := c.otherTypes
+	c.mu.Unlock()
+	slices.SortFunc(all, func(a, b CacheTypeStat) int {
+		return cmp.Or(cmp.Compare(b.Entries, a.Entries), cmp.Compare(a.Type, b.Type))
+	})
+	if len(all) > shownCacheTypes {
+		for _, t := range all[shownCacheTypes:] {
+			other += t.Entries
+		}
+		all = all[:shownCacheTypes]
+	}
+	if other > 0 {
+		all = append(all, CacheTypeStat{Type: "OTHER", Entries: other})
+	}
+	return all
+}
+
+// typeName returns the mnemonic of a record type ("TYPEnnn" without one).
+func typeName(t uint16) string {
+	if s, ok := dns.TypeToString[t]; ok {
+		return s
+	}
+	return "TYPE" + strconv.Itoa(int(t))
 }
 
 func (c *respCache) len() int {

@@ -21,7 +21,7 @@ func (a *App) healthLoop(ctx context.Context) {
 		h := a.evalHealth(ctx)
 		a.health.Store(&h)
 		for _, m := range watch.observe(h.Checks) {
-			a.notify.Emit(m)
+			a.emit(m)
 		}
 		for _, c := range h.Checks {
 			old, seen := prev[c.Name]
@@ -222,6 +222,11 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 		if st, msg, hint, show := a.dhcp.Health(); show {
 			add("dhcp", st, msg, hint)
 		}
+	}
+
+	// Host resources (only when a value could be read)
+	if st, msg, hint, show := a.hostHealth(); show {
+		add("host", st, msg, hint)
 	}
 
 	// Network check (the cached check of DNS → Network check)

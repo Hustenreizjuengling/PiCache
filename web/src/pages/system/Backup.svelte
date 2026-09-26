@@ -1,8 +1,9 @@
 <!--
   @component
   Backup & restore: download the configuration database, restore one
-  (staged, applied by a restart), scheduled backups (settings, state, "Back
-  up now", stored files) and the log retention and privacy settings.
+  (staged, applied by a restart) and scheduled backups (settings, state,
+  "Back up now", stored files). Log retention and privacy moved to Logs &
+  privacy (/system/logs).
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -10,7 +11,6 @@
   import { session } from '$lib/session.svelte'
   import { Notice } from '$lib/ui'
   import BackupPanel from './backup/BackupPanel.svelte'
-  import LogSettingsPanel from './backup/LogSettingsPanel.svelte'
   import RestorePanel from './backup/RestorePanel.svelte'
   import Scheduled from './backup/Scheduled.svelte'
 
@@ -28,8 +28,6 @@
   </div>
 
   <Scheduled info={info.data} />
-
-  <LogSettingsPanel />
 </div>
 
 <style>

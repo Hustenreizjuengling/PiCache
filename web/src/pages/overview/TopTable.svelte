@@ -1,8 +1,9 @@
 <!--
   @component
-  A small ranked list (top blocked domains, top clients) with inline bars.
-  Items grouped by device show the device's other addresses as "+N
-  addresses" (expandable, all of them in its tooltip).
+  A small ranked list (top allowed and blocked domains, top clients) with
+  inline bars. Items grouped by device show the device's other addresses as
+  "+N addresses" (expandable, all of them in its tooltip). `notice`
+  replaces the list with a short explanation (e.g. domains are hidden).
 -->
 <script lang="ts">
   import type { TopItem } from '../../lib/api'
@@ -28,6 +29,8 @@
     /** Bar colour; omit for neutral. */
     pair?: Pair
     link: (item: TopItem) => string
+    /** Shown instead of the list. */
+    notice?: string
   }
 
   let {
@@ -44,6 +47,7 @@
     mono = false,
     pair,
     link,
+    notice,
   }: Props = $props()
 
   const max = $derived(Math.max(1, ...(items ?? []).map((i) => i.count)))
@@ -74,18 +78,22 @@
 
 <div class="top">
   <h3>{title}{#if note}<span class="note" title={noteTitle}>· {note}</span>{/if}</h3>
-  <Table
-    compact
-    rows={items}
-    key={(it) => it.key}
-    {loading}
-    {error}
-    {onretry}
-    skeletonRows={5}
-    {emptyText}
-    caption={title}
-    {columns}
-  />
+  {#if notice}
+    <p class="notice small muted">{notice}</p>
+  {:else}
+    <Table
+      compact
+      rows={items}
+      key={(it) => it.key}
+      {loading}
+      {error}
+      {onretry}
+      skeletonRows={5}
+      {emptyText}
+      caption={title}
+      {columns}
+    />
+  {/if}
 </div>
 
 <style>
@@ -104,6 +112,9 @@
     margin-left: 0.35em;
     font-weight: 400;
     color: var(--text-3);
+  }
+  .notice {
+    padding: 0 var(--sp-4) var(--sp-4);
   }
   .key {
     display: block;

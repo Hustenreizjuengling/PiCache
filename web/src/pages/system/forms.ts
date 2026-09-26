@@ -19,9 +19,27 @@ export const RANGES = {
   sessionRetentionDays: { min: 1, max: 3_650 },
   statsRetentionDays: { min: 1, max: 3_650 },
   maxDbSizeMiB: { min: 64, max: 1_048_576 },
+  flushSeconds: { min: 5, max: 300 },
   tokenExpiryDays: { min: 1, max: 3_650 },
   backupKeep: { min: 1, max: 90 },
+  memoryAvailableMinPercent: { min: 1, max: 50 },
+  loadPerCpuMax: { min: 1, max: 16 },
+  temperatureMaxCelsius: { min: 50, max: 110 },
+  logLevelMinutes: { min: 1, max: 240 },
 } satisfies Record<string, Range>
+
+/** The number fields of the logs settings (checked before saving). */
+export const LOG_NUMBERS = [
+  'queryLogRetentionHours',
+  'cacheLogRetentionHours',
+  'sessionRetentionDays',
+  'statsRetentionDays',
+  'maxDbSizeMiB',
+  'flushSeconds',
+] as const
+
+/** Most entries in logs.ignoredDomains. */
+export const MAX_IGNORED_DOMAINS = 256
 
 /** Longest API token name (characters). */
 export const MAX_TOKEN_NAME = 64

@@ -33,8 +33,9 @@ type retention struct {
 }
 
 // retentions lists every table with its retention. The size cap shortens
-// the raw events, the download sessions and the hourly top lists; the count
-// rollups are small, bounded by their retention and never pruned for size.
+// the raw events, the download sessions and the hourly and daily top
+// lists; the count rollups are small, bounded by their retention and never
+// pruned for size.
 func (w *writer) retentions() []retention {
 	c := w.s.cfg()
 	queries := time.Duration(c.QueryLogRetentionHours) * time.Hour
@@ -53,6 +54,8 @@ func (w *writer) retentions() []retention {
 		{table: "logs_cache_hourly", col: "bucket", keep: stats, window: 7 * 24 * hourMs},
 		{table: "logs_dns_top_hourly", col: "bucket", keep: stats, window: 6 * hourMs, size: true},
 		{table: "logs_cache_top_hourly", col: "bucket", keep: stats, window: 6 * hourMs, size: true},
+		{table: "logs_dns_top_daily", col: "bucket", keep: stats, window: 7 * dayMs, size: true},
+		{table: "logs_cache_top_daily", col: "bucket", keep: stats, window: 7 * dayMs, size: true},
 	}
 }
 
@@ -61,6 +64,7 @@ func (w *writer) retentions() []retention {
 // starts after the next flush.
 func (w *writer) prune(now time.Time) {
 	deadline := time.Now().Add(pruneBudget)
+	w.s.events.prune(now) // the warning history keeps its own retention and is never size-trimmed
 	done := w.pruneRetention(now, deadline)
 	if done {
 		done = w.enforceSize(now, int64(w.s.cfg().MaxDBSizeMiB)<<20, deadline)
@@ -69,7 +73,7 @@ func (w *writer) prune(now time.Time) {
 	if done {
 		w.nextPrune = now.Add(pruneInterval)
 	} else {
-		w.nextPrune = now.Add(flushInterval)
+		w.nextPrune = now.Add(tickInterval)
 	}
 }
 

@@ -1,9 +1,10 @@
 // Server-Sent Events with reconnect/backoff, batching and pause. The server
-// ends every stream after 1 h and allows at most 16 streams, so streams
-// reconnect with exponential backoff and pause while the tab is hidden.
+// ends every stream after 1 h and allows at most 16 query and cache streams
+// (and 4 application-log streams), so streams reconnect with exponential
+// backoff and pause while the tab is hidden.
 
 import { apiUrl, notifyUnauthorized, request, type Query } from './client'
-import type { AuthStatus, CacheEvent, QueryEvent, QueryStatus } from './types'
+import type { AuthStatus, CacheEvent, LogLevelFilter, LogRecord, QueryEvent, QueryStatus } from './types'
 
 export type StreamState = 'connecting' | 'open' | 'paused' | 'retrying' | 'closed'
 
@@ -175,4 +176,12 @@ export function streamQueries(
 /** Live cache requests (`event: request`). */
 export function streamCache(opts: Omit<StreamOptions<CacheEvent>, 'query'>): LiveStream<CacheEvent> {
   return new LiveStream<CacheEvent>('/stream/cache', 'request', opts)
+}
+
+/** Live application log (`event: record`; admins, at most 4 streams), filtered server-side. */
+export function streamSystemLog(
+  filter: { level?: LogLevelFilter; component?: string },
+  opts: Omit<StreamOptions<LogRecord>, 'query'>,
+): LiveStream<LogRecord> {
+  return new LiveStream<LogRecord>('/stream/system-log', 'record', { ...opts, query: { ...filter } })
 }

@@ -326,13 +326,14 @@ func TestRestoreOlderBackupIsMigrated(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := reg.CreateClient(ctx, clients.ClientInput{Name: "Console", Identifiers: []string{"192.168.1.50"},
-			DownloadCacheBypass: true}); err != nil {
+			DownloadCacheBypass: true, IgnoreLogs: true}); err != nil {
 			t.Fatal(err)
 		}
 	})
 	execFile(t, up, // back to the 0.1.x format
 		`UPDATE settings SET doc = json_set(json_remove(doc, '$.downloadCache'), '$.`+oldName+`', json(json_extract(doc, '$.downloadCache')))`,
 		`ALTER TABLE client_clients RENAME COLUMN download_cache_bypass TO `+oldName+`_bypass`,
+		`ALTER TABLE client_clients DROP COLUMN ignore_stats`, // added by clients v3 (0.12.0)
 		`DELETE FROM schema_migrations WHERE component IN ('settings', 'clients') AND version > 1`)
 
 	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
@@ -355,7 +356,9 @@ func TestRestoreOlderBackupIsMigrated(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, err := reg.Clients(ctx)
-	if err != nil || len(list) != 1 || !list[0].DownloadCacheBypass {
+	// clients v3 back-fills ignoreStats from ignoreLogs (the meaning of the
+	// single flag before 0.12.0).
+	if err != nil || len(list) != 1 || !list[0].DownloadCacheBypass || !list[0].IgnoreLogs || !list[0].IgnoreStats {
 		t.Fatalf("restored clients: %+v, %v", list, err)
 	}
 }

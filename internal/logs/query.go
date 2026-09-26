@@ -289,8 +289,16 @@ func QueryMatcher(clients []string, statuses []string) (func(QueryEvent) bool, e
 	}, nil
 }
 
-// QueryLog returns a page of query events.
-func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) {
+// Limits of the rcode filter.
+const (
+	maxRCodeFilters = 16
+	maxRCodeLen     = 16
+)
+
+// queryWhere builds the conditions of a query-log filter (without the
+// cursor): the range (default the last hour), clients, domain, statuses,
+// query type, upstream, rcodes and the AD flag.
+func queryWhere(f *QueryFilter) (where, error) {
 	var w where
 	to := f.To
 	if to.IsZero() {
@@ -301,21 +309,21 @@ func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) 
 		from = to.Add(-time.Hour)
 	}
 	if err := timeRange(&w, "ts", from, to); err != nil {
-		return QueryPage{}, err
+		return w, err
 	}
 	if err := clientFilter(&w, "client_ip", "client_name", f.Clients...); err != nil {
-		return QueryPage{}, err
+		return w, err
 	}
 	if d := strings.TrimSpace(f.Domain); len(d) >= 2 && d[0] == '"' && d[len(d)-1] == '"' {
 		name := cleanName(d[1 : len(d)-1])
 		if name == "" {
-			return QueryPage{}, apperr.Invalid("domain", "empty exact domain")
+			return w, apperr.Invalid("domain", "empty exact domain")
 		}
 		w.add("qname = ?", name)
 	} else {
 		v, err := search("domain", strings.TrimSuffix(d, "."))
 		if err != nil {
-			return QueryPage{}, err
+			return w, err
 		}
 		if v != "" {
 			w.add("instr(qname, ?) > 0", v)
@@ -323,45 +331,152 @@ func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) 
 	}
 	st, err := expandStatuses(f.Status)
 	if err != nil {
-		return QueryPage{}, err
+		return w, err
 	}
 	if len(st) > 0 {
 		w.add("status IN ("+strings.Repeat("?, ", len(st)-1)+"?)", anySlice(st)...)
 	}
 	qtype, err := exact("qtype", f.QType, maxShortLen)
 	if err != nil {
-		return QueryPage{}, err
+		return w, err
 	}
 	if qtype != "" {
 		w.add("qtype = ?", strings.ToUpper(qtype))
 	}
 	upstream, err := exact("upstream", f.Upstream, maxTextLen)
 	if err != nil {
-		return QueryPage{}, err
+		return w, err
 	}
 	if upstream != "" {
 		w.add("upstream = ?", upstream)
 	}
+	rcodes, err := rcodeFilter(f.RCode)
+	if err != nil {
+		return w, err
+	}
+	if len(rcodes) > 0 {
+		w.add("rcode IN ("+strings.Repeat("?, ", len(rcodes)-1)+"?)", anySlice(rcodes)...)
+	}
+	if f.DNSSEC != nil {
+		w.add("dnssec = ?", *f.DNSSEC)
+	}
+	return w, nil
+}
+
+// rcodeFilter validates the rcode values of a filter: at most 16, each 1–16
+// characters of A-Z and 0-9 after upper-casing (NOERROR, NXDOMAIN, RCODE23).
+// Repeated values count once; the work stays linear in the input (the
+// 17th distinct value ends it).
+func rcodeFilter(in []string) ([]string, error) {
+	var out []string
+	for _, v := range in {
+		v = strings.ToUpper(strings.TrimSpace(v))
+		if v == "" {
+			continue
+		}
+		if len(v) > maxRCodeLen || strings.Trim(v, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != "" {
+			return nil, apperr.Invalid("rcode", "must be a response code such as NOERROR or NXDOMAIN")
+		}
+		if !slices.Contains(out, v) {
+			if len(out) == maxRCodeFilters {
+				return nil, apperr.Invalid("rcode", "at most %d values", maxRCodeFilters)
+			}
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
+// queryColumns are the columns scanQuery reads (id and ts first).
+const queryColumns = `id, ts, client_ip, client_name, qname, qtype, status, rcode, reason, list_id,
+		rule_id, service, upstream, duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs, upstream_answer`
+
+// scanQuery reads a row of queryColumns.
+func scanQuery(r *sql.Rows) (QueryEvent, int64, int64, error) {
+	var e QueryEvent
+	var ts int64
+	var edeCode int
+	var edeText string
+	err := r.Scan(&e.ID, &ts, &e.ClientIP, &e.ClientName, &e.QName, &e.QType, &e.Status, &e.RCode, &e.Reason,
+		&e.ListID, &e.RuleID, &e.Service, &e.Upstream, &e.DurationUs, &e.Answer, &e.DNSSEC, &e.Protocol,
+		&edeCode, &edeText, &e.ECS, &e.UpstreamAnswer)
+	if edeCode >= 0 {
+		e.UpstreamEDE = &UpstreamEDE{Code: edeCode, Text: edeText}
+	}
+	e.Time = db.Time(ts)
+	return e, e.ID, ts, err
+}
+
+// QueryLog returns a page of query events.
+func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) {
+	w, err := queryWhere(&f)
+	if err != nil {
+		return QueryPage{}, err
+	}
 	if err := cursorFilter(&w, f.Cursor); err != nil {
 		return QueryPage{}, err
 	}
-	return cursorPage(ctx, s, `SELECT id, ts, client_ip, client_name, qname, qtype, status, rcode, reason, list_id,
-		rule_id, service, upstream, duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs
-		FROM logs_queries`,
-		&w, listing.Clamp(f.Limit, 100, 1000), func(r *sql.Rows) (QueryEvent, int64, int64, error) {
-			var e QueryEvent
-			var ts int64
-			var edeCode int
-			var edeText string
-			err := r.Scan(&e.ID, &ts, &e.ClientIP, &e.ClientName, &e.QName, &e.QType, &e.Status, &e.RCode, &e.Reason,
-				&e.ListID, &e.RuleID, &e.Service, &e.Upstream, &e.DurationUs, &e.Answer, &e.DNSSEC, &e.Protocol,
-				&edeCode, &edeText, &e.ECS)
-			if edeCode >= 0 {
-				e.UpstreamEDE = &UpstreamEDE{Code: edeCode, Text: edeText}
-			}
-			e.Time = db.Time(ts)
-			return e, e.ID, ts, err
-		})
+	return cursorPage(ctx, s, `SELECT `+queryColumns+` FROM logs_queries`, &w, listing.Clamp(f.Limit, 100, 1000), scanQuery)
+}
+
+// ExportChunk is the size of the chunks ExportQueries reads.
+const ExportChunk = 5000
+
+// ExportQueries reads the query log of f (Cursor and Limit are ignored)
+// newest first in keyset chunks of at most ExportChunk rows: every chunk is
+// its own bounded read (a query slot with the normal timeout), so no read
+// transaction spans chunks. fn receives each chunk and returns false to
+// stop; ExportQueries returns when the rows are exhausted, fn stops or an
+// error occurs.
+func (s *Store) ExportQueries(ctx context.Context, f QueryFilter, fn func([]QueryEvent) (bool, error)) error {
+	base, err := queryWhere(&f)
+	if err != nil {
+		return err
+	}
+	var lastTS, lastID int64
+	for first := true; ; first = false {
+		w := where{conds: slices.Clone(base.conds), args: slices.Clone(base.args)}
+		if !first {
+			w.add("(ts, id) < (?, ?)", lastTS, lastID)
+		}
+		chunk, err := s.exportChunk(ctx, &w)
+		if err != nil {
+			return err
+		}
+		if len(chunk) == 0 {
+			return nil
+		}
+		last := chunk[len(chunk)-1]
+		lastTS, lastID = last.Time.UnixMilli(), last.ID
+		more, err := fn(chunk)
+		if err != nil || !more || len(chunk) < ExportChunk {
+			return err
+		}
+	}
+}
+
+// exportChunk reads one chunk of ExportQueries.
+func (s *Store) exportChunk(ctx context.Context, w *where) ([]QueryEvent, error) {
+	ctx, release, err := s.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := s.d.R.QueryContext(ctx, `SELECT `+queryColumns+` FROM logs_queries`+w.sql()+
+		` ORDER BY ts DESC, id DESC LIMIT ?`, append(w.args, ExportChunk)...)
+	if err != nil {
+		return nil, queryErr(ctx, err)
+	}
+	defer rows.Close()
+	out := make([]QueryEvent, 0, 256)
+	for rows.Next() {
+		e, _, _, err := scanQuery(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, queryErr(ctx, rows.Err())
 }
 
 func anySlice(ss []string) []any {

@@ -196,6 +196,10 @@ type Match struct {
 	GroupIDs  []int64 `json:"groupIds"`
 	Applies   bool    `json:"applies"` // shares an enabled group with the client
 	Decisive  bool    `json:"decisive"`
+	// Category is the list's category ("" for rules): the query panel
+	// shows list matches of category privacy as a known tracker (the
+	// substitute for an external tracker database).
+	Category string `json:"category"`
 }
 
 // Stats describes the compiled matcher.

@@ -292,3 +292,7 @@ func nonNil(ids []int64) []int64 {
 	}
 	return ids
 }
+
+// Migrations returns the schema steps of component "filter" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

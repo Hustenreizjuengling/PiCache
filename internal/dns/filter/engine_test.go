@@ -489,9 +489,22 @@ func TestExplain(t *testing.T) {
 		t.Errorf("Check disagrees with Explain: %+v", d)
 	}
 	for _, m := range ms {
-		if m.Source == "list" && (m.Name != "A" || m.ListID != l.ID || m.Pattern == "") {
+		if m.Source == "list" && (m.Name != "A" || m.ListID != l.ID || m.Pattern == "" || m.Category != CategoryOther) {
 			t.Errorf("list match fields: %+v", m)
 		}
+		if m.Source == "rule" && m.Category != "" {
+			t.Errorf("rule match with a category: %+v", m)
+		}
+	}
+	// A list of category privacy: its matches carry the category (the query
+	// panel shows them as a known tracker).
+	pl := addLocalList(t, e, "p.txt", "||tracker.example.com^", ListInput{Name: "Trackers", Category: CategoryPrivacy})
+	if _, err := e.RefreshList(ctx, pl.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ms, err := e.Explain(ctx, "a.tracker.example.com", []int64{1}); err != nil ||
+		!slices.ContainsFunc(ms, func(m Match) bool { return m.Name == "Trackers" && m.Category == CategoryPrivacy }) {
+		t.Errorf("privacy list: %+v, %v", ms, err)
 	}
 	// With group 2 the user allow rule is decisive.
 	ms, _ = e.Explain(ctx, "x.good.example.com", []int64{1, 2})

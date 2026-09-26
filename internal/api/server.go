@@ -13,8 +13,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
+	"github.com/hustenreizjuengling/picache/internal/applog"
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/config"
@@ -153,8 +155,14 @@ type Deps struct {
 	// WebAccess is the web ACL shared with the listeners (stage 1); nil:
 	// New builds one from Settings.
 	WebAccess *netutil.WebAccess
-	UI        http.Handler // embedded web UI
-	Log       *slog.Logger
+	// AppLog is the application log (nil: GET /system/log and the debug
+	// level answer 503).
+	AppLog *applog.Log
+	// Diag provides host resources, database sizes and the support bundle
+	// (nil: those endpoints answer 503).
+	Diag Diagnostics
+	UI   http.Handler // embedded web UI
+	Log  *slog.Logger
 }
 
 // Server is the API + UI HTTP handler.
@@ -169,11 +177,18 @@ type Server struct {
 	// macOf reads the neighbour-table MAC of an address (nil:
 	// Deps.Clients.NeighbourMAC; replaced in tests).
 	macOf func(ip netip.Addr) (string, bool)
+
+	// One query-log export and one support bundle at a time; the export's
+	// limits (tests lower them).
+	exporting, bundling atomic.Bool
+	exportMaxRows       int
+	exportMaxTime       time.Duration
 }
 
 // New builds the handler with all routes and middleware.
 func New(d Deps) *Server {
-	s := &Server{d: d, log: d.Log.With(slog.String("component", "api")), mux: http.NewServeMux()}
+	s := &Server{d: d, log: d.Log.With(slog.String("component", "api")), mux: http.NewServeMux(),
+		exportMaxRows: exportMaxRows, exportMaxTime: exportMaxTime}
 	s.hosts = newHostAllowlist(d.Config, d.Settings)
 	s.web = d.WebAccess
 	if s.web == nil {
@@ -205,6 +220,7 @@ func New(d Deps) *Server {
 	s.registerParentalRoutes()
 	s.registerNetworkRoutes()
 	s.registerDHCPRoutes()
+	s.registerDiagRoutes()
 
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, s.log, errNotFoundRoute)

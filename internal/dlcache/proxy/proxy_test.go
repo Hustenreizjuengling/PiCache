@@ -907,4 +907,16 @@ func TestIgnoreLogs(t *testing.T) {
 	if n := len(h.logs.all()); n != 0 {
 		t.Fatalf("%d events for an ignored client", n)
 	}
+	// Excluded from the raw data only: the event carries NoLog (the logs
+	// package counts it in the statistics).
+	h.ids.ignore.Store(false)
+	h.ids.ignoreLogs.Store(true)
+	h.get("GET", testHost, "/i", nil)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(h.logs.all()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ev := h.logs.all(); len(ev) != 1 || !ev[0].NoLog || ev[0].NoStats {
+		t.Fatalf("events %+v", ev)
+	}
 }

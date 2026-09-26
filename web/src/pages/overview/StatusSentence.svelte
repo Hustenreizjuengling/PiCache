@@ -11,7 +11,14 @@
   import { Skeleton, Stat, Trans } from '../../lib/ui'
   import { links } from './links'
 
-  let { overview, summary }: { overview?: SystemOverview; summary?: Summary } = $props()
+  interface Props {
+    overview?: SystemOverview
+    summary?: Summary
+    /** DNS statistics are counted (false: the blocked share is not shown). */
+    statsOn?: boolean
+  }
+
+  let { overview, summary, statsOn = true }: Props = $props()
 
   // Rounded as shown (one decimal below 10), so the unit's plural form matches the number.
   const qpm = $derived.by(() => {
@@ -40,7 +47,7 @@
           />{/snippet}
       </Trans>
     </span>
-    {#if summary}
+    {#if summary && statsOn}
       <span class="sep" aria-hidden="true">·</span>
       <span class="clause">
         <Trans key="overview.sentence.blocked">

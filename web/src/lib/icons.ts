@@ -59,6 +59,8 @@ export const icons = {
   key: `${circle(7, 13, 3)}M9.2 10.8L16 4M13.5 6.5l2 2M11.5 8.5L13 10`,
   lock: 'M5 9h10v8H5zM7 9V6.5a3 3 0 0 1 6 0V9',
   document: 'M5 2.5h7l3 3v12H5zM12 2.5v3h3M7.5 9.5h5M7.5 12.5h5M7.5 15h3',
+  /** A console window: the application log. */
+  terminal: 'M3 4h14v12H3zM6.5 8l2.5 2-2.5 2M10.5 12.5h3',
   archive: 'M3 4h14v3.5H3zM4.5 7.5v9h11v-9M8 11h4',
   activity: 'M2.5 10H6l2-5 4 10 2-5h3.5',
   clock: `${circle(10, 10, 7)}M10 6v4l2.5 2.5`,

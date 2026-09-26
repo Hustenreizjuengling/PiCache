@@ -54,6 +54,8 @@ export type MenuItem =
       /** Shows a check mark (radio-like menus). */
       checked?: boolean
       href?: string
+      /** With href: a download link (the file name, or true for the server's). */
+      download?: boolean | string
       onselect?: () => void
     }
   | { separator: true }

@@ -13,6 +13,9 @@
 //	picache update --check                check for a newer release
 //	picache update [flags]                (root) install a release (signed, rolled back if unhealthy)
 //	picache update apply-pending          (root) install an update queued by the web UI
+//	picache logs tail|export [flags]      follow or export the query log through the API
+//	picache db check                      check picache.db
+//	picache db salvage --out <file>       copy the readable rows of a damaged picache.db
 package main
 
 import (
@@ -42,6 +45,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/hustenreizjuengling/picache/internal/app"
+	"github.com/hustenreizjuengling/picache/internal/applog"
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/db"
@@ -90,6 +94,10 @@ func run(args []string) int {
 		return storageCmd(args)
 	case "update":
 		return updateCmd(args)
+	case "logs":
+		return logsCmd(args)
+	case "db":
+		return dbCmd(args)
 	case "help":
 		fmt.Println(strings.TrimSpace(usage))
 		return 0
@@ -137,14 +145,28 @@ commands:
                                 [--version vX.Y.Z] [--prerelease] [--allow-downgrade] [--yes];
                                 --from DIR installs from downloaded release files
   update apply-pending          (root) install an update queued in the web UI (picache-update.service)
+  logs tail                     follow the query log: [--client ADDR]... [--status S]... [--json]
+  logs export                   export the query log: --format ndjson|csv --out FILE|- [--range R |
+                                --from T --to T] [--client ADDR]... [--status S]... [--domain D]
+                                [--qtype T] [--rcode R]... [--dnssec true|false] [--upstream U]
+                                Both use the API: [--url URL] (default PICACHE_URL, else the local
+                                web listener) and an API token (a read token is enough) from
+                                PICACHE_TOKEN or [--token-file FILE], never from picache.env
+  db check                      check picache.db: integrity, foreign keys, schema versions
+                                (exit code 0: no problems, 3: problems found)
+  db salvage --out FILE [--force]
+                                copy every readable row of a damaged picache.db into the new file
+                                FILE (PiCache must be stopped; exit code 3: rows lost)
 
 Configuration is read from PICACHE_* environment variables and, for all
-commands, from /etc/picache/picache.env (or $PICACHE_ENV_FILE) if present.
-See docs/DEPLOYMENT.md.
+commands, from /etc/picache/picache.env (or $PICACHE_ENV_FILE) if present
+(never PICACHE_TOKEN). See docs/DEPLOYMENT.md.
 `
 
 // loadEnvFile applies KEY=VALUE lines from $PICACHE_ENV_FILE or
 // /etc/picache/picache.env. Variables already set in the environment win.
+// PICACHE_TOKEN is never applied from the file (the service's environment
+// file must not hold an API token; a warning names the line).
 func loadEnvFile() error {
 	path := os.Getenv("PICACHE_ENV_FILE")
 	explicit := path != ""
@@ -174,6 +196,10 @@ func loadEnvFile() error {
 		if !strings.HasPrefix(k, "PICACHE_") {
 			continue
 		}
+		if k == "PICACHE_TOKEN" {
+			fmt.Fprintf(os.Stderr, "picache: warning: PICACHE_TOKEN in %s is ignored; set it in the environment or use --token-file\n", path)
+			continue
+		}
 		if _, set := os.LookupEnv(k); !set {
 			_ = os.Setenv(k, v)
 		}
@@ -181,15 +207,19 @@ func loadEnvFile() error {
 	return sc.Err()
 }
 
+// newLogger returns the logger of PiCache: the stderr handler (created at
+// debug level) wrapped by the application log, which decides the level
+// (PICACHE_LOG_LEVEL and the runtime override), redacts secrets for both
+// sinks and keeps the last records for the web UI.
 func newLogger(cfg *config.Config) *slog.Logger {
-	opts := &slog.HandlerOptions{Level: cfg.LogLevel}
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
 	var h slog.Handler
 	if cfg.LogFormat == "json" {
 		h = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
 		h = slog.NewTextHandler(os.Stderr, opts)
 	}
-	return slog.New(h)
+	return slog.New(applog.New(h, cfg.LogLevel))
 }
 
 func serve(args []string) int {

@@ -33,10 +33,12 @@ func (f fakeAllowlist) SNIAllowed(sni string) (string, bool) {
 	return id, ok
 }
 
-type fakeClients struct{ ignore bool }
+// fakeClients: ignore excludes the client from the raw data and the
+// statistics, ignoreLogs from the raw data only.
+type fakeClients struct{ ignore, ignoreLogs bool }
 
 func (f fakeClients) Identify(ip netip.Addr) *clients.Identity {
-	return &clients.Identity{IP: ip, Name: "gaming-pc", IgnoreLogs: f.ignore}
+	return &clients.Identity{IP: ip, Name: "gaming-pc", IgnoreLogs: f.ignore || f.ignoreLogs, IgnoreStats: f.ignore}
 }
 
 type fakeLogs struct{ ch chan logs.SNIEvent }
@@ -279,6 +281,29 @@ func TestIgnoreLogsClient(t *testing.T) {
 	case e := <-ts.events:
 		t.Fatalf("event logged for an ignored client: %+v", e)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A client excluded from the raw data only is logged with NoLog (counted
+// in the statistics by the logs package).
+func TestIgnoreLogsOnlyClient(t *testing.T) {
+	upAddr, _ := echoUpstream(t, "")
+	ts := startServer(t, newSettings(t, nil), fakeAllowlist{"cdn.example.com": "x"}, fakeClients{ignoreLogs: true}, upAddr)
+	c, err := net.Dial("tcp", ts.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.Write(records(buildHello(sniExt(0, "cdn.example.com")), 4096))
+	_ = c.(*net.TCPConn).CloseWrite()
+	_, _ = io.ReadAll(c)
+	c.Close()
+	select {
+	case e := <-ts.events:
+		if !e.NoLog || e.NoStats {
+			t.Fatalf("event %+v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event")
 	}
 }
 

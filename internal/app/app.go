@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/api"
+	"github.com/hustenreizjuengling/picache/internal/applog"
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/config"
@@ -33,6 +34,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/dns/parental"
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
+	"github.com/hustenreizjuengling/picache/internal/hostinfo"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/notify"
@@ -107,6 +109,10 @@ type App struct {
 	restoredAt time.Time // set when a staged restore was applied at this start
 	restart    chan struct{}
 
+	appLog      *applog.Log                   // the application log of the logger (nil: another handler)
+	hostSampler *hostinfo.Sampler             // host resources (built with the storage manager)
+	host        atomic.Pointer[hostinfo.Info] // the last sample
+
 	web    *netutil.WebAccess // the web ACL (listeners and API)
 	webTLS *webTLS            // the certificate of the HTTPS listener
 	hup    <-chan os.Signal   // SIGHUP: run the maintenance tick now (nil: never)
@@ -124,6 +130,9 @@ type App struct {
 func Run(ctx context.Context, cfg *config.Config, log *slog.Logger, hup <-chan os.Signal) error {
 	a := newApp(cfg, log)
 	a.hup = hup
+	if h, ok := log.Handler().(*applog.Handler); ok {
+		a.appLog = h.Log()
+	}
 	info := version.Get()
 	log.Info("starting PiCache", slog.String("version", info.Version), slog.String("commit", info.Commit),
 		slog.String("go", info.GoVersion), slog.String("data_dir", cfg.DataDir), slog.String("cache_dir", cfg.CacheDir))
@@ -260,6 +269,12 @@ func (a *App) build(ctx context.Context) error {
 	if a.set, err = settings.Open(ctx, a.cdb, log); err != nil {
 		return err
 	}
+	if a.appLog != nil {
+		// The application log masks addresses and hides domains in the web
+		// UI like the query log (stderr is not covered).
+		a.appLog.SetPrivacy(func() bool { return a.set.Get().Logs.AnonymizeClientIPs },
+			func() bool { return a.set.Get().Logs.HideDomains })
+	}
 	if a.set.Created() {
 		a.applyDetectedDefaults(ctx)
 	}
@@ -292,6 +307,7 @@ func (a *App) build(ctx context.Context) error {
 		return fmt.Errorf("clients: %w", err)
 	}
 	a.clients.SetPTRResolver(a.lookupClientName)
+	a.clients.SetFlushInterval(func() time.Duration { return time.Duration(a.set.Get().Logs.FlushSeconds) * time.Second })
 	if a.filter, err = filter.New(ctx, a.cdb, a.set, fetch, a.paths.ListsDir, log); err != nil {
 		return fmt.Errorf("filter: %w", err)
 	}
@@ -328,7 +344,7 @@ func (a *App) build(ctx context.Context) error {
 	if a.auth, err = auth.New(ctx, a.cdb, a.set, a.box, a.paths.SetupTokenFile, log); err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}
-	a.auth.OnLockout(func(l auth.Lockout) { a.notify.Emit(lockoutMessage(l)) })
+	a.auth.OnLockout(func(l auth.Lockout) { a.emit(lockoutMessage(l)) })
 	if !a.restoredAt.IsZero() {
 		// CarryOverAccounts already emptied the sessions; a failure here
 		// rolls the restore back.
@@ -352,14 +368,16 @@ func (a *App) build(ctx context.Context) error {
 	// list downloads: DNS through the upstreams, public destinations only.
 	caps := a.storage.Capabilities()
 	service := runsAsSystemdService(caps.Systemd)
+	a.hostSampler = a.newHostSampler()
+	a.sampleHost()
 	releases := &update.Client{HTTP: newFetchClient(lookup46)}
 	a.updates = newUpdater(a.cfg.DataDir, version.Version, a.cdb, a.set, func() string {
 		_, err := os.Stat(update.HelperMarker)
 		return updateMode(caps.Container, service, err == nil)
 	}, releases.Latest, log)
-	a.updates.emit = a.notify.Emit
+	a.updates.emit = a.emit
 	a.updates.load(ctx)
-	a.backups = newBackupScheduler(a.cfg.DataDir, a.instanceID, a.cdb, a.set, a.Backup, a.backupTarget, a.notify.Emit, log)
+	a.backups = newBackupScheduler(a.cfg.DataDir, a.instanceID, a.cdb, a.set, a.Backup, a.backupTarget, a.emit, log)
 	a.backups.load(ctx)
 	a.storage.OnStatusChange(func(string, storage.Status) { a.kickStore() })
 	a.set.Subscribe(func(o, n *settings.All) {
@@ -395,7 +413,8 @@ func (a *App) build(ctx context.Context) error {
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
 		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
-		Parental: a.parental, Network: a.network, DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, UI: webui.Handler(), Log: log,
+		Parental: a.parental, Network: a.network, DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, AppLog: a.appLog, Diag: a,
+		UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil

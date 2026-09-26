@@ -346,7 +346,7 @@ func TestCleanEvents(t *testing.T) {
 		c.Label != "bad � utf8" || c.BytesSent != 0 || c.DurationMs != maxEventSpan.Milliseconds() || c.Time.IsZero() {
 		t.Fatalf("cleanCache = %+v", c)
 	}
-	q := cleanQuery(QueryEvent{QName: "WWW.Example.COM.", QType: "aaaa", Status: "Forwarded", Time: now}, false, now)
+	q := cleanQuery(QueryEvent{QName: "WWW.Example.COM.", QType: "aaaa", Status: "Forwarded", Time: now}, false, false, now)
 	if q.QName != "www.example.com" || q.QType != "AAAA" || q.Status != "forwarded" || !q.Time.Equal(now.Truncate(time.Millisecond)) {
 		t.Fatalf("cleanQuery = %+v", q)
 	}

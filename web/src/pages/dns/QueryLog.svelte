@@ -1,11 +1,16 @@
 <!--
   @component
-  Query log: every DNS query with its status, filterable by time range,
-  client, domain, status, record type and upstream (all in the URL), paged
-  by cursor. "Live" follows new queries over SSE (pause/resume); a row opens
-  the details panel.
-  Query: ?range&client&domain&status&qtype&upstream&live=true; client may be
-  repeated (every address of one device).
+  Query log: every DNS query with its status, filterable by time range
+  (a preset or a custom window), client, domain, status, record type,
+  upstream, reply code and DNSSEC (all in the URL), paged by cursor. "Live"
+  follows new queries over SSE (pause/resume; not with a custom window,
+  which may end in the past: turning Live on returns to the default range
+  and ?live=true is ignored while one is set); a row opens the details
+  panel. Export downloads the filtered log (NDJSON or CSV); admins may clear
+  the query log or reset the statistics from the menu (when the host allows
+  destructive actions).
+  Query: ?range|from&to&client&domain&status&qtype&upstream&rcode&dnssec&live=true;
+  client and rcode may be repeated (every address of one device, any of the codes).
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -19,7 +24,9 @@
   } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { formatDateTime, formatMicros, formatNumber, formatTime } from '$lib/format'
+  import { isCustom } from '$lib/range'
   import { router, type QueryPatch } from '$lib/router.svelte'
+  import { session } from '$lib/session.svelte'
   import { appStatus } from '$lib/status.svelte'
   import {
     Button,
@@ -27,6 +34,7 @@
     CursorStack,
     EmptyState,
     IconButton,
+    Menu,
     Notice,
     Pager,
     Panel,
@@ -34,8 +42,10 @@
     Table,
     Toggle,
     type Column,
+    type MenuItem,
   } from '$lib/ui'
-  import { apiQuery, hasFilters, matchesLocally, readFilters, streamClient } from './querylog/filters'
+  import { clearQueryLog, resetStatistics } from '../system/logs/clear'
+  import { apiQuery, CLEAR_FILTERS, exportQuery, hasFilters, matchesLocally, readFilters, streamClient } from './querylog/filters'
   import QueryFilters from './querylog/QueryFilters.svelte'
   import QueryPanel from './querylog/QueryPanel.svelte'
 
@@ -45,7 +55,9 @@
   type Row = QueryEvent & { key: string }
 
   const filters = $derived(readFilters())
-  const live = $derived(router.param('live') === 'true')
+  /** A custom window (?from&to) may end in the past: live events would not belong to it. */
+  const customRange = $derived(isCustom(filters.range))
+  const live = $derived(router.param('live') === 'true' && !customRange)
   const filterKey = $derived(JSON.stringify(filters))
 
   // Cursor pages belong to one set of filters; new filters start at page 1.
@@ -112,6 +124,29 @@
   const rows = $derived(live ? [...liveRows, ...pageRows].slice(0, MAX_LIVE) : pageRows)
 
   const upstreams = $derived((appStatus.overview.data?.upstreams ?? []).map((u) => u.upstream))
+  /** Reply codes of the rows shown (suggestions of the reply-code filter). */
+  const rcodes = $derived([...new Set(rows.map((r) => r.rcode.toUpperCase()).filter(Boolean))])
+
+  // A plain download link with the current filters (the browser sends the session cookie).
+  const exportItems = $derived<MenuItem[]>([
+    { note: t('dns.queryLog.export.note') },
+    { label: t('dns.queryLog.export.ndjson'), icon: 'download', href: api.logs.exportUrl('ndjson', exportQuery(filters)), download: true },
+    { label: t('dns.queryLog.export.csv'), icon: 'download', href: api.logs.exportUrl('csv', exportQuery(filters)), download: true },
+  ])
+  const clearItems = $derived<MenuItem[]>([
+    {
+      label: t('system.logs.clear.queries'),
+      icon: 'trash',
+      danger: true,
+      onselect: async () => {
+        if (await clearQueryLog()) {
+          liveRows = []
+          void log.refresh()
+        }
+      },
+    },
+    { label: t('system.logs.clear.stats'), icon: 'trash', danger: true, onselect: () => void resetStatistics() },
+  ])
 
   const filterErrors = $derived({
     client: fieldError(log.error, 'client'),
@@ -134,7 +169,8 @@
   }
 
   function setLive(on: boolean) {
-    router.setQuery({ live: on })
+    // Live follows the queries arriving now: a custom window gives way to the default range.
+    router.setQuery(on && customRange ? { live: on, from: null, to: null } : { live: on })
   }
 
   function next() {
@@ -197,7 +233,11 @@
 {/snippet}
 
 {#snippet domainCell(e: Row)}
-  <span class="domain mono" title={e.qname}>{e.qname}</span>
+  {#if e.qname === 'hidden'}
+    <span class="subtle" title={t('dns.queryLog.hiddenDomain')}>{t('dns.queryLog.hiddenShort')}</span>
+  {:else}
+    <span class="domain mono" title={e.qname}>{e.qname}</span>
+  {/if}
 {/snippet}
 
 {#snippet statusCell(e: Row)}
@@ -205,7 +245,15 @@
 {/snippet}
 
 <div class="page">
-  <QueryFilters {filters} {live} {upstreams} errors={filterErrors} onchange={setFilters} />
+  <QueryFilters
+    {filters}
+    {live}
+    {upstreams}
+    {rcodes}
+    retentionHours={settings.data?.logs.queryLogRetentionHours}
+    errors={filterErrors}
+    onchange={setFilters}
+  />
 
   {#if appStatus.overview.data && !appStatus.overview.data.blocking.enabled}
     <Notice tone="warn">{t('dns.queryLog.blockingOff')}</Notice>
@@ -213,7 +261,11 @@
 
   <Panel flush>
     <div class="head">
-      <Toggle bind:checked={() => live, setLive} label={t('dns.queryLog.live.label')} />
+      <Toggle
+        bind:checked={() => live, setLive}
+        label={t('dns.queryLog.live.label')}
+        description={customRange ? t('dns.queryLog.live.customRange') : undefined}
+      />
       {#if live && stream}
         <Chip size="sm" tone={streamTone} label={streamLabel} />
         {#if stream.paused}
@@ -224,6 +276,10 @@
         <span class="small muted">{t('dns.queryLog.live.count', { count: formatNumber(rows.length), max: formatNumber(MAX_LIVE) })}</span>
       {/if}
       <span class="spacer"></span>
+      <Menu label={t('dns.queryLog.export.label')} icon="download" size="sm" items={exportItems} />
+      {#if session.canDestroy}
+        <Menu label={t('common.action.more')} icon="more" iconOnly size="sm" variant="ghost" items={clearItems} />
+      {/if}
       {#if !live}
         <IconButton icon="refresh" size="sm" label={t('common.action.refresh')} loading={log.loading} onclick={() => log.refresh()} />
       {/if}
@@ -247,7 +303,7 @@
           <EmptyState compact icon="activity" title={t('dns.queryLog.live.waiting')} text={t('dns.queryLog.live.waitingText')} />
         {:else if hasFilters(filters)}
           <EmptyState compact icon="filter" title={t('dns.queryLog.emptyFiltered')} text={t('dns.queryLog.emptyFilteredText')}>
-            <Button size="sm" onclick={() => setFilters({ client: null, domain: null, status: null, qtype: null, upstream: null })}>
+            <Button size="sm" onclick={() => setFilters(CLEAR_FILTERS)}>
               {t('dns.queryLog.filter.clear')}
             </Button>
           </EmptyState>

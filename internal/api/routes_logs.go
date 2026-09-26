@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -20,13 +21,18 @@ const (
 // registerLogsRoutes registers the logs endpoints (docs/API.md).
 func (s *Server) registerLogsRoutes() {
 	s.route("GET /api/v1/logs/queries", permRead, s.logsQueries)
+	s.route("GET /api/v1/logs/queries/export", permRead, s.logsExport)
+	s.route("DELETE /api/v1/logs/queries", permAdmin, s.logsClearQueries, routeDestructive)
+	s.route("DELETE /api/v1/stats", permAdmin, s.logsClearStats, routeDestructive)
 	s.route("GET /api/v1/stats/summary", permRead, s.logsSummary)
 	s.route("GET /api/v1/stats/dns", permRead, s.logsDNSSeries)
 	s.route("GET /api/v1/stats/cache", permRead, s.logsCacheSeries)
 	s.route("GET /api/v1/stats/top", permRead, s.logsTop)
 	s.route("GET /api/v1/stats/services", permRead, s.logsServiceStats)
 	s.route("GET /api/v1/stats/clients", permRead, s.logsClientStats)
+	s.route("GET /api/v1/stats/clients/{key}/series", permRead, s.logsClientSeries)
 	s.route("GET /api/v1/stats/purposes", permRead, s.logsPurposes)
+	s.route("GET /api/v1/stats/qtypes", permRead, s.logsQTypes)
 	s.route("GET /api/v1/cache/downloads", permRead, s.logsDownloads)
 	s.route("GET /api/v1/cache/requests", permRead, s.logsCacheRequests)
 	s.route("GET /api/v1/cache/sni-events", permRead, s.logsSNIEvents)
@@ -36,28 +42,62 @@ func (s *Server) registerLogsRoutes() {
 }
 
 func (s *Server) logsQueries(w http.ResponseWriter, r *http.Request) error {
-	from, to, err := qRange(r, logsQueryRange)
+	f, err := queryFilter(r)
 	if err != nil {
 		return err
 	}
-	limit, err := qInt(r, "limit", 0)
-	if err != nil {
+	if f.Limit, err = qInt(r, "limit", 0); err != nil {
 		return err
 	}
-	page, err := s.d.Logs.QueryLog(r.Context(), logs.QueryFilter{
-		From: from, To: to,
-		Clients:  qStrings(r, "client"),
-		Domain:   qString(r, "domain"),
-		Status:   qList(r, "status"),
-		QType:    qString(r, "qtype"),
-		Upstream: qString(r, "upstream"),
-		Cursor:   qString(r, "cursor"),
-		Limit:    limit,
-	})
+	f.Cursor = qString(r, "cursor")
+	page, err := s.d.Logs.QueryLog(r.Context(), f)
 	if err != nil {
 		return err
 	}
 	return ok(w, page)
+}
+
+// clearDeadline bounds DELETE /logs/queries and DELETE /stats (the writer
+// runs the delete).
+const clearDeadline = 2 * time.Minute
+
+// logsClearQueries deletes the query log (the writer's pending rows too).
+func (s *Server) logsClearQueries(w http.ResponseWriter, r *http.Request) error {
+	extendDeadlines(w, clearDeadline)
+	ctx, cancel := context.WithTimeout(r.Context(), clearDeadline)
+	defer cancel()
+	n, err := s.d.Logs.ClearQueries(ctx)
+	if err != nil {
+		return err
+	}
+	s.audit(r, "logs.queries.delete", "", map[string]int64{"deleted": n})
+	return ok(w, map[string]int64{"deleted": n})
+}
+
+// logsClearStats deletes the statistics (count rollups and top tables).
+func (s *Server) logsClearStats(w http.ResponseWriter, r *http.Request) error {
+	extendDeadlines(w, clearDeadline)
+	ctx, cancel := context.WithTimeout(r.Context(), clearDeadline)
+	defer cancel()
+	n, err := s.d.Logs.ClearStats(ctx)
+	if err != nil {
+		return err
+	}
+	s.audit(r, "logs.stats.delete", "", map[string]int64{"deleted": n})
+	return ok(w, map[string]int64{"deleted": n})
+}
+
+// logsQTypes answers the queries of the range by query type.
+func (s *Server) logsQTypes(w http.ResponseWriter, r *http.Request) error {
+	from, to, err := qRange(r, logsStatsRange)
+	if err != nil {
+		return err
+	}
+	st, err := s.d.Logs.QTypes(r.Context(), from, to)
+	if err != nil {
+		return err
+	}
+	return ok(w, st)
 }
 
 // logsPurposes answers "blocked by purpose": the blocked and safe-search

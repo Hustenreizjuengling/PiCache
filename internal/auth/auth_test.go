@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
+	"github.com/hustenreizjuengling/picache/internal/applog"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
@@ -191,6 +193,29 @@ func TestSetupTokenReusedAcrossRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.login(t) // the original password still works: Provision never overwrites
+}
+
+// The setup token is in the journal (stderr) in plain text, as the setup
+// hints and the docs say, but redacted in the application log of the UI.
+func TestSetupTokenLoggedToStderr(t *testing.T) {
+	e := newEnv(t)
+	var buf bytes.Buffer
+	h := applog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}), slog.LevelInfo)
+	a2, err := New(context.Background(), e.d, e.set, e.a.box, e.setupFile, slog.New(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := a2.setupToken
+	if tok == "" || !strings.Contains(buf.String(), "setupToken="+tok) {
+		t.Fatalf("token %q not on stderr: %s", tok, buf.String())
+	}
+	for _, r := range h.Log().Records(slog.LevelDebug, "", applog.Capacity) {
+		for _, at := range r.Attrs {
+			if strings.Contains(at.Value, tok) {
+				t.Fatalf("the ring holds the token: %+v", r)
+			}
+		}
+	}
 }
 
 func TestLoginAndAuthenticate(t *testing.T) {

@@ -135,6 +135,12 @@ type overviewHealth struct {
 	Failures int  `json:"failures"`
 }
 
+// overviewEvents counts the unacknowledged warnings and errors of the
+// warning history the caller may see (the header badge).
+type overviewEvents struct {
+	Unacknowledged int `json:"unacknowledged"`
+}
+
 type systemOverviewResponse struct {
 	Blocking             dnsserver.BlockingStatus `json:"blocking"`
 	DNS                  dnsserver.Stats          `json:"dns"`
@@ -149,6 +155,7 @@ type systemOverviewResponse struct {
 	Upstreams            []upstream.UpstreamStat  `json:"upstreams"`
 	ClockGuard           bool                     `json:"clockGuard"`
 	Health               overviewHealth           `json:"health"`
+	Events               overviewEvents           `json:"events"`
 }
 
 func (s *Server) systemOverview(w http.ResponseWriter, r *http.Request) error {
@@ -167,6 +174,11 @@ func (s *Server) systemOverview(w http.ResponseWriter, r *http.Request) error {
 	if ups == nil {
 		ups = []upstream.UpstreamStat{}
 	}
+	ev := d.Logs.EventCounts() // in memory: no query per poll
+	unacked := ev.All
+	if !isAdmin(r) {
+		unacked -= ev.Security
+	}
 	return ok(w, systemOverviewResponse{
 		Blocking:             d.DNS.Blocking(),
 		DNS:                  d.DNS.Stats(),
@@ -181,6 +193,7 @@ func (s *Server) systemOverview(w http.ResponseWriter, r *http.Request) error {
 		Upstreams:            ups,
 		ClockGuard:           d.Upstream.ClockGuard(),
 		Health:               sum,
+		Events:               overviewEvents{Unacknowledged: unacked},
 	})
 }
 

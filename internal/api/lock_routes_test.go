@@ -38,7 +38,9 @@ var expectedClasses = func() map[string]routeClass {
 		"POST /api/v1/filter/lists/refresh", "POST /api/v1/filter/lists/{id}/refresh", "POST /api/v1/download-cache/source/refresh",
 		"POST /api/v1/network/scan", "POST /api/v1/dhcp/probe", "POST /api/v1/notifications/channels/{id}/test",
 		"POST /api/v1/storage/targets/{id}/test", "POST /api/v1/storage/targets/{id}/benchmark", "DELETE /api/v1/storage/benchmark",
-		"POST /api/v1/cache/verify")
+		"POST /api/v1/cache/verify",
+		"PUT /api/v1/system/log/level", "DELETE /api/v1/system/log/level", "POST /api/v1/system/events/{id}/ack",
+		"POST /api/v1/system/events/ack-all", "POST /api/v1/system/support-bundle")
 	add(routeClass{lock: lockPause}, "POST /api/v1/dns/blocking")
 	add(none,
 		"POST /api/v1/auth/setup", "POST /api/v1/auth/login", "POST /api/v1/auth/logout", "POST /api/v1/dns/lookup",
@@ -71,7 +73,8 @@ var expectedClasses = func() map[string]routeClass {
 		"POST /api/v1/system/restore", "POST /api/v1/dhcp/reset", "DELETE /api/v1/dhcp/leases",
 		"POST /api/v1/cache/services/{service}/purge", "POST /api/v1/cache/groups/delete", "POST /api/v1/storage/targets/{id}/init",
 		"DELETE /api/v1/storage/targets/{id}", "DELETE /api/v1/system/backups/scheduled/files/{name}",
-		"DELETE /api/v1/system/users/{id}", "DELETE /api/v1/system/tls")
+		"DELETE /api/v1/system/users/{id}", "DELETE /api/v1/system/tls",
+		"DELETE /api/v1/logs/queries", "DELETE /api/v1/stats")
 	return m
 }()
 

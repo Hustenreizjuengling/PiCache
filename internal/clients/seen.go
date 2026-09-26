@@ -74,10 +74,29 @@ func (r *Registry) recordSeen(ip netip.Addr, persist bool) {
 	}
 }
 
-// seenLoop flushes seen data every minute, refreshes hostnames hourly and
-// prunes daily. A final flush runs when ctx ends.
+// SetFlushInterval sets the source of the logs.flushSeconds setting: seen
+// data is written every max(1 minute, fn()) (nil: every minute). A change
+// applies from the next write on.
+func (r *Registry) SetFlushInterval(fn func() time.Duration) {
+	if fn == nil {
+		r.seenEvery.Store(nil)
+		return
+	}
+	r.seenEvery.Store(&fn)
+}
+
+// seenInterval returns how often seen data is written.
+func (r *Registry) seenInterval() time.Duration {
+	if fn := r.seenEvery.Load(); fn != nil {
+		return max(seenFlushEvery, (*fn)())
+	}
+	return seenFlushEvery
+}
+
+// seenLoop flushes seen data every seenInterval, refreshes hostnames hourly
+// and prunes daily. A final flush runs when ctx ends.
 func (r *Registry) seenLoop(ctx context.Context) {
-	flush := time.NewTicker(seenFlushEvery)
+	flush := time.NewTimer(r.seenInterval())
 	defer flush.Stop()
 	names := time.NewTicker(nameRefreshEvery)
 	defer names.Stop()
@@ -93,6 +112,7 @@ func (r *Registry) seenLoop(ctx context.Context) {
 			return
 		case <-flush.C:
 			r.flush(ctx)
+			flush.Reset(r.seenInterval())
 		case <-names.C:
 			r.refreshNames()
 		case <-prune.C:

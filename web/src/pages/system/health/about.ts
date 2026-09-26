@@ -27,8 +27,10 @@ export const CHECKS: Record<string, CheckInfo> = {
   download_cache: { label: 'system.health.check.download_cache', path: '/cache/settings', page: 'common.nav.cacheSettings' },
   sni: { label: 'system.health.check.sni' },
   'cache-store': { label: 'system.health.check.cache-store', path: '/cache/storage', page: 'common.nav.storage' },
-  logs: { label: 'system.health.check.logs', path: '/system/backup', page: 'common.nav.backup' },
+  logs: { label: 'system.health.check.logs', path: '/system/logs', page: 'common.nav.logs' },
   'data-disk': { label: 'system.health.check.data-disk' },
+  host: { label: 'system.health.check.host' },
+  network: { label: 'system.health.check.network', path: '/dns/network', page: 'common.nav.network' },
   dhcp: { label: 'system.health.check.dhcp', path: '/dns/dhcp', page: 'common.nav.dhcp' },
   tls: { label: 'system.health.check.tls', path: '/system/https', page: 'common.nav.https' },
 }

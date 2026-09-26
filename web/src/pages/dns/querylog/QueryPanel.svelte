@@ -9,7 +9,11 @@
   cannot help; answers blocked by rebinding protection offer to allow the
   name; safe-search answers point to parental controls. After "Explain",
   a client in exactly one group other than Default can have that group's
-  filtering paused (admins, not while addresses are anonymised).
+  filtering paused (admins, not while addresses are anonymised). The
+  explanation names the enabled privacy lists that contain the domain as
+  "Known tracker" (PiCache has no tracker database of its own). The
+  upstream's own answer is shown where it differs from the final one.
+  Entries recorded while domains were hidden offer no domain actions.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -53,6 +57,8 @@
   let { open = $bindable(false), event, groups, lists, settings, onsettings, onfilter }: Props = $props()
 
   const CACHE_WINDOW = 5 * 60 // seconds before and after the query
+  /** The query name of entries recorded while logs.hideDomains was on. */
+  const HIDDEN = 'hidden'
 
   let explain = $state.raw<ExplainResult | undefined>(undefined)
   let explainErr = $state.raw<ApiError | undefined>(undefined)
@@ -77,9 +83,23 @@
   $effect(() => () => ctrl?.abort())
 
   const blocked = $derived(!!event && isBlockedStatus(event.status))
+  /** The domain was not recorded (privacy setting "Hide domains"). */
+  const hidden = $derived(event?.qname === HIDDEN)
   // An allow rule cannot lift an upstream's block: the upstream sent no usable answer.
   // (For rebinding the allow list is the first choice; an allow rule exempts the name too.)
-  const ruleAction = $derived(!event || event.status === 'blocked-upstream' ? undefined : blocked ? 'allow' : 'block')
+  const ruleAction = $derived(!event || hidden || event.status === 'blocked-upstream' ? undefined : blocked ? 'allow' : 'block')
+
+  /**
+   * Enabled privacy lists blocking the domain: PiCache's substitute for a tracker database.
+   * An exception of a list (action allow) says the opposite and does not count.
+   */
+  const trackers = $derived([
+    ...new Set(
+      (explain?.matches ?? [])
+        .filter((m) => m.source === 'list' && m.action === 'block' && m.category === 'privacy')
+        .map((m) => m.name),
+    ),
+  ])
   const listName = $derived(event?.listId ? (lists?.find((l) => l.id === event.listId)?.name ?? `#${event.listId}`) : '')
 
   const cacheHref = $derived.by(() => {
@@ -170,22 +190,30 @@
   }
 </script>
 
-<SidePanel bind:open title={event?.qname ?? ''} subtitle={event ? formatDateTime(event.time, true) : undefined} size="lg">
+<SidePanel
+  bind:open
+  title={hidden ? t('dns.queryLog.hiddenShort') : (event?.qname ?? '')}
+  subtitle={event ? formatDateTime(event.time, true) : undefined}
+  size="lg"
+>
   {#if event}
     <div class="stack">
       <div class="headline">
         <QueryStatusChip status={event.status} size="md" />
         <span class="muted small">{event.rcode} · {formatMicros(event.durationUs)}</span>
         <span class="spacer"></span>
-        <CopyButton text={event.qname} label={t('dns.queryLog.copyDomain')} />
+        {#if !hidden}<CopyButton text={event.qname} label={t('dns.queryLog.copyDomain')} />{/if}
       </div>
+
+      {#if hidden}<p class="small muted">{t('dns.queryLog.hiddenDomain')}</p>{/if}
 
       <KeyValue
         items={[
-          { label: t('common.label.domain'), value: event.qname, mono: true },
+          { label: t('common.label.domain'), value: hidden ? t('dns.queryLog.hiddenShort') : event.qname, mono: !hidden },
           { label: t('common.label.type'), value: event.qtype },
           { label: t('common.label.client'), value: event.clientName ? `${event.clientName} (${event.clientIp})` : event.clientIp },
           { label: t('dns.queryLog.answer'), value: event.answer, mono: true },
+          ...(event.upstreamAnswer ? [{ label: t('dns.queryLog.upstreamAnswer'), value: event.upstreamAnswer, mono: true }] : []),
           { label: t('dns.queryLog.reason'), value: event.reason },
         ]}
       >
@@ -231,7 +259,7 @@
             <p class="small">{t('dns.queryLog.rebindAllowedBy', { entry: rebindAllowedBy })}</p>
           {/if}
           {#snippet actions()}
-            {#if session.isAdmin && settings && !rebindAllowedBy}
+            {#if session.isAdmin && settings && !rebindAllowedBy && !hidden}
               <span class="long">
                 <Button size="sm" variant="primary" icon="shield-off" loading={allowing} onclick={allowRebinding}>
                   {t('dns.queryLog.allowRebinding', { name: rebindName })}
@@ -261,7 +289,9 @@
             {ruleAction === 'allow' ? t('dns.queryLog.allowDomain') : t('dns.queryLog.blockDomain')}
           </Button>
         {/if}
-        <Button icon="info" loading={explaining} onclick={runExplain}>{t('dns.queryLog.explain')}</Button>
+        {#if !hidden}
+          <Button icon="info" loading={explaining} onclick={runExplain}>{t('dns.queryLog.explain')}</Button>
+        {/if}
         <Button icon="user" href={href('/dns/clients', { ip: event.clientIp })}>{t('dns.queryLog.openClient')}</Button>
         <Button icon="download" href={cacheHref}>{t('dns.queryLog.cacheTraffic')}</Button>
         {#if canBlockDevice && !blockResult}
@@ -269,9 +299,11 @@
         {/if}
       </div>
       <div class="row">
-        <Button size="sm" variant="ghost" icon="filter" onclick={() => filterBy({ domain: `"${event.qname}"` })}>
-          {t('dns.queryLog.onlyDomain')}
-        </Button>
+        {#if !hidden}
+          <Button size="sm" variant="ghost" icon="filter" onclick={() => filterBy({ domain: `"${event.qname}"` })}>
+            {t('dns.queryLog.onlyDomain')}
+          </Button>
+        {/if}
         <Button size="sm" variant="ghost" icon="filter" onclick={() => filterBy({ client: event.clientIp })}>
           {t('dns.queryLog.onlyClient')}
         </Button>
@@ -295,6 +327,11 @@
       {#if explain}
         <section class="stack-sm" aria-labelledby="explain-title">
           <h3 id="explain-title">{t('dns.queryLog.explainTitle')}</h3>
+          {#if trackers.length > 0}
+            <Notice tone="info" title={t('dns.queryLog.tracker', { lists: trackers.join(', ') })}>
+              {t('dns.queryLog.trackerHelp')}
+            </Notice>
+          {/if}
           <MatchList matches={explain.matches} {groups} groupIds={explain.groupIds} />
           {#if pauseGroup}
             <div class="row">

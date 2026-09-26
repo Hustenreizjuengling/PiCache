@@ -5,6 +5,93 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Databases:** `logs.db` gets the upstream's answer column, the warning
+  history and daily top tables (logs migration 4, no table rewrite); the
+  history of the last year appears in the daily tables within about 30
+  minutes after the first start. `picache.db` gets `ignore_stats` for clients
+  (clients migration 3): a client that was excluded from the logs stays
+  excluded from both the raw data and the statistics.
+- **Settings:** the new log settings start with their defaults (statistics
+  on, domains not hidden, no ignored domains, every query type counted,
+  written every 5 s; health thresholds 5 % memory, load 2 per CPU, 80 °C).
+  Every existing combination of the query log and anonymisation keeps its
+  behaviour; the privacy level shows `full` or `custom`.
+- **API:** `logs.privacyLevel` is derived from the four privacy switches;
+  a value sent in `PUT`/`PATCH /settings` is ignored. `ClientInput` without
+  `ignoreStats` (or `null`) takes the value of `ignoreLogs`, so older API
+  clients keep the meaning of the single flag. `GET /stats/top?kind=upstreams`
+  carries the average duration in the new `avgDurationUs` (and still in
+  `bytes`). Ranges longer than 7 days read daily top tables: their `topFrom`
+  is the start of the UTC day.
+- **Downgrade:** a version before 0.12.0 refuses the migrated `picache.db`
+  (clients schema 3) and does not start: go back with the copy
+  `<data>/backups/picache-<old version>-<timestamp>.db` made at the first
+  start (the update helper's rollback does this itself). 0.11 sets the newer
+  `logs.db` aside as `logs.db.broken-<timestamp>` (query log, statistics and
+  warning history start fresh); after upgrading again, stop PiCache and move
+  it back by hand. Backups made by 0.12 are refused by 0.11.
+
+### Added
+
+- **Privacy levels** (**System → Logs & privacy**, a new page that also holds
+  the retention settings): *Full*, *Hide domains*, *Anonymous*, *Off* and
+  *Custom* over four switches: the query log, anonymised client addresses,
+  `logs.hideDomains` (domain names replaced by `hidden`, answers removed, no
+  top lists of domains) and `logs.statsEnabled` (the DNS statistics). Per
+  client, `ignoreStats` excludes the statistics and `ignoreLogs` the raw
+  data (query log, cache requests, SNI events, download sessions, seen data).
+  `logs.ignoredDomains` are answered and filtered but never logged or
+  counted; `logs.statsOnlyAddressQueries` counts only A, AAAA and HTTPS
+  queries in the statistics.
+- **Clearing:** `DELETE /logs/queries` and `DELETE /stats` (admins,
+  destructive, audited) clear the query log or the statistics through the
+  log writer, so nothing reappears.
+- **Dashboard:** top allowed domains, upstreams with their share and average
+  response time, the average processing time, an estimate of the distinct
+  domains (HyperLogLog, about 2.3 %), and a chart of the query types
+  (`GET /stats/qtypes`, at most 32 types plus `OTHER`).
+- **Long ranges:** 90 days, 180 days, a year and custom ranges read daily top
+  tables (built after each day and backfilled for the existing history).
+- **Client activity:** `GET /stats/clients/{key}/series`: allowed and
+  blocked queries and download-cache bytes per step for an address or a
+  device (client or MAC).
+- **Query log:** filters by response code (`rcode`) and DNSSEC (`dnssec`),
+  the upstream's answer when it differs from the final one (CNAME and
+  upstream blocks, rebinding protection, bogus NXDOMAIN, DNS64, removed
+  `ipv6hint`), "Known tracker" in the explain result for lists of the
+  category privacy that block the name (`filter.Match.category`), and an
+  export as NDJSON or CSV (`GET /logs/queries/export`, one at a time, at
+  most 1 000 000 rows or 15 minutes, spreadsheet formulas neutralised).
+- **CLI:** `picache logs tail` follows the query log, `picache logs export`
+  saves it (API token from `PICACHE_TOKEN` or `--token-file`, never from
+  `picache.env`; sent only to loopback or verified HTTPS URLs).
+  `picache db check` checks `picache.db`; `picache db salvage --out <file>`
+  copies every readable row of a damaged one into a new file.
+- **Application log** (**System → Application log**, admins): the last 2000
+  log records with level and component filters and a live stream, secrets
+  redacted (also in the journal), client addresses and domains masked per
+  the privacy switches; a temporary debug level for all components or one
+  (`PUT`/`DELETE /system/log/level`).
+- **Host resources** (`GET /system/host`, **Health & about**): model, CPUs,
+  load, uptime, memory, the cgroup's memory, temperatures and the data and
+  cache disks; the health check `host` warns about low memory, high load and
+  heat (thresholds in the new settings section `health`).
+- **Warning history** (`GET /system/events`, **Health & about**): the
+  notification events are recorded whether or not channels exist, merged
+  while unacknowledged and acknowledged by admins; the header shows the
+  unacknowledged warnings (`/system/overview` `events`).
+- **Support bundle** (`POST /system/support-bundle`, **Health & about**): a
+  zip of version, settings, health, listeners, network check, DHCP state,
+  database sizes, host resources and the application log with names,
+  addresses and secrets replaced; client names only when ticked.
+- **Database sizes** (`GET /system/databases`), DNS cache counters
+  (insertions, evictions, expired, entries by type) and new metrics
+  (`picache_dns_cache_*`, `picache_dhcp_*`).
+- **Fewer SD-card writes:** `logs.flushSeconds` (5 to 300 s) sets how often
+  the query log and the counters are written.
+
 ## [0.11.0] - 2026-09-26
 
 ### Upgrade notes

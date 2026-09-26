@@ -66,7 +66,7 @@ func TestQueryEventEDEAndECS(t *testing.T) {
 	} {
 		ev := query(now, "192.168.1.7", "a.example", "forwarded")
 		ev.ECS = in
-		if got := cleanQuery(ev, true, now).ECS; got != want {
+		if got := cleanQuery(ev, true, false, now).ECS; got != want {
 			t.Errorf("anonymised %q = %q, want %q", in, got, want)
 		}
 	}

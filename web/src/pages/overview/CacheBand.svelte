@@ -6,9 +6,10 @@
 -->
 <script lang="ts">
   import { t } from '../../i18n/index.svelte'
-  import { api, resource, type RangePreset, type SystemOverview } from '../../lib/api'
+  import { api, resource, type SystemOverview } from '../../lib/api'
   import { errorText } from '../../lib/errors'
   import { formatRate } from '../../lib/format'
+  import { chartStep, type Range } from '../../lib/range'
   import { seriesRates } from '../../lib/series'
   import { Button, Chart, Notice } from '../../lib/ui'
   import Band from './Band.svelte'
@@ -17,14 +18,15 @@
   import LiveDownloads from './LiveDownloads.svelte'
   import StorageSummary from './StorageSummary.svelte'
 
-  let { range, overview }: { range: RangePreset; overview: SystemOverview } = $props()
+  let { range, overview }: { range: Range; overview: SystemOverview } = $props()
 
   // A derived boolean: the overview object changes every poll, the flag rarely.
   const enabled = $derived(overview.downloadCacheEnabled)
-  // asOf: the end of the range, for the rate of the bucket still in progress.
+  // asOf: the end of the range, for the rate of the bucket still in progress;
+  // one point per day from 90 days on.
   const series = resource(
     async (signal) =>
-      enabled ? { asOf: Date.now(), s: await api.stats.cache(range, undefined, undefined, { signal }) } : undefined,
+      enabled ? { asOf: Date.now(), s: await api.stats.cache(range, chartStep(range), undefined, { signal }) } : undefined,
     { interval: 60_000 },
   )
 

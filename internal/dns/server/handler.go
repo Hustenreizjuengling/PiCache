@@ -142,11 +142,12 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 		return
 	}
-	// Clients excluded from logs are not recorded as seen, and while client
-	// addresses are anonymised the activity is kept in memory only (nothing
-	// is written to logs.db).
+	// Clients excluded from the raw data (ignoreLogs) are not recorded as
+	// seen; while client addresses are anonymised, or neither the query log
+	// nor the statistics are kept, the activity is kept in memory only
+	// (nothing is written to logs.db).
 	if s.d.Clients != nil && !qc.id.IgnoreLogs {
-		if set.Logs.AnonymizeClientIPs {
+		if lg := &set.Logs; lg.AnonymizeClientIPs || (!lg.QueryLogEnabled && !lg.StatsEnabled) {
 			s.d.Clients.SeenTransient(qc.client)
 		} else {
 			s.d.Clients.Seen(qc.client)
@@ -299,12 +300,15 @@ func dropDNSSEC(rrs []dns.RR) []dns.RR {
 	return out
 }
 
-// logQuery hands the query to the query log (async in the logs package),
-// unless the client is excluded from logging.
+// logQuery hands the query to the query log and the statistics (async in
+// the logs package): not for a client excluded from both (ignoreLogs and
+// ignoreStats), otherwise with NoLog and NoStats of its identity, and never
+// for logs.ignoredDomains.
 func (s *Server) logQuery(qc *qctx, res result, reply *dns.Msg) {
-	if s.d.Logs == nil || qc.id == nil || qc.id.IgnoreLogs || qc.tracing() {
+	if s.d.Logs == nil || qc.id == nil || (qc.id.IgnoreLogs && qc.id.IgnoreStats) || qc.tracing() || s.ignoredDomain(qc.qname) {
 		return
 	}
+	answer := summarize(reply.Answer)
 	e := logs.QueryEvent{
 		Time:       qc.start.UTC(),
 		ClientIP:   qc.client.String(),
@@ -319,11 +323,16 @@ func (s *Server) logQuery(qc *qctx, res result, reply *dns.Msg) {
 		Service:    res.service,
 		Upstream:   res.upstream,
 		DurationUs: time.Since(qc.start).Microseconds(),
-		Answer:     summarize(reply.Answer),
+		Answer:     answer,
 		DNSSEC:     reply.AuthenticatedData,
 		Protocol:   qc.proto,
 		ECS:        clientSubnet(qc.req),
 		Purpose:    purposeOf(res),
+		NoLog:      qc.id.IgnoreLogs,
+		NoStats:    qc.id.IgnoreStats,
+	}
+	if res.upstreamAnswer != "" && res.upstreamAnswer != answer {
+		e.UpstreamAnswer = res.upstreamAnswer
 	}
 	if res.ede != nil {
 		e.UpstreamEDE = &logs.UpstreamEDE{Code: int(res.ede.Code), Text: res.ede.Text}

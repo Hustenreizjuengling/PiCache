@@ -517,19 +517,33 @@ func TestRouterResolverAndLoopGuard(t *testing.T) {
 func TestIgnoreLogsAndSeen(t *testing.T) {
 	e := newEnv(t, nil).serve()
 	client := netip.MustParseAddr("127.0.0.1")
-	e.cl.set(&clients.Identity{IP: client, GroupIDs: []int64{1}, IgnoreLogs: true})
+	// Excluded from both: no event at all.
+	e.cl.set(&clients.Identity{IP: client, GroupIDs: []int64{1}, IgnoreLogs: true, IgnoreStats: true})
 	e.query("udp", "quiet.example", dns.TypeA)
+	// Excluded from one of them: the logs package gets the event with the flag.
+	e.cl.set(&clients.Identity{IP: client, GroupIDs: []int64{1}, IgnoreLogs: true})
+	e.query("udp", "nolog.example", dns.TypeA)
+	if ev := e.logs.waitEvent(t, "nolog.example", 0); !ev.NoLog || ev.NoStats {
+		t.Errorf("ignoreLogs event %+v", ev)
+	}
+	e.cl.set(&clients.Identity{IP: client, GroupIDs: []int64{1}, IgnoreStats: true})
+	e.query("udp", "nostats.example", dns.TypeA)
+	if ev := e.logs.waitEvent(t, "nostats.example", 0); ev.NoLog || !ev.NoStats {
+		t.Errorf("ignoreStats event %+v", ev)
+	}
 	e.cl.set(&clients.Identity{IP: client, GroupIDs: []int64{1}})
 	e.query("udp", "loud.example", dns.TypeA)
-	e.logs.waitEvent(t, "loud.example", 0)
+	if ev := e.logs.waitEvent(t, "loud.example", 0); ev.NoLog || ev.NoStats {
+		t.Errorf("event %+v", ev)
+	}
 	if n := e.logs.count("quiet.example"); n != 0 {
-		t.Errorf("ignoreLogs client was logged %d times", n)
+		t.Errorf("ignoreLogs+ignoreStats client was logged %d times", n)
 	}
 	e.cl.mu.Lock()
 	seen := e.cl.seen[client]
 	e.cl.mu.Unlock()
-	if seen != 1 {
-		t.Errorf("Seen called %d times, want 1 (not for the ignoreLogs client)", seen)
+	if seen != 2 {
+		t.Errorf("Seen called %d times, want 2 (not for the ignoreLogs clients)", seen)
 	}
 	// With anonymised client addresses activity is recorded in memory only.
 	e.update(func(a *settings.All) { a.Logs.AnonymizeClientIPs = true })
@@ -538,9 +552,61 @@ func TestIgnoreLogsAndSeen(t *testing.T) {
 	e.cl.mu.Lock()
 	seen, transient := e.cl.seen[client], e.cl.transient[client]
 	e.cl.mu.Unlock()
-	if seen != 1 || transient != 1 {
-		t.Errorf("anonymised: Seen %d, SeenTransient %d; want 1, 1", seen, transient)
+	if seen != 2 || transient != 1 {
+		t.Errorf("anonymised: Seen %d, SeenTransient %d; want 2, 1", seen, transient)
 	}
+	// Without the query log and the statistics nothing is persisted either.
+	e.update(func(a *settings.All) {
+		a.Logs.AnonymizeClientIPs, a.Logs.QueryLogEnabled, a.Logs.StatsEnabled = false, false, false
+	})
+	e.query("udp", "off.example", dns.TypeA)
+	e.logs.waitEvent(t, "off.example", 0)
+	e.cl.mu.Lock()
+	seen, transient = e.cl.seen[client], e.cl.transient[client]
+	e.cl.mu.Unlock()
+	if seen != 2 || transient != 2 {
+		t.Errorf("logs off: Seen %d, SeenTransient %d; want 2, 2", seen, transient)
+	}
+	e.update(func(a *settings.All) { a.Logs.StatsEnabled = true })
+	e.query("udp", "stats.example", dns.TypeA)
+	e.logs.waitEvent(t, "stats.example", 0)
+	e.cl.mu.Lock()
+	seen = e.cl.seen[client]
+	e.cl.mu.Unlock()
+	if seen != 3 {
+		t.Errorf("statistics on: Seen %d, want 3", seen)
+	}
+}
+
+// logs.ignoredDomains (subtrees): answered, filtered, counted in the
+// server counters and recorded as seen, but never logged.
+func TestIgnoredDomains(t *testing.T) {
+	e := newEnv(t, func(a *settings.All) { a.Logs.IgnoredDomains = []string{"noisy.example", "lan"} }).serve()
+	for _, name := range []string{"noisy.example", "a.b.noisy.example", "printer.lan", "notnoisy.example", "logged.example"} {
+		if r := e.query("udp", name, dns.TypeA); r.Rcode != dns.RcodeSuccess && r.Rcode != dns.RcodeNameError {
+			t.Fatalf("%s: rcode %s", name, dns.RcodeToString[r.Rcode])
+		}
+	}
+	e.logs.waitEvent(t, "logged.example", 0)
+	e.logs.waitEvent(t, "notnoisy.example", 0)
+	for _, name := range []string{"noisy.example", "a.b.noisy.example", "printer.lan"} {
+		if n := e.logs.count(name); n != 0 {
+			t.Errorf("%s logged %d times", name, n)
+		}
+	}
+	if st := e.srv.Stats(); st.Queries < 5 {
+		t.Errorf("server counters %d", st.Queries)
+	}
+	e.cl.mu.Lock()
+	seen := e.cl.seen[netip.MustParseAddr("127.0.0.1")]
+	e.cl.mu.Unlock()
+	if seen != 5 {
+		t.Errorf("seen %d, want 5", seen)
+	}
+	// A change applies at once.
+	e.update(func(a *settings.All) { a.Logs.IgnoredDomains = []string{} })
+	e.query("udp", "noisy.example", dns.TypeA)
+	e.logs.waitEvent(t, "noisy.example", 0)
 }
 
 func TestLocalCNAMELoopServfail(t *testing.T) {

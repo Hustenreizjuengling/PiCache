@@ -120,6 +120,18 @@ func validHostname(h string) bool {
 // ValidHostname reports whether h is a syntactically valid DNS hostname (A-labels).
 func ValidHostname(h string) bool { return validHostname(strings.ToLower(h)) }
 
+// ignoredDomainRE is a domain name of logs.ignoredDomains: lower-case
+// A-labels that may contain underscores (service names such as
+// _dns.resolver.arpa are queried too); a single label is allowed.
+var ignoredDomainRE = regexp.MustCompile(`^(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$`)
+
+// ValidIgnoredDomain reports whether s (normalised: lower-case, no trailing
+// dot) is an entry of logs.ignoredDomains: a domain name of at most 253
+// characters, without wildcards, patterns or a record type.
+func ValidIgnoredDomain(s string) bool {
+	return len(s) > 0 && len(s) <= 253 && ignoredDomainRE.MatchString(s)
+}
+
 // normalize trims and lower-cases list entries and removes duplicates.
 func (a *All) normalize() {
 	clean := func(in []string, lower bool) []string {
@@ -177,6 +189,9 @@ func (a *All) normalize() {
 	a.Web.AllowedNetworks = normalizeList(a.Web.AllowedNetworks, normalizeAddrOrPrefix)
 	a.Web.TrustedProxies = normalizeList(a.Web.TrustedProxies, normalizeAddrOrPrefix)
 	a.Web.TLSMinVersion = strings.TrimSpace(a.Web.TLSMinVersion)
+	g := &a.Logs
+	g.IgnoredDomains = normalizeList(g.IgnoredDomains, func(s string) string { return strings.TrimSuffix(strings.ToLower(s), ".") })
+	g.PrivacyLevel = g.privacyLevel() // derived: a value sent by a client is ignored
 	b := &a.Backups
 	b.Schedule = strings.ToLower(strings.TrimSpace(b.Schedule))
 	b.Time = strings.TrimSpace(b.Time)
@@ -454,6 +469,28 @@ func (a *All) Validate() error {
 	}
 	if g.MaxDBSizeMiB < 64 || g.MaxDBSizeMiB > 1<<20 {
 		return apperr.Invalid("logs.maxDbSizeMiB", "must be between 64 and 1048576")
+	}
+	if len(g.IgnoredDomains) > MaxIgnoredDomains {
+		return apperr.Invalid("logs.ignoredDomains", "at most %d entries", MaxIgnoredDomains)
+	}
+	for i, s := range g.IgnoredDomains {
+		if !ValidIgnoredDomain(s) {
+			return apperr.Invalid("logs.ignoredDomains["+strconv.Itoa(i)+"]", "must be a domain name")
+		}
+	}
+	if g.FlushSeconds < MinFlushSeconds || g.FlushSeconds > MaxFlushSeconds {
+		return apperr.Invalid("logs.flushSeconds", "must be between %d and %d", MinFlushSeconds, MaxFlushSeconds)
+	}
+
+	hl := a.Health
+	if hl.MemoryAvailableMinPercent < 1 || hl.MemoryAvailableMinPercent > 50 {
+		return apperr.Invalid("health.memoryAvailableMinPercent", "must be between 1 and 50")
+	}
+	if hl.LoadPerCPUMax < 1 || hl.LoadPerCPUMax > 16 {
+		return apperr.Invalid("health.loadPerCpuMax", "must be between 1 and 16")
+	}
+	if hl.TemperatureMaxCelsius < 50 || hl.TemperatureMaxCelsius > 110 {
+		return apperr.Invalid("health.temperatureMaxCelsius", "must be between 50 and 110")
 	}
 
 	w := a.Web

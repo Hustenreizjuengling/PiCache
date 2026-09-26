@@ -4,7 +4,8 @@
   activity first): addresses ("+N addresses" expands), host name, MAC, the
   client they belong to and their traffic (summed over their addresses).
   Unconfigured devices can be added as a client in one step (MAC address
-  plus IPv4 and ULA addresses). Admins can block a device's DNS queries
+  plus IPv4 and ULA addresses). A device's panel shows its activity over the
+  range. Admins can block a device's DNS queries
   (by its MAC address when known) or lift the entries that block it.
   Query: ?tab=seen&within=24h|7d|30d&ip=<address> (selects the device with that address)
 -->
@@ -21,8 +22,9 @@
   import { clientValues } from '../querylog/filters'
   import AddressList from '../shared/AddressList.svelte'
   import { confirmBlockDevice, confirmUnblock } from '../shared/blockClient'
+  import ActivityChart from './ActivityChart.svelte'
   import ClientPanel from './ClientPanel.svelte'
-  import { clientFromKnown, deviceTotals, seenDevices, type SeenDevice, type Totals, type TrafficRange } from './clientStats'
+  import { clientFromKnown, deviceTotals, seenDevices, seriesKey, type SeenDevice, type Totals, type TrafficRange } from './clientStats'
 
   interface Props {
     known: Resource<KnownClient[]>
@@ -233,6 +235,11 @@
           ]}
         />
       </section>
+      <ActivityChart
+        key={seriesKey(selected)}
+        {range}
+        excluded={!!selected.clientId && !!clients?.find((c) => c.id === selected?.clientId)?.ignoreStats}
+      />
       <div class="row">
         {#if selected.clientId}
           <Button icon="user" href={href('/dns/clients', { sel: selected.clientId })}>{t('dns.seen.openClient')}</Button>

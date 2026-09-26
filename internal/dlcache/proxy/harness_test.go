@@ -278,10 +278,12 @@ func (c *fakeClassifier) Classify(host, ua, path string) (string, bool, bool) {
 
 func (c *fakeClassifier) Label(key string) string { return "label:" + key }
 
-type fakeClients struct{ ignore atomic.Bool }
+// fakeClients identifies every address as "tester"; ignore excludes it
+// from the raw data and the statistics, ignoreLogs from the raw data only.
+type fakeClients struct{ ignore, ignoreLogs atomic.Bool }
 
 func (c *fakeClients) Identify(ip netip.Addr) *clients.Identity {
-	return &clients.Identity{IP: ip, Name: "tester", IgnoreLogs: c.ignore.Load()}
+	return &clients.Identity{IP: ip, Name: "tester", IgnoreLogs: c.ignore.Load() || c.ignoreLogs.Load(), IgnoreStats: c.ignore.Load()}
 }
 
 type fakeLogger struct {

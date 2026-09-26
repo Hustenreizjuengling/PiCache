@@ -1,8 +1,10 @@
 <!--
   @component
   DNS response cache: on/off, size, TTL limits and serve-stale, with the
-  live hit rate and "Flush DNS cache" (admins may flush while the host
-  locks the configuration, so the settings have their own fieldset).
+  live hit rate, the counters since the start (stored, removed for space,
+  expired), the entries by record type and "Flush DNS cache" (admins may
+  flush while the host locks the configuration, so the settings have their
+  own fieldset).
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
@@ -25,6 +27,8 @@
   let flushing = $state(false)
 
   const hitRate = $derived(cache && cache.hits + cache.misses > 0 ? cache.hits / (cache.hits + cache.misses) : undefined)
+  const types = $derived(cache?.types ?? [])
+  const maxType = $derived(Math.max(1, ...types.map((x) => x.entries)))
 
   async function flush() {
     flushing = true
@@ -46,14 +50,37 @@
   {/snippet}
   <fieldset class="stack" disabled={!session.isAdmin}>
     {#if cache}
-      <p class="small muted">
-        {t('dns.settings.cache.stats', {
-          entries: formatNumber(cache.entries),
-          capacity: formatNumber(cache.capacity),
-          hitRate: formatPercent(hitRate),
-          stale: tn('dns.settings.cache.staleAnswers', cache.staleHits, { count: formatNumber(cache.staleHits) }),
-        })}
-      </p>
+      <div class="stack-sm">
+        <p class="small muted">
+          {t('dns.settings.cache.stats', {
+            entries: formatNumber(cache.entries),
+            capacity: formatNumber(cache.capacity),
+            hitRate: formatPercent(hitRate),
+            stale: tn('dns.settings.cache.staleAnswers', cache.staleHits, { count: formatNumber(cache.staleHits) }),
+          })}
+        </p>
+        <p class="small muted">
+          {t('dns.settings.cache.counters', {
+            insertions: formatNumber(cache.insertions),
+            evictions: formatNumber(cache.evictions),
+            expired: formatNumber(cache.expired),
+          })}
+        </p>
+        {#if types.length > 0}
+          <section class="types" aria-labelledby="dns-cache-types">
+            <h3 id="dns-cache-types">{t('dns.settings.cache.types')}</h3>
+            <ol>
+              {#each types as ty (ty.type)}
+                <li>
+                  <span class="mono">{ty.type === 'OTHER' ? t('dns.settings.cache.otherTypes') : ty.type}</span>
+                  <span class="bar" aria-hidden="true"><span style:width="{(ty.entries / maxType) * 100}%"></span></span>
+                  <span class="n">{formatNumber(ty.entries)}</span>
+                </li>
+              {/each}
+            </ol>
+          </section>
+        {/if}
+      </div>
     {/if}
     <Toggle bind:checked={d.cacheEnabled} label={t('dns.settings.cache.enabled')} description={t('dns.settings.cache.enabledHelp')} />
     {#if d.cacheEnabled}
@@ -84,6 +111,49 @@
     margin: 0;
     padding: 0;
     border: 0;
+  }
+  .types {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+  h3 {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text-2);
+  }
+  ol {
+    max-width: 900px;
+    columns: 3 200px;
+    column-gap: var(--sp-6);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(40px, 72px) 7ch;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: 2px 0;
+    break-inside: avoid;
+    font-size: var(--fs-sm);
+  }
+  .bar {
+    display: flex;
+    height: 6px;
+    border-radius: var(--r-pill);
+    background: var(--surface-3);
+    overflow: hidden;
+  }
+  .bar span {
+    height: 100%;
+    border-radius: var(--r-pill);
+    background: var(--text-3);
+  }
+  .n {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
   .grid {
     display: grid;

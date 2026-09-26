@@ -160,8 +160,12 @@ func principal(r *http.Request) *auth.Principal {
 	return p
 }
 
-// audit records a state-changing admin action.
+// audit records a state-changing admin action (nothing without an auth
+// service: handler tests).
 func (s *Server) audit(r *http.Request, action, target string, details any) {
+	if s.d.Auth == nil {
+		return
+	}
 	s.d.Auth.Audit(r.Context(), principal(r), clientIP(r), action, target, details)
 }
 

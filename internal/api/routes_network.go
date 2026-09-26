@@ -28,8 +28,9 @@ type NetworkCheck struct {
 	CheckedAt time.Time `json:"checkedAt"`
 	Mode      string    `json:"mode"` // host | bridge (container bridge network)
 	// StatsAvailable: the query counts come from the statistics of the
-	// last 24 h; false while logs.db is unavailable or client addresses
-	// are anonymised (then from the in-memory activity, less exact).
+	// last 24 h; false while logs.db is unavailable, client addresses are
+	// anonymised or the statistics are off (then from the in-memory
+	// activity, less exact).
 	StatsAvailable bool            `json:"statsAvailable"`
 	Router         *NetworkRouter  `json:"router,omitempty"`
 	Self           NetworkSelf     `json:"self"`

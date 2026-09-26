@@ -338,3 +338,7 @@ func deleteLeases(ctx context.Context, d *db.DB, macs ...string) error {
 		return nil
 	})
 }
+
+// Migrations returns the schema steps of component "dhcp" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

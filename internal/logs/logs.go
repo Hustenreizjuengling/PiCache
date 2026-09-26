@@ -3,24 +3,37 @@
 // rollups that power the dashboard (docs/ARCHITECTURE.md section 11).
 //
 // Responsibilities:
-//   - Producers call Log* for every event unless the client's
-//     Identity.IgnoreLogs is true. This package anonymises client IPs (if
-//     enabled) before storage and before the live feed, and with
-//     QueryLogEnabled=false still updates rollups but stores no query rows.
+//   - Producers call Log* for every event unless the client's identity has
+//     both IgnoreLogs and IgnoreStats, and set NoLog (IgnoreLogs: no raw
+//     data) and NoStats (IgnoreStats: no statistics) on the event. This
+//     package applies the privacy switches of the log settings in one
+//     place (ARCHITECTURE 11): it anonymises client IPs (if enabled) and
+//     hides domain names (logs.hideDomains) before storage and before the
+//     live feed, stores no query rows with QueryLogEnabled=false, counts no
+//     DNS statistics with StatsEnabled=false and only address queries with
+//     StatsOnlyAddressQueries.
 //   - Ingestion never blocks: events go into bounded channels; a single
-//     writer goroutine batch-inserts every 5 s or 5000 rows, updates rollups
-//     and fans events out to live subscribers (buffer 256, dropped when full).
+//     writer goroutine batch-inserts every logs.flushSeconds (5 s by
+//     default) or 5000 rows, updates rollups and fans events out to live
+//     subscribers at ingestion (buffer 256, dropped when full).
 //   - Rollups: dns_minute / dns_hourly (counts by status class), cache_minute
 //     / cache_hourly (bytes by service), dns_top_hourly (kind domain |
-//     blocked | client | upstream | purpose, top 1000 keys per hour and
-//     kind; purpose counts blocked and safe-search queries by the purpose
-//     the DNS server sets, QueryEvent.Purpose) and
-//     cache_top_hourly (kind client | content). Top/ClientStats/ServiceStats/
-//     Summary read only rollups. Minute rollups are kept 48 h, hourly ones
-//     settings.Logs.StatsRetentionDays.
+//     blocked | client | upstream | purpose | qtype | unique, top 1000 keys
+//     per hour and kind; purpose counts blocked and safe-search queries by
+//     the purpose the DNS server sets, QueryEvent.Purpose; qtype at most 32
+//     types plus OTHER; unique is a HyperLogLog sketch of the distinct
+//     names) and cache_top_hourly (kind client | content), and their daily
+//     forms dns_top_daily / cache_top_daily (daily.go). Top/ClientStats/
+//     ServiceStats/Summary read only rollups. Minute rollups are kept 48 h,
+//     hourly and daily ones settings.Logs.StatsRetentionDays.
+//   - Clearing the query log or the statistics (ClearQueries, ClearStats)
+//     is a request to the writer goroutine.
+//   - The warning history (logs_events, events.go) records the
+//     notification events of the app; it is never size-trimmed or
+//     cleared, and kept in memory while logs.db is disabled.
 //   - Retention: raw tables by the configured hours/days, and logs.db is kept
 //     below settings.Logs.MaxDBSizeMiB by pruning the oldest entries of the
-//     raw events, download sessions and hourly top lists, each shortened by
+//     raw events, download sessions and hourly and daily top lists, each shortened by
 //     the same share of its retention (never the last hour; the small count
 //     rollups are kept); raw inserts pause while the data dir has < 1 GiB
 //     free. Freed pages are returned to the filesystem in small
@@ -34,7 +47,8 @@
 // Tables (logs.db, component "logs"): logs_queries, logs_cache_requests,
 // logs_downloads, logs_sni, logs_evictions, logs_dns_minute, logs_dns_hourly,
 // logs_cache_minute, logs_cache_hourly, logs_dns_top_hourly,
-// logs_cache_top_hourly.
+// logs_cache_top_hourly, logs_dns_top_daily, logs_cache_top_daily,
+// logs_events.
 //
 // Implementation notes:
 //   - Count rollups (minute/hour) are upserted with every batch. Cache and
@@ -46,15 +60,18 @@
 //     current hour, so top lists are live.
 //   - Summary, series and service statistics read the minute rollups for
 //     ranges that start within the last 48 h and the hourly ones otherwise;
-//     top lists and client statistics read the hourly top tables. The start
-//     of a range is aligned down to that resolution (series: to the step;
-//     Summary.TopFrom reports the start of the top lists).
+//     top lists and client statistics read the hourly top tables, for
+//     ranges longer than 7 days the daily ones plus the hourly rows of the
+//     last day. The start of a range is aligned down to that resolution
+//     (series: to the step; Summary.TopFrom reports the start of the top
+//     lists).
 //   - Live events carry a per-process sequence number (Seq) because their
 //     database IDs are assigned only when the batch is written.
 //   - Anonymisation masks IPv4 to /16 and IPv6 to /48 and also drops client
 //     names (a name identifies a client as well as its address).
 //   - While the query log is disabled no query rows are stored and the live
-//     query feed stays silent; statistics are still counted.
+//     query feed stays silent; statistics are still counted. A switch
+//     applies from the change on: stored rows are never rewritten.
 package logs
 
 import (
@@ -76,9 +93,8 @@ import (
 const MaxSubscribers = 16
 
 const (
-	flushInterval = 5 * time.Second // batch writer cadence
-	batchRows     = 5000            // flush early at this many buffered raw rows
-	liveBuffer    = 256             // per live subscriber; slow subscribers lose events
+	batchRows  = 5000 // flush early at this many buffered raw rows
+	liveBuffer = 256  // per live subscriber; slow subscribers lose events
 
 	// Ingestion queue capacities; events beyond are dropped and counted.
 	queryQueue    = 16384
@@ -119,12 +135,22 @@ type QueryEvent struct {
 	// option, e.g. "203.0.113.0/24"; at most /16 or /48 while client
 	// addresses are anonymised); "" if none.
 	ECS string `json:"ecs,omitempty"`
+	// UpstreamAnswer is the upstream's answer in the format of Answer, set
+	// by the DNS server only when it differs from the final answer (CNAME,
+	// upstream and rebind blocks, bogus NXDOMAIN, DNS64, removed
+	// ipv6hint); without control and bidi characters, at most 512 bytes.
+	UpstreamAnswer string `json:"upstreamAnswer,omitempty"`
 	// Purpose is what a blocked or safe-search query was stopped for (a
 	// list category, "rule", "service", "schedule", "upstream", "rebind",
 	// "special" or "safesearch"; "" = not counted), set by the DNS server.
 	// It is counted in the hourly top table (kind purpose) but not stored
 	// with the query, and it is not part of the live feed or the query log.
 	Purpose string `json:"-"`
+	// NoLog and NoStats are set by the producer for a client that is
+	// excluded from the raw data (clients ignoreLogs: no query row, no live
+	// event) or from the statistics (ignoreStats).
+	NoLog   bool `json:"-"`
+	NoStats bool `json:"-"`
 }
 
 // UpstreamEDE is an Extended DNS Error (RFC 8914) of an upstream reply.
@@ -157,6 +183,11 @@ type CacheEvent struct {
 	GroupKey    string    `json:"groupKey"`
 	Label       string    `json:"label,omitempty"`
 	UserAgent   string    `json:"userAgent,omitempty"` // truncated to 256 chars
+	// NoLog: no request row, live event or download session (clients
+	// ignoreLogs); NoStats: not counted in the cache statistics
+	// (ignoreStats). Set by the producer.
+	NoLog   bool `json:"-"`
+	NoStats bool `json:"-"`
 }
 
 // SNIEvent is one finished pass-through connection.
@@ -170,6 +201,10 @@ type SNIEvent struct {
 	BytesUp    int64     `json:"bytesUp"`
 	BytesDown  int64     `json:"bytesDown"`
 	DurationMs int64     `json:"durationMs"`
+	// NoLog: no SNI row (clients ignoreLogs); NoStats: not counted in the
+	// cache rollups (ignoreStats). Set by the producer.
+	NoLog   bool `json:"-"`
+	NoStats bool `json:"-"`
 }
 
 // EvictionEvent records a removed cache object.
@@ -193,8 +228,10 @@ type QueryFilter struct {
 	Status   []string // any of
 	QType    string
 	Upstream string
-	Cursor   string // opaque, from QueryPage.Next
-	Limit    int    // default 100, max 1000
+	RCode    []string // any of (at most 16; 1–16 characters of A-Z and 0-9)
+	DNSSEC   *bool    // the AD flag; nil = either
+	Cursor   string   // opaque, from QueryPage.Next
+	Limit    int      // default 100, max 1000
 }
 
 // QueryPage is a cursor page of the query log.
@@ -225,10 +262,17 @@ type Summary struct {
 	ActiveClients    int64  `json:"activeClients"`
 	ActiveDownloads  int64  `json:"activeDownloads"`
 	DroppedLogEvents uint64 `json:"droppedLogEvents"`
-	// TopFrom is where the hourly top tables start for this range: From
-	// aligned down to the full hour. Top lists, client statistics and
-	// ActiveClients cover [TopFrom, To), up to an hour more than the range
-	// (a 15-minute range at 10:05 covers 09:00–10:05).
+	// UniqueDomains estimates the distinct domains queried in [TopFrom,
+	// To) (a HyperLogLog sketch per hour and day, about 2.3 % standard
+	// error); UniqueDomainsEstimated is always true.
+	UniqueDomains          int64 `json:"uniqueDomains"`
+	UniqueDomainsEstimated bool  `json:"uniqueDomainsEstimated"`
+	// TopFrom is where the top tables start for this range: From aligned
+	// down to the full hour, for ranges longer than 7 days (read from the
+	// daily top tables) to the start of the UTC day. Top lists, client
+	// statistics, ActiveClients and UniqueDomains cover [TopFrom, To), up
+	// to an hour (a day) more than the range (a 15-minute range at 10:05
+	// covers 09:00–10:05).
 	TopFrom time.Time `json:"topFrom"`
 }
 
@@ -252,7 +296,7 @@ const (
 	TopClients        TopKind = "clients"       // by query count
 	TopCacheClients   TopKind = "cache-clients" // by cache bytes sent
 	TopContent        TopKind = "content"       // cache groups by bytes sent
-	TopUpstreams      TopKind = "upstreams"     // by query count (Bytes = avg duration µs)
+	TopUpstreams      TopKind = "upstreams"     // by query count (AvgDurationUs, and Bytes for compatibility)
 )
 
 // TopItem is one entry of a top list.
@@ -260,8 +304,11 @@ type TopItem struct {
 	Key   string `json:"key"`
 	Label string `json:"label,omitempty"`
 	Count int64  `json:"count"`
-	Bytes int64  `json:"bytes,omitempty"`
-	Extra string `json:"extra,omitempty"` // e.g. service for content
+	Bytes int64  `json:"bytes,omitempty"` // upstreams: the average duration in µs (as AvgDurationUs)
+	// AvgDurationUs is the average processing time of the queries an
+	// upstream answered (kind upstreams only).
+	AvgDurationUs int64  `json:"avgDurationUs,omitzero"`
+	Extra         string `json:"extra,omitempty"` // e.g. service for content
 	// Addresses are the client addresses of a device (most active first)
 	// when the clients or cache-clients list is grouped by device (API
 	// ?group=device; Key is then the most active address).
@@ -280,6 +327,30 @@ type PurposeStats struct {
 type PurposeCount struct {
 	Purpose string `json:"purpose"`
 	Count   int64  `json:"count"`
+}
+
+// QTypeStats are the queries of a range by query type (GET /stats/qtypes),
+// most first, then by name: at most 32 types, the others under "OTHER".
+// From is the start the counts actually cover (like Summary.TopFrom).
+type QTypeStats struct {
+	From   time.Time    `json:"from"`
+	QTypes []QTypeCount `json:"qtypes"`
+}
+
+// QTypeCount is the number of queries of one type.
+type QTypeCount struct {
+	QType string `json:"qtype"`
+	Count int64  `json:"count"`
+}
+
+// ClientSeries is the activity of one client (an address or the addresses
+// of a device) per step (GET /stats/clients/{key}/series): "allowed" and
+// "blocked" DNS queries, "cacheBytes" sent by the download cache.
+type ClientSeries struct {
+	Step       int64                `json:"step"` // seconds
+	Timestamps []int64              `json:"timestamps"`
+	Values     map[string][]float64 `json:"values"`
+	Addresses  []string             `json:"addresses"`
 }
 
 // Download is a download session: requests of one client for one content
@@ -402,10 +473,13 @@ type Store struct {
 	started   atomic.Bool
 	closed    atomic.Bool
 
-	sem  chan struct{} // bounds concurrent read queries
-	live hub
-	top  topSet
-	w    *writer // state owned by the Start goroutine
+	sem     chan struct{} // bounds concurrent read queries
+	live    hub
+	top     topSet
+	w       *writer       // state owned by the Start goroutine
+	control chan clearReq // clear requests to the writer
+	stopped chan struct{} // closed when the writer has stopped
+	events  *eventStore   // the warning history
 
 	autoVacuum bool // logs.db uses incremental auto-vacuum
 	// diskFree reports the free bytes of the filesystem holding dir.
@@ -429,6 +503,8 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, log *slog.Logger) (
 		sni:       make(chan SNIEvent, sniQueue),
 		evictions: make(chan EvictionEvent, evictionQueue),
 		sem:       make(chan struct{}, queryConcurrency),
+		control:   make(chan clearReq),
+		stopped:   make(chan struct{}),
 		diskFree:  diskFree,
 	}
 	av, err := enableAutoVacuum(ctx, d)
@@ -447,6 +523,9 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, log *slog.Logger) (
 	if _, _, err := s.refreshSize(ctx); err != nil {
 		return nil, fmt.Errorf("logs: database size: %w", err)
 	}
+	if s.events, err = openEvents(ctx, d, s.log); err != nil {
+		return nil, fmt.Errorf("logs: warning history: %w", err)
+	}
 	return s, nil
 }
 
@@ -459,7 +538,9 @@ func Discard(reason string, log *slog.Logger) *Store {
 	if reason == "" {
 		reason = "logs.db unavailable"
 	}
-	s := &Store{log: log.With(slog.String("component", "logs")), disabled: reason}
+	s := &Store{log: log.With(slog.String("component", "logs")), disabled: reason, stopped: make(chan struct{})}
+	s.events = memoryEvents(s.log)
+	close(s.stopped)
 	s.live.close()
 	return s
 }
@@ -475,6 +556,8 @@ func (s *Store) Start(ctx context.Context) {
 		// The app closes logs.db after Start returns: refuse new queries
 		// and wait for running ones (each ends within queryTimeout).
 		s.closed.Store(true)
+		close(s.stopped)
+		s.events.close()
 		s.live.close()
 		for range cap(s.sem) {
 			s.sem <- struct{}{}

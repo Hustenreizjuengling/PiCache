@@ -10,6 +10,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
+	"github.com/hustenreizjuengling/picache/internal/dhcp"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
@@ -54,6 +55,14 @@ type metricsSnapshot struct {
 	StoreFreeBytes uint64
 	Upstreams      []upstream.UpstreamStat
 	LogDropped     uint64
+	DNSCache       upstream.CacheStat
+	DHCP           *dhcpMetrics // nil without a DHCP service
+}
+
+// dhcpMetrics are the DHCPv4 counters and the active leases.
+type dhcpMetrics struct {
+	Counters     dhcp.Counters
+	ActiveLeases int
 }
 
 func (s *Server) collectMetrics() metricsSnapshot {
@@ -70,6 +79,16 @@ func (s *Server) collectMetrics() metricsSnapshot {
 		StoreFreeBytes: st.FreeBytes,
 		Upstreams:      s.d.Upstream.Stats(),
 		LogDropped:     s.d.Logs.Metrics().Dropped,
+		DNSCache:       s.d.Upstream.CacheStats(),
+	}
+	if s.d.DHCP != nil {
+		dm := &dhcpMetrics{Counters: s.d.DHCP.Status().Counters}
+		for _, l := range s.d.DHCP.Leases() {
+			if l.Active {
+				dm.ActiveLeases++
+			}
+		}
+		m.DHCP = dm
 	}
 	if st.Usage != nil {
 		m.StoreBytes = st.Usage.CachedBytes
@@ -114,6 +133,45 @@ func writeMetrics(w io.Writer, m metricsSnapshot) {
 
 	family("picache_log_events_dropped_total", "counter", "Log events dropped because the log writer could not keep up.")
 	fmt.Fprintf(w, "picache_log_events_dropped_total %d\n", m.LogDropped)
+
+	c := m.DNSCache
+	family("picache_dns_cache_entries", "gauge", "Answers in the DNS response cache.")
+	fmt.Fprintf(w, "picache_dns_cache_entries %d\n", c.Entries)
+	for _, x := range []struct {
+		name, help string
+		v          int64
+	}{
+		{"hits", "DNS answers served from the response cache (stale ones included) since start.", c.Hits},
+		{"misses", "DNS response cache lookups without a usable answer since start.", c.Misses},
+		{"stale_hits", "Stale DNS answers served from the response cache since start.", c.StaleHits},
+		{"insertions", "Answers stored in the DNS response cache since start.", c.Insertions},
+		{"evictions", "DNS response cache entries removed for the capacity since start.", c.Evictions},
+		{"expired", "DNS response cache entries removed after their TTL and the serve-stale window since start.", c.Expired},
+	} {
+		family("picache_dns_cache_"+x.name+"_total", "counter", x.help)
+		fmt.Fprintf(w, "picache_dns_cache_%s_total %d\n", x.name, x.v)
+	}
+
+	if d := m.DHCP; d != nil {
+		for _, x := range []struct {
+			name, help string
+			v          int64
+		}{
+			{"received", "DHCPv4 packets received since start.", d.Counters.Received},
+			{"offers", "DHCPOFFER messages sent since start.", d.Counters.Offers},
+			{"acks", "DHCPACK messages sent since start.", d.Counters.Acks},
+			{"naks", "DHCPNAK messages sent since start.", d.Counters.Naks},
+			{"declines", "DHCPDECLINE messages received since start.", d.Counters.Declines},
+			{"releases", "DHCPRELEASE messages received since start.", d.Counters.Releases},
+			{"informs", "DHCPINFORM messages answered since start.", d.Counters.Informs},
+			{"dropped", "DHCPv4 packets dropped (malformed, rate limited or not for this server) since start.", d.Counters.Dropped},
+		} {
+			family("picache_dhcp_"+x.name+"_total", "counter", x.help)
+			fmt.Fprintf(w, "picache_dhcp_%s_total %d\n", x.name, x.v)
+		}
+		family("picache_dhcp_leases_active", "gauge", "Active DHCPv4 leases.")
+		fmt.Fprintf(w, "picache_dhcp_leases_active %d\n", d.ActiveLeases)
+	}
 }
 
 var promLabelEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)

@@ -64,6 +64,11 @@ var migrations = []string{
 	// cache. No index uses the column, so restored backups of older versions
 	// keep matching the live index definitions (app.checkPlainSchema).
 	`ALTER TABLE client_clients RENAME COLUMN lancache_bypass TO download_cache_bypass;`,
+	// v3 (0.12.0): ignoreLogs is split into raw data (ignore_logs) and
+	// statistics (ignore_stats); existing clients keep the meaning of the
+	// single flag of 0.11. Like v2 it also converts a restored older backup.
+	`ALTER TABLE client_clients ADD COLUMN ignore_stats INTEGER NOT NULL DEFAULT 0;
+	UPDATE client_clients SET ignore_stats = ignore_logs;`,
 }
 
 // reload rebuilds the identification snapshot from the database and the
@@ -271,7 +276,7 @@ func (r *Registry) queryClients(ctx context.Context, id int64) ([]Client, error)
 	if id != 0 {
 		where, args = " WHERE id = ?", []any{id}
 	}
-	rows, err := r.db.R.QueryContext(ctx, `SELECT id, name, comment, download_cache_bypass, ignore_logs, created_at, updated_at
+	rows, err := r.db.R.QueryContext(ctx, `SELECT id, name, comment, download_cache_bypass, ignore_logs, ignore_stats, created_at, updated_at
 		FROM client_clients`+where+` ORDER BY name COLLATE NOCASE, id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("clients: list clients: %w", err)
@@ -281,7 +286,7 @@ func (r *Registry) queryClients(ctx context.Context, id int64) ([]Client, error)
 	for rows.Next() {
 		var c Client
 		var created, updated int64
-		if err := rows.Scan(&c.ID, &c.Name, &c.Comment, &c.DownloadCacheBypass, &c.IgnoreLogs, &created, &updated); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Comment, &c.DownloadCacheBypass, &c.IgnoreLogs, &c.IgnoreStats, &created, &updated); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("clients: scan client: %w", err)
 		}
@@ -449,8 +454,9 @@ func (r *Registry) CreateClient(ctx context.Context, in ClientInput) (Client, er
 			return apperr.Conflict("at most %d clients are allowed", maxClients)
 		}
 		now := db.NowMs()
-		res, err := tx.ExecContext(ctx, `INSERT INTO client_clients (name, comment, download_cache_bypass, ignore_logs, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`, in.Name, in.Comment, in.DownloadCacheBypass, in.IgnoreLogs, now, now)
+		res, err := tx.ExecContext(ctx, `INSERT INTO client_clients (name, comment, download_cache_bypass, ignore_logs, ignore_stats,
+				created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			in.Name, in.Comment, in.DownloadCacheBypass, in.IgnoreLogs, in.ignoreStats(), now, now)
 		if err != nil {
 			return err
 		}
@@ -472,8 +478,9 @@ func (r *Registry) UpdateClient(ctx context.Context, id int64, in ClientInput) (
 		return Client{}, err
 	}
 	err = r.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE client_clients SET name = ?, comment = ?, download_cache_bypass = ?, ignore_logs = ?, updated_at = ?
-			WHERE id = ?`, in.Name, in.Comment, in.DownloadCacheBypass, in.IgnoreLogs, db.NowMs(), id)
+		res, err := tx.ExecContext(ctx, `UPDATE client_clients SET name = ?, comment = ?, download_cache_bypass = ?, ignore_logs = ?,
+				ignore_stats = ?, updated_at = ? WHERE id = ?`,
+			in.Name, in.Comment, in.DownloadCacheBypass, in.IgnoreLogs, in.ignoreStats(), db.NowMs(), id)
 		if err != nil {
 			return err
 		}
@@ -501,3 +508,7 @@ func (r *Registry) DeleteClient(ctx context.Context, id int64) error {
 		return nil
 	})
 }
+
+// Migrations returns the schema steps of component "clients" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

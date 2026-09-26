@@ -107,13 +107,16 @@ type Client struct {
 	GroupIDs            []int64   `json:"groupIds"`
 	Comment             string    `json:"comment"`
 	DownloadCacheBypass bool      `json:"downloadCacheBypass"` // never give this client the download cache DNS answers
-	IgnoreLogs          bool      `json:"ignoreLogs"`          // exclude from query log and stats
+	IgnoreLogs          bool      `json:"ignoreLogs"`          // exclude its raw data: query log, cache requests, SNI events, download sessions, seen
+	IgnoreStats         bool      `json:"ignoreStats"`         // exclude it from the DNS and cache statistics
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
 // ClientInput creates or updates a client. An empty GroupIDs puts the client
-// into the Default group.
+// into the Default group. IgnoreStats absent or null (on create and update)
+// takes the value of IgnoreLogs: the meaning of the single flag of 0.11 for
+// API clients that do not know the member.
 type ClientInput struct {
 	Name                string   `json:"name"`
 	Identifiers         []string `json:"identifiers"`
@@ -121,6 +124,15 @@ type ClientInput struct {
 	Comment             string   `json:"comment"`
 	DownloadCacheBypass bool     `json:"downloadCacheBypass"`
 	IgnoreLogs          bool     `json:"ignoreLogs"`
+	IgnoreStats         *bool    `json:"ignoreStats"`
+}
+
+// ignoreStats returns the effective IgnoreStats of the input.
+func (in *ClientInput) ignoreStats() bool {
+	if in.IgnoreStats == nil {
+		return in.IgnoreLogs
+	}
+	return *in.IgnoreStats
 }
 
 // Identity is the resolved identity of a querying address. Identities are
@@ -132,7 +144,8 @@ type Identity struct {
 	MAC                 string  // if known
 	GroupIDs            []int64 // enabled groups only (sorted); may be empty if all its groups are disabled
 	DownloadCacheBypass bool
-	IgnoreLogs          bool
+	IgnoreLogs          bool // no raw data (query log, cache requests, SNI events, sessions, seen)
+	IgnoreStats         bool // not counted in the statistics
 }
 
 // Known is a client address that has been seen recently.
@@ -186,8 +199,9 @@ type Registry struct {
 	cacheGen uint64
 	cache    *lru[netip.Addr, cachedIdentity]
 
-	seenMu sync.Mutex
-	seen   *lru[netip.Addr, *seenEntry]
+	seenMu    sync.Mutex
+	seen      *lru[netip.Addr, *seenEntry]
+	seenEvery atomic.Pointer[func() time.Duration] // logs.flushSeconds (nil: seenFlushEvery)
 
 	namesMu sync.Mutex
 	names   *lru[netip.Addr, hostName]
@@ -272,7 +286,8 @@ func defaultGateways() []netip.Addr {
 }
 
 // Start runs background refreshes (ARP table every 30 s and on request,
-// hostnames hourly, flushing "seen" data every minute, daily pruning).
+// hostnames hourly, flushing "seen" data every max(1 minute,
+// logs.flushSeconds), daily pruning).
 // Blocks until ctx is done.
 func (r *Registry) Start(ctx context.Context) {
 	var wg sync.WaitGroup
@@ -368,7 +383,7 @@ func (r *Registry) IdentifyDerived(ip netip.Addr, mac string) *Identity {
 	if c != nil {
 		id.ClientID, id.Name = c.id, c.name
 		id.GroupIDs = snap.enabledGroups(c.groups)
-		id.DownloadCacheBypass, id.IgnoreLogs = c.downloadCacheBypass, c.ignoreLogs
+		id.DownloadCacheBypass, id.IgnoreLogs, id.IgnoreStats = c.downloadCacheBypass, c.ignoreLogs, c.ignoreStats
 	} else {
 		id.GroupIDs = snap.defaultGroups
 	}
@@ -411,6 +426,7 @@ func (r *Registry) resolve(ip netip.Addr) *Identity {
 		id.GroupIDs = snap.enabledGroups(c.groups)
 		id.DownloadCacheBypass = c.downloadCacheBypass
 		id.IgnoreLogs = c.ignoreLogs
+		id.IgnoreStats = c.ignoreStats
 	} else {
 		id.GroupIDs = snap.defaultGroups
 	}

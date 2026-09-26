@@ -366,3 +366,7 @@ func replaceDomains(ctx context.Context, tx *sql.Tx, id string, patterns []strin
 	}
 	return nil
 }
+
+// Migrations returns the schema steps of component "services" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

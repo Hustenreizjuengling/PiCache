@@ -19,7 +19,9 @@ private contact, without any details.
 Include the version (`picache version`, or the commit you built), the
 deployment type, and steps to reproduce. Never include real passwords,
 tokens, setup tokens or NAS credentials, and do not attach databases or
-backups: they contain secrets and personal data (query logs).
+backups: they contain secrets and personal data (query logs). A support
+bundle ([below](#logs-diagnostics-and-privacy)) is meant for bug reports;
+review it before you attach it.
 
 Security fixes are published as a new release (see [Updates](#updates)) and
 listed in [CHANGELOG.md](../CHANGELOG.md). Only the newest release gets
@@ -548,6 +550,78 @@ flag), shows them as blocked and names only the upstream's host (never the
 path of a DoH URL, which can carry a profile ID); the upstream's own error
 text is never passed on to clients.
 
+## Logs, diagnostics and privacy
+
+**What is recorded.** The query log, the statistics and the seen clients
+live only in `logs.db` on the PiCache host; nothing is sent anywhere. Four
+switches (**System → Logs & privacy**; ARCHITECTURE 11 has the exact table)
+decide what is kept: the query log, anonymised client addresses (masked to
+/16 or /48, names dropped), hidden domain names (`hidden` instead of the
+name, answers removed, no top lists of domains) and the DNS statistics.
+Clients can be excluded from the raw data and from the statistics
+separately, and domains can be ignored. A switch applies from the change
+on: stored rows are not rewritten; clear the query log or the statistics
+(admins, destructive, audited) when older data must go. None of the
+switches covers stderr/journald: keep `PICACHE_LOG_LEVEL=info` (the default)
+on hosts whose journal others can read.
+
+**Application log in the web UI.** **System → Application log** is for admins
+only (viewers and read tokens get 403). Before a record reaches stderr or the
+in-memory ring, the values of secret names (the same list the audit log
+redacts: password, token, secret, code, TOTP, authorization, cookie,
+credentials, private keys, …, at any depth) become `[redacted]` and URLs lose
+their user information, query and fragment. The one exception is the
+first-run setup token: it reaches the journal in plain text (the documented
+way to find it; it is void once setup is done) and is `[redacted]` in the
+ring. The ring additionally masks the values of client-address attributes
+while client addresses are anonymised and hides the values of domain
+attributes while domains are hidden (the journal keeps them). It holds the
+last 2000 records of at most 2 KiB each
+and is lost at a restart. The runtime debug level (1–240 minutes, audited,
+memory only) ends by itself; debug records can contain query names and
+client addresses, so switch it on only while you look for a problem.
+
+**Support bundle.** **System → Health & about** (an admin's browser session,
+current password, throttled and audited; one at a time) builds a zip in
+memory from cached data only. It contains exactly `MANIFEST.txt`,
+`version.json`, `settings.json`, `health.json`, `listeners.json`,
+`network-check.json`, `dhcp.json`, `databases.json`, `host.json` and
+`log.ndjson` (at most 16 MiB), never accounts, sessions, tokens, the audit
+log, the query log, cache or SNI events, leases, reservations, clients,
+groups, filter lists or rules, storage targets, notification channels,
+backups or keys. Redaction: every settings member has a rule (upstreams and
+URLs reduced to `scheme://host[:port]` with the path as `/…` and host names
+other than the defaults as `*.<registrable domain>`; public addresses and
+networks masked to /16 or /48; MAC entries dropped; configured names such
+as the local domain replaced by `name-<n>`); every text of the other files
+has the configured names, `PICACHE_WEB_HOSTS` and the host name replaced by
+the same placeholders, the configured upstreams and their host names reduced
+as in the settings (so a DoH profile ID or path does not survive in the
+log), every other URL reduced to `scheme://host[:port]` with the path as
+`/…` and no query, and public addresses masked (all of this also with the
+tick "Include device and client names"); without that tick private
+addresses are masked too and MAC addresses replaced by `mac-<n>`, the
+network check and the DHCP state are reduced to counts and states, and user
+and device names in log records are redacted (user names always).
+`MANIFEST.txt` lists the rules and what each file had replaced.
+**Review the files before sharing them:** redaction works on known fields
+and patterns, and a log message can still name something personal.
+
+**Command-line access to the query log.** `picache logs tail` and
+`picache logs export` use an API token (a read token is enough). The token
+is taken from the process environment or a token file, never from
+`picache.env` (which configures the service and is readable by its group),
+and is sent only to a loopback `http` URL or a verified `https` URL. While
+PiCache is stopped, another local user could open the loopback port and
+receive the token: prefer a read token with an expiry and a token file
+readable only by you.
+
+**Database salvage.** `picache db salvage` writes a new `picache.db` with
+every readable row, including password hashes, TOTP secrets, sealed secrets
+and API token hashes. It is created with mode 0600 (owned like the data
+directory, never through a link, never over an existing file); treat it like
+the database itself and delete copies you no longer need.
+
 ## Hardening checklist
 
 **Network**
@@ -650,8 +724,15 @@ text is never passed on to clients.
       shares with a stored password.
 - [ ] The NAS account can access only the cache share. NFS exports are limited
       to PiCache's host.
-- [ ] The query-log retention and client anonymisation settings match your
-      privacy requirements.
+- [ ] The query-log retention and the privacy switches (**System → Logs &
+      privacy**: query log, anonymised addresses, hidden domains,
+      statistics) match your privacy requirements; `PICACHE_LOG_LEVEL` stays
+      `info`.
+- [ ] Support bundles are reviewed before they are shared, and `picache db
+      salvage` output files are kept private (0600) and deleted when no
+      longer needed.
+- [ ] `PICACHE_TOKEN` is never put into `picache.env`; CLI scripts use a read
+      token from the environment or a 0600 token file.
 - [ ] `downloadCache.nocacheClients` and `allowPrivateUpstreams` stay at their
       defaults (empty / off) unless you know you need them.
 

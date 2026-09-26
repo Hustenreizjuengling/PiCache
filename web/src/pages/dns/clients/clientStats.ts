@@ -118,6 +118,16 @@ export interface SeenDevice {
   blockedBy: string[]
 }
 
+/**
+ * The key of a device's activity series (GET /stats/clients/{key}/series),
+ * resolved the way the server groups addresses: the configured client the
+ * device belongs to, else its MAC address, else its address.
+ */
+export function seriesKey(d: Pick<SeenDevice, 'clientId' | 'mac' | 'ip'>): string {
+  if (d.clientId) return `client:${d.clientId}`
+  return d.mac ? `mac:${d.mac.toLowerCase()}` : `ip:${d.ip}`
+}
+
 /** Groups recently seen addresses by MAC address; devices with the newest activity first. */
 export function seenDevices(known: readonly KnownClient[]): SeenDevice[] {
   const groups = new Map<string, KnownClient[]>()

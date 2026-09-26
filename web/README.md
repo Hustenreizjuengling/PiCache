@@ -28,10 +28,10 @@ src/shell/               pair strip, sidebar/drawer, top bar (status, blocking m
 src/pages/               Login, Setup, Overview (+ overview/, auth/) and the section pages
 src/pages/dns/**         DNS pages: query log, filtering, clients, local DNS, settings
 src/pages/cache/**       cache pages: downloads, library, services, storage, settings
-src/pages/system/**      system pages: account, tokens, audit log, backup (+ scheduled backups), health, notifications, updates
+src/pages/system/**      system pages: account, tokens, audit log, application log, notifications, logs & privacy, backup (+ scheduled backups), health, updates
 src/lib/api/             typed REST client, polling, SSE
 src/lib/ui/              components (import from '$lib/ui')
-src/lib/*.ts             router, session, app status, settings forms, formatters, icons, theme, errors
+src/lib/*.ts             router, session, app status, settings forms, time ranges, downloads, formatters, icons, theme, errors
 src/i18n/                t(), dictionaries en/ and de/ per namespace
 ```
 
@@ -50,7 +50,7 @@ Aliases: `$lib` = `src/lib`, `$i18n` = `src/i18n`.
   Keep the page file names, because `routes.ts` imports them:
   `dns/{QueryLog,Filtering,Clients,LocalDns,DnsSettings}.svelte`,
   `cache/{Downloads,Library,Services,Storage,CacheSettings}.svelte`,
-  `system/{Account,Tokens,Audit,Backup,Health,Notifications,Updates}.svelte`.
+  `system/{Account,Tokens,Audit,AppLog,Notifications,LogsPrivacy,Backup,Health,Updates}.svelte`.
 - **Never render HTML from data**: no `{@html}`, no `innerHTML`. No inline
   scripts, no `eval`, no external requests (CSP `script-src 'self'`,
   `connect-src 'self'`). Inline `style=` / `style:` is allowed.
@@ -101,12 +101,16 @@ support these query parameters):
 
 | Target | Parameters |
 |---|---|
-| `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d), `status` (query statuses, repeated or a comma list; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name; repeated for every address of one device, at most 32, shown as "Device with N addresses") |
+| `/` (overview) | `range` (15m, 1h, 24h, 7d, 30d, 90d, 180d, 365d) or `from` + `to` (unix seconds, a custom window of at most 400 days) |
+| `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d; 30d, 90d, 180d, 365d as far as the query log's retention goes) or `from` + `to` (unix seconds, a custom window), `status` (query statuses, repeated or a comma list; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name; repeated for every address of one device, at most 32, shown as "Device with N addresses"), `qtype`, `upstream`, `rcode` (reply codes, repeated: any of them), `dnssec` (true, false) |
 | `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here), `tab` (clients, seen, groups), `range` (24h, 7d, 30d; without it the range last chosen in this browser) |
 | `#/cache/downloads` | `client` (IP), `active=true`, `from` + `to` (unix seconds: an explicit time window instead of the range; shown as a removable chip) |
 | `#/cache/library`, `#/cache/storage`, `#/cache/settings` | – |
 | `#/system/notifications` | `channel` (id: open that channel) |
-| `#/system/health`, `#/system/account`, `#/system/updates`, `#/system/backup` | – |
+| `#/system/health` | `section` (warnings, host, databases, thresholds, support: scrolls there), `warnings=open` (only unacknowledged entries; the top bar's badge links here) |
+| `#/system/logs` | `section` (privacy, recording, retention, clear) |
+| `#/system/app-log` | `level` (debug, info, warn, error), `component` |
+| `#/system/account`, `#/system/updates`, `#/system/backup` | – |
 
 ## API layer (`$lib/api`)
 
@@ -121,7 +125,7 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 |---|---|
 | `api.auth` | `status() setup(b) login({username,password,totp?}) logout() me() changePassword({currentPassword,newPassword,keepTokens?}) sessions() revokeSession(id) totpBegin(currentPassword) totpConfirm(code) totpDisable(password)` |
 | `api.tokens` | `list() create({name,scope,expiresInDays?,currentPassword}) remove(id)` |
-| `api.system` | `info() health() overview() audit({search,limit,offset}) backupUrl(includeSecrets) restore(blob, password) restart() update() checkUpdate() applyUpdate({version,currentPassword})` |
+| `api.system` | `info() health() overview() audit({search,limit,offset}) backupUrl(includeSecrets) restore(blob, password) restart() update() checkUpdate() applyUpdate({version,currentPassword}) host() databases() log({level,component,limit}) setLogLevel({level,component?,minutes}) clearLogLevel() events({unacknowledged,limit,cursor}) ackEvent(id) ackAllEvents() supportBundle({currentPassword,includeClientNames})` (`supportBundle` resolves with `{blob, filename}`: save it with `saveBlob` from `$lib/download`) |
 | `api.backups` | `scheduled() run() fileUrl(name) removeFile(name)` (scheduled backups; their settings are the `backups` section of `api.settings`) |
 | `api.notifications` | `channels.{list,create,update,remove,test(id)}`, `events()`, `log(limit?)` |
 | `api.settings` | `get() put(all) patch(section, partial) defaults()` |
@@ -134,8 +138,8 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.downloadCache` | `services() service(id) setEnabled(id,on) setExtraDomains(id,list) createService(s) updateService(id,s) deleteService(id) source() refreshSource() setLabel(groupKey,label) sni()` |
 | `api.cache` | `state() services() groups(q) groupDetail(service,key) objects(q) deleteObject(id) pinObject(id,pinned) deleteGroup(service,key) pinGroup(service,key,pinned) purgeService(service) evict() verify(repair) verifyState() live() active() proxyStats() noSlice() resetNoSlice(host) downloads(q) requests(q) sniEvents(q) evictions(q)` |
 | `api.storage` | `capabilities() targets() target(id) create(t) update(id,t) remove(id) test(id) apply(id) init(id,adopt) activate(id) snippets(id) benchmark(id,sizeMiB?) benchmarkState() cancelBenchmark()` |
-| `api.logs` | `queries(q)` (cursor page) |
-| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?, {group?}) services(range) clients(range, {group?}) purposes(range)` – `range` is a preset (`'24h'`) or `{ from, to }`; `group: 'device'` (clients, cache-clients) merges the addresses of one device into one row with `addresses` |
+| `api.logs` | `queries(q)` (cursor page), `exportUrl(format, q)` (a plain download link: ndjson or csv with the filters of `queries`), `clear()` (deletes the query log) |
+| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?, {group?}) services(range) clients(range, {group?}) purposes(range) qtypes(range) clientSeries(key, range, step?) reset()` – `range` is a preset (`'24h'`) or `{ from, to }`; `group: 'device'` (clients, cache-clients) merges the addresses of one device into one row with `addresses`; `clientSeries` keys: an address, `ip:<address>`, `client:<id>`, `mac:<MAC>`; `reset()` deletes the statistics |
 
 Long-running calls (list/source refresh, storage test, starting a storage
 speed test, restore) already carry longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`; so is a stored scheduled backup (`api.backups.fileUrl(name)`).
@@ -201,7 +205,9 @@ $effect(() => () => live.close())
 ```
 
 `streamCache(opts)` streams cache requests. At most 16 streams exist per
-server: open one per page, close it on destroy.
+server: open one per page, close it on destroy. `streamSystemLog({level,
+component}, opts)` streams the application log (admins; at most 4 such
+streams, counted separately).
 
 **Settings sections** (`$lib/settings.svelte`): load a section plus its
 defaults, edit a draft, save only the changed members (important: the filter
@@ -245,13 +251,14 @@ All components are keyboard accessible, themed and translated. Props marked
 | `confirm(opts)` | `{ title, message?, confirmLabel, cancelLabel?, danger?, action? }` → `Promise<boolean>` | With `action` the dialog runs it with a spinner and shows its error. |
 | `toast` | `toast.success(msg)`, `toast.info(msg)`, `toast.error(errOrMsg)` | While a Dialog/SidePanel is open, toasts show in it (above its footer when they would cover it), so they stay clickable. |
 | `Tabs` | `tabs: TabItem[]` ({id,label,count?,icon?}), `bind:active`, `label`, `onchange(id)`, snippet `children(active)` | Keep `tab` in the URL. |
-| `Menu` | `items: MenuItem[]` ({label, icon?, danger?, disabled?, checked?, href?, onselect?}, {separator:true} or {note}), `label`, `icon`, `iconOnly`, `variant` secondary\|ghost, `size`, `align` start\|end (end), `disabled`, snippet `trigger` | Row "more actions" menus: `iconOnly icon="more"`. `{ note: '…' }` is a short, non-focusable explanation between the items that also describes the menu (e.g. what a pause keeps on). |
+| `Menu` | `items: MenuItem[]` ({label, icon?, danger?, disabled?, checked?, href?, download?, onselect?}, {separator:true} or {note}), `label`, `icon`, `iconOnly`, `variant` secondary\|ghost, `size`, `align` start\|end (end), `disabled`, snippet `trigger` | Row "more actions" menus: `iconOnly icon="more"`. `{ note: '…' }` is a short, non-focusable explanation between the items that also describes the menu (e.g. what a pause keeps on). |
 | `Tooltip` | `text`, `focusable` (true), children | Never for essential information. |
 | `Stat` | `value`, `label`, `href`, `title`, `tone` | Inline linked number (status sentences), not a card. |
 | `Chart` | `label`, `timestamps` (unix s), `series: ChartSeries[]` ({label, values, pair?, colorVar?, dashed?, fill?}), `stacked`, `height` (220), `yFormat` (formatCompact), `valueFormat`, `loading`, `minMax` (1), `integer` (true) | uPlot; legend doubles as the tooltip; follows theme and width. |
 | `Meter` | `label`, `max`, `segments: MeterSegment[]` ({label, value, text?, pair?, tone?}), `rest` {label,text}, `marker` {value,label}, `legend` (true) | Used/free bars. |
 | `PairStrip` | `allowed`, `blocked`, `hit`, `wan`, `caption` | Used by the shell. |
-| `TimeRangePicker` | `bind:value` (24h), `options` (15m 1h 24h 7d 30d), `label`, `onchange(range)` | `value={null}`: nothing selected (an explicit from/to window is shown instead). |
+| `TimeRangePicker` | `bind:value` (24h), `options` (15m 1h 24h 7d 30d), `more` (presets under "More"), `custom` ({from,to} shown instead of a preset), `oncustom` (adds "Custom range…" to "More"), `label`, `onchange(range)` | `value={null}`: nothing selected (an explicit from/to window is shown instead). Offer only presets the retention keeps (`withinRetention` from `$lib/range`). |
+| `CustomRangeDialog` | `bind:open`, `value` ({from,to} or null), `earliest` (unix s: the retention), `onapply({from,to})` | Local date and time; start before end, at most 400 days, not in the future. |
 | `KeyValue` | `items: KeyValueItem[]` ({label, value, mono?, href?}), children (extra `<dt>/<dd>`) | Details in side panels. |
 | `Notice` | `tone` info\|ok\|warn\|fail, `title`, `icon`, `ondismiss`, snippet `actions`, children | What happened + how to fix it. |
 | `EmptyState` | `title`, `text`, `icon`, `compact`, children (actions) | Says what to do next. |
@@ -265,8 +272,8 @@ chevron-down chevron-up chevron-left chevron-right first check plus minus sun
 moon monitor globe logout pause play shield shield-check shield-off alert info
 error success copy external refresh trash edit pin download upload filter more
 sort arrow-up arrow-down overview list users user home sliders layers grid
-drive key lock document archive activity clock eye eye-off link power update
-bell send; neutral category icons (never brand logos) video chat gamepad
+drive key lock document terminal archive activity clock eye eye-off link power
+update bell send; neutral category icons (never brand logos) video chat gamepad
 music sparkles heart dice cart cloud newspaper.
 
 CSS utilities (`app.css`): `.page`, `.stack`, `.stack-sm`, `.row`, `.spacer`,
@@ -293,6 +300,7 @@ formatMicros(us)             // DNS durations
 formatRelative(iso)          // "5 minutes ago"
 formatDateTime(iso, seconds?) · formatTime(iso) · formatDate(iso)
 formatDateTimeShort(iso, seconds?)  // dense tables: "Sep 24, 2:05 PM" / "24. Sept., 14:05" (year only if not the current one)
+formatSpan(from, to)         // a time window: "Sep 12, 14:00 – Sep 20, 18:00"
 sameDay(a, b)                // same local calendar day
 ```
 
@@ -302,6 +310,8 @@ All formatters follow the active language and return "–" for missing values.
 - `lib/session.svelte.ts`: `session.user`, `session.isAdmin`, `session.status` (AuthStatus), `session.logout()`.
 - `lib/theme.svelte.ts`: `theme.effective` ('light' | 'dark'), `prefersReducedMotion()`.
 - `lib/storage.ts`: `loadPref(key)` / `savePref(key, value)` for per-browser conveniences only (never secrets or server state).
+- `lib/range.ts`: `Range` (a preset or `{from, to}` in unix seconds, usable as the API's range), `readRange(presets, fallback)` / `rangeParams(range, fallback)` (the URL's `range` or `from`+`to`), `isCustom`, `isLong` (more than 7 days: daily top tables, load panels one after another), `chartStep` (one point per day from 90 days), `withinRetention(presets, seconds)`, `rangeText`.
+- `lib/download.ts`: `saveBlob(blob, name)` and `fileStamp()` for files built or fetched in the page (support bundle, application log).
 - `lib/series.ts`: `seriesRates(series, keys, per, asOfMs)` turns a statistics series into rates per `per` seconds for charts. The last bucket of a range that ends now is still filling: it is divided by the time elapsed in it, and left out while that is less than 30 s or a quarter of the step, whichever is longer.
 
 ## Translations (`$i18n/index.svelte`)

@@ -195,6 +195,26 @@ export function formatDateTimeShort(v: string | number | Date | null | undefined
   }).format(d)
 }
 
+/**
+ * A time window: "Sep 12, 14:00 – Sep 20, 18:00" / "12. Sept., 14:00 – 20. Sept., 18:00"
+ * (the year when a bound is not in the current one; one date for a window within a day).
+ */
+export function formatSpan(from: string | number | Date, to: string | number | Date): string {
+  const a = toDate(from)
+  const b = toDate(to)
+  if (!a || !b) return DASH
+  const now = new Date().getFullYear()
+  const year = a.getFullYear() !== now || b.getFullYear() !== now
+  const cycle = df('hc', { timeStyle: 'short' }).resolvedOptions().hourCycle
+  return df(`span${year}`, {
+    year: year ? 'numeric' : undefined,
+    month: 'short',
+    day: 'numeric',
+    hour: cycle === 'h23' || cycle === 'h24' ? '2-digit' : 'numeric',
+    minute: '2-digit',
+  }).formatRange(a, b)
+}
+
 /** Whether two times fall on the same local calendar day. */
 export function sameDay(a: string | number | Date | null | undefined, b: string | number | Date | null | undefined): boolean {
   const x = toDate(a)

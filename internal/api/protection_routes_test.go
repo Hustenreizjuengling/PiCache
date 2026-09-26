@@ -366,7 +366,7 @@ func TestStatsPurposesRoute(t *testing.T) {
 		ps := logsDecode[logs.PurposeStats](t, w)
 		if len(ps.Purposes) == 2 {
 			if ps.Purposes[0] != (logs.PurposeCount{Purpose: "adult", Count: 2}) || ps.Purposes[1].Purpose != "safesearch" ||
-				!ps.From.Equal(logs.TopFrom(now.Add(-time.Hour))) && !ps.From.Equal(logs.TopFrom(time.Now().Add(-time.Hour))) {
+				!ps.From.Equal(logs.TopFrom(now.Add(-time.Hour), now)) && !ps.From.Equal(logs.TopFrom(time.Now().Add(-time.Hour), time.Now())) {
 				t.Fatalf("purposes %s", w.Body)
 			}
 			break

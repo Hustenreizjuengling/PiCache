@@ -549,3 +549,7 @@ func minTTL(rrs []localRR) uint32 {
 	}
 	return slices.MinFunc(rrs, func(a, b localRR) int { return cmp.Compare(a.ttl, b.ttl) }).ttl
 }
+
+// Migrations returns the schema steps of component "dns" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

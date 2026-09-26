@@ -7,11 +7,31 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/api"
 	"github.com/hustenreizjuengling/picache/internal/auth"
+	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/notify"
 )
 
 // Notification events of the app (docs/ARCHITECTURE.md 15.1). Health checks
 // and the cache store are debounced here; the notifier only delivers.
+
+// emit records a notification event in the warning history (logs.db, or in
+// memory while it is disabled) and hands it to the notifier. Every event
+// of the app goes through it, whatever channels exist.
+func (a *App) emit(m notify.Message) {
+	if a.logs != nil {
+		sev, title, ok := notify.Defaults(m.Event)
+		if ok {
+			if m.Severity != "" {
+				sev = m.Severity
+			}
+			if m.Title != "" {
+				title = m.Title
+			}
+			a.logs.RecordEvent(logs.EventRecord{Event: m.Event, Severity: string(sev), Title: title, Message: m.Message, Time: m.Time})
+		}
+	}
+	a.notify.Emit(m)
+}
 
 // healthWatch turns health evaluations into health.* messages. A check is
 // reported when it had the same problem status (warn or fail) in two

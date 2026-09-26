@@ -32,6 +32,7 @@ type All struct {
 	Updates       Updates       `json:"updates"`
 	Backups       Backups       `json:"backups"`
 	DHCP          DHCP          `json:"dhcp"`
+	Health        Health        `json:"health"`
 }
 
 // DNS configures the resolver side.
@@ -211,7 +212,9 @@ type Cache struct {
 	ActiveStoreID      string `json:"activeStoreId"`      // storage target id; "local" = built-in (change via the storage API)
 }
 
-// Logs configures retention and privacy.
+// Logs configures retention and privacy (docs/ARCHITECTURE.md 11: the
+// privacy switches QueryLogEnabled, AnonymizeClientIPs, HideDomains and
+// StatsEnabled are the source of truth; PrivacyLevel is derived from them).
 type Logs struct {
 	QueryLogEnabled        bool `json:"queryLogEnabled"` // false: no query rows, statistics still counted
 	QueryLogRetentionHours int  `json:"queryLogRetentionHours"`
@@ -220,6 +223,66 @@ type Logs struct {
 	StatsRetentionDays     int  `json:"statsRetentionDays"`
 	AnonymizeClientIPs     bool `json:"anonymizeClientIps"`
 	MaxDBSizeMiB           int  `json:"maxDbSizeMiB"` // logs.db cap; raw events, sessions and hourly top lists are trimmed proportionally
+	// HideDomains replaces the domain names of DNS data before storage and
+	// the live feed (qname "hidden", answers removed) and stops the top
+	// lists of domains; the other statistics continue.
+	HideDomains bool `json:"hideDomains"`
+	// StatsEnabled: false stops the DNS statistics (counts and every DNS
+	// top list); the query log and the download-cache statistics continue.
+	StatsEnabled bool `json:"statsEnabled"`
+	// IgnoredDomains (with their subdomains) are answered and filtered as
+	// usual but never logged or counted in the statistics (unlike
+	// dns.droppedDomains, whose queries get no answer). Never null.
+	IgnoredDomains []string `json:"ignoredDomains"`
+	// StatsOnlyAddressQueries counts only A, AAAA and HTTPS queries in the
+	// DNS statistics (the query-type chart keeps every type).
+	StatsOnlyAddressQueries bool `json:"statsOnlyAddressQueries"`
+	// FlushSeconds is how often raw rows and count deltas are written
+	// (5..300; fewer writes on SD cards, more lost on a power cut).
+	FlushSeconds int `json:"flushSeconds"`
+	// PrivacyLevel is derived from the four switches by normalize (full,
+	// hide-domains, anonymous, off or custom); a value sent by a client is
+	// ignored.
+	PrivacyLevel string `json:"privacyLevel"`
+}
+
+// Privacy levels (Logs.PrivacyLevel): presets of the four privacy switches
+// (query log, anonymise, hide domains, statistics).
+const (
+	PrivacyFull        = "full"         // on, off, off, on
+	PrivacyHideDomains = "hide-domains" // on, off, on, on
+	PrivacyAnonymous   = "anonymous"    // on, on, on, on
+	PrivacyOff         = "off"          // off, on, on, off
+	PrivacyCustom      = "custom"       // any other combination
+)
+
+// Limits of the log settings.
+const (
+	MaxIgnoredDomains = 256
+	MinFlushSeconds   = 5
+	MaxFlushSeconds   = 300
+)
+
+// privacyLevel derives the preset of the four privacy switches.
+func (g *Logs) privacyLevel() string {
+	switch [4]bool{g.QueryLogEnabled, g.AnonymizeClientIPs, g.HideDomains, g.StatsEnabled} {
+	case [4]bool{true, false, false, true}:
+		return PrivacyFull
+	case [4]bool{true, false, true, true}:
+		return PrivacyHideDomains
+	case [4]bool{true, true, true, true}:
+		return PrivacyAnonymous
+	case [4]bool{false, true, true, false}:
+		return PrivacyOff
+	}
+	return PrivacyCustom
+}
+
+// Health configures the thresholds of the health check "host".
+type Health struct {
+	MemoryAvailableMinPercent int `json:"memoryAvailableMinPercent"` // warn below this share of available memory (1..50)
+	LoadPerCPUMax             int `json:"loadPerCpuMax"`             // warn above this 15-minute load per CPU (1..16)
+	TemperatureMaxCelsius     int `json:"temperatureMaxCelsius"`     // warn at this temperature of any thermal zone (50..110)
 }
 
 // Web configures the UI/API.
@@ -622,3 +685,7 @@ func (s *Store) persist(ctx context.Context, a *All) error {
 	}
 	return nil
 }
+
+// Migrations returns the schema steps of component "settings" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

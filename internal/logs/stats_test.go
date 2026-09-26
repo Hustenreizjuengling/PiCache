@@ -247,12 +247,12 @@ func TestTopListsLiveCheckpointAndRollover(t *testing.T) {
 			kind TopKind
 			want string
 		}{
-			{TopDomains, "[{a.example  5 0  []} {b.example  3 0  []}]"},
-			{TopBlockedDomains, "[{ads.example  4 0  []}]"},
-			{TopClients, "[{10.0.0.2 name-10.0.0.2 7 0  []} {10.0.0.1 name-10.0.0.1 5 0  []}]"},
-			{TopUpstreams, "[{https://dns.quad9.net/dns-query  5 2000  []}]"},
-			{TopCacheClients, "[{10.0.0.3  2 6000  []} {10.0.0.4  1 100  []}]"},
-			{TopContent, "[{steam:depot:2 Label steam:depot:2 1 5000 steam []} {steam:depot:1 Label steam:depot:1 1 1000 steam []} {steam:depot:1 Label steam:depot:1 1 100 epicgames []}]"},
+			{TopDomains, "[{a.example  5 0 0  []} {b.example  3 0 0  []}]"},
+			{TopBlockedDomains, "[{ads.example  4 0 0  []}]"},
+			{TopClients, "[{10.0.0.2 name-10.0.0.2 7 0 0  []} {10.0.0.1 name-10.0.0.1 5 0 0  []}]"},
+			{TopUpstreams, "[{https://dns.quad9.net/dns-query  5 2000 2000  []}]"},
+			{TopCacheClients, "[{10.0.0.3  2 6000 0  []} {10.0.0.4  1 100 0  []}]"},
+			{TopContent, "[{steam:depot:2 Label steam:depot:2 1 5000 0 steam []} {steam:depot:1 Label steam:depot:1 1 1000 0 steam []} {steam:depot:1 Label steam:depot:1 1 100 0 epicgames []}]"},
 		} {
 			items, err := s.Top(ctx, tc.kind, from, to, 10)
 			if err != nil {
@@ -274,8 +274,9 @@ func TestTopListsLiveCheckpointAndRollover(t *testing.T) {
 	hour := s.top.currentHour()
 	s.w.rollover(now, hour+hourMs)
 	check("after rollover")
-	if n := count(t, s, "logs_dns_top_hourly"); n != 6 {
-		t.Fatalf("stored dns top rows = %d, want 6", n)
+	// domain 2, blocked 1, client 2, upstream 1, qtype 1, unique 1
+	if n := count(t, s, "logs_dns_top_hourly"); n != 8 {
+		t.Fatalf("stored dns top rows = %d, want 8", n)
 	}
 	// A restart within the hour continues from the stored rows.
 	if err := s.loadTop(ctx, hour); err != nil {
@@ -309,7 +310,7 @@ func TestTopListsKeepTop1000PerHour(t *testing.T) {
 		t.Fatalf("stored domain rows = %d, %v", n, err)
 	}
 	items, err := s.Top(ctx, TopDomains, now.Add(-time.Hour), now.Add(time.Hour), 3)
-	if err != nil || fmt.Sprint(items) != "[{d1100.example  14 0  []} {d1000.example  13 0  []} {d0900.example  12 0  []}]" {
+	if err != nil || fmt.Sprint(items) != "[{d1100.example  14 0 0  []} {d1000.example  13 0 0  []} {d0900.example  12 0 0  []}]" {
 		t.Fatalf("top = %v, %v", items, err)
 	}
 }

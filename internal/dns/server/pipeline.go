@@ -115,6 +115,10 @@ type result struct {
 	// list's category or "rule"); the other purposes follow from the
 	// status (purposeOf).
 	purpose string
+	// upstreamAnswer is the summary of the upstream's answer when the
+	// steps after forwarding replaced or changed it (keepUpstreamAnswer);
+	// the query log shows it when it differs from the final answer.
+	upstreamAnswer string
 }
 
 // scope computes the filtering groups of the query once, after
@@ -178,8 +182,10 @@ func (s *Server) process(qc *qctx) result {
 		}
 	}
 	if r, ok := s.singleLabel(qc); ok { // 11a
+		up := upstreamAnswerOf(qc, r.msg)
 		s.inspectCNAMEs(qc, &r) // 14 (local answers are not inspected)
 		stripIPv6Hints(qc, &r)  // 14a
+		up.keep(&r)
 		return r
 	}
 	return s.forward(qc)
@@ -209,13 +215,62 @@ func (s *Server) forward(qc *qctx) result {
 	default: // 13
 		r = s.resolveVia(qc, nil, nil, "upstreams")
 	}
+	up := upstreamAnswerOf(qc, r.msg)
 	s.upstreamBlock(qc, &r)            // 13a
 	s.bogusNXDomain(qc, &r)            // 13b
 	s.inspectCNAMEs(qc, &r)            // 14
 	stripIPv6Hints(qc, &r)             // 14a
 	s.synthesizeAAAA(qc, &r, via, ips) // 14b
 	s.rebindCheck(qc, &r)              // 14c
+	up.keep(&r)
 	return r
+}
+
+// upstreamAnswer is the upstream's reply before steps 13a–14c: msg as
+// received (also a cached reply), and its summary taken before steps 14a
+// and 14b can change it in place (HTTPS/SVCB answers while
+// dns.disableAAAA is on, AAAA queries while DNS64 is on). Other replies
+// are summarised only when a step replaced them, so the hot path costs
+// nothing.
+type upstreamAnswer struct {
+	msg     *dns.Msg
+	summary string
+	early   bool
+}
+
+func upstreamAnswerOf(qc *qctx, msg *dns.Msg) upstreamAnswer {
+	up := upstreamAnswer{msg: msg}
+	if msg == nil {
+		return up
+	}
+	d := &qc.set.DNS
+	if (d.DNS64.Enabled && qc.qtype == dns.TypeAAAA) || (d.DisableAAAA && slices.ContainsFunc(msg.Answer, func(rr dns.RR) bool {
+		t := rr.Header().Rrtype
+		return t == dns.TypeHTTPS || t == dns.TypeSVCB
+	})) {
+		up.summary, up.early = summarize(msg.Answer), true
+	}
+	return up
+}
+
+// keep records the upstream's answer in r where the final answer is not
+// the upstream's (docs/API.md logs.QueryEvent.upstreamAnswer): CNAME,
+// upstream and rebind blocks, bogus NXDOMAIN, DNS64 and removed ipv6hint
+// parameters. logQuery drops it when it equals the final answer.
+func (up upstreamAnswer) keep(r *result) {
+	if up.msg == nil {
+		return
+	}
+	switch {
+	case r.status == StatusBlockedCNAME, r.status == StatusBlockedUpstream, r.status == StatusBlockedRebind,
+		r.reason == ReasonBogusNXDomain:
+		if !up.early {
+			up.summary = summarize(up.msg.Answer)
+		}
+		r.upstreamAnswer = up.summary
+	case up.early: // DNS64 or a removed ipv6hint (unchanged answers are dropped by logQuery)
+		r.upstreamAnswer = up.summary
+	}
 }
 
 // resolveVia forwards the query to specific resolvers (via == nil: the

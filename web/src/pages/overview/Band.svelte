@@ -66,15 +66,21 @@
     padding-top: var(--sp-4);
     min-width: 0;
   }
-  .split > :global(* + *) {
+  /* Two columns, as many rows as needed: dividers between columns and rows. */
+  .split > :global(:nth-child(2n)) {
     border-left: 1px solid var(--line);
+  }
+  .split > :global(:nth-child(n + 3)) {
+    border-top: 1px solid var(--line);
   }
   @media (max-width: 1000px) {
     .split {
       grid-template-columns: minmax(0, 1fr);
     }
-    .split > :global(* + *) {
+    .split > :global(:nth-child(2n)) {
       border-left: 0;
+    }
+    .split > :global(* + *) {
       border-top: 1px solid var(--line);
     }
   }

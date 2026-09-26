@@ -309,3 +309,7 @@ func (t *noSliceTracker) close() {
 	t.closed = true
 	t.mu.Unlock()
 }
+
+// Migrations returns the schema steps of component "proxy" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(noSliceMigrations) }

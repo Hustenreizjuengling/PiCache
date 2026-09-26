@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
+	"github.com/hustenreizjuengling/picache/internal/applog"
 	"github.com/hustenreizjuengling/picache/internal/db"
 )
 
@@ -49,9 +50,10 @@ func (a *Service) initSetup(ctx context.Context) error {
 	}
 	a.setupToken = tok
 	// Logging the token is intended: it is the documented way to find it
-	// (docs/ARCHITECTURE.md 6.1). It is logged once per start.
+	// (docs/ARCHITECTURE.md 6.1). It is logged once per start, to stderr
+	// (the journal) only: the application log of the web UI redacts it.
 	a.log.Warn("first-run setup required: open the web UI and enter this setup token (also: `picache setup-token`)",
-		slog.String("setupToken", tok), slog.String("file", a.setupFile))
+		applog.StderrOnly("setupToken", tok), slog.String("file", a.setupFile))
 	return nil
 }
 

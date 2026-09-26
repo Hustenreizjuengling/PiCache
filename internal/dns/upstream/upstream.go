@@ -94,13 +94,26 @@ type UpstreamStat struct {
 	Healthy     bool      `json:"healthy"`
 }
 
-// CacheStat describes the response cache.
+// CacheStat describes the response cache. The counters count since the
+// start.
 type CacheStat struct {
-	Entries   int   `json:"entries"`
-	Capacity  int   `json:"capacity"` // 0 while the cache is disabled
-	Hits      int64 `json:"hits"`     // answers from the cache, stale ones included
-	Misses    int64 `json:"misses"`
-	StaleHits int64 `json:"staleHits"`
+	Entries    int   `json:"entries"`
+	Capacity   int   `json:"capacity"` // 0 while the cache is disabled
+	Hits       int64 `json:"hits"`     // answers from the cache, stale ones included
+	Misses     int64 `json:"misses"`
+	StaleHits  int64 `json:"staleHits"`
+	Insertions int64 `json:"insertions"` // answers stored
+	Evictions  int64 `json:"evictions"`  // entries removed for the capacity
+	Expired    int64 `json:"expired"`    // entries removed after their TTL and the serve-stale window
+	// Types are the current entries by record type: the 16 largest, most
+	// entries first, and "OTHER" for the rest. Never null.
+	Types []CacheTypeStat `json:"types"`
+}
+
+// CacheTypeStat is the number of cached answers of one record type.
+type CacheTypeStat struct {
+	Type    string `json:"type"`
+	Entries int    `json:"entries"`
 }
 
 // TestResult is the outcome of testing one upstream string.
@@ -504,10 +517,14 @@ func setStats(set *upstreamSet) []UpstreamStat {
 func (r *Resolver) CacheStats() CacheStat {
 	d := r.set.Get().DNS
 	st := CacheStat{
-		Entries:   r.cache.len(),
-		Hits:      r.cache.hits.Load(),
-		Misses:    r.cache.misses.Load(),
-		StaleHits: r.cache.staleHits.Load(),
+		Entries:    r.cache.len(),
+		Hits:       r.cache.hits.Load(),
+		Misses:     r.cache.misses.Load(),
+		StaleHits:  r.cache.staleHits.Load(),
+		Insertions: r.cache.insertions.Load(),
+		Evictions:  r.cache.evictions.Load(),
+		Expired:    r.cache.expired.Load(),
+		Types:      r.cache.typeStats(),
 	}
 	if d.CacheEnabled {
 		st.Capacity = d.CacheSize

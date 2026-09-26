@@ -6,10 +6,15 @@ import (
 	"net/http"
 	"net/netip"
 	"slices"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/logs"
+	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // Top lists grouped by device: maxGroupedTop rows are grouped before the
@@ -181,4 +186,95 @@ func groupTop(items []logs.TopItem, devs map[string]clients.Device, byBytes bool
 	}
 	slices.SortFunc(out, more)
 	return out[:min(len(out), limit)]
+}
+
+// clientSeriesRange is the default range of GET /stats/clients/{key}/series.
+const clientSeriesRange = 7 * 24 * time.Hour
+
+// seriesKey parses the key of GET /stats/clients/{key}/series: a canonical
+// IP address without zone, "ip:<address>", "client:<positive int>" or
+// "mac:<canonical MAC>" (lower-case, colons). It returns the address of an
+// address key or the device key.
+func seriesKey(key string) (addr netip.Addr, device string, err error) {
+	bad := apperr.Invalid("key", "must be an IP address, ip:<address>, client:<id> or mac:<mac>")
+	switch {
+	case strings.HasPrefix(key, "client:"):
+		id := strings.TrimPrefix(key, "client:")
+		n, perr := strconv.ParseInt(id, 10, 64)
+		if perr != nil || n <= 0 || strconv.FormatInt(n, 10) != id {
+			return addr, "", bad
+		}
+		return addr, key, nil
+	case strings.HasPrefix(key, "mac:"):
+		mac := strings.TrimPrefix(key, "mac:")
+		if m, ok := settings.NormalizeMAC(mac); !ok || m != mac {
+			return addr, "", bad
+		}
+		return addr, key, nil
+	}
+	s := strings.TrimPrefix(key, "ip:")
+	a, perr := netip.ParseAddr(s)
+	if perr != nil || a.Zone() != "" || netutil.Canon(a).String() != s {
+		return addr, "", bad
+	}
+	return a, "", nil
+}
+
+// logsClientSeries serves the activity of one client per step: an address,
+// or the addresses a device had in the range (as ?group=device groups
+// them; at most 256, the most recently seen).
+func (s *Server) logsClientSeries(w http.ResponseWriter, r *http.Request) error {
+	addr, device, err := seriesKey(r.PathValue("key"))
+	if err != nil {
+		return err
+	}
+	from, to, err := qRange(r, clientSeriesRange)
+	if err != nil {
+		return err
+	}
+	step, err := logsStep(r)
+	if err != nil {
+		return err
+	}
+	addrs := []string{}
+	if addr.IsValid() {
+		addrs = append(addrs, addr.String())
+	} else if addrs, err = s.deviceAddresses(r.Context(), device, from, to); err != nil {
+		return err
+	}
+	ser, err := s.d.Logs.ClientSeries(r.Context(), addrs, from, to, step)
+	if err != nil {
+		return err
+	}
+	return ok(w, ser)
+}
+
+// deviceAddresses returns the addresses of the range that belong to a
+// device key, most recently seen first (at most logs.MaxSeriesAddresses).
+func (s *Server) deviceAddresses(ctx context.Context, key string, from, to time.Time) ([]string, error) {
+	if s.d.Settings != nil && s.d.Settings.Get().Logs.AnonymizeClientIPs {
+		return nil, apperr.Invalid("key", "devices cannot be resolved while client addresses are anonymised")
+	}
+	stats, err := s.d.Logs.ClientStats(ctx, from, to)
+	if err != nil {
+		return nil, err
+	}
+	all := make([]string, len(stats))
+	for i, st := range stats {
+		all[i] = st.ClientIP
+	}
+	devs, err := s.devices(ctx, all)
+	if err != nil || devs == nil {
+		return []string{}, err
+	}
+	slices.SortStableFunc(stats, func(a, b logs.ClientStat) int {
+		return cmp.Or(b.LastSeen.Compare(a.LastSeen), cmp.Compare(a.ClientIP, b.ClientIP))
+	})
+	out := []string{}
+	for _, st := range stats {
+		if deviceKey(devs, st.ClientIP) == key && len(out) < logs.MaxSeriesAddresses {
+			out = append(out, st.ClientIP)
+		}
+	}
+	return out, nil
 }

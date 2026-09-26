@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
@@ -128,3 +129,7 @@ func updateTarget(ctx context.Context, w *sql.DB, t Target, sealed string, setPa
 	}
 	return nil
 }
+
+// Migrations returns the schema steps of component "storage" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

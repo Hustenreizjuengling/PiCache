@@ -1,5 +1,7 @@
 package auth
 
+import "slices"
+
 // migrations are the append-only schema steps of component "auth".
 var migrations = []string{
 	`CREATE TABLE auth_users (
@@ -51,3 +53,7 @@ var migrations = []string{
 		CHECK (role IN ('admin', 'viewer'));
 	UPDATE auth_users SET role = 'admin';`,
 }
+
+// Migrations returns the schema steps of component "auth" in picache.db
+// (`picache db salvage` builds a fresh schema with them).
+func Migrations() []string { return slices.Clone(migrations) }

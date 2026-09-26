@@ -162,7 +162,10 @@ type acct struct {
 	sent, hit, wan, stored atomic.Int64
 	refs                   atomic.Int32
 	ev                     logs.CacheEvent // completed by the handler before its release
-	emit                   bool
+	// emit: the event goes to the logs unless the client is excluded from
+	// both the raw data and the statistics; noLog and noStats are its
+	// exclusions (clients ignoreLogs, ignoreStats).
+	emit, noLog, noStats bool
 }
 
 func (a *acct) retain() { a.refs.Add(1) }
@@ -230,7 +233,10 @@ func (s *Server) newRequest(w http.ResponseWriter, r *http.Request, rc *http.Res
 		}
 	}
 	rq.fillHeader = forwardHeaders(r.Header, s.d.InstanceID, true)
-	rq.acct = &acct{s: s, emit: rq.ident == nil || !rq.ident.IgnoreLogs}
+	rq.acct = &acct{s: s, emit: true}
+	if id := rq.ident; id != nil {
+		rq.acct.emit, rq.acct.noLog, rq.acct.noStats = !(id.IgnoreLogs && id.IgnoreStats), id.IgnoreLogs, id.IgnoreStats
+	}
 	rq.acct.refs.Store(1)
 	rq.tr = s.live.begin(rq)
 	return rq
@@ -277,6 +283,8 @@ func (rq *request) finish() {
 		GroupKey:    rq.group.Key,
 		Label:       rq.label,
 		UserAgent:   clip(rq.r.UserAgent(), maxLogField),
+		NoLog:       a.noLog,
+		NoStats:     a.noStats,
 	}
 	a.release()
 }

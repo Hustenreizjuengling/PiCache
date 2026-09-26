@@ -193,6 +193,50 @@ var migrations = []string{
 	`ALTER TABLE logs_queries ADD COLUMN upstream_ede_code INTEGER NOT NULL DEFAULT -1;
 	ALTER TABLE logs_queries ADD COLUMN upstream_ede_text TEXT NOT NULL DEFAULT '';
 	ALTER TABLE logs_queries ADD COLUMN ecs TEXT NOT NULL DEFAULT '';`,
+	// v4 (0.12.0): the upstream's answer when it differs from the final
+	// one, the warning history (ack_ts 0 = not acknowledged) and the daily
+	// top tables (bucket = start of the UTC day; same columns and keys as
+	// the hourly ones). The top kinds qtype and unique need no step.
+	`ALTER TABLE logs_queries ADD COLUMN upstream_answer TEXT NOT NULL DEFAULT '';
+
+	CREATE TABLE logs_events (
+		id       INTEGER PRIMARY KEY,
+		ts       INTEGER NOT NULL,
+		last_ts  INTEGER NOT NULL,
+		count    INTEGER NOT NULL DEFAULT 1,
+		event    TEXT    NOT NULL,
+		severity TEXT    NOT NULL,
+		title    TEXT    NOT NULL,
+		message  TEXT    NOT NULL DEFAULT '',
+		ack_ts   INTEGER NOT NULL DEFAULT 0,
+		ack_by   TEXT    NOT NULL DEFAULT ''
+	);
+	CREATE INDEX logs_events_last ON logs_events (last_ts);
+
+	CREATE TABLE logs_dns_top_daily (
+		bucket      INTEGER NOT NULL,
+		kind        TEXT    NOT NULL,
+		key         TEXT    NOT NULL,
+		label       TEXT    NOT NULL DEFAULT '',
+		count       INTEGER NOT NULL DEFAULT 0,
+		blocked     INTEGER NOT NULL DEFAULT 0,
+		duration_us INTEGER NOT NULL DEFAULT 0,
+		last_seen   INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (bucket, kind, key)
+	) WITHOUT ROWID;
+	CREATE TABLE logs_cache_top_daily (
+		bucket     INTEGER NOT NULL,
+		kind       TEXT    NOT NULL,
+		service    TEXT    NOT NULL DEFAULT '',
+		key        TEXT    NOT NULL,
+		label      TEXT    NOT NULL DEFAULT '',
+		requests   INTEGER NOT NULL DEFAULT 0,
+		bytes_sent INTEGER NOT NULL DEFAULT 0,
+		bytes_hit  INTEGER NOT NULL DEFAULT 0,
+		bytes_wan  INTEGER NOT NULL DEFAULT 0,
+		last_seen  INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (bucket, kind, service, key)
+	) WITHOUT ROWID;`,
 }
 
 // enableAutoVacuum switches a brand-new logs.db to incremental auto-vacuum so

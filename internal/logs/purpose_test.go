@@ -88,7 +88,7 @@ func TestPurposes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := fmt.Sprint(st.Purposes); got != want || !st.From.Equal(TopFrom(now.Add(-30*time.Minute))) {
+		if got := fmt.Sprint(st.Purposes); got != want || !st.From.Equal(TopFrom(now.Add(-30*time.Minute), now.Add(time.Minute))) {
 			t.Errorf("%s: purposes %s from %v, want %s", stage, got, st.From, want)
 		}
 	}

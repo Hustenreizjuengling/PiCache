@@ -113,10 +113,25 @@ unprivileged Proxmox LXC container.
 **Web UI and operations**
 
 - English and German UI with dashboard, live query and download streams,
-  query log, statistics and health checks with hints.
+  query log, statistics and health checks with hints. Statistics over up to
+  a year (daily summaries), top domains and upstreams with their response
+  times, query types, an estimate of the distinct domains, activity charts
+  per client and device, and an export of the query log as NDJSON or CSV
+  (also `picache logs export`; `picache logs tail` follows it in a
+  terminal).
+- Privacy levels (full, hide domains, anonymous, off) with the switches
+  behind them: anonymised client addresses, hidden domain names, no query
+  log or no statistics; clients excluded from the log or the statistics,
+  ignored domains, and clearing the query log or the statistics. All data
+  stays on the machine.
+- Diagnostics: the application log in the web UI with a temporary debug
+  level, host resources (memory, load, temperatures, disks) with health
+  thresholds, database sizes, a history of past warnings to acknowledge,
+  a redacted support bundle for bug reports, and `picache db check` /
+  `picache db salvage` to recover a damaged configuration database.
 - Several accounts with the roles admin and viewer (viewers see the pages
-  read-only, except the audit log, notification channels and backup
-  downloads, and change nothing but their own account), optional TOTP
+  read-only, except the audit log, the application log, notification
+  channels and backup downloads, and change nothing but their own account), optional TOTP
   two-factor authentication, API tokens (`read`/`admin`) for automation, an audit
   log, backup and restore (also scheduled, for example to your NAS), and
   optional Prometheus metrics.
@@ -550,6 +565,13 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
   verteilen kann: wird bei Bedarf in der Oberfläche eingeschaltet (keine
   Installationsoption; solange er aus ist, belegt PiCache keinen DHCP-Port),
   mit Reservierungen, DNS-Namen der Geräte und IPv6-DNS-Ankündigungen.
+- **Datenschutz und Diagnose:** Datenschutzstufen (vollständig, Domains
+  verbergen, anonym, aus), Clients ohne Protokoll oder ohne Statistik,
+  ignorierte Domains, Löschen von Abfrageprotokoll und Statistik, Export
+  als NDJSON/CSV, Statistik über bis zu ein Jahr, Anwendungsprotokoll in der
+  Oberfläche, Host-Ressourcen, Warnungsverlauf, bereinigtes Support-Paket
+  und `picache db salvage` für eine beschädigte Konfigurationsdatenbank –
+  alle Daten bleiben auf dem Gerät.
 - **Betrieb** auf Debian 12/13 (auch Raspberry Pi 4/5), in einem Proxmox-LXC
   oder mit Docker.
 - **Updates:** Die Oberfläche zeigt neue Versionen an und installiert sie auf

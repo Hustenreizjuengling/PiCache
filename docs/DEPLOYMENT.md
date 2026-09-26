@@ -1307,7 +1307,7 @@ Everything persistent lives in exactly two places plus optional NAS mounts.
 
 | Path (bare metal / LXC) | Docker | Contents | Backup? |
 |---|---|---|---|
-| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, parental controls, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and progress of the update helper); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
+| `/var/lib/picache` (`PICACHE_DATA_DIR`) | `/data` | `picache.db` (configuration: settings, users, lists, rules, clients, groups, parental controls, local records, services, storage targets with sealed NAS passwords, audit log); `logs.db` (query log, cache events, sessions, statistics, evictions, seen clients, warning history); `cache-index/<store-id>.db`; `lists/`; `cache-domains/`; `tls/`; `keys/master.key` (0600); `instance-id`; `setup-token` (until setup is done); `backups/` (automatic pre-upgrade copies, newest 3); `storage-requests/` (mount requests for the root helper); `update-requests/` (update request and progress of the update helper); `picache.db.before-restore` (after a restore) | `picache.db` (UI download or file copy while stopped); everything else is rebuildable. `keys/master.key` separately if stored NAS passwords should survive a move to another machine. |
 | `/var/cache/picache` (`PICACHE_CACHE_DIR`) | `/cache` | The built-in **local** cache store (slice files). Large. | No |
 | `/srv/picache/<id>` (`PICACHE_MOUNT_ROOT`) | `/srv/picache` (bind, `rslave`) | NAS cache stores. The only place outside the cache dir where stores may live (the only NAS path writable inside the sandbox). | No |
 | `/etc/picache/picache.env` | environment | Bootstrap settings only. Read by systemd **and by every CLI command**. | Yes |
@@ -1418,6 +1418,63 @@ the accounts, API tokens and sessions of the copy; use the UI restore to keep
 the current accounts. PiCache creates no triggers or views; if the file has
 any, they are removed at start and a warning is logged.
 
+### Recovering a damaged picache.db
+
+When PiCache reports a damaged configuration database (for example "database
+disk image is malformed" at start, after a power cut or a failing SD card),
+check it and copy every readable row into a new file:
+
+```sh
+sudo systemctl stop picache
+sudo picache db check              # integrity, foreign keys, schema versions
+sudo picache db salvage --out /var/lib/picache/picache.db.salvaged
+```
+
+Read the report. When `salvage` created the file (exit code `0` or `3`),
+put it in place. The data directory is readable by the service user only,
+so every step runs as root, and the block stops at the first step that
+fails (nothing is started on the damaged database then):
+
+```sh
+sudo sh -e -c '
+  d=/var/lib/picache
+  ts=$(date -u +%Y%m%dT%H%M%SZ)
+  test -s "$d/picache.db.salvaged"
+  for f in picache.db picache.db-wal picache.db-shm; do
+    if [ -e "$d/$f" ]; then mv "$d/$f" "$d/$f.damaged-$ts"; fi
+  done
+  mv "$d/picache.db.salvaged" "$d/picache.db"
+  systemctl start picache
+'
+```
+
+- `picache db check` reads `picache.db` read-only and may run while PiCache
+  runs. It prints the first 100 lines of SQLite's integrity check and of the
+  foreign key check and compares the schema versions with the program. Exit
+  code `0` no problems, `3` problems found, `1` error, `2` usage.
+- `picache db salvage --out <file>` refuses while PiCache answers on this
+  machine (the checks of `picache healthcheck`; `--force` skips this) and when
+  the database was written by another PiCache version ("salvage with the
+  PiCache version that wrote it"). It never modifies the source. It creates
+  the new file (an existing path is refused, mode 0600, owned like the data
+  directory), builds this version's schema in it, copies every table this
+  version knows column by column (rows that cannot be read are skipped and
+  counted), leaves out unknown tables, triggers and views, and checks the new
+  file. It prints what was copied and lost per table. Exit code `0` every row
+  copied, `3` rows lost or skipped, `1` error, `2` usage.
+- The new file holds the accounts with their password hashes, TOTP secrets,
+  sealed secrets and API token hashes: keep it private. If accounts were
+  lost, run `sudo picache reset-password --admin` after the start.
+- Docker: check while it runs with
+  `docker exec -u 65532:65532 <container> /picache db check`; salvage with
+  the container stopped:
+  `docker run --rm --user 65532:65532 -v <data volume>:/data --entrypoint /picache <image> db salvage --out /data/picache.db.salvaged`,
+  then move the files in the volume as above (the same block in
+  `docker run --rm -v <data volume>:/data alpine sh -e -c '…'` with
+  `d=/data` and without the `systemctl` line) and start the container.
+- A backup (**System → Backup & restore**, scheduled backups) is the better
+  way back when a recent one exists.
+
 **Moving to a new machine:** install PiCache there, stop it, copy
 `picache.db` (and `keys/master.key`) into the data directory with the right
 owner, and start it (this keeps the accounts). Alternatively complete setup
@@ -1425,6 +1482,92 @@ on the new machine and restore a downloaded backup in the UI: the account
 created there stays. The cache can be copied too, or it simply fills again.
 A NAS store is adopted by initialising the target with *adopt* in
 **Cache → Storage**.
+
+---
+
+## Logs and privacy
+
+**System → Logs & privacy** sets what PiCache records. A preset sets four
+switches: *Full* (query log and statistics, client addresses and domains
+kept), *Hide domains* (domain names replaced by `hidden` in the query log;
+no top lists of domains), *Anonymous* (additionally client addresses masked
+to /16 or /48 and client names dropped) and *Off* (no query log, no DNS
+statistics); *Custom* shows the switches. A change applies from then on;
+stored rows are not rewritten, so clear the query log or the statistics
+afterwards if they must go (**Clear data**; admins, needs
+`PICACHE_DESTRUCTIVE_API` on). Per client, **Clients & groups** can exclude
+the raw data (query log, cache requests, sessions) and the statistics
+separately. *Ignored domains* are answered and filtered as usual but never
+logged or counted (for noisy names such as a time server; unlike *dropped
+domains*, which get no answer at all).
+
+**Fewer writes on SD cards:** *Write interval* (`logs.flushSeconds`, 5 to
+300 seconds, default 5) sets how often PiCache writes the query log and the
+statistics counters. A longer interval saves writes, but up to that many
+seconds of query log rows and counts (and up to the interval or a minute,
+whichever is longer, of the seen-client data) are lost on a power cut, and
+the query log, exports and minute-based charts lag by as much. The live
+query view is not delayed.
+
+### From the command line
+
+`picache logs tail` follows the query log and `picache logs export` saves it
+as NDJSON or CSV, through the API (a **read** API token is enough; create one
+under **System → API tokens**):
+
+```sh
+export PICACHE_TOKEN=pc_...          # or: --token-file ~/.picache-token (chmod 600)
+picache logs tail --status blocked --client 192.168.1.20
+picache logs tail --json | jq .qname
+picache logs export --format csv --range 7d --rcode NXDOMAIN --out nxdomain.csv
+picache logs export --format ndjson --from 2026-09-01T00:00:00Z --to 2026-09-02T00:00:00Z --out - | gzip > sept1.ndjson.gz
+```
+
+- The token comes from `PICACHE_TOKEN` in the environment or from
+  `--token-file` (a regular file, not a link, at most 4 KiB; a warning when
+  other users can read it). It is **never** read from `picache.env` (a
+  `PICACHE_TOKEN` line there is ignored with a warning): that file configures
+  the service.
+- The URL is `--url`, else `PICACHE_URL`, else the local web listener
+  (`http://127.0.0.1:8080` by default). The token is sent only to a loopback
+  `http` URL, or to an `https` URL whose certificate is verified against the
+  system's roots and PiCache's local CA (`<data>/tls/ca.crt`, when readable);
+  a loopback `https` URL without a readable CA is not verified (like
+  `healthcheck`). Any other URL is refused ("refusing to send the API token
+  to …"). No proxy is used and redirects are not followed.
+- The local listener is taken from `PICACHE_WEB_LISTEN` only when
+  `picache.env` is readable (it is not for other users than root and the
+  `picache` group: then `http://127.0.0.1:8080` is used). With another web
+  listener, or with **Redirect HTTP to HTTPS** on (the commands then stop
+  with "PiCache redirects to …"), pass the address: `--url
+  https://127.0.0.1:8443` or `PICACHE_URL`.
+- `tail` prints one line per query (local time, client, type, name, status,
+  response code, duration) with control characters escaped, reconnects after
+  1, 2, 4 … 30 seconds when the stream ends or PiCache is busy or
+  restarting, stops with 1 on a revoked token (401/403) and with 0 on Ctrl-C.
+- `export` takes the filters of the query log; `--out` must name a new file
+  (created with mode 0600; `-` writes to stdout). An export stops after
+  1 000 000 rows or 15 minutes; the file then ends with a marker and the
+  command says so. One export runs at a time.
+- While PiCache is stopped, another local user could open the loopback port
+  and receive the token: prefer a read token, and a token file over a
+  variable in a shell profile.
+
+### Application log and support bundle
+
+**System → Application log** (admins) shows the last 2000 log lines (the
+newest 500 at first, **Show older records** loads the rest) with
+level and component filters, and can switch on debug logging for a
+component or for everything for 1 to 240 minutes (it ends by itself and at a
+restart). Secrets are never shown; while client addresses are anonymised or
+domains hidden, the page masks them too (the journal keeps them: keep
+`PICACHE_LOG_LEVEL=info`).
+
+**System → Health & about → Support bundle** (admins, password) downloads a
+zip for a bug report: version, settings, health, listeners, the network
+check, the DHCP state, database sizes, host resources and the application
+log, with names, addresses and secrets replaced (SECURITY "Support
+bundle"). Review the files before sharing them.
 
 ---
 
@@ -1766,6 +1909,8 @@ sudo mount /srv/picache/ssd && sudo chown picache:picache /srv/picache/ssd
   databases and logs are off the SD card too. Otherwise mount the SSD below
   `/srv/picache` as shown above and activate it as a local target.
 - Use a power supply that can also feed the SSD.
+- If the databases stay on the SD card, a longer *Write interval* under
+  **System → Logs & privacy** saves writes ([Logs and privacy](#logs-and-privacy)).
 - The Pi has no battery-backed clock. While its clock is still before the
   binary's build date (after a boot, until NTP has set the time), PiCache
   uses plain DNS to its bootstrap servers instead of DoH/DoT (health warning).
@@ -1950,6 +2095,8 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_MASTER_KEY_FILE` | `<data>/keys/master.key` | Master key for stored secrets: 32 raw bytes or 64 hex characters. Created with mode 0600 if missing. A systemd credential `picache-master-key` (`$CREDENTIALS_DIRECTORY`) or the Docker secret `/run/secrets/picache_master_key` takes precedence. A systemd credential must also be given to `picache-storage.service` when host-apply mounts SMB shares with a stored password ([Host-apply](#host-apply-root-helper)). The Docker secret is read after the privilege drop, so it must be readable by 65532. |
 | `PICACHE_DEV` | `false` | Development mode (relaxed platform checks, verbose errors). Never in production. |
 | `PICACHE_ENV_FILE` | `/etc/picache/picache.env` | Env file to read instead of the default. Unlike the default file, it must exist. |
+| `PICACHE_TOKEN` | – | CLI only (`picache logs tail`, `picache logs export`): the API token. Read from the environment only, never from the env file ([From the command line](#from-the-command-line)). |
+| `PICACHE_URL` | the local web listener | CLI only: the PiCache URL for `picache logs tail` and `picache logs export`. |
 | `GOMEMLIMIT` | 60 % of the memory limit | Go's soft memory limit. By default PiCache sets 60 % of the cgroup memory limit, or of the RAM. |
 
 `picache serve` also accepts flags that override the environment:
@@ -1976,11 +2123,15 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `picache update [--version vX.Y.Z] [--prerelease] [--allow-downgrade] [--yes]` | Root only. Show the start of the release notes, ask (unless `--yes`), then download, verify and install the newest release (or the given one) and restart PiCache; roll back if the new version fails its health check ([Updates](#updates)). `--prerelease` also considers pre-releases; `--allow-downgrade` allows an older release. |
 | `picache update --from <dir> [--yes]` | Root only. The same from a directory with the release files (`SHA256SUMS`, `SHA256SUMS.sig`, the binary), without network access. |
 | `picache update apply-pending` | Root only. Install the version the web UI queued in `<data>/update-requests/`. Run by `picache-update.service`. |
+| `picache logs tail [--client ADDR]... [--status S]... [--json] [--url URL] [--token-file FILE]` | Follow the query log through the API ([From the command line](#from-the-command-line)). Needs an API token (read is enough). |
+| `picache logs export --format ndjson\|csv [--range R \| --from T --to T] [--client ADDR]... [--status S]... [--domain D] [--qtype T] [--rcode R]... [--dnssec true\|false] [--upstream U] --out FILE\|- [--url URL] [--token-file FILE]` | Export the query log through the API to a new file (0600) or stdout. |
+| `picache db check` | Check `picache.db` read-only (also while PiCache runs): integrity, foreign keys, schema versions. Exit code `3` when problems are found ([Recovering a damaged picache.db](#recovering-a-damaged-picachedb)). Root or the service user. |
+| `picache db salvage --out FILE [--force]` | Copy every readable row of a damaged `picache.db` into the new file `FILE` (PiCache stopped; the source is never modified). Exit code `3` when rows were lost or skipped. Root or the service user. |
 | `picache help` | Print the usage. |
 
 Exit codes: `0` success, `1` error or unhealthy, `2` usage or configuration
-error, `75` restart requested from the web UI (systemd and Docker restart the
-process).
+error, `3` problems found or rows lost (`db check`, `db salvage`), `75`
+restart requested from the web UI (systemd and Docker restart the process).
 
 ---
 
@@ -2004,9 +2155,13 @@ process).
   → Web access**. The HTTPS redirect, the sessions and the allowed hosts are
   not changed. A browser that stored HSTS for a name whose certificate it no
   longer trusts refuses that name: open PiCache by its IP address.
-- **Logs:** `journalctl -u picache -f` (bare metal/LXC),
-  `docker compose logs -f picache` (Docker). Set `PICACHE_LOG_LEVEL=debug`
-  for more detail.
+- **Logs:** **System → Application log** shows the last 2000 lines and
+  switches on debug logging for a while; `journalctl -u picache -f` (bare
+  metal/LXC), `docker compose logs -f picache` (Docker). Set
+  `PICACHE_LOG_LEVEL=debug` for more detail at every start. Past warnings
+  are listed under **System → Health & about → Warnings**.
+- **Damaged configuration database:** `sudo picache db check`, then see
+  [Recovering a damaged picache.db](#recovering-a-damaged-picachedb).
 - **`bind … permission denied`:** PiCache was started without
   `CAP_NET_BIND_SERVICE`. Use the systemd unit or the compose file from
   `deploy/`.
