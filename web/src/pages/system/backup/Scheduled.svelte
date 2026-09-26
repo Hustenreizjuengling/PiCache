@@ -221,7 +221,7 @@
   footer={session.isAdmin && form.draft ? formFooter : undefined}
 >
   {#snippet actions()}
-    {#if session.isAdmin && settings}
+    {#if session.canOperate && settings}
       <Button
         icon="archive"
         loading={starting || running}
@@ -259,7 +259,7 @@
             {/snippet}
           </Notice>
         {/if}
-        {#if !session.isAdmin}
+        {#if !session.canOperate}
           <p class="small muted">{t('system.backup.scheduled.readOnly')}</p>
         {/if}
       </section>

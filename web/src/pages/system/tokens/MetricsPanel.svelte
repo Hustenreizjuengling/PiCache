@@ -2,10 +2,14 @@
   @component
   The Prometheus endpoint (settings.web.metricsEnabled, off by default).
   Switching applies immediately; when on, shows the URL and a scrape config
-  for this address. Scraping needs an admin API token.
+  for this address. Scraping needs an admin API token. Over HTTPS the
+  certificate check depends on the certificate in use: the local CA's
+  certificate as ca_file, the legacy self-signed certificate itself, or
+  nothing for certificate files and uploads (a public or your own CA).
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
+  import { api, resource } from '$lib/api'
   import { session } from '$lib/session.svelte'
   import { settingsForm } from '$lib/settings.svelte'
   import { CopyButton, Notice, Panel, Skeleton, Toggle, toast } from '$lib/ui'
@@ -14,18 +18,35 @@
 
   const url = new URL('metrics', document.baseURI)
   const https = url.protocol === 'https:'
-  const scrapeConfig = [
-    'scrape_configs:',
-    '  - job_name: picache',
-    `    scheme: ${https ? 'https' : 'http'}`,
-    `    metrics_path: ${url.pathname}`,
-    '    authorization:',
-    '      type: Bearer',
-    '      credentials_file: /etc/prometheus/picache-token',
-    ...(https ? ['    tls_config:', '      ca_file: /etc/prometheus/picache-cert.pem'] : []),
-    '    static_configs:',
-    `      - targets: ['${url.host}']`,
-  ].join('\n')
+  // Only over HTTPS: which certificate Prometheus has to verify.
+  const tls = https ? resource((signal) => api.tls.status({ signal })) : undefined
+  const source = $derived(tls?.data?.source)
+  const caFile = $derived(
+    source === 'local-ca' ? '/etc/prometheus/picache-ca.crt' : source === 'self-signed' ? '/etc/prometheus/picache-cert.pem' : '',
+  )
+  const scrapeConfig = $derived(
+    [
+      'scrape_configs:',
+      '  - job_name: picache',
+      `    scheme: ${https ? 'https' : 'http'}`,
+      `    metrics_path: ${url.pathname}`,
+      '    authorization:',
+      '      type: Bearer',
+      '      credentials_file: /etc/prometheus/picache-token',
+      ...(https && caFile ? ['    tls_config:', `      ca_file: ${caFile}`] : []),
+      '    static_configs:',
+      `      - targets: ['${url.host}']`,
+    ].join('\n'),
+  )
+  const scrapeHelp = $derived(
+    !https
+      ? t('system.metrics.scrapeHelp')
+      : source === 'local-ca'
+        ? t('system.metrics.scrapeHelpTls')
+        : source === 'self-signed'
+          ? t('system.metrics.scrapeHelpSelfSigned')
+          : t('system.metrics.scrapeHelpOwnCert'),
+  )
 
   async function toggle(on: boolean) {
     if (await form.save()) {
@@ -61,13 +82,15 @@
         </div>
         <div class="stack-sm">
           <p class="small">{t('system.metrics.scrape')}</p>
-          <div class="box top">
-            <pre class="mono">{scrapeConfig}</pre>
-            <CopyButton text={scrapeConfig} />
-          </div>
-          <p class="small muted">
-            {https ? t('system.metrics.scrapeHelpTls') : t('system.metrics.scrapeHelp')}
-          </p>
+          {#if tls && !tls.data && !tls.error}
+            <Skeleton height="160px" />
+          {:else}
+            <div class="box top">
+              <pre class="mono">{scrapeConfig}</pre>
+              <CopyButton text={scrapeConfig} />
+            </div>
+            <p class="small muted">{scrapeHelp}</p>
+          {/if}
         </div>
       {/if}
     </div>

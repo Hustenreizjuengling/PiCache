@@ -8,6 +8,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"runtime"
 	"runtime/metrics"
@@ -38,10 +39,10 @@ func (s *Server) registerSystemRoutes() {
 	s.route("GET /api/v1/system/backup", permAdmin, s.systemBackup)
 	// A restore replaces the whole configuration at once: interactive
 	// sessions only, and the password is asked again (restorePasswordHeader).
-	s.route("POST /api/v1/system/restore", permSession, s.systemRestore)
-	s.route("POST /api/v1/system/restart", permAdmin, s.systemRestart)
+	s.route("POST /api/v1/system/restore", permSession, s.systemRestore, routeDestructive)
+	s.route("POST /api/v1/system/restart", permAdmin, s.systemRestart, routeExempt)
 	s.route("GET /api/v1/system/update", permRead, s.systemUpdate)
-	s.route("POST /api/v1/system/update/check", permAdmin, s.systemUpdateCheck)
+	s.route("POST /api/v1/system/update/check", permAdmin, s.systemUpdateCheck, routeExempt)
 	// Installing replaces the binary: interactive sessions only, and the
 	// password is asked again (like a restore).
 	s.route("POST /api/v1/system/update/apply", permSession, s.systemUpdateApply)
@@ -66,12 +67,28 @@ type systemInfoResponse struct {
 	MasterKeySource string       `json:"masterKeySource"`
 	Memory          memoryInfo   `json:"memory"`
 	Goroutines      int          `json:"goroutines"`
+	// WebRefused counts the connections and requests the web ACL refused
+	// since the start; ClientAddress is this request's effective client,
+	// PeerAddress its TCP peer (a trusted proxy when they differ).
+	WebRefused    uint64 `json:"webRefused"`
+	ClientAddress string `json:"clientAddress"`
+	PeerAddress   string `json:"peerAddress"`
 }
 
 func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) error {
 	rt := s.d.Runtime
 	started := rt.StartedAt()
+	ci := requestClient(r)
+	addr := func(ip netip.Addr) string {
+		if ip.IsValid() {
+			return ip.String()
+		}
+		return ""
+	}
 	return ok(w, systemInfoResponse{
+		WebRefused:      s.web.Refused(),
+		ClientAddress:   addr(ci.client),
+		PeerAddress:     addr(ci.peer),
 		Version:         version.Get(),
 		StartedAt:       started.UTC(),
 		UptimeSec:       int64(time.Since(started).Seconds()),
@@ -249,14 +266,21 @@ func (s *Server) systemRestore(w http.ResponseWriter, r *http.Request) error {
 		_, _ = io.Copy(io.Discard, body)
 		return err
 	}
-	if err := s.d.Runtime.StageRestore(r.Context(), body); err != nil {
+	staged, err := s.d.Runtime.StageRestore(r.Context(), body)
+	if err != nil {
 		if _, tooBig := errors.AsType[*http.MaxBytesError](err); tooBig {
 			return apperr.Invalid("body", "the backup is larger than 512 MiB")
 		}
 		return err
 	}
 	s.audit(r, "system.restore", "", nil)
-	return writeJSON(w, http.StatusAccepted, map[string]any{"staged": true, "message": "Restart PiCache to apply"})
+	out := map[string]any{"staged": true, "message": "Restart PiCache to apply"}
+	// Nothing is refused, but a requester the restored settings would lock
+	// out is told how to get back in.
+	if warn := restoreWarning(r, staged); warn != "" {
+		out["webAccessWarning"] = warn
+	}
+	return writeJSON(w, http.StatusAccepted, out)
 }
 
 func (s *Server) systemRestart(w http.ResponseWriter, r *http.Request) error {

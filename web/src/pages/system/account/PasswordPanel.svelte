@@ -97,7 +97,7 @@
       description={t('system.account.password.keepTokensHelp')}
     />
     <div class="row">
-      <Button type="submit" variant="primary" loading={busy} disabled={!session.isAdmin}>
+      <Button type="submit" variant="primary" loading={busy}>
         {t('system.account.password.submit')}
       </Button>
     </div>

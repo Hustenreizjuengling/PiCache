@@ -109,9 +109,11 @@
       {/each}
     </nav>
 
-    {#if !session.isAdmin}<Notice>{t('common.state.readOnly')}</Notice>{/if}
+    {#if !session.canOperate}<Notice>{t('common.state.readOnly')}</Notice>{/if}
 
-    <fieldset class="sections" disabled={!session.isAdmin}>
+    <!-- Upstream tests and the cache flush stay usable for admins while the host
+         locks the configuration: those two sections disable their settings themselves. -->
+    <fieldset class="sections" disabled={!session.canOperate}>
       <UpstreamsSection
         form={dns}
         stats={upstreams.data?.upstreams}
@@ -120,13 +122,15 @@
         clockGuard={!!upstreams.data?.clockGuard}
       />
       <CacheSection form={dns} cache={upstreams.data?.cache} onflushed={() => upstreams.refresh()} />
-      <BlockingSection form={filter} />
-      <ProtectionSection form={dns} stats={dnsStats.data} />
-      <RateLimitSection form={dns} stats={dnsStats.data} />
-      <AccessSection form={dns} stats={dnsStats.data} />
-      <NamesSection form={dns} status={appStatus.overview.data?.router} />
-      <Ipv6Section form={dns} />
-      <DnssecSection form={dns} />
+      <fieldset class="sections" disabled={!session.isAdmin}>
+        <BlockingSection form={filter} />
+        <ProtectionSection form={dns} stats={dnsStats.data} />
+        <RateLimitSection form={dns} stats={dnsStats.data} />
+        <AccessSection form={dns} stats={dnsStats.data} />
+        <NamesSection form={dns} status={appStatus.overview.data?.router} />
+        <Ipv6Section form={dns} />
+        <DnssecSection form={dns} />
+      </fieldset>
     </fieldset>
 
     {#if dirty || saveErrors.length > 0}

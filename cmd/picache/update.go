@@ -118,7 +118,7 @@ func published(rel *update.Release) string {
 // updateInstall runs the install procedure (root): from GitHub after
 // showing the release notes, or from a directory of release files.
 func updateInstall(ver string, pre, downgrade, yes bool, from string) int {
-	cfg, err := config.Load(nil, os.Getenv)
+	cfg, err := config.LoadWithoutSecrets(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2
@@ -197,7 +197,7 @@ func updateInstall(ver string, pre, downgrade, yes bool, from string) int {
 
 // updateApplyPending is the root helper started by picache-update.path.
 func updateApplyPending() int {
-	cfg, err := config.Load(nil, os.Getenv)
+	cfg, err := config.LoadWithoutSecrets(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2

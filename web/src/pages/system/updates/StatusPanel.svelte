@@ -97,7 +97,7 @@
         {t('system.updates.checkedAt', { time: formatRelative(info.checkedAt) })}
       </span>
     {/if}
-    {#if session.isAdmin}
+    {#if session.canOperate}
       <Button size="sm" icon="refresh" loading={checking} disabled={busy} onclick={oncheck}>
         {t('system.updates.check')}
       </Button>

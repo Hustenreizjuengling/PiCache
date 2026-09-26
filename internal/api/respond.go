@@ -18,27 +18,93 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 )
 
-// perm is the permission a route requires.
+// perm is the permission a route requires (docs/API.md: P, R, U, A, S).
 type perm int
 
 const (
-	permPublic  perm = iota // no authentication
-	permRead                // any authenticated principal (read or admin scope)
-	permAdmin               // admin scope (browser session or admin API token)
-	permSession             // interactive browser session of an admin (never API tokens): account security
+	permPublic  perm = iota // P: no authentication
+	permRead                // R: any authenticated principal (read or admin scope)
+	permAdmin               // A: admin scope (an admin's browser session or an admin API token)
+	permSession             // S: interactive browser session of an admin (never API tokens)
+	permSelf                // U: interactive browser session of any role (never API tokens): the own account
 )
+
+// lockClass says whether PICACHE_CONFIG_LOCKED refuses a route for
+// sessions (docs/ARCHITECTURE.md 6.1).
+type lockClass int
+
+const (
+	lockNone   lockClass = iota // GET/HEAD and every P, R and U route
+	lockLocked                  // the default of every other A and S route: refused for sessions while locked
+	lockExempt                  // no stored configuration changes, nothing deleted (routeExempt)
+	lockPause                   // POST /dns/blocking: the handler locks a permanent disable (routePause)
+)
+
+// routeOpt classifies a route for the configuration lock and the
+// destructive switch.
+type routeOpt int
+
+const (
+	routeExempt      routeOpt = iota + 1 // not locked by PICACHE_CONFIG_LOCKED
+	routePause                           // lock class pause (only POST /dns/blocking)
+	routeDestructive                     // refused while PICACHE_DESTRUCTIVE_API is off
+)
+
+// routeInfo is one registered route (the tests iterate the registry).
+type routeInfo struct {
+	Pattern     string
+	Perm        perm
+	Lock        lockClass
+	Destructive bool
+}
 
 // handlerFunc is an API handler that returns an error instead of writing it.
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
 
 type ctxKey int
 
-const principalKey ctxKey = 1
+const (
+	principalKey ctxKey = iota + 1
+	clientKey
+)
 
 var errNotFoundRoute = apperr.NotFound("route", "")
 
-// route registers pattern ("METHOD /api/v1/…") with a permission.
-func (s *Server) route(pattern string, p perm, h handlerFunc) {
+// errConfigLocked is the answer to a locked route called by a session while
+// PICACHE_CONFIG_LOCKED is on.
+func errConfigLocked() error {
+	return apperr.Locked("the configuration is locked on this host (PICACHE_CONFIG_LOCKED); change it with an admin API token or unset the variable")
+}
+
+// classify returns the registry entry of a route.
+func classify(pattern string, p perm, opts []routeOpt) routeInfo {
+	info := routeInfo{Pattern: pattern, Perm: p, Lock: lockLocked}
+	method, _, _ := strings.Cut(pattern, " ")
+	for _, o := range opts {
+		switch o {
+		case routeExempt:
+			info.Lock = lockExempt
+		case routePause:
+			info.Lock = lockPause
+		case routeDestructive:
+			info.Destructive = true
+		}
+	}
+	if method == http.MethodGet || method == http.MethodHead || p == permPublic || p == permRead || p == permSelf {
+		info.Lock = lockNone
+	}
+	return info
+}
+
+// route registers pattern ("METHOD /api/v1/…") with a permission and its
+// classification (routeExempt, routePause, routeDestructive; every other
+// non-GET A or S route is locked by PICACHE_CONFIG_LOCKED). After
+// authentication and the permission check, and before the handler reads
+// the body, it refuses a locked route for sessions while the configuration
+// is locked, then a destructive route while PICACHE_DESTRUCTIVE_API is off.
+func (s *Server) route(pattern string, p perm, h handlerFunc, opts ...routeOpt) {
+	info := classify(pattern, p, opts)
+	s.routes = append(s.routes, info)
 	s.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		if p != permPublic {
 			pr, err := s.d.Auth.Authenticate(r)
@@ -50,8 +116,16 @@ func (s *Server) route(pattern string, p perm, h handlerFunc) {
 				writeError(w, r, s.log, apperr.Forbidden("this action requires admin rights"))
 				return
 			}
-			if p == permSession && pr.TokenID != 0 {
+			if (p == permSession || p == permSelf) && pr.TokenID != 0 {
 				writeError(w, r, s.log, apperr.Forbidden("this action requires an interactive login"))
+				return
+			}
+			if info.Lock == lockLocked && pr.TokenID == 0 && s.configLocked() {
+				writeError(w, r, s.log, errConfigLocked())
+				return
+			}
+			if info.Destructive && !s.destructiveAllowed() {
+				writeError(w, r, s.log, apperr.Forbidden("this action is disabled on this host (PICACHE_DESTRUCTIVE_API=false)"))
 				return
 			}
 			r = r.WithContext(context.WithValue(r.Context(), principalKey, pr))
@@ -61,6 +135,23 @@ func (s *Server) route(pattern string, p perm, h handlerFunc) {
 			writeError(w, r, s.log, err)
 		}
 	})
+}
+
+// configLocked reports whether PICACHE_CONFIG_LOCKED is on.
+func (s *Server) configLocked() bool { return s.d.Config != nil && s.d.Config.ConfigLocked }
+
+// destructiveAllowed reports whether PICACHE_DESTRUCTIVE_API is on (the
+// default; a process without a configuration allows them).
+func (s *Server) destructiveAllowed() bool { return s.d.Config == nil || s.d.Config.DestructiveAPI }
+
+// requireUnlocked refuses a configuration change of a session while the
+// configuration is locked (for routes of lock class pause, which lock only
+// some requests).
+func (s *Server) requireUnlocked(r *http.Request) error {
+	if p := principal(r); p != nil && p.TokenID == 0 && s.configLocked() {
+		return errConfigLocked()
+	}
+	return nil
 }
 
 // principal returns the authenticated principal (nil on public routes).
@@ -74,7 +165,9 @@ func (s *Server) audit(r *http.Request, action, target string, details any) {
 	s.d.Auth.Audit(r.Context(), principal(r), clientIP(r), action, target, details)
 }
 
-// clientIP returns the direct peer address (no proxy headers are trusted).
+// clientIP returns the effective client address (the peer, or the address
+// a trusted reverse proxy forwarded; the access middleware has rewritten
+// r.RemoteAddr to it).
 func clientIP(r *http.Request) string {
 	if ip := netutil.AddrFromRemote(r.RemoteAddr); ip.IsValid() {
 		return ip.String()
@@ -112,11 +205,17 @@ type errAlreadyWritten struct{ error }
 
 // decode reads a JSON body (max 1 MiB, unknown members rejected).
 func decode(w http.ResponseWriter, r *http.Request, dst any) error {
+	return decodeLimit(w, r, dst, 1<<20)
+}
+
+// decodeLimit reads a JSON body of at most limit bytes (unknown members
+// rejected).
+func decodeLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
 	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if ct != "application/json" {
 		return apperr.Invalid("body", "Content-Type must be application/json")
 	}
-	body := http.MaxBytesReader(w, r.Body, 1<<20)
+	body := http.MaxBytesReader(w, r.Body, limit)
 	if err := json.UnmarshalRead(body, dst, json.RejectUnknownMembers(true)); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
@@ -173,6 +272,8 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 			status, code = http.StatusUnauthorized, "unauthorized"
 		case apperr.KindTooMany:
 			status, code = http.StatusTooManyRequests, "too_many_requests"
+		case apperr.KindLocked:
+			status, code = http.StatusForbidden, "config_locked"
 		}
 		if status != http.StatusInternalServerError {
 			body.Error.Message = ae.Message

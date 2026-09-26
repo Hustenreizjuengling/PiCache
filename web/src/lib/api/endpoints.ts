@@ -89,6 +89,42 @@ const backups = {
   removeFile: (name: string, o?: ReqOpts) => http.del(`/system/backups/scheduled/files/${seg(name)}`, o),
 }
 
+/**
+ * Accounts (admin sessions only). Every change needs the caller's password
+ * (400 with field "currentPassword"); 409 keeps at least one admin and at
+ * most 32 accounts. Changing your own role or deleting yourself ends your
+ * sessions (the server clears the cookies).
+ */
+const users = {
+  /** Oldest first. */
+  list: (o?: ReqOpts) => http.get<T.User[]>('/system/users', o),
+  /** 400 with field username, password or role; 409 for a name that exists (any case). */
+  create: (body: T.UserCreate, o?: ReqOpts) => http.post<T.User>('/system/users', body, o),
+  /** Another user's password signs them out and revokes their API tokens; disableTotp signs them out. */
+  update: (id: number, body: T.UserUpdate, o?: ReqOpts) => http.put<T.User>(`/system/users/${seg(id)}`, body, o),
+  remove: (id: number, currentPassword: string, o?: ReqOpts) =>
+    http.del(`/system/users/${seg(id)}`, { ...o, body: { currentPassword } }),
+}
+
+/** The HTTPS certificate of the web UI. */
+const tls = {
+  status: (o?: ReqOpts) => http.get<T.TlsStatus>('/system/tls', o),
+  /**
+   * Uploads a certificate chain (PEM, leaf first) and its unencrypted key;
+   * only over HTTPS. 400 with field certPem, keyPem, currentPassword or body;
+   * 409 without an HTTPS listener or while PICACHE_WEB_TLS_CERT is set.
+   */
+  upload: (body: { certPem: string; keyPem: string; currentPassword: string }, o?: ReqOpts) =>
+    http.put<T.TlsStatus>('/system/tls', body, o),
+  /** Deletes the uploaded certificate (404 without one); PiCache serves the next source. */
+  remove: (o?: ReqOpts) => http.del<T.TlsStatus>('/system/tls', o),
+  /** Creates (or replaces) the local CA and a new certificate from it. */
+  createLocalCa: (currentPassword: string, o?: ReqOpts) =>
+    http.post<T.TlsStatus>('/system/tls/local-ca', { currentPassword }, o),
+  /** URL for a plain <a href download> of the local CA certificate (public). */
+  caUrl: () => apiUrl('/system/tls/ca.crt'),
+}
+
 // ---------------------------------------------------------------- notifications
 
 const notifications = {
@@ -432,6 +468,8 @@ export const api = {
   tokens,
   system,
   backups,
+  users,
+  tls,
   notifications,
   settings,
   dns,

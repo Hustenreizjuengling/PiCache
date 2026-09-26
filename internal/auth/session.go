@@ -40,12 +40,12 @@ type userRow struct {
 	totpSealed   sql.NullString
 }
 
-const userColumns = `id, username, password_hash, totp_secret, created_at, last_login_at`
+const userColumns = `id, username, role, password_hash, totp_secret, created_at, last_login_at`
 
 func scanUser(row interface{ Scan(...any) error }) (userRow, error) {
 	var u userRow
 	var created, lastLogin int64
-	if err := row.Scan(&u.ID, &u.Username, &u.passwordHash, &u.totpSealed, &created, &lastLogin); err != nil {
+	if err := row.Scan(&u.ID, &u.Username, &u.Role, &u.passwordHash, &u.totpSealed, &created, &lastLogin); err != nil {
 		return u, err
 	}
 	u.TOTPEnabled = u.totpSealed.Valid
@@ -120,17 +120,31 @@ func (a *Service) Login(ctx context.Context, username, password, totp string, me
 		}
 	}
 	a.throttle.succeed(checked...)
+	a.passwordChecked()
 
 	now := a.now()
+	// The hash that was verified; the session is created only while it is
+	// still the account's (createSession), so a sign-in that raced a
+	// password reset fails instead of outliving it.
+	verified := u.passwordHash
 	if newHash != "" {
-		if _, err := a.db.W.ExecContext(ctx, `UPDATE auth_users SET password_hash = ? WHERE id = ?`, newHash, u.ID); err != nil {
+		// Only over the hash just verified: a reset that committed
+		// meanwhile must not be undone by the upgrade.
+		res, err := a.db.W.ExecContext(ctx, `UPDATE auth_users SET password_hash = ? WHERE id = ? AND password_hash = ?`,
+			newHash, u.ID, u.passwordHash)
+		if err != nil {
 			a.log.Warn("could not upgrade password hash", slog.Any("err", err))
+		} else if n, _ := res.RowsAffected(); n == 1 {
+			verified = newHash
 		}
 	}
 	if _, err := a.db.W.ExecContext(ctx, `UPDATE auth_users SET last_login_at = ? WHERE id = ?`, now.UnixMilli(), u.ID); err != nil {
 		return nil, err
 	}
-	s, err := a.createSession(ctx, u.ID, meta)
+	s, err := a.createSession(ctx, u.ID, verified, meta)
+	if errors.Is(err, errPasswordChanged) {
+		return nil, errBadCredentials
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -139,14 +153,21 @@ func (a *Service) Login(ctx context.Context, username, password, totp string, me
 	if u.TOTPEnabled {
 		method = "password+totp"
 	}
-	a.Audit(ctx, &Principal{UserID: u.ID, Username: u.Username, SessionID: s.ID, Scope: ScopeAdmin},
+	a.Audit(ctx, &Principal{UserID: u.ID, Username: u.Username, SessionID: s.ID, Role: u.Role, Scope: scopeOf(u.Role)},
 		meta.IP, "auth.login", u.Username, map[string]string{"method": method})
 	return s, nil
 }
 
+// errPasswordChanged reports that the account's password hash is no longer
+// the one that was verified (a reset or change committed meanwhile).
+var errPasswordChanged = errors.New("auth: the password was changed meanwhile")
+
 // createSession stores a new session for userID and ends the user's oldest
-// sessions beyond maxSessionsPerUser.
-func (a *Service) createSession(ctx context.Context, userID int64, meta ReqMeta) (*Session, error) {
+// sessions beyond maxSessionsPerUser. passwordHash is the hash the sign-in
+// verified: when the account's hash differs by the time the session is
+// written (a password reset committed while the password was checked), no
+// session is created and errPasswordChanged is returned.
+func (a *Service) createSession(ctx context.Context, userID int64, passwordHash string, meta ReqMeta) (*Session, error) {
 	raw := make([]byte, 32)
 	rand.Read(raw)
 	tok := base64.RawURLEncoding.EncodeToString(raw)
@@ -155,12 +176,20 @@ func (a *Service) createSession(ctx context.Context, userID int64, meta ReqMeta)
 	now := a.now()
 	ua := truncateUTF8(meta.UserAgent, maxUserAgentLen)
 	err := a.db.Tx(ctx, func(tx *sql.Tx) error {
+		var stored string
+		err := tx.QueryRowContext(ctx, `SELECT password_hash FROM auth_users WHERE id = ?`, userID).Scan(&stored)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && stored != passwordHash {
+			return errPasswordChanged
+		}
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO auth_sessions (id, hash, user_id, created_at, last_seen, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			id, h, userID, now.UnixMilli(), now.UnixMilli(), meta.IP, ua); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM auth_sessions WHERE user_id = ? AND id NOT IN
+		_, err = tx.ExecContext(ctx, `DELETE FROM auth_sessions WHERE user_id = ? AND id NOT IN
 			(SELECT id FROM auth_sessions WHERE user_id = ? ORDER BY last_seen DESC, created_at DESC LIMIT ?)`,
 			userID, userID, maxSessionsPerUser)
 		return err
@@ -245,12 +274,13 @@ func (a *Service) authSession(ctx context.Context, tok string) (*Principal, erro
 		return nil, errNotAuthenticated
 	}
 	var (
-		p                 = Principal{Scope: ScopeAdmin}
+		p                 Principal
 		created, lastSeen int64
 	)
-	err := a.db.R.QueryRowContext(ctx, `SELECT s.id, s.user_id, s.created_at, s.last_seen, u.username
+	// The role is read on every request, so a role change applies at once.
+	err := a.db.R.QueryRowContext(ctx, `SELECT s.id, s.user_id, s.created_at, s.last_seen, u.username, u.role
 		FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id WHERE s.hash = ?`, hashSecret(tok)).
-		Scan(&p.SessionID, &p.UserID, &created, &lastSeen, &p.Username)
+		Scan(&p.SessionID, &p.UserID, &created, &lastSeen, &p.Username, &p.Role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errNotAuthenticated
 	}
@@ -269,6 +299,7 @@ func (a *Service) authSession(ctx context.Context, tok string) (*Principal, erro
 			return nil, err
 		}
 	}
+	p.Scope = scopeOf(p.Role)
 	return &p, nil
 }
 
@@ -310,7 +341,8 @@ func (a *Service) ChangePassword(ctx context.Context, p *Principal, current, nex
 	if current == next {
 		return apperr.Invalid("newPassword", "must differ from the current password")
 	}
-	if err := a.verifyUserPassword(ctx, p, "currentPassword", current); err != nil {
+	verified, err := a.verifyUserPassword(ctx, p, "currentPassword", current)
+	if err != nil {
 		return err
 	}
 	h, err := a.newHash(ctx, next)
@@ -318,6 +350,9 @@ func (a *Service) ChangePassword(ctx context.Context, p *Principal, current, nex
 		return err
 	}
 	return a.db.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := recheckCaller(ctx, tx, p, "currentPassword", verified); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET password_hash = ? WHERE id = ?`, h, p.UserID); err != nil {
 			return err
 		}
@@ -340,53 +375,96 @@ func (a *Service) ChangePassword(ctx context.Context, p *Principal, current, nex
 // for the username must not keep the signed-in owner from changing the
 // password (and a success does not reset that delay either). It reports
 // false for a wrong password (the failure is recorded and audited like a
-// failed sign-in).
-func (a *Service) checkUserPassword(ctx context.Context, p *Principal, pw string) (bool, error) {
+// failed sign-in). For a right password it also returns the stored hash it
+// matched, for recheckCaller.
+func (a *Service) checkUserPassword(ctx context.Context, p *Principal, pw string) (bool, string, error) {
 	if p == nil {
-		return false, errNotAuthenticated
+		return false, "", errNotAuthenticated
 	}
 	u, err := a.userByID(ctx, p.UserID)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	ckey, ukey := clientThrottleKey(p.IP), userThrottleKey(u.Username)
-	akey := ukey // only sessions confirm passwords (permSession); the username otherwise
+	akey := ukey // only sessions confirm passwords (permSelf, permSession); the username otherwise
 	if p.SessionID != "" {
 		akey = sessionThrottleKey(p.SessionID)
 	}
 	if err := a.throttle.allow(a.now(), ckey, akey); err != nil {
-		return false, err
+		return false, "", err
 	}
 	ok := false
 	if len(pw) <= maxPasswordBytes {
 		if ok, _, err = a.checkPassword(ctx, u.passwordHash, pw); err != nil {
-			return false, err
+			return false, "", err
 		}
 	}
 	if !ok {
 		a.recordFailure(ckey, akey)
 		a.auditFailure(ctx, ReqMeta{IP: p.IP}, "password confirmation")
-		return false, nil
+		return false, "", nil
 	}
 	a.throttle.succeed(ckey, akey)
-	return true, nil
+	a.passwordChecked()
+	return true, u.passwordHash, nil
 }
 
 // verifyUserPassword re-checks the password of an authenticated user
-// (password change, creating an API token, starting or disabling TOTP) and
-// reports a missing or wrong password as invalid input of field.
-func (a *Service) verifyUserPassword(ctx context.Context, p *Principal, field, pw string) error {
+// (password change, creating an API token, starting or disabling TOTP,
+// managing accounts) and reports a missing or wrong password as invalid
+// input of field. It returns the stored hash the password matched: a
+// caller that then writes passes it to recheckCaller inside its
+// transaction.
+func (a *Service) verifyUserPassword(ctx context.Context, p *Principal, field, pw string) (string, error) {
 	if pw == "" {
-		return apperr.Invalid(field, "enter your current password")
+		return "", apperr.Invalid(field, "enter your current password")
 	}
-	ok, err := a.checkUserPassword(ctx, p, pw)
+	ok, hash, err := a.checkUserPassword(ctx, p, pw)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !ok {
-		return apperr.Invalid(field, "wrong password")
+		return "", apperr.Invalid(field, "wrong password")
 	}
-	return nil
+	return hash, nil
+}
+
+// recheckCaller repeats inside a write transaction what was checked before
+// it (the argon2id check takes a noticeable time on a small board): the
+// caller's account and session (or token) still exist and, when
+// passwordHash is not empty, the password confirmed for field is still the
+// account's. Every revocation (password reset, role change, delete,
+// `picache reset-password`) deletes the sessions in its own BEGIN
+// IMMEDIATE transaction, so a request that raced one fails here instead of
+// creating a token, session or change after it. It returns the caller's
+// current role.
+func recheckCaller(ctx context.Context, tx *sql.Tx, p *Principal, field, passwordHash string) (string, error) {
+	var role, stored string
+	err := tx.QueryRowContext(ctx, `SELECT role, password_hash FROM auth_users WHERE id = ?`, p.UserID).Scan(&role, &stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errNotAuthenticated
+	}
+	if err != nil {
+		return "", err
+	}
+	var alive bool
+	if p.TokenID != 0 {
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM auth_tokens WHERE id = ? AND user_id = ?)`,
+			p.TokenID, p.UserID).Scan(&alive)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM auth_sessions WHERE id = ? AND user_id = ?)`,
+			p.SessionID, p.UserID).Scan(&alive)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !alive {
+		return "", errNotAuthenticated
+	}
+	if passwordHash != "" && stored != passwordHash {
+		return "", apperr.Invalid(field, "the password was changed meanwhile; enter the current password")
+	}
+	return role, nil
 }
 
 // ConfirmPassword re-checks the password of a signed-in user before an
@@ -397,7 +475,7 @@ func (a *Service) ConfirmPassword(ctx context.Context, p *Principal, pw string) 
 	if pw == "" {
 		return &apperr.Error{Kind: apperr.KindUnauthorized, Field: "password", Message: "enter your password to confirm"}
 	}
-	ok, err := a.checkUserPassword(ctx, p, pw)
+	ok, _, err := a.checkUserPassword(ctx, p, pw)
 	if err != nil {
 		return err
 	}

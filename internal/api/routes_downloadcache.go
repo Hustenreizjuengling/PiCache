@@ -25,7 +25,7 @@ func (s *Server) registerDownloadCacheRoutes() {
 	s.route("PUT /api/v1/download-cache/services/{id}", permAdmin, s.downloadCacheUpdate)
 	s.route("DELETE /api/v1/download-cache/services/{id}", permAdmin, s.downloadCacheDelete)
 	s.route("GET /api/v1/download-cache/source", permRead, s.downloadCacheSource)
-	s.route("POST /api/v1/download-cache/source/refresh", permAdmin, s.downloadCacheRefresh)
+	s.route("POST /api/v1/download-cache/source/refresh", permAdmin, s.downloadCacheRefresh, routeExempt)
 	s.route("PUT /api/v1/download-cache/labels", permAdmin, s.downloadCacheSetLabel)
 	s.route("GET /api/v1/download-cache/sni", permRead, s.downloadCacheSNI)
 }

@@ -22,9 +22,43 @@ class Session {
     return this.status?.user
   }
 
-  /** Admin scope: may change settings. Read-only principals see disabled actions. */
-  get isAdmin(): boolean {
+  /**
+   * Admin rights (an admin session or admin token), whatever the host's
+   * configuration lock says: runs the actions that store no configuration
+   * (pauses, refreshes, tests, restart) and reads what only admins may read
+   * (audit log, notification channels, backups).
+   */
+  get canOperate(): boolean {
     return this.status?.scope === 'admin'
+  }
+
+  /**
+   * May change the configuration: admin rights while the host does not lock
+   * it (PICACHE_CONFIG_LOCKED). Read-only principals, and admins while the
+   * configuration is locked, see disabled actions.
+   */
+  get isAdmin(): boolean {
+    return this.canOperate && !this.configLocked
+  }
+
+  /** The host refuses configuration changes from interactive sessions (PICACHE_CONFIG_LOCKED). */
+  get configLocked(): boolean {
+    return !!this.status?.configLocked
+  }
+
+  /** The host allows destructive actions (PICACHE_DESTRUCTIVE_API); false while signed out. */
+  get destructiveApi(): boolean {
+    return !!this.status?.destructiveApi
+  }
+
+  /** May run destructive actions (restore, resets, purges, deleting stores, users or certificates); they are hidden otherwise. */
+  get canDestroy(): boolean {
+    return this.isAdmin && this.destructiveApi
+  }
+
+  /** The signed-in account has the viewer role (reads everything, changes only its own account and read tokens). */
+  get isViewer(): boolean {
+    return this.user?.role === 'viewer'
   }
 
   /** Loads /auth/status and selects the screen. */
@@ -45,6 +79,27 @@ class Session {
       this.phase = 'error'
     }
   }
+
+  /**
+   * Reloads /auth/status while the app is shown, after a 403: the role may
+   * have changed or the host may lock the configuration now, and the pages
+   * should show that. Only a changed status is applied (pages that load
+   * depending on the rights would otherwise load again); failures keep it.
+   */
+  async refresh(): Promise<void> {
+    if (this.phase !== 'ready' || this.#refreshing) return
+    this.#refreshing = true
+    try {
+      const st = await api.auth.status()
+      if (st.authenticated && JSON.stringify(st) !== JSON.stringify(this.status)) this.status = st
+    } catch {
+      /* keep what we have */
+    } finally {
+      this.#refreshing = false
+    }
+  }
+
+  #refreshing = false
 
   /** After a successful login or setup. */
   async signedIn(): Promise<void> {

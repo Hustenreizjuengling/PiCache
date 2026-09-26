@@ -3,7 +3,9 @@
   Creates an API token and shows its secret exactly once. Creating one needs
   the current password (a token outlives the session). Mount it only while
   it is open ({#if}), so every opening starts with an empty form and the
-  secret and the password are dropped from memory when it closes.
+  secret and the password are dropped from memory when it closes. The token
+  belongs to the signed-in account; viewers create read tokens only (no
+  choice of access).
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -79,7 +81,7 @@
     if (errors.name || errors.days || errors.password) return
     busy = true
     try {
-      const body = { name: name.trim(), scope, currentPassword: password, ...(days ? { expiresInDays: days } : {}) }
+      const body = { name: name.trim(), scope: session.isViewer ? ('read' as const) : scope, currentPassword: password, ...(days ? { expiresInDays: days } : {}) }
       created = await api.tokens.create(body)
       password = ''
       oncreated?.(created.info)
@@ -126,13 +128,21 @@
       <Field label={t('system.tokens.name')} error={errors.name} help={t('system.tokens.nameHelp')}>
         <Input bind:value={name} maxlength={MAX_TOKEN_NAME} autocomplete="off" required />
       </Field>
-      <Field
-        label={t('system.tokens.scopeLabel')}
-        error={errors.scope}
-        help={scope === 'admin' ? t('system.tokens.scopeHelp.admin') : t('system.tokens.scopeHelp.read')}
-      >
-        <Select options={scopeOptions} bind:value={() => scope, (v) => (scope = v === 'admin' ? 'admin' : 'read')} />
-      </Field>
+      {#if session.isViewer}
+        <div class="stack-sm">
+          <p class="small"><strong>{t('system.tokens.scopeLabel')}:</strong> {t('system.tokens.scope.read')}</p>
+          <p class="small muted">{t('system.tokens.scopeHelp.read')} {t('system.tokens.viewerRead')}</p>
+          {#if errors.scope}<p class="small err">{errors.scope}</p>{/if}
+        </div>
+      {:else}
+        <Field
+          label={t('system.tokens.scopeLabel')}
+          error={errors.scope}
+          help={scope === 'admin' ? t('system.tokens.scopeHelp.admin') : t('system.tokens.scopeHelp.read')}
+        >
+          <Select options={scopeOptions} bind:value={() => scope, (v) => (scope = v === 'admin' ? 'admin' : 'read')} />
+        </Field>
+      {/if}
       <Field label={t('system.tokens.expiryLabel')} error={expiry === 'custom' ? undefined : errors.days}>
         <Select options={expiryOptions} bind:value={() => expiry, (v) => (expiry = v as Expiry)} />
       </Field>
@@ -180,6 +190,9 @@
 </Dialog>
 
 <style>
+  .err {
+    color: var(--danger);
+  }
   .secret,
   .example {
     display: flex;

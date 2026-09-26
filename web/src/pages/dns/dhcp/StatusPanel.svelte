@@ -267,10 +267,12 @@
                 <Icon name="chevron-right" size={16} />
                 <span><Trans key="dns.dhcp.fritz.step" path={fritzPath} field={fritzField} /></span>
               </p>
-              {#if session.isAdmin}
+              {#if session.canOperate}
                 <div class="row">
                   <Button size="sm" icon="search" loading={probing} onclick={onprobe}>{t('dns.dhcp.probe.again')}</Button>
                 </div>
+              {/if}
+              {#if session.isAdmin}
                 <p class="small muted"><Trans key="dns.dhcp.blocker.other-server.ignore" link={othersLink} /></p>
               {/if}
             {:else if b === 'no-interface'}

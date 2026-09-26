@@ -89,10 +89,7 @@ func newCacheEnv(t *testing.T) *cacheEnv {
 	}
 	t.Cleanup(func() { d.Close() })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	set, err := settings.Open(ctx, d, log)
-	if err != nil {
-		t.Fatal(err)
-	}
+	set := openOpenSettings(t, d, log)
 	box, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +99,7 @@ func newCacheEnv(t *testing.T) *cacheEnv {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{DataDir: dir, CacheDir: filepath.Join(dir, "cache"), MountRoot: filepath.Join(dir, "mnt"),
-		WebListen: []string{":8080"}}
+		WebListen: []string{":8080"}, DestructiveAPI: true}
 	e := &cacheEnv{t: t, rt: &cacheRuntime{}}
 	e.srv = New(Deps{Config: cfg, Settings: set, Auth: a, Runtime: e.rt, Log: log})
 	const password = "cache route test password"

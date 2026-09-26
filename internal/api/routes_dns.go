@@ -18,7 +18,7 @@ import (
 // registerDNSRoutes registers the dns endpoints (docs/API.md).
 func (s *Server) registerDNSRoutes() {
 	s.route("GET /api/v1/dns/blocking", permRead, s.dnsBlockingGet)
-	s.route("POST /api/v1/dns/blocking", permAdmin, s.dnsBlockingSet)
+	s.route("POST /api/v1/dns/blocking", permAdmin, s.dnsBlockingSet, routePause)
 	s.route("POST /api/v1/dns/lookup", permRead, s.dnsLookup)
 	s.route("GET /api/v1/dns/stats", permRead, s.dnsStats)
 	s.route("GET /api/v1/dns/cache-ips", permRead, s.dnsCacheIPs)
@@ -67,10 +67,20 @@ func (s *Server) dnsBlockingSet(w http.ResponseWriter, r *http.Request) error {
 	if in.Enabled == nil {
 		return apperr.Invalid("enabled", "required")
 	}
-	if in.PauseSeconds < 0 {
-		return apperr.Invalid("pauseSeconds", "must not be negative")
+	// Bounded before the conversion: a huge value would overflow the
+	// duration (to 0, a permanent disable past the lock check below).
+	if limit := int(dnsserver.MaxPause / time.Second); in.PauseSeconds < 0 || in.PauseSeconds > limit {
+		return apperr.Invalid("pauseSeconds", "must be between 0 and %d", limit)
 	}
-	st, err := s.d.DNS.SetBlocking(r.Context(), *in.Enabled, time.Duration(in.PauseSeconds)*time.Second)
+	pause := time.Duration(in.PauseSeconds) * time.Second
+	// Lock class pause: resuming and a timed pause are allowed while the
+	// configuration is locked, a permanent disable is not.
+	if !*in.Enabled && pause == 0 {
+		if err := s.requireUnlocked(r); err != nil {
+			return err
+		}
+	}
+	st, err := s.d.DNS.SetBlocking(r.Context(), *in.Enabled, pause)
 	if err != nil {
 		return err
 	}

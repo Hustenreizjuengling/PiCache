@@ -119,7 +119,7 @@
 {#snippet raProblem(reason: string | undefined)}
   {#if raCode === 'restart-required'}
     <p>{t('dns.dhcp.ipv6.restart')}</p>
-    {#if session.isAdmin}
+    {#if session.canOperate}
       <div class="row">
         <RestartButton size="sm" message={t('dns.dhcp.ipv6.restartConfirm')} ondone={onrestarted} />
       </div>

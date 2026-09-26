@@ -210,6 +210,13 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 		add("data-disk", "fail", fmt.Sprintf("only %d MiB free in %s", free>>20, a.cfg.DataDir), "free space on the data disk")
 	}
 
+	// Web certificate (only while an HTTPS listener is bound)
+	if a.webTLS != nil {
+		if st, msg, hint, show := a.webTLS.health(time.Now()); show {
+			add("tls", st, msg, hint)
+		}
+	}
+
 	// DHCP server (only when it is enabled or available)
 	if a.dhcp != nil {
 		if st, msg, hint, show := a.dhcp.Health(); show {

@@ -31,8 +31,8 @@ type upstreamTestInput struct {
 // registerUpstreamRoutes registers the upstream endpoints (docs/API.md).
 func (s *Server) registerUpstreamRoutes() {
 	s.route("GET /api/v1/dns/upstreams", permRead, s.handleUpstreamList)
-	s.route("POST /api/v1/dns/upstreams/test", permAdmin, s.handleUpstreamTest)
-	s.route("POST /api/v1/dns/cache/flush", permAdmin, s.handleDNSCacheFlush)
+	s.route("POST /api/v1/dns/upstreams/test", permAdmin, s.handleUpstreamTest, routeExempt)
+	s.route("POST /api/v1/dns/cache/flush", permAdmin, s.handleDNSCacheFlush, routeExempt)
 }
 
 func (s *Server) handleUpstreamList(w http.ResponseWriter, r *http.Request) error {

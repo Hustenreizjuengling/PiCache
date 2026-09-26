@@ -23,8 +23,9 @@ import (
 const csp = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
 	"font-src 'self'; connect-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
-// middleware wraps h: recover → security headers → host allowlist →
-// HTTPS redirect → cross-origin protection → handler.
+// middleware wraps h: recover → client address and web access → security
+// headers → host allowlist → HTTPS redirect → cross-origin protection →
+// handler.
 func (s *Server) middleware(h http.Handler) http.Handler {
 	cop := http.NewCrossOriginProtection()
 	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +35,7 @@ func (s *Server) middleware(h http.Handler) http.Handler {
 	h = s.httpsRedirect(h)
 	h = s.hosts.middleware(h, s.log)
 	h = s.securityHeaders(h)
+	h = s.clientAccess(h)
 	h = s.recoverer(h)
 	return h
 }
@@ -55,23 +57,31 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("Content-Security-Policy", csp)
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Cross-Origin-Opener-Policy", "same-origin")
-		h.Set("Cross-Origin-Resource-Policy", "same-origin")
-		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), usb=(), interest-cohort=()")
-		if r.TLS != nil && s.d.Settings.Get().Web.RedirectToHTTPS {
-			h.Set("Strict-Transport-Security", "max-age=31536000")
-		}
+		s.setSecurityHeaders(w, isHTTPS(r))
 		next.ServeHTTP(w, r)
 	})
 }
 
+// setSecurityHeaders sets the security headers of every response (also of
+// the refusals of the access middleware); HSTS when the effective scheme
+// is https and web.redirectToHttps is on.
+func (s *Server) setSecurityHeaders(w http.ResponseWriter, https bool) {
+	h := w.Header()
+	h.Set("Content-Security-Policy", csp)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Cross-Origin-Opener-Policy", "same-origin")
+	h.Set("Cross-Origin-Resource-Policy", "same-origin")
+	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), usb=(), interest-cohort=()")
+	if https && s.d.Settings.Get().Web.RedirectToHTTPS {
+		h.Set("Strict-Transport-Security", "max-age=31536000")
+	}
+}
+
 // httpsRedirect redirects plain-HTTP requests to the HTTPS listener when
-// settings.Web.RedirectToHTTPS is on (never /healthz).
+// settings.Web.RedirectToHTTPS is on (never /healthz, and never a request
+// whose effective scheme is https: a trusted TLS-terminating proxy).
 func (s *Server) httpsRedirect(next http.Handler) http.Handler {
 	port := ""
 	if len(s.d.Config.WebTLSListen) > 0 {
@@ -80,7 +90,7 @@ func (s *Server) httpsRedirect(next http.Handler) http.Handler {
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.TLS == nil && port != "" && r.URL.Path != "/healthz" && s.d.Settings.Get().Web.RedirectToHTTPS {
+		if !isHTTPS(r) && port != "" && r.URL.Path != "/healthz" && s.d.Settings.Get().Web.RedirectToHTTPS {
 			host := r.Host
 			if h, _, err := net.SplitHostPort(host); err == nil {
 				host = h

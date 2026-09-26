@@ -2,6 +2,9 @@
   @component
   API tokens for scripts, monitoring and automated backups: list, create
   (the secret is shown once), delete; plus the Prometheus metrics switch.
+  Every session manages tokens (they are created for the signed-in account):
+  viewers see and create their own read tokens, admins see every account's
+  tokens with their owner and may delete any of them.
   Query: ?token=<id> opens a token's details.
 -->
 <script lang="ts">
@@ -42,10 +45,14 @@
     router.setQuery({ token: tk?.id }, { push: !!tk })
   }
 
+  /** Admins list every account's tokens: show whose each one is. */
+  const showOwner = $derived(session.canOperate)
+  const mine = (tk: TokenInfo) => tk.userId === session.user?.id
+
   async function remove(tk: TokenInfo) {
     const ok = await confirm({
       title: t('system.tokens.deleteTitle', { name: tk.name }),
-      message: t('system.tokens.deleteText'),
+      message: mine(tk) ? t('system.tokens.deleteText') : t('system.tokens.deleteTextOther', { user: tk.username }),
       confirmLabel: t('system.tokens.delete'),
       action: () => api.tokens.remove(tk.id),
     })
@@ -62,6 +69,9 @@
 
   const columns = $derived<Column<TokenInfo>[]>([
     { key: 'name', label: t('common.label.name'), sortable: true, value: (x) => x.name, truncate: true, width: '30%' },
+    ...(showOwner
+      ? [{ key: 'owner', label: t('system.tokens.owner'), cell: ownerCell, value: (x) => x.username, sortable: true } satisfies Column<TokenInfo>]
+      : []),
     { key: 'scope', label: t('system.tokens.scopeLabel'), cell: scopeCell, value: (x) => x.scope, sortable: true },
     { key: 'prefix', label: t('system.tokens.prefix'), mono: true, value: (x) => x.prefix, format: (x) => `${x.prefix}…` },
     {
@@ -89,6 +99,13 @@
   ])
 </script>
 
+{#snippet ownerCell(x: TokenInfo)}
+  <span class="owner">
+    <span class="truncate">{x.username}</span>
+    {#if mine(x)}<Badge tone="info">{t('system.users.you')}</Badge>{/if}
+  </span>
+{/snippet}
+
 {#snippet scopeCell(x: TokenInfo)}
   {#if x.scope === 'admin'}
     <Badge tone="warn">{t('system.tokens.scope.admin')}</Badge>
@@ -113,19 +130,14 @@
     size="sm"
     variant="danger"
     label={t('system.tokens.deleteNamed', { name: x.name })}
-    disabled={!session.isAdmin}
     onclick={() => remove(x)}
   />
 {/snippet}
 
 <div class="page">
-  {#if !session.isAdmin}
-    <Notice tone="info">{t('common.state.readOnly')}</Notice>
-  {/if}
-
   <Panel title={t('system.tokens.title')} description={t('system.tokens.description')} flush>
     {#snippet actions()}
-      <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (createOpen = true)}>
+      <Button variant="primary" icon="plus" onclick={() => (createOpen = true)}>
         {t('system.tokens.create')}
       </Button>
     {/snippet}
@@ -143,7 +155,7 @@
     >
       {#snippet empty()}
         <EmptyState icon="key" title={t('system.tokens.emptyTitle')} text={t('system.tokens.emptyText')} compact>
-          <Button icon="plus" disabled={!session.isAdmin} onclick={() => (createOpen = true)}>
+          <Button icon="plus" onclick={() => (createOpen = true)}>
             {t('system.tokens.create')}
           </Button>
         </EmptyState>
@@ -171,6 +183,7 @@
       {/if}
       <KeyValue
         items={[
+          ...(showOwner ? [{ label: t('system.tokens.owner'), value: selected.username }] : []),
           {
             label: t('system.tokens.scopeLabel'),
             value: selected.scope === 'admin' ? t('system.tokens.scope.admin') : t('system.tokens.scope.read'),
@@ -196,9 +209,19 @@
   {/if}
   {#snippet actions()}
     {#if selected}
-      <Button variant="danger" icon="trash" disabled={!session.isAdmin} onclick={() => remove(selected)}>
+      <Button variant="danger" icon="trash" onclick={() => remove(selected)}>
         {t('system.tokens.delete')}
       </Button>
     {/if}
   {/snippet}
 </SidePanel>
+
+<style>
+  .owner {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    max-width: 100%;
+    min-width: 0;
+  }
+</style>

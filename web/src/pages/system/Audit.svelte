@@ -43,7 +43,7 @@
   const entryId = $derived(Number(router.param('entry')) || undefined)
 
   const log = resource((signal) =>
-    session.isAdmin
+    session.canOperate
       ? api.system.audit({ search: q || undefined, limit, offset }, { signal })
       : Promise.resolve(undefined),
   )
@@ -108,7 +108,7 @@
 {/snippet}
 
 <div class="page">
-  {#if !session.isAdmin}
+  {#if !session.canOperate}
     <Notice tone="info">{t('system.audit.adminOnly')}</Notice>
   {:else}
     <Panel title={t('system.audit.title')} description={t('system.audit.description')} flush>

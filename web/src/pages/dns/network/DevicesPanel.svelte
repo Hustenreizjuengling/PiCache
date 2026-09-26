@@ -130,7 +130,7 @@
 
 <Panel id="network-devices" flush title={t('dns.network.devices.title')} description={t('dns.network.devices.description')} footer={limits}>
   {#snippet actions()}
-    {#if session.isAdmin}
+    {#if session.canOperate}
       <Button icon="refresh" loading={starting} disabled={bridge || running || !net} onclick={onscan}>{t('dns.network.scan.button')}</Button>
     {/if}
   {/snippet}
@@ -138,7 +138,7 @@
   <div class="top">
     {#if bridge}
       <p class="small muted">{t('dns.network.scan.bridge')}</p>
-    {:else if session.isAdmin}
+    {:else if session.canOperate}
       <p class="small muted">{t('dns.network.scan.explain')}</p>
     {/if}
     {#if bridge}
@@ -185,7 +185,7 @@
           <EmptyState compact icon="success" title={t('dns.network.devices.emptyUnused')} />
         {:else}
           <EmptyState compact icon="network" title={t('dns.network.devices.empty')} text={t('dns.network.devices.emptyText')}>
-            {#if session.isAdmin}
+            {#if session.canOperate}
               <Button size="sm" icon="refresh" loading={starting} disabled={running} onclick={onscan}>{t('dns.network.scan.button')}</Button>
             {/if}
           </EmptyState>

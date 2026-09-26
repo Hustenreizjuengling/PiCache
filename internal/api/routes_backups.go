@@ -70,9 +70,9 @@ type ScheduledBackupsOverview struct {
 // running, downloading and deleting backups needs admin rights.
 func (s *Server) registerBackupRoutes() {
 	s.route("GET /api/v1/system/backups/scheduled", permRead, s.backupsScheduled)
-	s.route("POST /api/v1/system/backups/scheduled/run", permAdmin, s.backupsRun)
+	s.route("POST /api/v1/system/backups/scheduled/run", permAdmin, s.backupsRun, routeExempt)
 	s.route("GET /api/v1/system/backups/scheduled/files/{name}", permAdmin, s.backupsDownload)
-	s.route("DELETE /api/v1/system/backups/scheduled/files/{name}", permAdmin, s.backupsDelete)
+	s.route("DELETE /api/v1/system/backups/scheduled/files/{name}", permAdmin, s.backupsDelete, routeDestructive)
 }
 
 var errNoScheduledBackups = apperr.Unavailable("scheduled backups are not available")

@@ -17,6 +17,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
 
@@ -105,24 +106,25 @@ func clearColumn(ctx context.Context, d *sql.DB, table, column, what string) err
 
 // StageRestore validates an uploaded picache.db against the live database
 // and stages it; it replaces the configuration on the next start (see
-// applyStagedRestore). Only one upload is handled at a time, each in its own
-// temporary file.
-func (a *App) StageRestore(ctx context.Context, r io.Reader) error {
+// applyStagedRestore). It returns the staged settings as that start will
+// load them (nil when they cannot be decoded). Only one upload is handled
+// at a time, each in its own temporary file.
+func (a *App) StageRestore(ctx context.Context, r io.Reader) (*settings.All, error) {
 	if !restoreMu.TryLock() {
-		return apperr.Conflict("another backup is being uploaded; try again when it is done")
+		return nil, apperr.Conflict("another backup is being uploaded; try again when it is done")
 	}
 	defer restoreMu.Unlock()
 	if a.cdb == nil {
-		return apperr.Unavailable("the configuration database is not open")
+		return nil, apperr.Unavailable("the configuration database is not open")
 	}
 	live, err := schemaNames(ctx, a.cdb.R)
 	if err != nil {
-		return fmt.Errorf("restore: read the current schema: %w", err)
+		return nil, fmt.Errorf("restore: read the current schema: %w", err)
 	}
 	staged := a.paths.ConfigDB + ".restore"
 	f, err := os.CreateTemp(filepath.Dir(staged), filepath.Base(staged)+"-*.tmp")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tmp := f.Name()
 	defer func() {
@@ -135,19 +137,40 @@ func (a *App) StageRestore(ctx context.Context, r io.Reader) error {
 		err = cerr
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if n > maxRestoreBytes {
-		return apperr.Invalid("file", "backup is larger than 512 MiB")
+		return nil, apperr.Invalid("file", "backup is larger than 512 MiB")
 	}
 	if err := validateBackup(ctx, tmp, live); err != nil {
-		return apperr.Wrap(apperr.KindInvalid, err, "not a usable PiCache backup: %v", err)
+		return nil, apperr.Wrap(apperr.KindInvalid, err, "not a usable PiCache backup: %v", err)
+	}
+	// The settings as the next start will load them, so the API can warn a
+	// requester the restored web access would lock out.
+	set, err := stagedSettings(ctx, tmp)
+	if err != nil {
+		a.log.Warn("restore: the staged settings cannot be decoded; the restore will be refused at the next start", slog.Any("err", err))
 	}
 	if err := os.Rename(tmp, staged); err != nil {
-		return err
+		return nil, err
 	}
 	a.log.Warn("configuration restore staged; it will be applied on the next restart")
-	return nil
+	return set, nil
+}
+
+// stagedSettings decodes the settings document of an uploaded database
+// (read-only) like the next start will (settings.DecodeStored).
+func stagedSettings(ctx context.Context, path string) (*settings.All, error) {
+	d, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)&_pragma=trusted_schema(0)")
+	if err != nil {
+		return nil, err
+	}
+	defer d.Close()
+	var doc string
+	if err := d.QueryRowContext(ctx, `SELECT doc FROM settings WHERE id = 1`).Scan(&doc); err != nil {
+		return nil, err
+	}
+	return settings.DecodeStored([]byte(doc))
 }
 
 // schemaObject is one table or index of sqlite_master.
@@ -437,27 +460,43 @@ func (a *App) removePlantedSchema(ctx context.Context) error {
 // back for the previous version, which refuses newer schema versions. An
 // error fails the start, so nothing is migrated without a copy.
 func (a *App) preUpgradeBackup(ctx context.Context) error {
+	return PreUpgradeBackup(ctx, a.cdb, a.cfg.DataDir, a.log)
+}
+
+// PreUpgradeBackup is the pre-upgrade copy of the service start
+// (preUpgradeBackup) for d, the picache.db of dataDir. A CLI command that
+// migrates picache.db (`picache reset-password`) calls it first: run with a
+// new binary before the service's first start, the command would otherwise
+// migrate the database, and the copy made at that start would no longer
+// open with the previous version. The new version is recorded, so the
+// service does not copy the migrated database again under the previous
+// version's name.
+func PreUpgradeBackup(ctx context.Context, d *db.DB, dataDir string, log *slog.Logger) error {
 	var hadSchema int
-	_ = a.cdb.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'schema_migrations'`).Scan(&hadSchema)
+	_ = d.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'schema_migrations'`).Scan(&hadSchema)
 	var prev string // stays "" while app_meta does not exist yet
-	_ = a.cdb.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = 'binary_version'`).Scan(&prev)
+	_ = d.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = 'binary_version'`).Scan(&prev)
 	cur := version.Version
 	if hadSchema > 0 && prev != "" && prev != cur && cur != "dev" {
-		dir := filepath.Join(a.cfg.DataDir, "backups")
+		dir := filepath.Join(dataDir, "backups")
 		name := fmt.Sprintf("picache-%s-%s.db", sanitizeFile(prev), time.Now().UTC().Format("20060102T150405"))
-		if _, err := a.cdb.W.ExecContext(ctx, `VACUUM INTO ?`, filepath.Join(dir, name)); err != nil {
+		err := os.MkdirAll(dir, 0o750) // the CLI may run before the service ever created it
+		if err == nil {
+			_, err = d.W.ExecContext(ctx, `VACUUM INTO ?`, filepath.Join(dir, name))
+		}
+		if err != nil {
 			return fmt.Errorf("copy picache.db to %s before the upgrade from %s (is the disk full?): %w", dir, prev, err)
 		}
-		a.log.Info("saved configuration backup before upgrade", slog.String("file", filepath.Join(dir, name)))
+		log.Info("saved configuration backup before upgrade", slog.String("file", filepath.Join(dir, name)))
 		pruneBackups(dir, 3)
 	}
-	if err := a.cdb.Migrate(ctx, "app", appMigrations); err != nil {
+	if err := d.Migrate(ctx, "app", appMigrations); err != nil {
 		return err
 	}
 	if prev == cur {
 		return nil
 	}
-	_, err := a.cdb.W.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES ('binary_version', ?)
+	_, err := d.W.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES ('binary_version', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, cur)
 	return err
 }

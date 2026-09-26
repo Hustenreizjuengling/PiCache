@@ -96,7 +96,10 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 }
 
 // updateSettings validates, persists and audits a change (with the changed
-// member paths) and responds with the new document.
+// member paths) and responds with the new document. For every principal it
+// refuses a change of the web access that would lock the requester out
+// (checkWebLockout) and a TLS minimum the requester's own connection does
+// not meet (checkTLSMinVersion).
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(*settings.All) error) error {
 	old := s.d.Settings.Get()
 	next, err := s.d.Settings.Update(r.Context(), func(a *settings.All) error {
@@ -110,6 +113,12 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(
 			return err
 		}
 		if err := checkECSSubnet(old, a); err != nil {
+			return err
+		}
+		if err := s.checkWebLockout(r, old, a); err != nil {
+			return err
+		}
+		if err := checkTLSMinVersion(r, old, a); err != nil {
 			return err
 		}
 		return s.checkDHCP(old, a)

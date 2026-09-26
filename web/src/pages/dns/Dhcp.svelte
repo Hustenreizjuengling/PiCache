@@ -305,7 +305,7 @@
     <Skeleton height="160px" />
     <Skeleton height="280px" />
   {:else}
-    {#if !session.isAdmin}<Notice>{t('common.state.readOnly')}</Notice>{/if}
+    {#if !session.canOperate}<Notice>{t('common.state.readOnly')}</Notice>{/if}
 
     <StatusPanel
       status={st}
@@ -345,7 +345,7 @@
       {#if (leases.data?.length ?? 0) > 0}{@render leasesPanel()}{/if}
       {#if (log.data?.length ?? 0) > 0}{@render logPanel()}{/if}
     {/if}
-    {#if form.draft && session.isAdmin}
+    {#if form.draft && session.canDestroy}
       <ResetPanel
         dirty={form.dirty}
         onleasesended={() => {

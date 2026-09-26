@@ -15,7 +15,7 @@ func (s *Server) registerNotifyRoutes() {
 	s.route("POST /api/v1/notifications/channels", permAdmin, s.notifyCreate)
 	s.route("PUT /api/v1/notifications/channels/{id}", permAdmin, s.notifyUpdate)
 	s.route("DELETE /api/v1/notifications/channels/{id}", permAdmin, s.notifyDelete)
-	s.route("POST /api/v1/notifications/channels/{id}/test", permAdmin, s.notifyTest)
+	s.route("POST /api/v1/notifications/channels/{id}/test", permAdmin, s.notifyTest, routeExempt)
 	s.route("GET /api/v1/notifications/events", permRead, s.notifyEvents)
 	s.route("GET /api/v1/notifications/log", permAdmin, s.notifyLog)
 }

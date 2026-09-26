@@ -106,12 +106,24 @@ type App struct {
 	health     atomic.Pointer[api.Health]
 	restoredAt time.Time // set when a staged restore was applied at this start
 	restart    chan struct{}
+
+	web    *netutil.WebAccess // the web ACL (listeners and API)
+	webTLS *webTLS            // the certificate of the HTTPS listener
+	hup    <-chan os.Signal   // SIGHUP: run the maintenance tick now (nil: never)
+	// The web access reset marker: resetApplied once a marker that could
+	// not be deleted was applied (once per start); resetMarkerWarned once a
+	// marker that is no regular file was logged.
+	resetApplied, resetMarkerWarned bool
 }
 
 // Run starts PiCache and blocks until ctx is cancelled, a restart is
-// requested (ErrRestart) or a fatal error occurs.
-func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
+// requested (ErrRestart) or a fatal error occurs. A value on hup (SIGHUP,
+// subscribed by the caller before any listener is bound) runs the
+// maintenance tick at once: the web access reset marker, the web ACL and
+// the web certificate files are checked; it never stops PiCache.
+func Run(ctx context.Context, cfg *config.Config, log *slog.Logger, hup <-chan os.Signal) error {
 	a := newApp(cfg, log)
+	a.hup = hup
 	info := version.Get()
 	log.Info("starting PiCache", slog.String("version", info.Version), slog.String("commit", info.Commit),
 		slog.String("go", info.GoVersion), slog.String("data_dir", cfg.DataDir), slog.String("cache_dir", cfg.CacheDir))
@@ -258,6 +270,9 @@ func (a *App) build(ctx context.Context) error {
 		return err
 	}
 	a.acl = netutil.NewACLWatcher(a.set)
+	a.web = netutil.NewWebAccess(a.set, log)
+	a.webTLS = newWebTLS(a.cfg.DataDir, a.cfg.WebTLSCertFile, a.cfg.WebTLSKeyFile, len(a.ln.webTLS) > 0, a.cfg.WebHosts,
+		a.instanceID, a.set, func() bool { return a.dns != nil && a.dns.BridgeNetwork() }, log)
 	host, _ := os.Hostname()
 	if a.notify, err = notify.New(ctx, a.cdb, a.box,
 		notify.Options{InstanceID: a.instanceID, Hostname: host, Version: version.Version}, log); err != nil {
@@ -380,7 +395,7 @@ func (a *App) build(ctx context.Context) error {
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
 		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
-		Parental: a.parental, Network: a.network, DHCP: a.dhcp, UI: webui.Handler(), Log: log,
+		Parental: a.parental, Network: a.network, DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil
@@ -481,11 +496,16 @@ func (a *App) serve(ctx context.Context) error {
 			}
 		})
 	}
+	// The web certificate is loaded (or created) and a pending web access
+	// reset applied before the web listeners serve.
+	a.webTLS.start()
+	a.applyWebAccessReset(ctx)
 	for _, fn := range []func(context.Context){
 		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
 		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop, a.updates.run,
 		a.notify.Start, a.backups.Start, a.network.Start, a.dhcp.Start,
 		func(ctx context.Context) { a.acl.Run(ctx.Done(), time.Minute) }, // follows prefix changes within a minute
+		a.maintenanceLoop, // web ACL, web access reset, web certificate: every minute and on SIGHUP
 	} {
 		bg.Go(func() { fn(ctx) })
 	}
@@ -526,22 +546,23 @@ func (a *App) serve(ctx context.Context) error {
 			ErrorLog:          slog.NewLogLogger(a.log.Handler(), slog.LevelDebug),
 		}
 	}
+	// The web listeners close connections from addresses outside the web
+	// ACL right after accept (stage 1; the API checks every request too).
 	webSrv := newWeb()
 	servers = append(servers, webSrv)
 	for _, ln := range a.ln.web {
-		goRun("web", func() error { return webSrv.Serve(ln) })
+		guarded := a.web.Listener(ln)
+		goRun("web", func() error { return webSrv.Serve(guarded) })
 	}
 	if len(a.ln.webTLS) > 0 {
-		tlsCfg, err := a.webTLSConfig()
-		if err != nil {
-			a.log.Error("HTTPS web listener disabled", slog.Any("err", err))
-		} else {
-			webTLS := newWeb()
-			webTLS.TLSConfig = tlsCfg
-			servers = append(servers, webTLS)
-			for _, ln := range a.ln.webTLS {
-				goRun("web-tls", func() error { return webTLS.ServeTLS(ln, "", "") })
-			}
+		// Never disabled for a certificate problem: the web certificate
+		// falls back to the local CA or a self-signed certificate.
+		webTLS := newWeb()
+		webTLS.TLSConfig = a.webTLS.tlsConfig()
+		servers = append(servers, webTLS)
+		for _, ln := range a.ln.webTLS {
+			guarded := a.web.Listener(ln)
+			goRun("web-tls", func() error { return webTLS.ServeTLS(guarded, "", "") })
 		}
 	}
 

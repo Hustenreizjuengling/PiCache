@@ -32,7 +32,7 @@
 
 <Panel title={t('cache.speed.title')} description={t('cache.speed.description')}>
   {#snippet actions()}
-    {#if session.isAdmin && anyOnline}
+    {#if session.canOperate && anyOnline}
       <Button icon="overview" disabled={running} onclick={onstart}>{t('cache.speed.test')}</Button>
     {/if}
   {/snippet}
@@ -51,7 +51,7 @@
   {:else}
     <div class="stack-sm">
       <p class="muted small">{t('cache.speed.none')}</p>
-      {#if session.isAdmin && targets && !anyOnline}<p class="muted small">{t('cache.speed.noOnline')}</p>{/if}
+      {#if session.canOperate && targets && !anyOnline}<p class="muted small">{t('cache.speed.noOnline')}</p>{/if}
     </div>
   {/if}
 </Panel>

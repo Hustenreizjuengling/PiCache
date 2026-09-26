@@ -42,9 +42,15 @@
 //   - Setup: token compared in constant time; the first user is created in
 //     one BEGIN IMMEDIATE transaction that checks that no user exists; the
 //     setup-token file is deleted on success.
+//   - Roles (users.go): admins and viewers, at most 32 accounts, at least
+//     one admin always (role changes and deletes count the admins in one
+//     BEGIN IMMEDIATE transaction). A viewer's session has the read scope;
+//     an admin token of a viewer counts as read. A role change ends the
+//     account's sessions, a demotion also deletes its admin tokens.
 //   - Audit: details are marshalled to JSON and every object member whose
 //     lower-cased name is one of password, currentpassword, newpassword,
-//     setuptoken, token, secret, code, totp is replaced by "[redacted]"
+//     setuptoken, token, secret, code, totp, keypem, certpem (and the other
+//     names of redactedNames) is replaced by "[redacted]"
 //     (recursively); details are truncated to 4 KiB. Retention: 365 days or
 //     100 000 rows; failed logins are aggregated per client key per 10 min.
 package auth
@@ -65,11 +71,27 @@ import (
 // Scope of a principal.
 type Scope string
 
-// Scopes. Browser sessions always have ScopeAdmin; API tokens have either.
+// Scopes. A session has the scope of its account's role (admin: ScopeAdmin,
+// viewer: ScopeRead); an API token has ScopeAdmin only when it was created
+// with it and its owner is an admin (read on every request).
 const (
 	ScopeAdmin Scope = "admin"
 	ScopeRead  Scope = "read"
 )
+
+// Roles of accounts (auth_users.role).
+const (
+	RoleAdmin  = "admin"
+	RoleViewer = "viewer"
+)
+
+// scopeOf returns the scope a session of an account with this role has.
+func scopeOf(role string) Scope {
+	if role == RoleAdmin {
+		return ScopeAdmin
+	}
+	return ScopeRead
+}
 
 // ErrTOTPRequired is returned by Login when TOTP is enabled and the code is
 // missing or wrong (the UI shows the code field when Field == "totp").
@@ -82,10 +104,12 @@ func errTOTPWrong() error {
 	return &apperr.Error{Kind: apperr.KindUnauthorized, Field: "totp", Message: "wrong or already used code"}
 }
 
-// User is an account (v1: a single admin, the model allows more).
+// User is an account: an admin, or a viewer who can read everything but
+// change only their own account (docs/ARCHITECTURE.md 6.1).
 type User struct {
 	ID          int64     `json:"id"`
 	Username    string    `json:"username"`
+	Role        string    `json:"role"` // RoleAdmin | RoleViewer
 	TOTPEnabled bool      `json:"totpEnabled"`
 	CreatedAt   time.Time `json:"createdAt"`
 	LastLoginAt time.Time `json:"lastLoginAt,omitzero"`
@@ -97,6 +121,7 @@ type Principal struct {
 	Username  string
 	SessionID string // session id (hash prefix) for "current" marking; "" for tokens
 	TokenID   int64  // API token id, 0 for browser sessions
+	Role      string // the account's role (RoleAdmin, RoleViewer)
 	Scope     Scope
 	IP        string // client address of the request (throttles password confirmations)
 }
@@ -138,6 +163,8 @@ type TokenInfo struct {
 	CreatedAt time.Time `json:"createdAt"`
 	ExpiresAt time.Time `json:"expiresAt,omitzero"`
 	LastUsed  time.Time `json:"lastUsed,omitzero"`
+	UserID    int64     `json:"userId"`   // the owner
+	Username  string    `json:"username"` // the owner's username
 }
 
 // AuditEntry is one audit log record.
@@ -178,6 +205,17 @@ type Service struct {
 	setupMu    sync.Mutex
 	setupToken string      // "" once setup is done (guarded by setupMu)
 	setupDone  atomic.Bool // a user exists (never becomes false again)
+
+	// onPasswordChecked is a test hook: it runs after a password was
+	// verified and before the transaction that relies on it.
+	onPasswordChecked func()
+}
+
+// passwordChecked runs the test hook onPasswordChecked.
+func (a *Service) passwordChecked() {
+	if a.onPasswordChecked != nil {
+		a.onPasswordChecked()
+	}
 }
 
 // New creates the service. setupTokenFile is where the one-time setup token
@@ -197,6 +235,9 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, box *secrets.Box, s
 		setupFile: setupTokenFile,
 	}
 	if err := a.initSetup(ctx); err != nil {
+		return nil, err
+	}
+	if err := a.checkAdmins(ctx); err != nil {
 		return nil, err
 	}
 	return a, nil

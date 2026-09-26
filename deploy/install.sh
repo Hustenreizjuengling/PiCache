@@ -220,7 +220,8 @@ env_template() {
 # Download cache over HTTP and HTTPS (SNI) pass-through.
 #PICACHE_CACHE_LISTEN=:80
 #PICACHE_SNI_LISTEN=:443
-# Web UI and API over HTTP and HTTPS (self-signed unless a certificate is set).
+# Web UI and API over HTTP and HTTPS (a certificate of PiCache's local CA unless
+# a certificate is set).
 #PICACHE_WEB_LISTEN=:8080
 #PICACHE_WEB_TLS_LISTEN=:8443
 # Own certificate and key (PEM), readable by the picache group (0640 root:picache).
@@ -652,7 +653,7 @@ print_summary() {
 	web_listen=$(env_value PICACHE_WEB_LISTEN)
 	say ""
 	say "PiCache is running."
-	say "  Web UI:        http://$host_ip:8080/  (HTTPS: https://$host_ip:8443/, self-signed)"
+	say "  Web UI:        http://$host_ip:8080/  (HTTPS: https://$host_ip:8443/, PiCache's local CA)"
 	if [ -n "$web_listen" ]; then
 		say "                 (PICACHE_WEB_LISTEN=$web_listen is set; adjust the address)"
 	fi

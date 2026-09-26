@@ -93,7 +93,8 @@
         {/if}
       </p>
     </div>
-    {#if session.isAdmin}
+    <!-- Overrides and pauses end by themselves (at most 7 days): admins may use them while the configuration is locked. -->
+    {#if session.canOperate}
       <div class="actions">
         <!-- An override of a disabled group would apply to nobody. -->
         <Menu label={t('dns.parental.block')} icon="pause" items={items('block')} disabled={busy || !group.groupEnabled} size="sm" align="end" />
@@ -116,7 +117,9 @@
             {onpaused}
           />
         {/if}
-        <Button size="sm" icon="edit" onclick={() => onedit(group)}>{t('dns.parental.edit')}</Button>
+        {#if session.isAdmin}
+          <Button size="sm" icon="edit" onclick={() => onedit(group)}>{t('dns.parental.edit')}</Button>
+        {/if}
       </div>
     {/if}
   </header>
@@ -133,7 +136,7 @@
         </p>
       {/if}
     </div>
-    {#if group.override && session.isAdmin}
+    {#if group.override && session.canOperate}
       <Button size="sm" variant="ghost" icon="close" loading={busy} onclick={() => onend(group)}>
         {t('dns.parental.end')}
       </Button>

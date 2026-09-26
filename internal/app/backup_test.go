@@ -181,7 +181,7 @@ func TestStageRestoreRejectsUntrustedSchema(t *testing.T) {
 				t.Skipf("cannot create %s here: %v", name, err)
 			}
 			d.Close()
-			err = a.StageRestore(ctx, bytes.NewReader(readFile(t, up)))
+			_, err = a.StageRestore(ctx, bytes.NewReader(readFile(t, up)))
 			if apperr.KindOf(err) != apperr.KindInvalid {
 				t.Fatalf("StageRestore = %v, want an invalid-backup error", err)
 			}
@@ -205,7 +205,7 @@ func TestBackupRoundTrip(t *testing.T) {
 	if err := a.Backup(ctx, &buf, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.StageRestore(ctx, bytes.NewReader(buf.Bytes())); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(buf.Bytes())); err != nil {
 		t.Fatalf("a PiCache backup must be accepted: %v", err)
 	}
 	closeLive(a)
@@ -235,7 +235,7 @@ func TestRestoreKeepsLiveAccounts(t *testing.T) {
 	// The attacker also adds a second admin.
 	execFile(t, up, `INSERT INTO auth_users (username, password_hash, created_at) SELECT 'mallory', password_hash, 1 FROM auth_users`)
 
-	if err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
 		t.Fatal(err)
 	}
 	closeLive(a)
@@ -335,7 +335,7 @@ func TestRestoreOlderBackupIsMigrated(t *testing.T) {
 		`ALTER TABLE client_clients RENAME COLUMN download_cache_bypass TO `+oldName+`_bypass`,
 		`DELETE FROM schema_migrations WHERE component IN ('settings', 'clients') AND version > 1`)
 
-	if err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
 		t.Fatalf("a backup of an older version must be accepted: %v", err)
 	}
 	closeLive(a)
@@ -390,7 +390,7 @@ func TestApplyStagedRestoreDiscardsUntrustedFile(t *testing.T) {
 func TestStageRestoreSerialised(t *testing.T) {
 	a := newRestoreApp(t)
 	restoreMu.Lock()
-	err := a.StageRestore(context.Background(), strings.NewReader("x"))
+	_, err := a.StageRestore(context.Background(), strings.NewReader("x"))
 	restoreMu.Unlock()
 	if apperr.KindOf(err) != apperr.KindConflict {
 		t.Fatalf("concurrent StageRestore = %v, want conflict", err)
@@ -490,7 +490,7 @@ func TestStageRestoreRejectsDisguisedIndexes(t *testing.T) {
 			makeConfigDB(t, up, "admin", "attacker password", "de")
 			execFile(t, up, `CREATE INDEX settings_updated ON settings(updated_at)`)
 			craftFile(t, up, stmts...)
-			err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)))
+			_, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)))
 			if apperr.KindOf(err) != apperr.KindInvalid || !strings.Contains(err.Error(), "index") {
 				t.Fatalf("StageRestore = %v, want an invalid-backup error about the index", err)
 			}
@@ -505,7 +505,7 @@ func TestStageRestoreRejectsDisguisedIndexes(t *testing.T) {
 	up := filepath.Join(t.TempDir(), "upload.db")
 	makeConfigDB(t, up, "admin", "attacker password", "de")
 	execFile(t, up, "CREATE  INDEX\tsettings_updated\n\tON settings(updated_at)")
-	if err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
 		t.Fatalf("an upload with the live indexes must be accepted: %v", err)
 	}
 }
@@ -550,7 +550,7 @@ func TestPlantedLiveTriggerIsRemoved(t *testing.T) {
 	}
 	// The backup of a database with a planted trigger is still a valid
 	// PiCache backup.
-	if err := a.StageRestore(ctx, bytes.NewReader(buf.Bytes())); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(buf.Bytes())); err != nil {
 		t.Fatalf("the scrubbed backup must be accepted: %v", err)
 	}
 
@@ -632,5 +632,69 @@ func TestPreUpgradeBackupBeforeMigrations(t *testing.T) {
 	}
 	if schema, bin := appState(a.cdb.R); schema != len(oldMigrations)+1 || bin != "v1.1.0" {
 		t.Fatalf("migrated without a copy: app schema %d, version %s", schema, bin)
+	}
+}
+
+// Going back from 0.11.0: the copy made at the first start of 0.11.0 has
+// the schema of 0.10 (auth v1 without roles, settings v4), because it is
+// made before any migration; the live database is migrated after it.
+func TestPreUpgradeCopyKeepsV010Schema(t *testing.T) {
+	ctx := context.Background()
+	a := newRestoreApp(t)
+	makeConfigDB(t, a.paths.ConfigDB, "owner", "owner password", "en")
+	// Back to the state 0.10 left: auth v1, settings v4, binary v0.10.0.
+	execFile(t, a.paths.ConfigDB,
+		`ALTER TABLE auth_users DROP COLUMN role`,
+		`DELETE FROM schema_migrations WHERE (component = 'auth' AND version > 1) OR (component = 'settings' AND version > 4)`,
+		`UPDATE settings SET doc = json_remove(doc, '$.web.restrictToNetworks')`,
+		`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT OR REPLACE INTO app_meta (key, value) VALUES ('binary_version', 'v0.10.0')`,
+		`INSERT OR IGNORE INTO schema_migrations (component, version, applied_at) VALUES ('app', 1, 1)`)
+	openLive(t, a)
+	oldVersion := version.Version
+	t.Cleanup(func() { version.Version = oldVersion })
+	version.Version = "v0.11.0"
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.DiscardHandler)
+	set, err := settings.Open(ctx, a.cdb, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, _ := secrets.New(make([]byte, 32))
+	if _, err := auth.New(ctx, a.cdb, set, box, "", log); err != nil {
+		t.Fatal(err)
+	}
+	copies, _ := filepath.Glob(filepath.Join(a.cfg.DataDir, "backups", "picache-v0.10.0-*.db"))
+	if len(copies) != 1 {
+		t.Fatalf("copies %v", copies)
+	}
+	versions := func(d *sql.DB) (authV, setV int, hasRole bool) {
+		t.Helper()
+		if err := d.QueryRow(`SELECT (SELECT MAX(version) FROM schema_migrations WHERE component = 'auth'),
+			(SELECT MAX(version) FROM schema_migrations WHERE component = 'settings'),
+			EXISTS (SELECT 1 FROM pragma_table_info('auth_users') WHERE name = 'role')`).Scan(&authV, &setV, &hasRole); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	cp, err := sql.Open("sqlite", copies[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cp.Close()
+	if authV, setV, hasRole := versions(cp); authV != 1 || setV != 4 || hasRole {
+		t.Fatalf("the copy has auth v%d, settings v%d, role column %v", authV, setV, hasRole)
+	}
+	if authV, setV, hasRole := versions(a.cdb.R); authV != 2 || setV != 5 || !hasRole {
+		t.Fatalf("live: auth v%d, settings v%d, role column %v", authV, setV, hasRole)
+	}
+	if set.Get().Web.RestrictToNetworks {
+		t.Fatal("an upgraded installation keeps the web UI open to every address")
+	}
+	users, err := auth.ListUsers(ctx, a.cdb)
+	if err != nil || len(users) != 1 || users[0].Role != auth.RoleAdmin {
+		t.Fatalf("existing accounts become admins: %+v %v", users, err)
 	}
 }

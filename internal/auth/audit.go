@@ -35,7 +35,7 @@ var redactedNames = map[string]bool{
 	"password": true, "currentpassword": true, "newpassword": true, "setuptoken": true,
 	"token": true, "secret": true, "code": true, "totp": true,
 	"passwordsealed": true, "passphrase": true, "apikey": true, "privatekey": true,
-	"authorization": true, "cookie": true, "credentials": true,
+	"authorization": true, "cookie": true, "credentials": true, "keypem": true, "certpem": true,
 }
 
 const redacted = "[redacted]"

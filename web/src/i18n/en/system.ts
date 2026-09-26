@@ -1,5 +1,5 @@
-// System pages: account & security, API tokens, audit log, backup & restore,
-// health & about, updates. Keys are prefixed by page or shared part.
+// System pages: users & security, HTTPS certificate, API tokens, audit log,
+// backup & restore, health & about, updates. Keys are prefixed by page or shared part.
 
 export default {
   // shared form strings
@@ -23,6 +23,8 @@ export default {
 
   // account & security
   'account.signedInAs': 'Signed in as {name}',
+  'account.readOnlyBelow':
+    'You manage your own password, two-factor authentication and sessions above. The web access and web interface settings are read-only for you.',
   'account.password.title': 'Password',
   'account.password.description':
     'Changing the password signs out all other sessions and, unless you keep them, revokes all API tokens.',
@@ -99,6 +101,50 @@ export default {
   'account.sessions.revokeAllText.other': '{count} other browsers have to sign in again. This browser stays signed in.',
   'account.sessions.revokedAll': 'Other sessions signed out',
 
+  // accounts (users & security page)
+  'users.title': 'Users',
+  'users.description':
+    'Everyone who signs in to PiCache. Admins change the configuration; viewers see the pages read-only (not the audit log, notification channels or backup downloads) and change only their own password, two-factor authentication and read-only API tokens.',
+  'users.add': 'Add user',
+  'users.addTitle': 'Add user',
+  'users.username': 'Username',
+  'users.usernameHelp': '1–64 letters, digits and . _ @ -, starting with a letter or digit.',
+  'users.usernameRequired': 'Enter a username.',
+  'users.usernameRule': 'Use 1–64 letters, digits and . _ @ -, starting with a letter or digit.',
+  'users.password': 'Password',
+  'users.newPassword': 'New password',
+  'users.role': 'Role',
+  'users.roleHelp.admin': 'Can change the whole configuration, manage accounts and read the audit log.',
+  'users.roleHelp.viewer':
+    'Sees the pages read-only (not the audit log, notification channels or backup downloads) and changes only their own account and read-only API tokens.',
+  'users.totp': 'Two-factor',
+  'users.lastLogin': 'Last sign-in',
+  'users.you': 'You',
+  'users.actionsNamed': 'Actions for {name}',
+  'users.limit': 'PiCache allows at most {max} accounts. Delete one to add another.',
+  'users.changeRole': 'Change role',
+  'users.roleTitle': 'Change the role of {name}',
+  'users.resetPassword': 'Reset password',
+  'users.passwordTitle': 'Reset the password of {name}',
+  'users.passwordNote': 'Signs the user out everywhere and revokes their API tokens.',
+  'users.disableTotp': 'Disable two-factor',
+  'users.totpTitle': 'Turn off two-factor authentication for {name}?',
+  'users.totpNote': 'Signs the user out everywhere. They can set it up again under Users & security.',
+  'users.delete': 'Delete user',
+  'users.deleteTitle': 'Delete {name}?',
+  'users.deleteSelfTitle': 'Delete your own account?',
+  'users.deleteText': 'The account {name}, its sessions and its API tokens are deleted. The audit log keeps its entries.',
+  'users.signedOut': 'You will be signed out.',
+  'users.current': 'Your password',
+  'users.currentHelp': 'Changes to accounts need your password again.',
+  'users.currentRequired': 'Enter your password.',
+  'users.created': 'User {name} added',
+  'users.roleChanged': 'Role of {name} changed. Their sessions were signed out.',
+  'users.passwordReset': 'Password of {name} reset. Their sessions were signed out and API tokens revoked.',
+  'users.totpDisabled': 'Two-factor authentication of {name} turned off',
+  'users.deleted': 'User {name} deleted',
+  'users.selfRoleChanged': 'Your role was changed. Sign in again.',
+  'users.selfDeleted': 'Your account was deleted.',
   // web interface settings (account page)
   'web.title': 'Web interface',
   'web.description': 'How long sign-ins last, which host names may open PiCache, HTTPS and the default language.',
@@ -120,12 +166,57 @@ export default {
     'Plain-HTTP requests are sent to the HTTPS listener. Browsers then remember to use HTTPS for this host name for a year.',
   'web.redirectNoTls': 'The HTTPS listener is not running (PICACHE_WEB_TLS_LISTEN), so the redirect cannot be turned on.',
   'web.redirectMove':
-    'After saving, this page moves to {url}. With the self-signed certificate your browser asks you once to accept it.',
+    'After saving, this page moves to {url}. Unless this device already trusts PiCache’s certificate (for example through its local CA, System > HTTPS certificate), your browser asks you once to accept it.',
+  // web access (users & security page)
+  'webAccess.title': 'Web access',
+  'webAccess.description': 'Which networks may open the web UI and the API, reverse proxies in front of PiCache and the oldest TLS version.',
+  'webAccess.seen': 'PiCache sees your address as {client}.',
+  'webAccess.seenViaProxy': 'PiCache sees your address as {client} (via proxy {peer}).',
+  'webAccess.refused.one': '{count} connection refused since the start.',
+  'webAccess.refused.other': '{count} connections refused since the start.',
+  'webAccess.restrict': 'Allow the web UI only from these networks',
+  'webAccess.restrictHelp':
+    'Other addresses cannot open the web UI or use the API. The networks below are always allowed; add others here.',
+  'webAccess.recommendTitle': 'Recommended: allow the web UI only from your networks',
+  'webAccess.recommendText':
+    'Right now every address that reaches PiCache can open the sign-in page. Turn the restriction on unless you reach PiCache from elsewhere; your own networks keep working.',
+  'webAccess.alwaysTitle': 'Always allowed while the restriction is on:',
+  'webAccess.always.host': 'This machine (whatever the settings say)',
+  'webAccess.always.private': 'Private networks',
+  'webAccess.always.linkLocal': 'and link-local addresses',
+  'webAccess.always.connected': 'The networks this machine is connected to (including their public IPv6 prefix)',
+  'webAccess.always.dns': 'The networks allowed to use DNS (DNS settings > Access)',
+  'webAccess.always.proxies': 'The trusted reverse proxies',
+  'webAccess.networks': 'Other allowed networks',
+  'webAccess.networksHelp':
+    'One address or network per line, e.g. 203.0.113.0/24 or a VPN range. At least /8 for IPv4 and /32 for IPv6; at most 64 entries.',
+  'webAccess.proxies': 'Trusted reverse proxies',
+  'webAccess.proxiesHelp':
+    'The exact addresses of proxies in front of PiCache (one per line). Only their X-Forwarded-For and X-Forwarded-Proto are read. A proxy on this machine must be listed too (127.0.0.1): otherwise every client behind it looks like this machine, which is always allowed. At least /24 for IPv4 and /64 for IPv6; at most 16 entries.',
+  'webAccess.proxyWarnTitle': 'Only list proxies you control',
+  'webAccess.proxyWarn.exact': 'Enter the proxy’s own address, never a whole network: every address listed can claim to be any client.',
+  'webAccess.proxyWarn.append':
+    'The proxy must append its client to X-Forwarded-For (nginx: $proxy_add_x_forwarded_for) and set X-Forwarded-Proto itself.',
+  'webAccess.proxyWarn.loopback':
+    'Listing 127.0.0.1 trusts every program on this machine. A proxy on this machine that is not listed makes every client look like this machine, which is always allowed.',
+  'webAccess.loopbackTitle': 'PiCache sees this browser as this machine',
+  'webAccess.loopbackText':
+    'A reverse proxy on this machine is probably not listed as trusted. Every client behind it then counts as this machine: the web access restriction does not apply to them, and they all share one limit for failed sign-ins. Add the proxy’s address (usually 127.0.0.1) under Trusted reverse proxies.',
+  'webAccess.tooMany': 'At most {max} entries.',
+  'webAccess.tlsMin': 'Minimum TLS version for HTTPS',
+  'webAccess.tls12': 'TLS 1.2 (default)',
+  'webAccess.tls13': 'TLS 1.3 only',
+  'webAccess.tlsHelp': 'Every current browser supports TLS 1.3; TLS 1.2 also lets older devices connect.',
+  'webAccess.tls13Help': 'Older clients cannot connect over HTTPS; the HTTP port is unaffected.',
+  'webAccess.resetTitle': 'Locked out? Reset the web access on the host',
+  'webAccess.resetText':
+    'Run this on the PiCache host (as root or the service user). It turns the restriction off, forgets the trusted proxies, sets TLS 1.2 again and removes an uploaded certificate; the allowed networks stay.',
+  'webAccess.resetDocker': 'With Docker:',
 
   // API tokens
   'tokens.title': 'API tokens',
   'tokens.description':
-    'For scripts, monitoring and automated backups (Authorization: Bearer …). Tokens can never manage tokens, passwords, two-factor authentication or sessions, nor restore backups.',
+    'For scripts, monitoring and automated backups (Authorization: Bearer …). Tokens can never manage tokens, accounts, passwords, two-factor authentication, sessions or HTTPS certificates, nor restore backups.',
   'tokens.create': 'Create token',
   'tokens.createTitle': 'Create API token',
   'tokens.createdTitle': 'Token created',
@@ -170,6 +261,142 @@ export default {
   'tokens.deleteTitle': 'Delete token {name}?',
   'tokens.deleteText': 'Programs that use it lose access immediately.',
   'tokens.deleted': 'Token deleted',
+  'tokens.deleteTextOther': 'It belongs to {user}. Programs that use it lose access immediately.',
+  'tokens.owner': 'Owner',
+  'tokens.viewerRead': 'As a viewer you can create read-only tokens.',
+
+  // https certificate
+  'https.loadError': 'The certificate status could not be loaded',
+  'https.noListener': 'No HTTPS listener (PICACHE_WEB_TLS_LISTEN is off)',
+  'https.changedTitle': 'The HTTPS certificate changed',
+  'https.changedText':
+    'This page still uses its connection with the previous certificate. Once this device trusts the new one (for the local CA: download and trust it below), reload the page; if the browser asks, accept the new certificate once.',
+  'https.noListenerText':
+    'PiCache serves the web UI over plain HTTP only. Set PICACHE_WEB_TLS_LISTEN (e.g. :8443) and restart PiCache to add an HTTPS port.',
+  'https.source.files': 'Certificate files',
+  'https.source.uploaded': 'Uploaded',
+  'https.source.local-ca': 'Local CA',
+  'https.source.self-signed': 'Self-signed',
+  'https.source.none': 'None',
+  'https.cert.title': 'Certificate in use',
+  'https.cert.description': 'What the HTTPS port shows to browsers.',
+  'https.cert.checkedAt': 'Checked {time}',
+  'https.cert.errorTitle': 'The configured certificate cannot be used',
+  'https.cert.fallback': 'A fallback certificate is served until it is fixed.',
+  'https.cert.tempTitle': 'PiCache cannot store its certificate',
+  'https.cert.temp':
+    'A temporary certificate is served. It changes at every restart, so browsers warn again each time until the TLS directory is fixed (see the log).',
+  'https.cert.expired': 'Expired on {date}',
+  'https.cert.daysLeft.one': 'Valid until {date} ({count} day left)',
+  'https.cert.daysLeft.other': 'Valid until {date} ({count} days left)',
+  'https.cert.subject': 'Subject',
+  'https.cert.issuer': 'Issued by',
+  'https.cert.selfSigned': 'Itself (self-signed)',
+  'https.cert.notBefore': 'Valid from',
+  'https.cert.notAfter': 'Valid until',
+  'https.cert.keyType': 'Key',
+  'https.cert.keyOther': 'Other',
+  'https.cert.chain': 'Chain',
+  'https.cert.chainLength.one': '{count} certificate',
+  'https.cert.chainLength.other': '{count} certificates',
+  'https.cert.sans': 'Names and addresses',
+  'https.cert.fingerprint': 'SHA-256 fingerprint',
+  'https.cert.copyFingerprint': 'Copy fingerprint',
+  'https.hosts.covered': 'Covered',
+  'https.hosts.notCovered': 'Not covered',
+  'https.hosts.none': 'None of PiCache’s names and addresses.',
+  'https.hosts.allCovered': 'The certificate covers every name and address of PiCache.',
+  'https.hosts.warn': 'Browsers warn when you use these.',
+  'https.ca.title': 'Local certificate authority',
+  'https.ca.description':
+    'PiCache issues its own certificate with a local CA. Trust the CA once on each device and browsers accept PiCache without warnings, also after renewals.',
+  'https.ca.download': 'Download CA certificate',
+  'https.ca.validUntil': 'CA valid until {date}',
+  'https.ca.inUse': 'Issues the certificate in use',
+  'https.ca.names': 'May issue for names',
+  'https.ca.addresses': 'May issue for addresses',
+  'https.ca.constraints':
+    'The CA can only issue certificates for these names and addresses: devices that trust it trust nothing else because of it.',
+  'https.ca.prepared': 'Certificate files or an uploaded certificate are in use; the local CA takes over when they are removed.',
+  'https.ca.none': 'There is no local CA yet.',
+  'https.ca.noneOther':
+    'There is no local CA. It is not needed while certificate files or an uploaded certificate are in use, but can be prepared.',
+  'https.ca.renewTitle': 'The local CA does not cover all of PiCache’s names and addresses',
+  'https.ca.renewText':
+    'PiCache has names or addresses the CA may not issue certificates for (see “Not covered” above). Create a new local CA to include them; every device must then trust the new CA.',
+  'https.ca.renewPrepared':
+    'The prepared local CA does not cover all of PiCache’s current names and addresses. Create a new local CA before it takes over, so it includes them.',
+  'https.ca.legacyTitle': 'PiCache still uses its self-signed certificate',
+  'https.ca.legacyText':
+    'On {date} PiCache replaces it with a certificate of its local CA, which your devices can trust once. Create the CA now to switch earlier.',
+  'https.ca.create': 'Create local CA',
+  'https.ca.createNow': 'Create local CA now',
+  'https.ca.createNew': 'Create a new local CA',
+  'https.ca.createTitle': 'Create the local CA',
+  'https.ca.createNewTitle': 'Create a new local CA?',
+  'https.ca.createText':
+    'PiCache creates a CA that can only issue certificates for its own names and addresses, and a new certificate from it. Trust the CA on your devices afterwards.',
+  'https.ca.replaceWarn':
+    'The current CA is replaced. Every device that trusts it must trust the new CA; until then browsers warn again.',
+  'https.ca.passwordRequired': 'Enter your password.',
+  'https.ca.created': 'Local CA created',
+  'https.ca.replaced': 'New local CA created. Trust it on your devices.',
+  'https.trust.title': 'Trust the local CA on your devices',
+  'https.trust.description': 'Download the CA certificate above on each device, then:',
+  'https.trust.windows.title': 'Windows',
+  'https.trust.windows.text':
+    'Open picache-ca.crt, choose Install certificate, then Place all certificates in the following store > Trusted Root Certification Authorities. Restart the browser.',
+  'https.trust.macos.title': 'macOS',
+  'https.trust.macos.text':
+    'Open picache-ca.crt to add it to Keychain Access. Double-click the PiCache CA there, open Trust and set “When using this certificate” to Always Trust.',
+  'https.trust.ios.title': 'iOS and iPadOS',
+  'https.trust.ios.text':
+    'Open the download in Safari and allow the profile, then install it under Settings > General > VPN & Device Management. Finally turn on full trust under Settings > General > About > Certificate Trust Settings.',
+  'https.trust.android.title': 'Android',
+  'https.trust.android.text':
+    'Settings > Security > Encryption & credentials > Install a certificate > CA certificate, then choose picache-ca.crt. The menu names differ slightly between manufacturers.',
+  'https.trust.firefox.title': 'Firefox',
+  'https.trust.firefox.text':
+    'Firefox has its own list: Settings > Privacy & Security > Certificates > View Certificates > Authorities > Import, choose picache-ca.crt and tick “Trust this CA to identify websites”.',
+  'https.trust.linux.title': 'Linux',
+  'https.trust.linux.text':
+    'Debian and Ubuntu add it to the system store with the command below. Chrome and Chromium use their own list: Settings > Privacy and security > Security > Manage certificates > Authorities > Import.',
+  'https.trust.riskTitle': 'What trusting the CA means',
+  'https.trust.riskText':
+    'The CA can only vouch for PiCache’s own names and addresses. Its key stays in PiCache’s data directory so renewals need no new trust: whoever can read that directory could issue such certificates too. Remove the CA from your devices when you retire PiCache or its data directory was exposed, and create a new CA after a compromise.',
+  'https.upload.title': 'Your own certificate',
+  'https.upload.description':
+    'Use a certificate from your own CA or a public one. PiCache serves it at once instead of its local CA.',
+  'https.upload.cert': 'Certificate (PEM)',
+  'https.upload.certHelp': 'The server certificate first, then any intermediate certificates.',
+  'https.upload.pickCert': 'Load certificate file',
+  'https.upload.key': 'Private key (PEM)',
+  'https.upload.keyHelp': 'Unencrypted (PKCS#8, PKCS#1 or EC). PiCache stores it readable only by its service user.',
+  'https.upload.pickKey': 'Load key file',
+  'https.upload.certRequired': 'Paste the certificate (-----BEGIN CERTIFICATE-----).',
+  'https.upload.keyRequired': 'Paste the private key (-----BEGIN PRIVATE KEY-----).',
+  'https.upload.tooLarge': 'Certificate and key together must be at most 64 KiB.',
+  'https.upload.fileTooLarge': '{name} is larger than 64 KiB: that is not a certificate or key.',
+  'https.upload.fileUnreadable': 'The browser could not read {name}. Choose it again.',
+  'https.upload.submit': 'Upload certificate',
+  'https.upload.done': 'Certificate uploaded and in use',
+  'https.upload.notCoveredTitle': 'The certificate does not cover all of PiCache’s names and addresses',
+  'https.upload.notCoveredText': 'Browsers warn when you use these:',
+  'https.upload.stored': 'An uploaded certificate is in use.',
+  'https.upload.storedBroken':
+    'An uploaded certificate is stored but cannot be used (see above). Upload it again or delete it.',
+  'https.upload.storedUnused': 'An uploaded certificate is stored but unused while PICACHE_WEB_TLS_CERT is set.',
+  'https.upload.envOverride':
+    'PICACHE_WEB_TLS_CERT is set: the certificate files on the host are used (reloaded within a minute).',
+  'https.upload.plainTitle': 'Upload over HTTPS',
+  'https.upload.plainText': 'The private key is only sent over an encrypted connection. Open this page over HTTPS:',
+  'https.upload.letsEncrypt':
+    'Let’s Encrypt: PiCache has no ACME client. Renew with acme.sh or lego (DNS challenge) into files set with PICACHE_WEB_TLS_CERT and PICACHE_WEB_TLS_KEY; PiCache loads renewed files within a minute. docs/DEPLOYMENT.md has a guide.',
+  'https.upload.delete': 'Delete uploaded certificate',
+  'https.upload.deleteTitle': 'Delete the uploaded certificate?',
+  'https.upload.deleteText':
+    'PiCache then serves the certificate of its local CA (or the certificate files set on the host). Browsers that trust only the uploaded certificate warn.',
+  'https.upload.deleted': 'Uploaded certificate deleted',
 
   'metrics.title': 'Prometheus metrics',
   'metrics.description': 'Exports DNS, cache and storage counters in the Prometheus text format.',
@@ -181,7 +408,11 @@ export default {
   'metrics.scrape': 'Example scrape configuration',
   'metrics.scrapeHelp': 'Save an admin API token in /etc/prometheus/picache-token on the Prometheus host.',
   'metrics.scrapeHelpTls':
-    'Save an admin API token in /etc/prometheus/picache-token. With PiCache’s self-signed certificate, copy <data>/tls/cert.pem to /etc/prometheus/picache-cert.pem.',
+    'Save an admin API token in /etc/prometheus/picache-token and PiCache’s CA certificate (System > HTTPS certificate) as /etc/prometheus/picache-ca.crt.',
+  'metrics.scrapeHelpSelfSigned':
+    'Save an admin API token in /etc/prometheus/picache-token. PiCache still uses its self-signed certificate: copy <data>/tls/cert.pem to /etc/prometheus/picache-cert.pem.',
+  'metrics.scrapeHelpOwnCert':
+    'Save an admin API token in /etc/prometheus/picache-token. Prometheus checks PiCache’s certificate against the system’s trusted CAs; for a certificate of your own CA add a tls_config with that CA as ca_file.',
 
   // audit log
   'audit.title': 'Audit log',
@@ -227,7 +458,7 @@ export default {
   'backup.restore.uploading': 'Uploading and checking…',
   'backup.restore.factReplace': 'PiCache checks the file and applies it at the next restart.',
   'backup.restore.factSessions':
-    'Your account, password, two-factor authentication, API tokens and the audit log stay as they are; everyone has to sign in again.',
+    'The accounts with their roles, passwords and two-factor authentication, the API tokens and the audit log stay as they are; everyone has to sign in again.',
   'backup.restore.factKeep':
     'The current database is kept as picache.db.before-restore; if PiCache cannot start with the backup, it goes back to it.',
   'backup.restore.checkFailed': 'This file cannot be restored',
@@ -237,7 +468,7 @@ export default {
   'backup.restore.check.unreadable': 'The browser could not read the file. Choose it again.',
   'backup.restore.confirmTitle': 'Restore {name}?',
   'backup.restore.confirmText':
-    'The backup replaces the whole configuration at the next restart, and everyone is signed out. Your account and API tokens stay. The current configuration stays available as picache.db.before-restore.',
+    'The backup replaces the whole configuration at the next restart, and everyone is signed out. The accounts and API tokens stay. The current configuration stays available as picache.db.before-restore.',
   'backup.restore.password': 'Your password',
   'backup.restore.passwordHelp': 'Restoring replaces the whole configuration, so PiCache asks for your password again.',
   'backup.restore.passwordRequired': 'Enter your password.',
@@ -247,6 +478,7 @@ export default {
   'backup.restore.staged': 'Backup checked',
   'backup.restore.stagedTitle': 'The backup is checked and ready',
   'backup.restore.stagedText': 'Restart PiCache to apply it. Until then the current configuration stays active.',
+  'backup.restore.webAccessTitle': 'This browser may be locked out after the restart',
   'backup.restore.restartNow': 'Restart now',
   'backup.restore.restartText':
     'PiCache restarts and applies the restored backup. Everyone is signed out; sign in again with your account.',
@@ -390,6 +622,7 @@ export default {
   'health.check.logs': 'Logs',
   'health.check.data-disk': 'Data disk',
   'health.check.dhcp': 'DHCP server',
+  'health.check.tls': 'HTTPS certificate',
 
   'health.about.title': 'About PiCache',
   'health.about.loadError': 'The system information could not be loaded',

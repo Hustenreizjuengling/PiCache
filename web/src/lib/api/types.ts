@@ -20,6 +20,8 @@ export type ErrorCode =
   | 'too_many_requests'
   | 'internal'
   | 'misdirected'
+  /** 403: the host locks the configuration (PICACHE_CONFIG_LOCKED) and the request came from a session. */
+  | 'config_locked'
   | 'network'
   | 'aborted'
 
@@ -76,6 +78,12 @@ export interface SystemInfo {
   masterKeySource: string
   memory: { allocBytes: number; sysBytes: number; limitBytes: number; numGC: number }
   goroutines: number
+  /** Connections and requests refused by the web access control since the start. */
+  webRefused: number
+  /** The address this request is attributed to (the forwarded client behind a trusted proxy). */
+  clientAddress: string
+  /** The TCP peer of this request (the proxy when it differs from clientAddress). */
+  peerAddress: string
 }
 
 export type HealthStatus = 'ok' | 'warn' | 'fail'
@@ -151,6 +159,8 @@ export interface RestartResult {
 export interface RestoreResult {
   staged: boolean
   message: string
+  /** Set when the restored settings would not let this browser use the web UI after the restart. */
+  webAccessWarning?: string
 }
 
 /**
@@ -217,10 +227,14 @@ export interface UpdateQueued {
 
 export type Scope = 'admin' | 'read'
 
+/** An account's role: admins manage everything, viewers read and manage only their own account. */
+export type Role = 'admin' | 'viewer'
+
 /** auth.User */
 export interface User {
   id: number
   username: string
+  role: Role
   totpEnabled: boolean
   createdAt: Timestamp
   lastLoginAt?: Timestamp
@@ -231,12 +245,33 @@ export interface AuthStatus {
   setupRequired: boolean
   authenticated: boolean
   user?: User
+  /** `read` for viewer sessions and read tokens (and admin tokens of viewers). */
   scope?: Scope
   tokenAuth: boolean
   language: string
   setupHints?: string[]
   /** Port of the bound HTTPS listener (0 if none). Absent from older servers. */
   httpsPort?: number
+  /** Sessions cannot change the configuration (PICACHE_CONFIG_LOCKED); false while signed out. */
+  configLocked: boolean
+  /** Destructive actions are allowed (PICACHE_DESTRUCTIVE_API); false while signed out. */
+  destructiveApi: boolean
+}
+
+/** POST /system/users */
+export interface UserCreate {
+  username: string
+  password: string
+  role: Role
+  currentPassword: string
+}
+
+/** PUT /system/users/{id}: at least one of role, password, disableTotp (only role for your own account). */
+export interface UserUpdate {
+  role?: Role
+  password?: string
+  disableTotp?: boolean
+  currentPassword: string
 }
 
 /** auth.SessionInfo */
@@ -259,6 +294,9 @@ export interface TokenInfo {
   createdAt: Timestamp
   expiresAt?: Timestamp
   lastUsed?: Timestamp
+  /** The owner (admins list the tokens of every account). */
+  userId: number
+  username: string
 }
 
 /** POST /tokens: the token secret is shown exactly once. */
@@ -282,6 +320,69 @@ export interface AuditEntry {
 export interface TotpBegin {
   secret: string
   uri: string
+}
+
+// ---------------------------------------------------------------- https certificate
+
+/**
+ * Where the served HTTPS certificate comes from, in order of precedence:
+ * `files` (PICACHE_WEB_TLS_CERT/KEY), `uploaded` (PUT /system/tls),
+ * `local-ca` (issued by PiCache's local CA), `self-signed` (from 0.10 or
+ * older, or an emergency certificate); `none` without an HTTPS listener.
+ */
+export type TlsSource = 'files' | 'uploaded' | 'local-ca' | 'self-signed' | 'none'
+
+/** Why an upload is not possible (first matching). */
+export type TlsUploadReason = 'no-listener' | 'env-override' | 'plain-http'
+
+/** api.CertInfo: the served leaf certificate. */
+export interface CertInfo {
+  /** RFC 2253 form. */
+  subject: string
+  issuer: string
+  sans: string[]
+  notBefore: Timestamp
+  notAfter: Timestamp
+  /** Upper-case hex pairs joined by ":". */
+  fingerprintSha256: string
+  /** "ECDSA P-256", "ECDSA P-384", "RSA <bits>", "Ed25519" or "other". */
+  keyType: string
+  chainLength: number
+  selfSigned: boolean
+}
+
+/** The local CA (present when ca.crt exists). */
+export interface LocalCaInfo {
+  subject: string
+  notBefore: Timestamp
+  notAfter: Timestamp
+  fingerprintSha256: string
+  /** The name constraints: the only names and addresses its certificates can be valid for. */
+  permittedNames: string[]
+  permittedAddresses: string[]
+  /** PiCache's names or addresses include some outside the constraints: a new CA is needed to cover them. */
+  renewalNeeded: boolean
+}
+
+/** GET /system/tls (also the answer of PUT, DELETE and POST /system/tls/local-ca). */
+export interface TlsStatus {
+  listener: boolean
+  source: TlsSource
+  /** PICACHE_WEB_TLS_CERT is set. */
+  envOverride: boolean
+  /** An uploaded certificate is stored (it may be unused while envOverride). */
+  uploadStored: boolean
+  upload: { allowed: boolean; reason?: TlsUploadReason }
+  certificate?: CertInfo
+  /** PiCache's names and addresses the served certificate covers / does not cover (names first). */
+  hostsCovered: string[]
+  hostsNotCovered: string[]
+  caAvailable: boolean
+  localCa?: LocalCaInfo
+  /** The configured certificate (files or upload) cannot be used: a fallback is served. */
+  fallback: boolean
+  error?: string
+  checkedAt?: Timestamp
 }
 
 // ---------------------------------------------------------------- settings
@@ -424,6 +525,14 @@ export interface WebSettings {
   redirectToHttps: boolean
   metricsEnabled: boolean
   language: '' | 'en' | 'de'
+  /** Addresses or CIDRs allowed to use the web UI besides the always allowed ones (at most 64). */
+  allowedNetworks: string[]
+  /** Only this machine, private and connected networks and the allowed networks may use the web UI. */
+  restrictToNetworks: boolean
+  /** Reverse proxies whose X-Forwarded-For and X-Forwarded-Proto are read (at most 16). */
+  trustedProxies: string[]
+  /** Oldest TLS version the HTTPS listener accepts. */
+  tlsMinVersion: '1.2' | '1.3'
 }
 
 /** settings.Updates */

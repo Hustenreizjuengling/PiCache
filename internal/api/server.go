@@ -27,6 +27,7 @@ import (
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/logs"
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/notify"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
@@ -104,8 +105,9 @@ type Runtime interface {
 	Backup(ctx context.Context, w io.Writer, includeSecrets bool) error
 	// StageRestore validates an upload and stages it for the next start; the
 	// restore keeps the live accounts, API tokens and audit log and ends all
-	// sessions.
-	StageRestore(ctx context.Context, r io.Reader) error
+	// sessions. It returns the staged settings as the next start will load
+	// them (settings.DecodeStored; nil when they cannot be decoded).
+	StageRestore(ctx context.Context, r io.Reader) (*settings.All, error)
 	Restart()                          // exit with code 75 after the response (systemd/Docker restart)
 	Health(ctx context.Context) Health // last evaluated health (refreshed every 60 s)
 }
@@ -147,8 +149,12 @@ type Deps struct {
 	Parental *parental.Engine // nil: the parental group endpoints answer 503
 	Network  Network          // nil: the network check endpoints answer 503
 	DHCP     DHCP             // nil: the DHCP endpoints answer 503
-	UI       http.Handler     // embedded web UI
-	Log      *slog.Logger
+	TLS      WebTLS           // nil: no HTTPS listener
+	// WebAccess is the web ACL shared with the listeners (stage 1); nil:
+	// New builds one from Settings.
+	WebAccess *netutil.WebAccess
+	UI        http.Handler // embedded web UI
+	Log       *slog.Logger
 }
 
 // Server is the API + UI HTTP handler.
@@ -158,6 +164,8 @@ type Server struct {
 	mux     *http.ServeMux
 	handler http.Handler
 	hosts   *hostAllowlist
+	web     *netutil.WebAccess
+	routes  []routeInfo // every route registered with route (tests iterate it)
 	// macOf reads the neighbour-table MAC of an address (nil:
 	// Deps.Clients.NeighbourMAC; replaced in tests).
 	macOf func(ip netip.Addr) (string, bool)
@@ -167,6 +175,10 @@ type Server struct {
 func New(d Deps) *Server {
 	s := &Server{d: d, log: d.Log.With(slog.String("component", "api")), mux: http.NewServeMux()}
 	s.hosts = newHostAllowlist(d.Config, d.Settings)
+	s.web = d.WebAccess
+	if s.web == nil {
+		s.web = netutil.NewWebAccess(d.Settings, d.Log)
+	}
 
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -176,7 +188,9 @@ func New(d Deps) *Server {
 	s.registerMetrics()
 
 	s.registerAuthRoutes()
+	s.registerUserRoutes()
 	s.registerSystemRoutes()
+	s.registerTLSRoutes()
 	s.registerSettingsRoutes()
 	s.registerDNSRoutes()
 	s.registerUpstreamRoutes()

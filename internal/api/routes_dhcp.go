@@ -48,9 +48,9 @@ type DHCP interface {
 func (s *Server) registerDHCPRoutes() {
 	s.route("GET /api/v1/dhcp", permRead, s.dhcpStatus)
 	s.route("GET /api/v1/dhcp/interfaces", permRead, s.dhcpInterfaces)
-	s.route("POST /api/v1/dhcp/probe", permAdmin, s.dhcpProbe)
+	s.route("POST /api/v1/dhcp/probe", permAdmin, s.dhcpProbe, routeExempt)
 	s.route("GET /api/v1/dhcp/leases", permRead, s.dhcpLeases)
-	s.route("DELETE /api/v1/dhcp/leases", permAdmin, s.dhcpLeasesDelete)
+	s.route("DELETE /api/v1/dhcp/leases", permAdmin, s.dhcpLeasesDelete, routeDestructive)
 	s.route("DELETE /api/v1/dhcp/leases/{mac}", permAdmin, s.dhcpLeaseDelete)
 	s.route("GET /api/v1/dhcp/static", permRead, s.dhcpStatics)
 	s.route("POST /api/v1/dhcp/static", permAdmin, s.dhcpStaticCreate)
@@ -58,7 +58,7 @@ func (s *Server) registerDHCPRoutes() {
 	s.route("POST /api/v1/dhcp/static/import", permAdmin, s.dhcpStaticImport)
 	s.route("PUT /api/v1/dhcp/static/{mac}", permAdmin, s.dhcpStaticUpdate)
 	s.route("DELETE /api/v1/dhcp/static/{mac}", permAdmin, s.dhcpStaticDelete)
-	s.route("POST /api/v1/dhcp/reset", permAdmin, s.dhcpReset)
+	s.route("POST /api/v1/dhcp/reset", permAdmin, s.dhcpReset, routeDestructive)
 	s.route("GET /api/v1/dhcp/log", permRead, s.dhcpLog)
 }
 

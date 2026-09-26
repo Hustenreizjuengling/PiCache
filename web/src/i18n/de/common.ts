@@ -27,7 +27,8 @@ const de: Messages<typeof en> = {
   'nav.storage': 'Speicher',
   'nav.cacheSettings': 'Cache-Einstellungen',
   'nav.system': 'System',
-  'nav.account': 'Konto & Sicherheit',
+  'nav.account': 'Benutzer & Sicherheit',
+  'nav.https': 'HTTPS-Zertifikat',
   'nav.tokens': 'API-Tokens',
   'nav.audit': 'Änderungsprotokoll',
   'nav.backup': 'Sicherung & Wiederherstellung',
@@ -163,6 +164,13 @@ const de: Messages<typeof en> = {
   'language.label': 'Sprache',
   'account.label': 'Konto',
   'account.logout': 'Abmelden',
+  'account.role.admin': 'Admin',
+  'account.role.viewer': 'Betrachter',
+
+  // Einschränkungen auf dem Host (für Admins über jeder Seite)
+  'host.configLocked':
+    'Die Konfiguration ist auf dem Host gesperrt (PICACHE_CONFIG_LOCKED): Einstellungen lassen sich nur mit einem Admin-API-Token ändern.',
+  'host.destructiveOff': 'Zerstörende Aktionen sind auf diesem Host abgeschaltet (PICACHE_DESTRUCTIVE_API=false).',
 
   // Paarstreifen
   'strip.caption': 'Verkehr der letzten 15 Minuten',

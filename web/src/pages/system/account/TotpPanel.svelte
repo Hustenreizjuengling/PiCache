@@ -161,11 +161,11 @@
       </div>
       <div class="row">
         {#if user.totpEnabled}
-          <Button icon="shield-off" disabled={!session.isAdmin} onclick={openDisable}>
+          <Button icon="shield-off" onclick={openDisable}>
             {t('system.account.totp.disable')}
           </Button>
         {:else}
-          <Button icon="shield-check" disabled={!session.isAdmin} onclick={openBegin}>
+          <Button icon="shield-check" onclick={openBegin}>
             {t('system.account.totp.setup')}
           </Button>
         {/if}

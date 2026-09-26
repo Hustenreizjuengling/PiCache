@@ -50,10 +50,15 @@ fixes; please test against it or a current build of `main`.
 | Hostile blocklists, cache-domains data or NAS content | Sizes, counts, names and patterns are validated; public-suffix patterns are rejected. Files are accessed through `os.Root`. Slice files carry validated, CRC-checked headers. |
 | Web UI takeover on first start | One-time setup token (logged and stored with mode 0600, compared in constant time, first user created atomically), or provisioning from `PICACHE_ADMIN_PASSWORD_FILE`. After setup, `/auth/setup` answers 403 at once, uses no share of the global attempt limit and counts as a failed attempt of the caller. |
 | Password guessing | argon2id; per client 5 failures → 15 min lockout; per user name a delay from the 5th failure (1 s, doubling, at most 30 s, reset by a successful sign-in), never a lockout; TOTP failures count; a global attempt limit; optional TOTP with single-use codes. Every sign-in gives the browser a device cookie (sealed with the master key, `HttpOnly`, 180 days, not a credential): a browser that signed in before is throttled by its own device key (5 failures → 15 min) instead of the user-name delay, so failed attempts from other LAN hosts cannot keep it out, and a copied device cookie allows no more guesses than one client. Password confirmations of signed-in users (tokens, TOTP, password change, restore) are throttled per client and per session (5 failures → 15 min each) and by the global limit, not by the user-name delay. |
-| Session theft, CSRF | 256-bit session tokens stored hashed; cookie `HttpOnly`, `SameSite=Strict`; over HTTPS `Secure` and named `__Host-picache_session`, so a plain-HTTP origin on the same host cannot plant or overwrite it; `PICACHE_WEB_SECURE_COOKIES` sets `Secure` behind a TLS-terminating reverse proxy; idle and absolute timeouts; sessions re-checked on every request; cross-origin protection; JSON-only request bodies. A stolen session alone cannot create API tokens or enrol TOTP (both need the current password); changing the password ends all other sessions and all API tokens (unless kept explicitly); enabling TOTP ends all other sessions. |
-| API token misuse | Tokens have scope `read` or `admin` and can never manage tokens, passwords, TOTP or sessions, nor restore a backup. Backups never contain accounts (users, password hashes, TOTP secrets, sessions, tokens), and a restore keeps the accounts and tokens of the running instance, so an admin token cannot become the interactive account. Live streams re-check the token every 15 s. |
+| Session theft, CSRF | 256-bit session tokens stored hashed; cookie `HttpOnly`, `SameSite=Strict`; over HTTPS `Secure` and named `__Host-picache_session`, so a plain-HTTP origin on the same host cannot plant or overwrite it; behind a TLS-terminating reverse proxy the same applies when the proxy is trusted and sends `X-Forwarded-Proto: https`, else `PICACHE_WEB_SECURE_COOKIES` sets `Secure`; idle and absolute timeouts; sessions re-checked on every request; cross-origin protection; JSON-only request bodies. A stolen session alone cannot create API tokens or enrol TOTP (both need the current password); changing the password ends all other sessions and all API tokens (unless kept explicitly); enabling TOTP ends all other sessions. |
+| API token misuse | Tokens have scope `read` or `admin` and can never manage tokens, passwords, TOTP or sessions, nor restore a backup, install an update, manage accounts or change the HTTPS certificate (these need an interactive session; accounts, restores, updates and certificates an admin's). An admin token acts with admin rights only while its owner is an admin (checked on every request); demoting an account deletes its admin tokens. Backups never contain accounts (users, password hashes, TOTP secrets, sessions, tokens), and a restore keeps the accounts and tokens of the running instance, so an admin token cannot become the interactive account. Live streams re-check the token every 15 s. |
 | Malicious backup upload | A restore needs an interactive session and the current password. Uploads with triggers, views, virtual tables, generated columns, tables or indexes the running PiCache does not have, indexes defined differently from the running PiCache's (including named indexes disguised as automatic ones), or altered account tables are refused, at upload and again at the next start. The restore keeps the accounts, API tokens and audit log of the running instance and ends all sessions. Every database connection runs with `trusted_schema` off. PiCache creates no triggers or views: any found in `picache.db` (e.g. planted through a restore by an older version) are removed at start with a warning, by `picache reset-password`, and from every backup copy; revoking sessions or tokens and scrubbing a backup verify that the rows are really gone. |
 | DNS rebinding against the UI | Host allowlist (IP addresses, localhost, this machine's names, configured hosts); other hosts get 421. |
+| Web UI reachable from other networks | New installations allow the web UI only from this machine, the private ranges, the networks the machine is connected to, the DNS allowed networks and the addresses you add (**System → Users & security → Web access**); other connections are closed at accept, and every request is checked again. A change that would lock out your own address is refused (this machine always passes), and `picache web-access --reset` on the host opens the web UI again. Installations upgraded from 0.10 keep it open until you switch the restriction on. |
+| Forged client addresses through proxies | `X-Forwarded-For` and `X-Forwarded-Proto` are read only from the addresses in `web.trustedProxies` (at least /24 or /64, never everything), right-most entry first; `Forwarded`, `X-Real-IP` and similar headers are always ignored; a malformed entry before the client fails the request. Residual: a trusted proxy that passes a client's `X-Forwarded-For` through without appending lets that client choose its address; trusting loopback trusts every local process; a proxy on the same host that is *not* trusted makes every client appear as loopback (always allowed, one shared sign-in throttle); never list a whole LAN. |
+| Too much power per account | Accounts are admins or viewers; viewers see the pages read-only (not the audit log, notification channels, backup downloads or storage snippets) and change only their own password, two-factor authentication, sessions and read tokens. Accounts are managed only in an admin's browser session with the current password; at least one admin always remains, also when two admins demote each other at the same time. A role change ends the account's sessions at once; a token or sign-in requested while a demotion or password reset is saved is refused, never created after it. |
+| Configuration drift in managed installations | `PICACHE_CONFIG_LOCKED` refuses configuration changes from interactive sessions (pauses, overrides, refreshes and tests stay possible); the automation writes with an admin API token. It is **not** an access control against admins: admin tokens still write, and whoever controls the host can unset it. `PICACHE_DESTRUCTIVE_API=false` refuses restores, resets, purges and other bulk deletions for everyone. |
+| Web certificate and the local CA | The local CA is limited by critical name constraints to PiCache's own names and addresses (never the local domain, other LAN names, `web.allowedHosts` or other addresses), with path length 0. Its key stays in the data directory (0600) so renewals need no new trust on your devices. Residual risk: whoever can read the data directory can issue certificates that devices which imported the CA trust, but only for PiCache's own names and addresses, whose server key the same attacker already holds. Remove the CA from your devices when PiCache is retired or its data directory was exposed, and create a new CA after a compromise. Uploaded private keys are accepted only over HTTPS or from a loopback address on the host (such as `http://127.0.0.1:8080`; the host's LAN address over plain HTTP does not count), with the current password, and are never shown, logged or audited. |
 | XSS, clickjacking | Strict Content-Security-Policy, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`. The UI never renders HTML from data. |
 | Secret leakage | NAS passwords, notification secrets and TOTP secrets are sealed (XChaCha20-Poly1305) with a master key that is never part of a backup. Secrets are write-only in the API and redacted in logs, snippets, notifications and the audit log. Only the root helper decrypts NAS passwords. CDN query strings are never logged or stored. |
 | Outbound notifications | Only admins configure channels. PiCache sends only to the URLs they entered (http or https, no redirects, no proxy, verified TLS, 10 s), and never to link-local (cloud metadata), multicast or unspecified addresses. Private and loopback addresses are allowed on purpose. A stored secret is never sent to a changed server. Messages carry no secrets, passwords, tokens, session data or user names. Details in [Notifications](#notifications). |
@@ -565,21 +570,36 @@ text is never passed on to clients.
 - [ ] Setup was completed right after the first start (the setup token grants
       the admin account to whoever uses it first).
 - [ ] The admin password is long and unique, and TOTP is enabled
-      (**System → Account & security**).
-- [ ] The UI is used over HTTPS (`:8443`, ideally with your own certificate
-      via `PICACHE_WEB_TLS_CERT`/`PICACHE_WEB_TLS_KEY`), and the HTTPS redirect
-      is enabled in the web settings. Optionally disable plain HTTP with
+      (**System → Users & security**).
+- [ ] The web UI is restricted to your networks (**System → Users & security
+      → Web access**, "Allow the web UI only from these networks"); an
+      installation upgraded from 0.10 has it off until you switch it on.
+- [ ] Only the exact addresses of your reverse proxies are trusted
+      (`web.trustedProxies`), never a whole LAN or loopback unless the proxy
+      runs on the same host; a proxy on the same host is always listed.
+- [ ] People who only look get viewer accounts, not the admin password; every
+      person has an own account (the audit log names who changed what).
+- [ ] Managed installations set `PICACHE_CONFIG_LOCKED=on` (changes then come
+      from an admin API token only) and, where restores and purges must not
+      happen through the API, `PICACHE_DESTRUCTIVE_API=false`.
+- [ ] The UI is used over HTTPS (`:8443`): your devices trust PiCache's local
+      CA (**System → HTTPS certificate**), or you uploaded your own certificate
+      or use certificate files (`PICACHE_WEB_TLS_CERT`/`PICACHE_WEB_TLS_KEY`,
+      reloaded when renewed), and the HTTPS redirect is enabled in the web
+      settings. Optionally require TLS 1.3 (`web.tlsMinVersion`). Optionally disable plain HTTP with
       `PICACHE_WEB_LISTEN=off`. The sign-in and setup pages point to the
       HTTPS port when they are opened over plain HTTP.
 - [ ] Behind a TLS-terminating reverse proxy that talks plain HTTP to
-      PiCache, `PICACHE_WEB_SECURE_COOKIES=true` is set, so the session
-      cookie is `Secure`.
+      PiCache, the proxy is in `web.trustedProxies` (then its
+      `X-Forwarded-Proto: https` makes the session cookie `Secure`), or
+      `PICACHE_WEB_SECURE_COOKIES=true` is set.
 - [ ] API tokens use scope `read` wherever possible and have an expiry.
       Unused tokens and sessions are revoked.
 - [ ] After a suspected compromise the password is changed in the UI
       (this ends all other sessions and all API tokens) or reset with
       `picache reset-password <user>` (also disables TOTP), and the audit log
-      is checked.
+      is checked. If the local CA's key may have been read, a new local CA is
+      created and the old one removed from your devices.
 - [ ] `/metrics` stays disabled unless you scrape it (it then requires an
       admin token).
 - [ ] Only needed host names are in `PICACHE_WEB_HOSTS` / the allowed hosts.

@@ -71,7 +71,7 @@
         : formatMiB(run.sizeMiB)}
     </p>
     <p class="small muted">{t('cache.speed.keepsRunning')}</p>
-    {#if session.isAdmin}
+    {#if session.canOperate}
       <div>
         <Button icon="close" loading={cancelling} onclick={cancel}>{t('cache.speed.cancel')}</Button>
       </div>

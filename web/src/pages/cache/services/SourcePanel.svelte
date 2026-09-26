@@ -32,7 +32,7 @@
 
 <Panel title={t('cache.source.title')} description={t('cache.source.description')}>
   {#snippet actions()}
-    <Button icon="refresh" loading={refreshing} disabled={!session.isAdmin} onclick={onrefresh}>{t('cache.source.refresh')}</Button>
+    <Button icon="refresh" loading={refreshing} disabled={!session.canOperate} onclick={onrefresh}>{t('cache.source.refresh')}</Button>
   {/snippet}
 
   {#if error && !source}

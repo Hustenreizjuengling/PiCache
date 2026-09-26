@@ -22,6 +22,9 @@ Whichever you choose:
 Contents: [Download](#download) · [Build from source](#build-from-source) ·
 [Bare metal](#bare-metal-and-vms-debian-1213) · [LXC](#proxmox-lxc) ·
 [Docker](#docker) · [First-run setup](#first-run-setup) ·
+[Web access and accounts](#web-access-and-accounts) ·
+[HTTPS certificates](#https-certificates) ·
+[Behind a reverse proxy](#behind-a-reverse-proxy) ·
 [IPv6](#ipv6-and-dual-stack-networks) ·
 [Port conflicts](#port-conflicts) · [Persistent data](#persistent-data) ·
 [Backup and restore](#backup-and-restore) · [Updates](#updates) ·
@@ -329,7 +332,10 @@ has limits: you **must** set the cache IPv4 address
 detect it; traffic that passes docker-proxy (IPv6, loopback, hairpin)
 appears to come from the Docker gateway; clients cannot be identified by
 MAC; the router resolver must be set explicitly; and the DHCP server is not
-available (DHCP broadcasts do not cross the bridge). Use host networking
+available (DHCP broadcasts do not cross the bridge). The
+[local CA](#the-local-ca) cannot cover the host's LAN IP either: the
+container does not know it, so browsers keep warning for
+`https://<host IP>:8443` even after you trust the CA. Use host networking
 whenever you can.
 
 **DHCP server** (optional, [DHCP server](#dhcp-server)): switch it on under
@@ -352,8 +358,10 @@ propagation does not work.
 
 ## First-run setup
 
-1. Open the web UI: `https://<ip>:8443/` (self-signed certificate; see
-   `PICACHE_WEB_TLS_CERT` for your own) or `http://<ip>:8080/`. Over plain
+1. Open the web UI: `https://<ip>:8443/` (a certificate of PiCache's own
+   local CA, which your browser does not know yet: accept the warning once,
+   then trust the CA, see [HTTPS certificates](#https-certificates)) or
+   `http://<ip>:8080/`. Over plain
    HTTP the setup token and the password cross the network unencrypted; the
    setup and sign-in pages then show a link to the HTTPS port.
 2. Enter the one-time **setup token** and create the admin account (password
@@ -369,10 +377,13 @@ propagation does not work.
    Alternatively provision the admin at start with
    `PICACHE_ADMIN_PASSWORD_FILE` (and `PICACHE_ADMIN_USER`, default `admin`).
    This only takes effect while no user exists. Remove the variable and the
-   file afterwards: every command reads the variable and fails if the file is
-   gone.
-3. Consider enabling two-factor authentication (**System → Account &
-   security**).
+   file afterwards: `picache serve` reads the variable at every start and
+   fails if the file is gone (the maintenance commands such as
+   `web-access --reset`, `users` and `reset-password` ignore it).
+3. Consider enabling two-factor authentication (**System → Users &
+   security**). There you can also add accounts for other people; give
+   people who only look the role *viewer* ([Web access and
+   accounts](#web-access-and-accounts)).
 4. Point your clients at PiCache: set the DNS server option of your router's
    DHCP server to PiCache's address. If the router instead forwards DNS to
    PiCache, all queries appear to come from the router. Also make sure the
@@ -385,10 +396,321 @@ propagation does not work.
    and move the cache to a suitable disk ([Cache storage](#cache-storage)) if
    needed.
 
+A new installation allows the web UI only from this machine, the private
+networks (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10,
+fc00::/7, link-local), the networks this machine is connected to and the
+DNS allowed networks. Other addresses (a VPN with public addresses, an
+uptime monitor on the Internet) need an entry under **System → Users &
+security → Web access** first ([Web access and accounts](#web-access-and-accounts)).
+
 If you open the UI through a host name that is not this machine's host name,
 local domain or a configured server name, PiCache answers `421 Misdirected
 Request` (DNS-rebinding protection). Add the name to `PICACHE_WEB_HOSTS` or
 to the allowed hosts in the web settings.
+
+---
+
+## Web access and accounts
+
+**Who may open the web UI.** The switch *Allow the web UI only from these
+networks* (**System → Users & security → Web access**, setting
+`web.restrictToNetworks`) is on for new installations. Allowed are then:
+this machine (loopback and its own addresses, always, whatever the
+settings say), the private ranges (10.0.0.0/8, 172.16.0.0/12,
+192.168.0.0/16, 100.64.0.0/10, fc00::/7, link-local), every network this
+machine is connected to (public ones too, so a LAN's global IPv6 prefix
+works and follows renumbering within a minute), the DNS allowed networks
+(`dns.allowedNetworks`), the web allowed networks (`web.allowedNetworks`,
+up to 64 addresses or CIDRs of at least /8 or /32) and the trusted proxies.
+Connections from other addresses are closed right after they are accepted;
+every request is checked again, so an address you remove is refused from its
+next request. Refusals are counted (the Web access panel shows the number)
+and logged at WARN once per address and 10 minutes:
+
+```text
+refused web UI access (not in the allowed networks; see Users & security > Web access or run `picache web-access --reset`) client=203.0.113.9
+```
+
+An installation upgraded from 0.10 keeps the web UI open to every address;
+the Web access panel recommends switching the restriction on. PiCache
+refuses a change that would lock out the address you are connected from
+(the error names the field and the address) and never refuses requests from
+the host itself; if you still lock yourself out, see [Locked out of the web
+UI](#troubleshooting). This applies to every path, `/healthz` and `/metrics`
+included: a monitor or a Prometheus server outside the allowed networks needs
+an entry in the web allowed networks.
+
+**Accounts.** Up to 32 accounts, each an *admin* or a *viewer*. Viewers see
+the pages read-only (not the audit log, the notification channels, backup
+downloads or the storage mount snippets) and change nothing except their own
+password, two-factor authentication, sessions and read-only API tokens; an API token of a viewer
+is always read-only. Admins manage accounts under **System → Users &
+security** (with their own password); an API token can never create
+accounts or change roles. A role change signs the account out everywhere; a
+demotion also deletes its admin API tokens. At least one admin always
+remains. Every account existing before 0.11.0 is an admin. When no admin is
+left (for example after editing the database), PiCache logs `no account is
+an admin: run `picache reset-password --admin <user>` on the host`.
+
+**Infrastructure as code.** Two bootstrap variables
+([Environment variables](#environment-variables)):
+
+- `PICACHE_CONFIG_LOCKED=on` refuses configuration changes from browser
+  sessions (the API answers `config_locked`; the UI shows a banner). Your
+  automation writes with an admin API token (`PUT /api/v1/settings`, the
+  lists, records and so on). Pausing blocking, parental overrides and pauses,
+  list refreshes, tests, the update check, restarts and cache verification
+  stay possible in the UI; a permanent blocking switch-off does not. This is
+  **not** an access control against admins: admin tokens still write, and
+  whoever controls the host can unset it.
+- `PICACHE_DESTRUCTIVE_API=false` refuses restores, the DHCP reset and lease
+  wipe, cache purges and group deletes, storage initialisation and deletion,
+  deleting scheduled backups, accounts and the uploaded certificate, for
+  sessions and tokens alike.
+
+---
+
+## HTTPS certificates
+
+PiCache serves the HTTPS listener (`:8443`) with, in this order:
+
+1. **Certificate files** named by `PICACHE_WEB_TLS_CERT` and
+   `PICACHE_WEB_TLS_KEY` (for example from [Let's Encrypt](#lets-encrypt));
+2. an **uploaded** certificate (**System → HTTPS certificate**);
+3. a certificate of PiCache's **local CA** (the default);
+4. the **self-signed** certificate of versions before 0.11.0, until 30 days
+   before it expires; then PiCache switches to a certificate of its local CA.
+
+If the certificate files or the upload cannot be used, PiCache keeps serving
+HTTPS with the previous certificate or with its local CA's, and the health
+check *HTTPS certificate* fails with the reason. HTTPS is never switched off
+because of a certificate problem. The page **System → HTTPS certificate**
+shows the certificate, its names and addresses, and which of PiCache's names
+it does not cover (browsers warn for those).
+
+### The local CA
+
+At its first start with an HTTPS listener PiCache creates a small
+certification authority in `<data>/tls/` and issues its HTTPS certificate
+with it (renewed automatically 30 days before it expires). Trust the CA once
+on each device and the browser warnings are gone, also after renewals:
+download it under **System → HTTPS certificate** (or from
+`https://<ip>:8443/api/v1/system/tls/ca.crt`) and import it:
+
+- **Windows:** double-click `picache-ca.crt` → *Install certificate* →
+  *Local machine* → *Trusted Root Certification Authorities*.
+- **macOS:** open it in Keychain Access, add it to *System*, then set *When
+  using this certificate* to *Always Trust*.
+- **iOS/iPadOS:** open the file, install the profile (Settings → *Profile
+  downloaded*), then enable it under Settings → General → About →
+  Certificate Trust Settings.
+- **Android:** Settings → Security → Encryption & credentials → Install a
+  certificate → CA certificate.
+- **Firefox** (its own store): Settings → Privacy & Security → Certificates →
+  View Certificates → Authorities → Import.
+- **Linux:** `sudo cp picache-ca.crt /usr/local/share/ca-certificates/ &&
+  sudo update-ca-certificates` (Debian/Ubuntu).
+
+The CA can sign certificates only for PiCache's own names (`localhost`,
+`picache`, the host name and the DNS server names, also with the local
+domain) and its own addresses; its name constraints are marked critical, so
+devices refuse anything else it might sign (your router, other LAN devices,
+public names). When a new server name or a new address appears, the page and
+the health check say that the CA does not cover it: *Create a new local CA*
+includes it, and every device must then trust the new CA. The CA's key stays
+in the data directory so renewals need no new trust. Whoever can read the
+data directory can therefore issue certificates for PiCache's names and
+addresses: remove the CA from your devices when you retire PiCache or its
+data directory was exposed, and create a new CA after a compromise.
+
+**Docker bridge networking:** inside a bridge network PiCache does not know
+the host's LAN IP (and leaves the container's own addresses out), so the CA
+can never cover `https://<host IP>:8443`; the page does not list that
+address as not covered because PiCache cannot see it. Open PiCache by a name
+the CA covers instead: add the name to the DNS server names (`dns.serverNames`)
+with a local DNS record pointing to the host, then create a new local CA. Or
+use host networking, or upload (or point `PICACHE_WEB_TLS_CERT` to) your own
+certificate for the host's address.
+
+### Uploading a certificate
+
+Under **System → HTTPS certificate** an admin can paste (or pick) a
+certificate with its intermediates and the private key (PEM; PKCS#8, PKCS#1
+or SEC1, without a passphrase; RSA 2048–4096 or ECDSA P-256/P-384). The key
+is accepted only over HTTPS or from a loopback address on the PiCache host
+(for example `http://127.0.0.1:8080`; the host's LAN address over plain HTTP
+does not count). PiCache stores
+it as `<data>/tls/uploaded.pem` (0600) and serves it at once; names the
+certificate does not cover are listed as a warning, never refused. *Delete
+uploaded certificate* goes back to the local CA. An upload is not possible
+while `PICACHE_WEB_TLS_CERT` is set.
+
+### Let's Encrypt
+
+PiCache has no ACME client of its own. Use acme.sh or lego with the **DNS-01
+challenge** (no port 80 or 443 needed on PiCache, works for hosts that are
+not reachable from the Internet) and let a deploy hook copy the files to a
+place the service can read. PiCache loads renewed files within a minute, no
+restart needed.
+
+1. The name, for example `picache.example.com`, must resolve to PiCache in
+   your network (a local DNS record, **DNS → Local DNS**) and be listed under
+   the web settings' allowed hosts (or `PICACHE_WEB_HOSTS`).
+2. Create the directory and a deploy hook (as root):
+
+   ```sh
+   sudo install -d -m 0750 -o root -g picache /etc/picache/tls
+   sudo tee /usr/local/sbin/picache-deploy-cert >/dev/null <<'EOF'
+   #!/bin/sh
+   # usage: picache-deploy-cert <fullchain.pem> <privkey.pem>
+   set -eu
+   d=/etc/picache/tls
+   install -m 0640 -o root -g picache "$2" "$d/.privkey.pem.new"
+   install -m 0640 -o root -g picache "$1" "$d/.fullchain.pem.new"
+   mv -f "$d/.privkey.pem.new" "$d/privkey.pem"      # the key first,
+   mv -f "$d/.fullchain.pem.new" "$d/fullchain.pem"  # then the certificate
+   systemctl kill -s HUP --kill-whom=main picache 2>/dev/null || true  # optional: load it now
+   EOF
+   sudo chmod 0755 /usr/local/sbin/picache-deploy-cert
+   ```
+
+3. Issue the certificate, for example with acme.sh and your DNS provider's
+   API (here Cloudflare):
+
+   ```sh
+   acme.sh --issue --dns dns_cf -d picache.example.com
+   acme.sh --install-cert -d picache.example.com \
+     --fullchain-file /root/picache/fullchain.pem --key-file /root/picache/privkey.pem \
+     --reloadcmd "/usr/local/sbin/picache-deploy-cert /root/picache/fullchain.pem /root/picache/privkey.pem"
+   ```
+
+   or with lego:
+
+   ```sh
+   lego --email you@example.com --dns cloudflare --domains picache.example.com run \
+     --run-hook '/usr/local/sbin/picache-deploy-cert "$LEGO_CERT_PATH" "$LEGO_CERT_KEY_PATH"'
+   # renewal (e.g. a daily timer): the same with "renew --renew-hook …"
+   ```
+
+4. Point PiCache at the copies in `/etc/picache/picache.env` and restart once:
+
+   ```sh
+   PICACHE_WEB_TLS_CERT=/etc/picache/tls/fullchain.pem
+   PICACHE_WEB_TLS_KEY=/etc/picache/tls/privkey.pem
+   ```
+
+The service cannot read the files where the tools keep them
+(`/etc/letsencrypt/archive` is 0700, and `~/.acme.sh` is hidden by the
+unit's `ProtectHome=yes`), hence the copies. PiCache reads both files every
+minute (each at most 1 MiB) and loads them when their content changed; a
+half-written pair keeps the previous certificate until the next minute.
+`sudo systemctl kill -s HUP --kill-whom=main picache` loads them at once (it
+never stops PiCache). **Docker:** bind-mount the directory read-only (e.g.
+`/etc/picache/tls:/tls:ro`, files readable by UID/GID 65532), set
+`PICACHE_WEB_TLS_CERT=/tls/fullchain.pem` and `PICACHE_WEB_TLS_KEY=/tls/privkey.pem`,
+and use `docker kill -s HUP picache` in the hook.
+
+### Minimum TLS version
+
+**System → Users & security → Web access** can require TLS 1.3
+(`web.tlsMinVersion`, default 1.2). It applies to the next connection;
+older clients can then no longer connect over HTTPS (the HTTP port is not
+affected). PiCache refuses the change from a browser that is itself
+connected with TLS 1.2.
+
+---
+
+## Behind a reverse proxy
+
+A reverse proxy (Caddy, nginx, Traefik) can terminate TLS with a public
+certificate and forward to PiCache's **plain-HTTP listener** (`:8080`). For
+PiCache to see the real client (for the web access, sign-in throttling,
+sessions and the audit log) and the scheme:
+
+- the proxy sets `X-Forwarded-For` by appending the address it received the
+  request from (nginx: `$proxy_add_x_forwarded_for`), and sets
+  `X-Forwarded-Proto` itself (never passes it through; nginx: `$scheme`);
+- the proxy keeps the `Host` header (nginx: `proxy_set_header Host $host`),
+  and the external name is listed under the web settings' allowed hosts;
+- the proxy's address (as PiCache sees it) is entered in **System → Users &
+  security → Web access → Trusted reverse proxies** (`web.trustedProxies`, exact
+  addresses or at least /24 and /64). PiCache reads `X-Forwarded-For` and
+  `X-Forwarded-Proto` only from these addresses (never `Forwarded` or
+  `X-Real-IP`), right-most entry first;
+- the live streams under `/api/v1/stream/` need HTTP/1.1 without buffering
+  and a long read timeout (one hour).
+
+With the proxy trusted, `X-Forwarded-Proto: https` makes the session cookie
+`Secure` and the HTTPS redirect is not applied, so
+`PICACHE_WEB_SECURE_COOKIES` is not needed.
+
+**Caddy** (sets the headers itself; Caddy ignores a client's
+`X-Forwarded-For` unless you configure trusted proxies there):
+
+```text
+picache.example.com {
+	reverse_proxy 192.168.1.10:8080
+}
+```
+
+**nginx:**
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name picache.example.com;
+    ssl_certificate     /etc/ssl/picache/fullchain.pem;
+    ssl_certificate_key /etc/ssl/picache/privkey.pem;
+
+    location / {
+        proxy_pass http://192.168.1.10:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /api/v1/stream/ {
+        proxy_pass http://192.168.1.10:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}
+```
+
+**Traefik** (file provider; Traefik sets `X-Forwarded-For` and
+`X-Forwarded-Proto` and keeps the host with `passHostHeader`):
+
+```yaml
+http:
+  routers:
+    picache:
+      rule: Host(`picache.example.com`)
+      entryPoints: [websecure]
+      service: picache
+      tls:
+        certResolver: letsencrypt
+  services:
+    picache:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://192.168.1.10:8080
+```
+
+Pitfalls:
+
+- A proxy on the same host that is **not** in the trusted proxies makes every
+  client appear as `127.0.0.1`: loopback is always allowed, so the web
+  access restriction no longer applies, and all clients share one sign-in
+  throttle. Always list such a proxy (`127.0.0.1` or `::1`); note that
+  trusting loopback trusts every process on the host.
+- Never list a whole LAN as trusted proxies: every device in it could claim
+  any address.
+- A proxy that passes a client's `X-Forwarded-For` through without appending
+  its peer lets clients choose their address.
 
 ---
 
@@ -1360,7 +1682,7 @@ sudo systemctl start picache
 ```
 
 Pick the copy named after the version you go back to. An older binary cannot
-be expected to open a database that a newer version has migrated. A version before 0.9.0 refuses the `picache.db` of 0.9.0 or later (newer schema) and does not start: go back with the copy 0.9.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image. An older version cannot open the newer `logs.db` either and sets it aside, so the query log and the statistics start fresh after such a downgrade. Changes to
+be expected to open a database that a newer version has migrated. A version before 0.11.0 refuses the `picache.db` of 0.11.0 (auth schema v2 with roles, settings schema v5) and does not start: go back with the copy 0.11.0 made at its first start (`picache-<old version>-<timestamp>.db`, made before any migration; `picache reset-password` of 0.11.0 run before that start makes it instead); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image; accounts, web access settings and certificates created with 0.11.0 are then gone (the files in `<data>/tls/` stay; 0.10 serves the current `cert.pem`). A version before 0.9.0 refuses the `picache.db` of 0.9.0 or later (newer schema) and does not start: go back with the copy 0.9.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image. An older version cannot open the newer `logs.db` either and sets it aside, so the query log and the statistics start fresh after such a downgrade. Changes to
 the configuration made since the upgrade are lost. With Docker, set the
 previous image tag in the compose file and restore the copy from the
 `picache-data` volume the same way.
@@ -1612,10 +1934,12 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_SNI_LISTEN` | `:443` | HTTPS (SNI) pass-through of the download cache. |
 | `PICACHE_WEB_LISTEN` | `:8080` | Web UI and API over HTTP. |
 | `PICACHE_WEB_TLS_LISTEN` | `:8443` | Web UI and API over HTTPS. At least one web listener is required. |
-| `PICACHE_WEB_TLS_CERT` | – | PEM certificate for the HTTPS listener. Without it, PiCache creates and renews a self-signed certificate in `<data>/tls/`. |
+| `PICACHE_WEB_TLS_CERT` | – | PEM certificate (with its intermediates) for the HTTPS listener. PiCache reloads it within a minute when the files change (at once on SIGHUP), keeps the previous certificate while a pair cannot be loaded, and serves its local CA's certificate while none could be loaded yet ([HTTPS certificates](#https-certificates)). Without it, PiCache serves an uploaded certificate or one of its local CA in `<data>/tls/`. |
 | `PICACHE_WEB_TLS_KEY` | – | PEM private key; set together with the certificate. Both files must be readable by the service user. |
 | `PICACHE_WEB_HOSTS` | – | Comma-separated extra host names allowed for the web UI (DNS-rebinding protection), e.g. a reverse-proxy name. Can also be set in the web settings. |
-| `PICACHE_WEB_SECURE_COOKIES` | `false` | Set to `true` when a TLS-terminating reverse proxy forwards to the plain-HTTP listener: the session and device cookies then get the `Secure` flag although the request reaches PiCache over HTTP. Requests on PiCache's own HTTPS listener always get `Secure` cookies named `__Host-picache_session` and `__Host-picache_device`. With this set, signing in directly over plain HTTP no longer works (browsers drop `Secure` cookies there). |
+| `PICACHE_CONFIG_LOCKED` | `off` | `on`: configuration changes from browser sessions are refused (`config_locked`); admin API tokens still write ([Web access and accounts](#web-access-and-accounts)). Not an access control against admins. |
+| `PICACHE_DESTRUCTIVE_API` | `on` | `off`: restores, resets, purges and other bulk deletions are refused through the API, for sessions and tokens. |
+| `PICACHE_WEB_SECURE_COOKIES` | `false` | Not needed when the proxy is in the trusted proxies ([Behind a reverse proxy](#behind-a-reverse-proxy)). Set to `true` when a TLS-terminating reverse proxy that is not trusted forwards to the plain-HTTP listener: the session and device cookies then get the `Secure` flag although the request reaches PiCache over HTTP. Requests on PiCache's own HTTPS listener always get `Secure` cookies named `__Host-picache_session` and `__Host-picache_device`. With this set, signing in directly over plain HTTP no longer works (browsers drop `Secure` cookies there). |
 | `PICACHE_DHCP` | – | Unset: the DHCP server is switched on under DNS → DHCP ([DHCP server](#dhcp-server)); PiCache holds no DHCP port while it is off. `off` (`no`, `0`, `false`): prevents it; the server cannot be switched on (for hosts that run another DHCP server; `install.sh --without-dhcp` sets it). `on` (`yes`, `1`, `true`) is the opt-in of versions before 0.8.0: still accepted (every DHCP socket opens at start and PiCache closes what the settings do not need), and removed by the installer. Anything else: PiCache refuses to start. |
 | `PICACHE_RUN_AS` | – · `65532:65532` | Numeric non-root `uid:gid`. When PiCache starts as root it binds the listeners and then switches to this user before touching files. Linux only. Not needed with the systemd unit. |
 | `PICACHE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
@@ -1641,7 +1965,9 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `picache [serve] [flags]` | Run PiCache (the default command). |
 | `picache version` | Print version, commit, build date, Go version and platform. |
 | `picache healthcheck [url]` | Exit 0 if the local web endpoint answers `/healthz` with `ok` and the DNS listener answers the probe name `healthcheck.picache.invalid` with a loopback address. PiCache answers that name like `localhost` when the query comes from this machine and never counts or logs it. Another DNS server on the port answers it with NXDOMAIN, so the check fails. It uses the first address of `PICACHE_WEB_LISTEN` (or of `PICACHE_WEB_TLS_LISTEN` if HTTP is off) and of `PICACHE_DNS_LISTEN`, with wildcard addresses replaced by `127.0.0.1`. With a URL, only that URL is checked. Used by the Docker `HEALTHCHECK`. |
-| `picache reset-password [user]` | Set a new password for the existing account `user` (default `admin`), read from stdin (at least 10 characters). The input is not hidden; you can redirect it from a file. Disables TOTP for the account, signs out all sessions and revokes all API tokens, then prints exactly what changed. A name that matches no account is refused and the existing names are listed; an account is created only when none exists yet. Run it as root or as the service user. As root it switches to the owner of the data directory first. |
+| `picache reset-password [--admin] [user]` | Set a new password for the existing account `user` (default `admin`; found case-insensitively), read from stdin (at least 10 characters). The input is not hidden; you can redirect it from a file. Disables TOTP for the account, signs out all sessions and revokes all API tokens of all accounts, then prints exactly what changed, including the role. The account keeps its role; `--admin` (before or after the name) makes it an admin, the way back when no admin is left. A name that matches no account is refused and the existing names are listed; an admin account is created only when none exists yet. Run it as root or as the service user. As root it switches to the owner of the data directory first. |
+| `picache users` | List the accounts: id, user name, role, two-factor on or off, last sign-in. Read-only; root or the service user. |
+| `picache web-access --reset` | Let every address use the web UI again: PiCache switches *Allow the web UI only from these networks* off, clears the trusted proxies, accepts TLS 1.2 again and deletes an uploaded certificate (the allowed networks and everything else stay), audited as `web.access_reset`. The command only creates `<data>/web-access.reset`; the running service applies it within a minute (at once: `sudo systemctl kill -s HUP --kill-whom=main picache`; Docker: `docker kill -s HUP <container>`), or at its next start. Root or the service user (Docker: `docker exec -u 65532:65532 <container> /picache web-access --reset`). |
 | `picache setup-token` | Print the first-run setup token (until setup is done). Needs read access to the data directory: `sudo` on bare metal, `-u 65532:65532` in Docker. |
 | `picache storage apply <id> [--password-stdin]` | Root only. Validate the storage target, write `/etc/picache/credentials/<id>.cred` and a systemd `.mount` unit for `/srv/picache/<id>`, then `systemctl daemon-reload`, `enable` and `start`, or `restart` when the mounted settings are outdated. The NAS password is decrypted from the database with the master key, or read from stdin with `--password-stdin`. |
 | `picache storage remove <id>` | Root only. Disable, stop and delete the `.mount` unit of `/srv/picache/<id>`, delete its credentials file and remove the empty mountpoint. Works without the database, for example after the target was deleted. |
@@ -1663,8 +1989,21 @@ process).
 - **Health:** **System → Health & about** lists every check with a hint:
   listeners, upstreams (including the clock guard), blocklists, rate limiting, cache-domains,
   download cache (cache IP), SNI, cache storage, logs, free space on the data disk
-  and the DHCP server (when enabled; see [DHCP server](#dhcp-server) for its
-  troubleshooting).
+  the DHCP server (when enabled; see [DHCP server](#dhcp-server) for its
+  troubleshooting) and the HTTPS certificate (when the HTTPS listener is on;
+  see [HTTPS certificates](#https-certificates)).
+- **Locked out of the web UI** ("PiCache does not allow the web UI from
+  <address>", or HTTPS no longer works after requiring TLS 1.3 or a broken
+  upload): run `sudo picache web-access --reset` on the PiCache host
+  (Docker: `docker exec -u 65532:65532 picache /picache web-access --reset`;
+  LXC: `pct exec <ctid> -- picache web-access --reset`). Within a minute (at
+  once after `sudo systemctl kill -s HUP --kill-whom=main picache` or
+  `docker kill -s HUP picache`) every address may use the web UI again, no
+  proxy is trusted, TLS 1.2 is accepted and an uploaded certificate is
+  deleted; then allow your networks again under **System → Users & security
+  → Web access**. The HTTPS redirect, the sessions and the allowed hosts are
+  not changed. A browser that stored HSTS for a name whose certificate it no
+  longer trusts refuses that name: open PiCache by its IP address.
 - **Logs:** `journalctl -u picache -f` (bare metal/LXC),
   `docker compose logs -f picache` (Docker). Set `PICACHE_LOG_LEVEL=debug`
   for more detail.
@@ -1687,4 +2026,4 @@ process).
   cache-domains list loaded, the :80 listener bound and a private cache IPv4
   address known, and the client must not be in a group that bypasses the
   download cache. The health page names the missing piece.
-- **Forgotten password:** `sudo picache reset-password <user>` with the user name chosen at setup (`admin` by default; an unknown name is refused and the existing names are shown). It also signs out every session and revokes all API tokens, so it is the recovery step after a suspected compromise too.
+- **Forgotten password or no admin left:** `sudo picache reset-password <user>` with the user name chosen at setup (`admin` by default; an unknown name is refused and the existing names are shown; `sudo picache users` lists them); add `--admin` to make the account an admin. It also signs out every session and revokes all API tokens, so it is the recovery step after a suspected compromise too.

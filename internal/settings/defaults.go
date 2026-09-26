@@ -80,6 +80,12 @@ func Defaults() All {
 			SessionIdleMinutes: 60,
 			SessionMaxHours:    168,
 			AllowedHosts:       []string{},
+			AllowedNetworks:    []string{},
+			// New installations allow the web UI only from the allowed
+			// networks; documents of earlier versions get false (migration v5).
+			RestrictToNetworks: true,
+			TrustedProxies:     []string{},
+			TLSMinVersion:      TLSVersion12,
 		},
 		Updates: Updates{
 			CheckEnabled: true,

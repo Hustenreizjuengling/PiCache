@@ -69,7 +69,7 @@
 <SidePanel bind:open {title} {subtitle} {size} dismissible={!saving}>
   <div class="content">
     {@render header?.()}
-    {#if readOnly}<Notice>{t('common.state.readOnly')}</Notice>{/if}
+    {#if !session.canOperate}<Notice>{t('common.state.readOnly')}</Notice>{/if}
     {#if error}<Notice tone="fail">{error}</Notice>{/if}
     <form id={formId} onsubmit={submit} novalidate>
       <fieldset disabled={readOnly} class="stack">

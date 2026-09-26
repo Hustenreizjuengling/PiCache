@@ -51,7 +51,7 @@
     LOCALES.map((l): MenuItem => ({ label: l.label, checked: i18n.locale === l.id, onselect: () => setLocale(l.id) })),
   )
   const accountItems = $derived<MenuItem[]>([
-    { label: t('common.nav.account'), icon: 'lock', href: href('/system/account') },
+    { label: t('common.nav.account'), icon: 'user', href: href('/system/account') },
     { separator: true },
     { label: t('common.account.logout'), icon: 'logout', onselect: () => void session.logout() },
   ])

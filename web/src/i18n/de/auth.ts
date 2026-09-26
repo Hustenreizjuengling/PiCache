@@ -45,7 +45,8 @@ const de: Messages<typeof en> = {
   'https.title': 'Diese Verbindung ist nicht verschlüsselt',
   'https.text':
     'Hier eingegebene Passwörter und das Einrichtungs-Token gehen unverschlüsselt über das Netzwerk. Verwende stattdessen die HTTPS-Adresse:',
-  'https.cert': 'Beim selbstsignierten Zertifikat fragt dein Browser einmal, ob du es akzeptierst.',
+  'https.cert':
+    'Solange dieses Gerät dem Zertifikat von PiCache nicht vertraut (etwa über seine lokale CA, System > HTTPS-Zertifikat), fragt dein Browser einmal, ob du es akzeptierst.',
 }
 
 export default de

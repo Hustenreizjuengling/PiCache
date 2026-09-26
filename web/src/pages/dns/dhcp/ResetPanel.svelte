@@ -1,6 +1,7 @@
 <!--
   @component
-  Resetting the DHCP server (admins; works while it is unavailable too):
+  Resetting the DHCP server (admins, where the host allows destructive
+  actions; works while the server is unavailable too):
   "End all leases" (DELETE /dhcp/leases: every handed-out address, also on
   reserved addresses) and "Reset DHCP" (POST /dhcp/reset: settings back to
   their defaults, which switches the server off, and every reservation and

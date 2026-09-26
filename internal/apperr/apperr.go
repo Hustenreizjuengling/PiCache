@@ -21,6 +21,7 @@ const (
 	KindUnavailable       // 503: dependency offline (e.g. storage)
 	KindUnauthorized      // 401
 	KindTooMany           // 429: rate limited
+	KindLocked            // 403 "config_locked": the configuration is locked on the host (PICACHE_CONFIG_LOCKED)
 )
 
 // Error is a user-facing error. Message must be safe to show to the admin
@@ -74,6 +75,12 @@ func Unauthorized(format string, args ...any) error {
 // TooMany reports rate limiting.
 func TooMany(format string, args ...any) error {
 	return &Error{Kind: KindTooMany, Message: fmt.Sprintf(format, args...)}
+}
+
+// Locked reports a configuration change refused because the configuration
+// is locked on the host.
+func Locked(format string, args ...any) error {
+	return &Error{Kind: KindLocked, Message: fmt.Sprintf(format, args...)}
 }
 
 // Wrap attaches a cause to a user-facing error.

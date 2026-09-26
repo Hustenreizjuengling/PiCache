@@ -1,5 +1,5 @@
-// System-Seiten: Konto & Sicherheit, API-Tokens, Audit-Log, Sicherung &
-// Wiederherstellung, Zustand & Info, Updates. Gleiche Schlüssel wie en/system.ts.
+// System-Seiten: Benutzer & Sicherheit, HTTPS-Zertifikat, API-Tokens,
+// Audit-Log, Sicherung & Wiederherstellung, Zustand & Info, Updates. Gleiche Schlüssel wie en/system.ts.
 
 import type en from '../en/system'
 import type { Messages } from '../types'
@@ -26,6 +26,8 @@ const de: Messages<typeof en> = {
 
   // Konto & Sicherheit
   'account.signedInAs': 'Angemeldet als {name}',
+  'account.readOnlyBelow':
+    'Dein Passwort, deine Zwei-Faktor-Authentifizierung und deine Sitzungen verwaltest du oben. Die Einstellungen zu Webzugriff und Weboberfläche kannst du nur ansehen.',
   'account.password.title': 'Passwort',
   'account.password.description':
     'Wenn du das Passwort änderst, werden alle anderen Sitzungen abgemeldet und, falls du sie nicht behältst, alle API-Tokens widerrufen.',
@@ -103,6 +105,50 @@ const de: Messages<typeof en> = {
     '{count} andere Browser müssen sich neu anmelden. Dieser Browser bleibt angemeldet.',
   'account.sessions.revokedAll': 'Andere Sitzungen abgemeldet',
 
+  // Konten (Seite Benutzer & Sicherheit)
+  'users.title': 'Benutzer',
+  'users.description':
+    'Alle, die sich bei PiCache anmelden. Admins ändern die Konfiguration; Betrachter sehen die Seiten nur lesend (nicht das Änderungsprotokoll, die Benachrichtigungskanäle und Sicherungs-Downloads) und ändern nur ihr eigenes Passwort, ihre Zwei-Faktor-Authentifizierung und Nur-lesen-API-Tokens.',
+  'users.add': 'Benutzer hinzufügen',
+  'users.addTitle': 'Benutzer hinzufügen',
+  'users.username': 'Benutzername',
+  'users.usernameHelp': '1–64 Buchstaben, Ziffern und . _ @ -, beginnend mit einem Buchstaben oder einer Ziffer.',
+  'users.usernameRequired': 'Gib einen Benutzernamen ein.',
+  'users.usernameRule': 'Verwende 1–64 Buchstaben, Ziffern und . _ @ -, beginnend mit einem Buchstaben oder einer Ziffer.',
+  'users.password': 'Passwort',
+  'users.newPassword': 'Neues Passwort',
+  'users.role': 'Rolle',
+  'users.roleHelp.admin': 'Darf die gesamte Konfiguration ändern, Konten verwalten und das Änderungsprotokoll lesen.',
+  'users.roleHelp.viewer':
+    'Sieht die Seiten nur lesend (nicht das Änderungsprotokoll, die Benachrichtigungskanäle und Sicherungs-Downloads) und ändert nur das eigene Konto und Nur-lesen-API-Tokens.',
+  'users.totp': 'Zwei-Faktor',
+  'users.lastLogin': 'Letzte Anmeldung',
+  'users.you': 'Du',
+  'users.actionsNamed': 'Aktionen für {name}',
+  'users.limit': 'PiCache erlaubt höchstens {max} Konten. Lösche eines, um ein weiteres hinzuzufügen.',
+  'users.changeRole': 'Rolle ändern',
+  'users.roleTitle': 'Rolle von {name} ändern',
+  'users.resetPassword': 'Passwort zurücksetzen',
+  'users.passwordTitle': 'Passwort von {name} zurücksetzen',
+  'users.passwordNote': 'Meldet den Benutzer überall ab und widerruft seine API-Tokens.',
+  'users.disableTotp': 'Zwei-Faktor ausschalten',
+  'users.totpTitle': 'Zwei-Faktor-Authentifizierung für {name} ausschalten?',
+  'users.totpNote': 'Meldet den Benutzer überall ab. Unter Benutzer & Sicherheit kann er sie wieder einrichten.',
+  'users.delete': 'Benutzer löschen',
+  'users.deleteTitle': '{name} löschen?',
+  'users.deleteSelfTitle': 'Dein eigenes Konto löschen?',
+  'users.deleteText': 'Das Konto {name}, seine Sitzungen und seine API-Tokens werden gelöscht. Das Änderungsprotokoll behält seine Einträge.',
+  'users.signedOut': 'Du wirst abgemeldet.',
+  'users.current': 'Dein Passwort',
+  'users.currentHelp': 'Änderungen an Konten brauchen noch einmal dein Passwort.',
+  'users.currentRequired': 'Gib dein Passwort ein.',
+  'users.created': 'Benutzer {name} hinzugefügt',
+  'users.roleChanged': 'Rolle von {name} geändert. Seine Sitzungen wurden abgemeldet.',
+  'users.passwordReset': 'Passwort von {name} zurückgesetzt. Seine Sitzungen wurden abgemeldet und API-Tokens widerrufen.',
+  'users.totpDisabled': 'Zwei-Faktor-Authentifizierung von {name} ausgeschaltet',
+  'users.deleted': 'Benutzer {name} gelöscht',
+  'users.selfRoleChanged': 'Deine Rolle wurde geändert. Melde dich neu an.',
+  'users.selfDeleted': 'Dein Konto wurde gelöscht.',
   // Weboberfläche (Kontoseite)
   'web.title': 'Weboberfläche',
   'web.description': 'Wie lange Anmeldungen gelten, unter welchen Namen PiCache erreichbar ist, HTTPS und die Standardsprache.',
@@ -126,12 +172,59 @@ const de: Messages<typeof en> = {
   'web.redirectNoTls':
     'Der HTTPS-Listener läuft nicht (PICACHE_WEB_TLS_LISTEN), deshalb lässt sich die Umleitung nicht einschalten.',
   'web.redirectMove':
-    'Nach dem Speichern wechselt diese Seite zu {url}. Beim selbstsignierten Zertifikat fragt dein Browser einmal, ob du es akzeptierst.',
+    'Nach dem Speichern wechselt diese Seite zu {url}. Solange dieses Gerät dem Zertifikat von PiCache nicht vertraut (etwa über seine lokale CA, System > HTTPS-Zertifikat), fragt dein Browser einmal, ob du es akzeptierst.',
+  // Webzugriff (Seite Benutzer & Sicherheit)
+  'webAccess.title': 'Webzugriff',
+  'webAccess.description':
+    'Aus welchen Netzen die Weboberfläche und die API erreichbar sind, Reverse-Proxys vor PiCache und die älteste TLS-Version.',
+  'webAccess.seen': 'PiCache sieht deine Adresse als {client}.',
+  'webAccess.seenViaProxy': 'PiCache sieht deine Adresse als {client} (über den Proxy {peer}).',
+  'webAccess.refused.one': '{count} Verbindung seit dem Start abgelehnt.',
+  'webAccess.refused.other': '{count} Verbindungen seit dem Start abgelehnt.',
+  'webAccess.restrict': 'Weboberfläche nur aus diesen Netzen erlauben',
+  'webAccess.restrictHelp':
+    'Andere Adressen können die Weboberfläche nicht öffnen und die API nicht nutzen. Die Netze unten sind immer erlaubt; weitere trägst du hier ein.',
+  'webAccess.recommendTitle': 'Empfohlen: Weboberfläche nur aus deinen Netzen erlauben',
+  'webAccess.recommendText':
+    'Im Moment kann jede Adresse, die PiCache erreicht, die Anmeldeseite öffnen. Schalte die Einschränkung ein, wenn du PiCache nicht von anderswo erreichst; deine eigenen Netze funktionieren weiter.',
+  'webAccess.alwaysTitle': 'Immer erlaubt, solange die Einschränkung an ist:',
+  'webAccess.always.host': 'Dieser Rechner (egal, was eingestellt ist)',
+  'webAccess.always.private': 'Private Netze',
+  'webAccess.always.linkLocal': 'und link-lokale Adressen',
+  'webAccess.always.connected': 'Die Netze, mit denen dieser Rechner verbunden ist (auch ihr öffentliches IPv6-Präfix)',
+  'webAccess.always.dns': 'Die Netze, die DNS nutzen dürfen (DNS-Einstellungen > Zugriff)',
+  'webAccess.always.proxies': 'Die vertrauenswürdigen Reverse-Proxys',
+  'webAccess.networks': 'Weitere erlaubte Netze',
+  'webAccess.networksHelp':
+    'Eine Adresse oder ein Netz pro Zeile, z. B. 203.0.113.0/24 oder ein VPN-Bereich. Mindestens /8 bei IPv4 und /32 bei IPv6; höchstens 64 Einträge.',
+  'webAccess.proxies': 'Vertrauenswürdige Reverse-Proxys',
+  'webAccess.proxiesHelp':
+    'Die genauen Adressen der Proxys vor PiCache (eine pro Zeile). Nur ihre Header X-Forwarded-For und X-Forwarded-Proto werden gelesen. Auch ein Proxy auf diesem Rechner muss eingetragen sein (127.0.0.1): Sonst sieht jeder Client dahinter wie dieser Rechner aus – und der ist immer erlaubt. Mindestens /24 bei IPv4 und /64 bei IPv6; höchstens 16 Einträge.',
+  'webAccess.proxyWarnTitle': 'Trage nur Proxys ein, die du selbst betreibst',
+  'webAccess.proxyWarn.exact':
+    'Trage die Adresse des Proxys ein, nie ein ganzes Netz: Jede eingetragene Adresse kann sich als beliebiger Client ausgeben.',
+  'webAccess.proxyWarn.append':
+    'Der Proxy muss seinen Client an X-Forwarded-For anhängen (nginx: $proxy_add_x_forwarded_for) und X-Forwarded-Proto selbst setzen.',
+  'webAccess.proxyWarn.loopback':
+    '127.0.0.1 einzutragen vertraut jedem Programm auf diesem Rechner. Ein Proxy auf diesem Rechner, der nicht eingetragen ist, lässt jeden Client wie diesen Rechner aussehen – und der ist immer erlaubt.',
+  'webAccess.loopbackTitle': 'PiCache sieht diesen Browser als diesen Rechner',
+  'webAccess.loopbackText':
+    'Vermutlich ist ein Reverse-Proxy auf diesem Rechner nicht als vertrauenswürdig eingetragen. Dann gilt jeder Client dahinter als dieser Rechner: Die Einschränkung des Webzugriffs gilt für ihn nicht, und alle teilen sich ein Limit für fehlgeschlagene Anmeldungen. Trage die Adresse des Proxys (meist 127.0.0.1) unter „Vertrauenswürdige Reverse-Proxys“ ein.',
+  'webAccess.tooMany': 'Höchstens {max} Einträge.',
+  'webAccess.tlsMin': 'Mindest-TLS-Version für HTTPS',
+  'webAccess.tls12': 'TLS 1.2 (Standard)',
+  'webAccess.tls13': 'Nur TLS 1.3',
+  'webAccess.tlsHelp': 'Alle aktuellen Browser können TLS 1.3; TLS 1.2 lässt auch ältere Geräte verbinden.',
+  'webAccess.tls13Help': 'Ältere Clients können sich nicht mehr über HTTPS verbinden; der HTTP-Port ist nicht betroffen.',
+  'webAccess.resetTitle': 'Ausgesperrt? Webzugriff auf dem Host zurücksetzen',
+  'webAccess.resetText':
+    'Führe das auf dem PiCache-Host aus (als root oder als Dienstbenutzer). Es schaltet die Einschränkung aus, vergisst die vertrauenswürdigen Proxys, stellt wieder TLS 1.2 ein und entfernt ein hochgeladenes Zertifikat; die erlaubten Netze bleiben.',
+  'webAccess.resetDocker': 'Mit Docker:',
 
   // API-Tokens
   'tokens.title': 'API-Tokens',
   'tokens.description':
-    'Für Skripte, Monitoring und automatische Sicherungen (Authorization: Bearer …). Tokens können nie Tokens, Passwörter, Zwei-Faktor-Authentifizierung oder Sitzungen verwalten und keine Sicherungen wiederherstellen.',
+    'Für Skripte, Monitoring und automatische Sicherungen (Authorization: Bearer …). Tokens können nie Tokens, Konten, Passwörter, Zwei-Faktor-Authentifizierung, Sitzungen oder HTTPS-Zertifikate verwalten und keine Sicherungen wiederherstellen.',
   'tokens.create': 'Token erstellen',
   'tokens.createTitle': 'API-Token erstellen',
   'tokens.createdTitle': 'Token erstellt',
@@ -177,6 +270,144 @@ const de: Messages<typeof en> = {
   'tokens.deleteTitle': 'Token {name} löschen?',
   'tokens.deleteText': 'Programme, die es verwenden, verlieren sofort den Zugriff.',
   'tokens.deleted': 'Token gelöscht',
+  'tokens.deleteTextOther': 'Es gehört {user}. Programme, die es verwenden, verlieren sofort den Zugriff.',
+  'tokens.owner': 'Besitzer',
+  'tokens.viewerRead': 'Als Betrachter kannst du Nur-lesen-Tokens erstellen.',
+
+  // HTTPS-Zertifikat
+  'https.loadError': 'Der Zertifikatsstatus konnte nicht geladen werden',
+  'https.noListener': 'Kein HTTPS-Listener (PICACHE_WEB_TLS_LISTEN ist aus)',
+  'https.changedTitle': 'Das HTTPS-Zertifikat hat sich geändert',
+  'https.changedText':
+    'Diese Seite nutzt noch ihre Verbindung mit dem bisherigen Zertifikat. Sobald dieses Gerät dem neuen vertraut (bei der lokalen CA: unten herunterladen und ihr vertrauen), lade die Seite neu; falls der Browser fragt, akzeptiere das neue Zertifikat einmal.',
+  'https.noListenerText':
+    'PiCache liefert die Weboberfläche nur über unverschlüsseltes HTTP aus. Setze PICACHE_WEB_TLS_LISTEN (z. B. :8443) und starte PiCache neu, um einen HTTPS-Port hinzuzufügen.',
+  'https.source.files': 'Zertifikatsdateien',
+  'https.source.uploaded': 'Hochgeladen',
+  'https.source.local-ca': 'Lokale CA',
+  'https.source.self-signed': 'Selbstsigniert',
+  'https.source.none': 'Keins',
+  'https.cert.title': 'Verwendetes Zertifikat',
+  'https.cert.description': 'Was der HTTPS-Port den Browsern zeigt.',
+  'https.cert.checkedAt': 'Geprüft {time}',
+  'https.cert.errorTitle': 'Das eingerichtete Zertifikat lässt sich nicht verwenden',
+  'https.cert.fallback': 'Bis das behoben ist, wird ein Ersatzzertifikat ausgeliefert.',
+  'https.cert.tempTitle': 'PiCache kann sein Zertifikat nicht speichern',
+  'https.cert.temp':
+    'Es wird ein vorläufiges Zertifikat ausgeliefert. Es ändert sich bei jedem Neustart, daher warnen Browser jedes Mal erneut, bis das TLS-Verzeichnis repariert ist (siehe Log).',
+  'https.cert.expired': 'Abgelaufen am {date}',
+  'https.cert.daysLeft.one': 'Gültig bis {date} (noch {count} Tag)',
+  'https.cert.daysLeft.other': 'Gültig bis {date} (noch {count} Tage)',
+  'https.cert.subject': 'Inhaber',
+  'https.cert.issuer': 'Ausgestellt von',
+  'https.cert.selfSigned': 'Sich selbst (selbstsigniert)',
+  'https.cert.notBefore': 'Gültig ab',
+  'https.cert.notAfter': 'Gültig bis',
+  'https.cert.keyType': 'Schlüssel',
+  'https.cert.keyOther': 'Anderer',
+  'https.cert.chain': 'Kette',
+  'https.cert.chainLength.one': '{count} Zertifikat',
+  'https.cert.chainLength.other': '{count} Zertifikate',
+  'https.cert.sans': 'Namen und Adressen',
+  'https.cert.fingerprint': 'SHA-256-Fingerabdruck',
+  'https.cert.copyFingerprint': 'Fingerabdruck kopieren',
+  'https.hosts.covered': 'Abgedeckt',
+  'https.hosts.notCovered': 'Nicht abgedeckt',
+  'https.hosts.none': 'Keiner der Namen und keine der Adressen von PiCache.',
+  'https.hosts.allCovered': 'Das Zertifikat deckt alle Namen und Adressen von PiCache ab.',
+  'https.hosts.warn': 'Browser warnen, wenn du diese verwendest.',
+  'https.ca.title': 'Lokale Zertifizierungsstelle',
+  'https.ca.description':
+    'PiCache stellt sein Zertifikat mit einer lokalen CA selbst aus. Vertraue der CA einmal auf jedem Gerät, dann akzeptieren Browser PiCache ohne Warnung – auch nach Erneuerungen.',
+  'https.ca.download': 'CA-Zertifikat herunterladen',
+  'https.ca.validUntil': 'CA gültig bis {date}',
+  'https.ca.inUse': 'Stellt das verwendete Zertifikat aus',
+  'https.ca.names': 'Darf ausstellen für Namen',
+  'https.ca.addresses': 'Darf ausstellen für Adressen',
+  'https.ca.constraints':
+    'Die CA kann nur Zertifikate für diese Namen und Adressen ausstellen: Geräte, die ihr vertrauen, vertrauen deshalb nichts anderem.',
+  'https.ca.prepared':
+    'Zertifikatsdateien oder ein hochgeladenes Zertifikat sind in Gebrauch; die lokale CA übernimmt, wenn sie entfernt werden.',
+  'https.ca.none': 'Es gibt noch keine lokale CA.',
+  'https.ca.noneOther':
+    'Es gibt keine lokale CA. Solange Zertifikatsdateien oder ein hochgeladenes Zertifikat verwendet werden, ist sie nicht nötig, lässt sich aber vorbereiten.',
+  'https.ca.renewTitle': 'Die lokale CA deckt nicht alle Namen und Adressen von PiCache ab',
+  'https.ca.renewText':
+    'PiCache hat Namen oder Adressen, für die die CA keine Zertifikate ausstellen darf (siehe „Nicht abgedeckt“ oben). Erstelle eine neue lokale CA, um sie einzuschließen; danach muss jedes Gerät der neuen CA vertrauen.',
+  'https.ca.renewPrepared':
+    'Die vorbereitete lokale CA deckt nicht alle aktuellen Namen und Adressen von PiCache ab. Erstelle eine neue lokale CA, bevor sie übernimmt, damit sie sie einschließt.',
+  'https.ca.legacyTitle': 'PiCache verwendet noch sein selbstsigniertes Zertifikat',
+  'https.ca.legacyText':
+    'Am {date} ersetzt PiCache es durch ein Zertifikat seiner lokalen CA, der deine Geräte einmal vertrauen können. Erstelle die CA jetzt, um früher zu wechseln.',
+  'https.ca.create': 'Lokale CA erstellen',
+  'https.ca.createNow': 'Lokale CA jetzt erstellen',
+  'https.ca.createNew': 'Neue lokale CA erstellen',
+  'https.ca.createTitle': 'Lokale CA erstellen',
+  'https.ca.createNewTitle': 'Neue lokale CA erstellen?',
+  'https.ca.createText':
+    'PiCache erstellt eine CA, die nur Zertifikate für seine eigenen Namen und Adressen ausstellen kann, und damit ein neues Zertifikat. Vertraue der CA danach auf deinen Geräten.',
+  'https.ca.replaceWarn':
+    'Die aktuelle CA wird ersetzt. Jedes Gerät, das ihr vertraut, muss der neuen CA vertrauen; bis dahin warnen Browser wieder.',
+  'https.ca.passwordRequired': 'Gib dein Passwort ein.',
+  'https.ca.created': 'Lokale CA erstellt',
+  'https.ca.replaced': 'Neue lokale CA erstellt. Vertraue ihr auf deinen Geräten.',
+  'https.trust.title': 'Der lokalen CA auf deinen Geräten vertrauen',
+  'https.trust.description': 'Lade das CA-Zertifikat oben auf jedem Gerät herunter, dann:',
+  'https.trust.windows.title': 'Windows',
+  'https.trust.windows.text':
+    'Öffne picache-ca.crt, wähle „Zertifikat installieren“, dann „Alle Zertifikate in folgendem Speicher speichern“ > „Vertrauenswürdige Stammzertifizierungsstellen“. Starte den Browser neu.',
+  'https.trust.macos.title': 'macOS',
+  'https.trust.macos.text':
+    'Öffne picache-ca.crt, um sie zur Schlüsselbundverwaltung hinzuzufügen. Doppelklicke dort auf die PiCache-CA, öffne „Vertrauen“ und stelle „Bei Verwendung dieses Zertifikats“ auf „Immer vertrauen“.',
+  'https.trust.ios.title': 'iOS und iPadOS',
+  'https.trust.ios.text':
+    'Öffne den Download in Safari und erlaube das Profil, dann installiere es unter Einstellungen > Allgemein > VPN und Geräteverwaltung. Schalte zuletzt unter Einstellungen > Allgemein > Info > Zertifikatsvertrauenseinstellungen das volle Vertrauen ein.',
+  'https.trust.android.title': 'Android',
+  'https.trust.android.text':
+    'Einstellungen > Sicherheit > Verschlüsselung & Anmeldedaten > Zertifikat installieren > CA-Zertifikat, dann picache-ca.crt wählen. Die Menünamen unterscheiden sich je nach Hersteller etwas.',
+  'https.trust.firefox.title': 'Firefox',
+  'https.trust.firefox.text':
+    'Firefox hat eine eigene Liste: Einstellungen > Datenschutz & Sicherheit > Zertifikate > Zertifikate anzeigen > Zertifizierungsstellen > Importieren, picache-ca.crt wählen und „Dieser CA vertrauen, um Websites zu identifizieren“ ankreuzen.',
+  'https.trust.linux.title': 'Linux',
+  'https.trust.linux.text':
+    'Debian und Ubuntu nehmen sie mit dem Befehl unten in den Systemspeicher auf. Chrome und Chromium nutzen eine eigene Liste: Einstellungen > Datenschutz und Sicherheit > Sicherheit > Zertifikate verwalten > Zertifizierungsstellen > Importieren.',
+  'https.trust.riskTitle': 'Was das Vertrauen in die CA bedeutet',
+  'https.trust.riskText':
+    'Die CA kann nur für die eigenen Namen und Adressen von PiCache bürgen. Ihr Schlüssel bleibt im Datenverzeichnis von PiCache, damit Erneuerungen kein neues Vertrauen brauchen: Wer dieses Verzeichnis lesen kann, könnte solche Zertifikate ebenfalls ausstellen. Entferne die CA von deinen Geräten, wenn du PiCache außer Betrieb nimmst oder das Datenverzeichnis offengelegt wurde, und erstelle nach einer Kompromittierung eine neue CA.',
+  'https.upload.title': 'Eigenes Zertifikat',
+  'https.upload.description':
+    'Verwende ein Zertifikat deiner eigenen CA oder einer öffentlichen. PiCache liefert es sofort statt des Zertifikats seiner lokalen CA aus.',
+  'https.upload.cert': 'Zertifikat (PEM)',
+  'https.upload.certHelp': 'Zuerst das Serverzertifikat, dann eventuelle Zwischenzertifikate.',
+  'https.upload.pickCert': 'Zertifikatsdatei laden',
+  'https.upload.key': 'Privater Schlüssel (PEM)',
+  'https.upload.keyHelp': 'Unverschlüsselt (PKCS#8, PKCS#1 oder EC). PiCache speichert ihn nur für seinen Dienstbenutzer lesbar.',
+  'https.upload.pickKey': 'Schlüsseldatei laden',
+  'https.upload.certRequired': 'Füge das Zertifikat ein (-----BEGIN CERTIFICATE-----).',
+  'https.upload.keyRequired': 'Füge den privaten Schlüssel ein (-----BEGIN PRIVATE KEY-----).',
+  'https.upload.tooLarge': 'Zertifikat und Schlüssel dürfen zusammen höchstens 64 KiB groß sein.',
+  'https.upload.fileTooLarge': '{name} ist größer als 64 KiB – das ist kein Zertifikat und kein Schlüssel.',
+  'https.upload.fileUnreadable': 'Der Browser konnte {name} nicht lesen. Wähle die Datei noch einmal.',
+  'https.upload.submit': 'Zertifikat hochladen',
+  'https.upload.done': 'Zertifikat hochgeladen und in Gebrauch',
+  'https.upload.notCoveredTitle': 'Das Zertifikat deckt nicht alle Namen und Adressen von PiCache ab',
+  'https.upload.notCoveredText': 'Browser warnen, wenn du diese verwendest:',
+  'https.upload.stored': 'Ein hochgeladenes Zertifikat ist in Gebrauch.',
+  'https.upload.storedBroken':
+    'Ein hochgeladenes Zertifikat ist gespeichert, lässt sich aber nicht verwenden (siehe oben). Lade es erneut hoch oder lösche es.',
+  'https.upload.storedUnused':
+    'Ein hochgeladenes Zertifikat ist gespeichert, wird aber nicht verwendet, solange PICACHE_WEB_TLS_CERT gesetzt ist.',
+  'https.upload.envOverride':
+    'PICACHE_WEB_TLS_CERT ist gesetzt: Die Zertifikatsdateien auf dem Host werden verwendet (innerhalb einer Minute neu geladen).',
+  'https.upload.plainTitle': 'Über HTTPS hochladen',
+  'https.upload.plainText': 'Der private Schlüssel wird nur über eine verschlüsselte Verbindung gesendet. Öffne diese Seite über HTTPS:',
+  'https.upload.letsEncrypt':
+    'Let’s Encrypt: PiCache hat keinen ACME-Client. Erneuere mit acme.sh oder lego (DNS-Challenge) in Dateien, die du mit PICACHE_WEB_TLS_CERT und PICACHE_WEB_TLS_KEY einträgst; PiCache lädt erneuerte Dateien innerhalb einer Minute. docs/DEPLOYMENT.md hat eine Anleitung.',
+  'https.upload.delete': 'Hochgeladenes Zertifikat löschen',
+  'https.upload.deleteTitle': 'Hochgeladenes Zertifikat löschen?',
+  'https.upload.deleteText':
+    'PiCache liefert dann das Zertifikat seiner lokalen CA aus (oder die auf dem Host eingerichteten Zertifikatsdateien). Browser, die nur dem hochgeladenen Zertifikat vertrauen, warnen.',
+  'https.upload.deleted': 'Hochgeladenes Zertifikat gelöscht',
 
   'metrics.title': 'Prometheus-Metriken',
   'metrics.description': 'Stellt Zähler für DNS, Cache und Speicher im Prometheus-Textformat bereit.',
@@ -188,7 +419,11 @@ const de: Messages<typeof en> = {
   'metrics.scrape': 'Beispiel für die Scrape-Konfiguration',
   'metrics.scrapeHelp': 'Speichere ein Admin-API-Token auf dem Prometheus-Rechner in /etc/prometheus/picache-token.',
   'metrics.scrapeHelpTls':
-    'Speichere ein Admin-API-Token in /etc/prometheus/picache-token. Beim selbstsignierten Zertifikat von PiCache kopierst du <data>/tls/cert.pem nach /etc/prometheus/picache-cert.pem.',
+    'Speichere ein Admin-API-Token in /etc/prometheus/picache-token und das CA-Zertifikat von PiCache (System > HTTPS-Zertifikat) als /etc/prometheus/picache-ca.crt.',
+  'metrics.scrapeHelpSelfSigned':
+    'Speichere ein Admin-API-Token in /etc/prometheus/picache-token. PiCache verwendet noch sein selbstsigniertes Zertifikat: Kopiere <data>/tls/cert.pem nach /etc/prometheus/picache-cert.pem.',
+  'metrics.scrapeHelpOwnCert':
+    'Speichere ein Admin-API-Token in /etc/prometheus/picache-token. Prometheus prüft das Zertifikat von PiCache mit den vertrauenswürdigen CAs des Systems; bei einem Zertifikat deiner eigenen CA ergänzt du eine tls_config mit dieser CA als ca_file.',
 
   // Audit-Log
   'audit.title': 'Audit-Log',
@@ -236,7 +471,7 @@ const de: Messages<typeof en> = {
   'backup.restore.uploading': 'Wird hochgeladen und geprüft …',
   'backup.restore.factReplace': 'PiCache prüft die Datei und übernimmt sie beim nächsten Neustart.',
   'backup.restore.factSessions':
-    'Dein Konto, Passwort, die Zwei-Faktor-Authentifizierung, API-Tokens und das Audit-Log bleiben, wie sie sind; alle müssen sich neu anmelden.',
+    'Die Konten mit ihren Rollen, Passwörtern und der Zwei-Faktor-Authentifizierung, die API-Tokens und das Audit-Log bleiben, wie sie sind; alle müssen sich neu anmelden.',
   'backup.restore.factKeep':
     'Die aktuelle Datenbank bleibt als picache.db.before-restore erhalten; startet PiCache mit der Sicherung nicht, kehrt es zu ihr zurück.',
   'backup.restore.checkFailed': 'Diese Datei kann nicht wiederhergestellt werden',
@@ -246,7 +481,7 @@ const de: Messages<typeof en> = {
   'backup.restore.check.unreadable': 'Der Browser konnte die Datei nicht lesen. Wähle sie noch einmal aus.',
   'backup.restore.confirmTitle': '{name} wiederherstellen?',
   'backup.restore.confirmText':
-    'Die Sicherung ersetzt beim nächsten Neustart die gesamte Konfiguration, und alle werden abgemeldet. Dein Konto und die API-Tokens bleiben. Die aktuelle Konfiguration bleibt als picache.db.before-restore erhalten.',
+    'Die Sicherung ersetzt beim nächsten Neustart die gesamte Konfiguration, und alle werden abgemeldet. Die Konten und die API-Tokens bleiben. Die aktuelle Konfiguration bleibt als picache.db.before-restore erhalten.',
   'backup.restore.password': 'Dein Passwort',
   'backup.restore.passwordHelp':
     'Eine Wiederherstellung ersetzt die gesamte Konfiguration, deshalb fragt PiCache noch einmal nach deinem Passwort.',
@@ -258,6 +493,7 @@ const de: Messages<typeof en> = {
   'backup.restore.stagedTitle': 'Die Sicherung ist geprüft und bereit',
   'backup.restore.stagedText':
     'Starte PiCache neu, um sie zu übernehmen. Bis dahin bleibt die aktuelle Konfiguration aktiv.',
+  'backup.restore.webAccessTitle': 'Dieser Browser ist nach dem Neustart vielleicht ausgesperrt',
   'backup.restore.restartNow': 'Jetzt neu starten',
   'backup.restore.restartText':
     'PiCache startet neu und übernimmt die wiederhergestellte Sicherung. Alle werden abgemeldet; melde dich danach wieder mit deinem Konto an.',
@@ -404,6 +640,7 @@ const de: Messages<typeof en> = {
   'health.check.logs': 'Logs',
   'health.check.data-disk': 'Datenplatte',
   'health.check.dhcp': 'DHCP-Server',
+  'health.check.tls': 'HTTPS-Zertifikat',
 
   'health.about.title': 'Über PiCache',
   'health.about.loadError': 'Die Systeminformationen konnten nicht geladen werden',

@@ -41,5 +41,6 @@ export default {
 
   'https.title': 'This connection is not encrypted',
   'https.text': 'Passwords and the setup token entered here cross the network in plain text. Use the HTTPS address instead:',
-  'https.cert': 'With the self-signed certificate your browser asks you once to accept it.',
+  'https.cert':
+    'Unless this device already trusts PiCache’s certificate (for example through its local CA, System > HTTPS certificate), the browser asks you once to accept it.',
 }

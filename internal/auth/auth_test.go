@@ -592,7 +592,7 @@ func TestAPITokens(t *testing.T) {
 	if !e.a.Valid(ctx, tp) {
 		t.Fatal("token must be valid")
 	}
-	list, err := e.a.Tokens(ctx)
+	list, err := e.a.Tokens(ctx, p)
 	if err != nil || len(list) != 1 || list[0].LastUsed.IsZero() || list[0].ExpiresAt.IsZero() {
 		t.Fatalf("tokens = %+v, %v", list, err)
 	}
@@ -612,10 +612,10 @@ func TestAPITokens(t *testing.T) {
 	if ap, err := e.a.Authenticate(bearerRequest(admin)); err != nil || ap.Scope != ScopeAdmin {
 		t.Fatalf("admin token: %+v, %v", ap, err)
 	}
-	if err := e.a.DeleteToken(ctx, info2.ID); err != nil {
+	if err := e.a.DeleteToken(ctx, p, info2.ID); err != nil {
 		t.Fatal(err)
 	}
-	wantKind(t, e.a.DeleteToken(ctx, info2.ID), apperr.KindNotFound)
+	wantKind(t, e.a.DeleteToken(ctx, p, info2.ID), apperr.KindNotFound)
 	if _, err := e.a.Authenticate(bearerRequest(admin)); err == nil {
 		t.Fatal("deleted token still valid")
 	}
@@ -731,7 +731,7 @@ func TestResetPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = ResetPassword(ctx, e.d, "root", "reset password 1")
+	_, err = ResetPassword(ctx, e.d, "root", "reset password 1", false)
 	if ae, ok := apperr.As(err); !ok || ae.Kind != apperr.KindInvalid || !strings.Contains(ae.Message, "admin") {
 		t.Fatalf("unknown name: err = %v (want the existing names)", err)
 	}
@@ -742,14 +742,14 @@ func TestResetPassword(t *testing.T) {
 	if _, err := e.a.Authenticate(bearerRequest(secret)); err != nil {
 		t.Fatal("a refused reset must change nothing")
 	}
-	_, err = ResetPassword(ctx, e.d, "admin", "short")
+	_, err = ResetPassword(ctx, e.d, "admin", "short", false)
 	wantKind(t, err, apperr.KindInvalid)
 
-	res, err := ResetPassword(ctx, e.d, "ADMIN", "reset password 1")
+	res, err := ResetPassword(ctx, e.d, "ADMIN", "reset password 1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := ResetResult{Username: "admin", TOTPDisabled: true, SessionsRevoked: 1, TokensRevoked: 1}
+	want := ResetResult{Username: "admin", Role: RoleAdmin, TOTPDisabled: true, SessionsRevoked: 1, TokensRevoked: 1}
 	if res != want {
 		t.Fatalf("result = %+v, want %+v", res, want)
 	}
@@ -772,14 +772,14 @@ func TestResetPassword(t *testing.T) {
 func TestResetPasswordCreatesOnlyTheFirstAccount(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	res, err := ResetPassword(ctx, e.d, "owner", "reset password 1")
+	res, err := ResetPassword(ctx, e.d, "owner", "reset password 1", false)
 	if err != nil || !res.Created || res.Username != "owner" {
 		t.Fatalf("reset without accounts = %+v, %v", res, err)
 	}
 	if _, err := e.a.Login(ctx, "owner", "reset password 1", "", meta); err != nil {
 		t.Fatal(err)
 	}
-	_, err = ResetPassword(ctx, e.d, "admin", "reset password 2")
+	_, err = ResetPassword(ctx, e.d, "admin", "reset password 2", false)
 	wantKind(t, err, apperr.KindInvalid)
 	if names, err := Usernames(ctx, e.d); err != nil || strings.Join(names, ",") != "owner" {
 		t.Fatalf("accounts = %v, %v", names, err)
@@ -800,7 +800,7 @@ func TestPlantedTriggerCannotKeepCredentials(t *testing.T) {
 	if err := e.d.Tx(ctx, func(tx *sql.Tx) error { return PurgeSessions(ctx, tx) }); err == nil {
 		t.Fatal("PurgeSessions must fail when sessions survive the delete")
 	}
-	if _, err := ResetPassword(ctx, e.d, "admin", "reset password 1"); err == nil {
+	if _, err := ResetPassword(ctx, e.d, "admin", "reset password 1", false); err == nil {
 		t.Fatal("ResetPassword must fail when sessions survive the delete")
 	}
 	e.login(t) // rolled back: the old password still works
@@ -844,7 +844,7 @@ func TestPlantedTriggerCannotKeepRevokedCredentials(t *testing.T) {
 	}
 	plant(`CREATE TRIGGER keep_tokens BEFORE DELETE ON auth_tokens BEGIN SELECT RAISE(IGNORE); END`)
 	wantKept("password change (tokens)", e.a.ChangePassword(ctx, p, testPassword, "a new password", false))
-	wantKept("delete token", e.a.DeleteToken(ctx, info.ID))
+	wantKept("delete token", e.a.DeleteToken(ctx, p, info.ID))
 	plant(`CREATE TRIGGER keep_sessions BEFORE DELETE ON auth_sessions BEGIN SELECT RAISE(IGNORE); END`)
 	wantKept("password change (sessions)", e.a.ChangePassword(ctx, p, testPassword, "a new password", true))
 	wantKept("revoke session", e.a.RevokeSession(ctx, p, s2.ID))

@@ -174,6 +174,9 @@ func (a *All) normalize() {
 	l.DisabledServices = clean(l.DisabledServices, true)
 	l.NocacheClients = clean(l.NocacheClients, true)
 	a.Web.AllowedHosts = clean(a.Web.AllowedHosts, true)
+	a.Web.AllowedNetworks = normalizeList(a.Web.AllowedNetworks, normalizeAddrOrPrefix)
+	a.Web.TrustedProxies = normalizeList(a.Web.TrustedProxies, normalizeAddrOrPrefix)
+	a.Web.TLSMinVersion = strings.TrimSpace(a.Web.TLSMinVersion)
 	b := &a.Backups
 	b.Schedule = strings.ToLower(strings.TrimSpace(b.Schedule))
 	b.Time = strings.TrimSpace(b.Time)
@@ -471,6 +474,9 @@ func (a *All) Validate() error {
 	case "", "en", "de":
 	default:
 		return apperr.Invalid("web.language", "must be empty, en or de")
+	}
+	if err := w.validateAccess(); err != nil {
+		return err
 	}
 	// updates: two switches, any combination is valid.
 

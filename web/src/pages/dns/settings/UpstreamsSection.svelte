@@ -10,6 +10,7 @@
   import { t } from '$i18n/index.svelte'
   import type { DnsSettings, EcsSettings, Timestamp, UpstreamMode, UpstreamStat } from '$lib/api'
   import { formatDateTime, formatRelative } from '$lib/format'
+  import { session } from '$lib/session.svelte'
   import type { SettingsForm } from '$lib/settings.svelte'
   import { Button, Field, Input, Notice, Panel, Select, Toggle } from '$lib/ui'
   import { lineError } from '../shared/errors'
@@ -92,7 +93,7 @@
         {#snippet extra()}
           {#if !defaultServers}
             <span class="long">
-              <Button size="sm" variant="ghost" onclick={useDefaults}>{t('dns.settings.upstreams.useDefaults')}</Button>
+              <Button size="sm" variant="ghost" disabled={!session.isAdmin} onclick={useDefaults}>{t('dns.settings.upstreams.useDefaults')}</Button>
             </span>
           {/if}
         {/snippet}
@@ -126,60 +127,63 @@
       {#if d.fallbackUpstreams.length === 0}<p class="small subtle">{t('dns.settings.fallback.none')}</p>{/if}
     </section>
 
-    <div class="grid">
-      <Field label={t('dns.settings.mode')} help={modeHelp} error={form.error('upstreamMode')}>
-        <Select
-          bind:value={() => d.upstreamMode, (v) => (d.upstreamMode = MODES.includes(v as UpstreamMode) ? (v as UpstreamMode) : 'load_balance')}
-          options={modeOptions}
-        />
-      </Field>
-      <Field label={t('dns.settings.timeout')} help={t('dns.settings.timeoutHelp')} error={form.error('upstreamTimeoutMs')}>
-        <NumberInput bind:value={d.upstreamTimeoutMs} min={500} max={60000} unit={t('dns.shared.unit.ms')} />
-      </Field>
-    </div>
-
-    <div class="grid">
-      <div class="stack-sm">
-        <Field label={t('dns.settings.bootstrap')} help={t('dns.settings.bootstrapHelp')} error={lineError(form.saveError, 'dns.bootstrap')}>
-          <LinesInput bind:value={d.bootstrap} rows={6} placeholder="9.9.9.9" />
-        </Field>
-        <Toggle
-          bind:checked={d.bootstrapPreferIpv6}
-          label={t('dns.settings.preferIpv6')}
-          description={t('dns.settings.preferIpv6Help')}
-        />
-        {#if form.error('bootstrapPreferIpv6')}<p class="err">{form.error('bootstrapPreferIpv6')}</p>{/if}
-      </div>
-      <Field label={t('dns.settings.localPtr')} optional help={t('dns.settings.localPtrHelp')} error={lineError(form.saveError, 'dns.localPtrUpstreams')}>
-        <LinesInput bind:value={d.localPtrUpstreams} rows={4} placeholder="192.168.1.1" />
-      </Field>
-    </div>
-
-    <section class="stack-sm sub" aria-labelledby="dns-ecs-title">
-      <h3 id="dns-ecs-title">{t('dns.settings.ecs.title')}</h3>
-      <p class="small muted">{t('dns.settings.ecs.help')}</p>
+    <!-- The upstream lists disable their entries themselves (their Test buttons stay usable). -->
+    <fieldset class="stack" disabled={!session.isAdmin}>
       <div class="grid">
-        <Field label={t('dns.settings.ecs.mode')} error={form.error('ecs.mode')}>
+        <Field label={t('dns.settings.mode')} help={modeHelp} error={form.error('upstreamMode')}>
           <Select
-            bind:value={() => d.ecs.mode, (v) => (d.ecs.mode = ECS_MODES.includes(v as EcsSettings['mode']) ? (v as EcsSettings['mode']) : 'off')}
-            options={ecsOptions}
+            bind:value={() => d.upstreamMode, (v) => (d.upstreamMode = MODES.includes(v as UpstreamMode) ? (v as UpstreamMode) : 'load_balance')}
+            options={modeOptions}
           />
         </Field>
-        {#if d.ecs.mode === 'custom' || d.ecs.customSubnet}
-          <Field
-            label={t('dns.settings.ecs.subnet')}
-            required={d.ecs.mode === 'custom'}
-            help={t('dns.settings.ecs.subnetHelp')}
-            error={form.error('ecs.customSubnet')}
-          >
-            <Input bind:value={d.ecs.customSubnet} mono placeholder="203.0.113.0/24" maxlength={64} autocomplete="off" />
-          </Field>
-        {/if}
+        <Field label={t('dns.settings.timeout')} help={t('dns.settings.timeoutHelp')} error={form.error('upstreamTimeoutMs')}>
+          <NumberInput bind:value={d.upstreamTimeoutMs} min={500} max={60000} unit={t('dns.shared.unit.ms')} />
+        </Field>
       </div>
-      {#if d.ecs.mode === 'client'}
-        <Notice tone="warn">{t('dns.settings.ecs.clientWarn')}</Notice>
-      {/if}
-    </section>
+
+      <div class="grid">
+        <div class="stack-sm">
+          <Field label={t('dns.settings.bootstrap')} help={t('dns.settings.bootstrapHelp')} error={lineError(form.saveError, 'dns.bootstrap')}>
+            <LinesInput bind:value={d.bootstrap} rows={6} placeholder="9.9.9.9" />
+          </Field>
+          <Toggle
+            bind:checked={d.bootstrapPreferIpv6}
+            label={t('dns.settings.preferIpv6')}
+            description={t('dns.settings.preferIpv6Help')}
+          />
+          {#if form.error('bootstrapPreferIpv6')}<p class="err">{form.error('bootstrapPreferIpv6')}</p>{/if}
+        </div>
+        <Field label={t('dns.settings.localPtr')} optional help={t('dns.settings.localPtrHelp')} error={lineError(form.saveError, 'dns.localPtrUpstreams')}>
+          <LinesInput bind:value={d.localPtrUpstreams} rows={4} placeholder="192.168.1.1" />
+        </Field>
+      </div>
+
+      <section class="stack-sm sub" aria-labelledby="dns-ecs-title">
+        <h3 id="dns-ecs-title">{t('dns.settings.ecs.title')}</h3>
+        <p class="small muted">{t('dns.settings.ecs.help')}</p>
+        <div class="grid">
+          <Field label={t('dns.settings.ecs.mode')} error={form.error('ecs.mode')}>
+            <Select
+              bind:value={() => d.ecs.mode, (v) => (d.ecs.mode = ECS_MODES.includes(v as EcsSettings['mode']) ? (v as EcsSettings['mode']) : 'off')}
+              options={ecsOptions}
+            />
+          </Field>
+          {#if d.ecs.mode === 'custom' || d.ecs.customSubnet}
+            <Field
+              label={t('dns.settings.ecs.subnet')}
+              required={d.ecs.mode === 'custom'}
+              help={t('dns.settings.ecs.subnetHelp')}
+              error={form.error('ecs.customSubnet')}
+            >
+              <Input bind:value={d.ecs.customSubnet} mono placeholder="203.0.113.0/24" maxlength={64} autocomplete="off" />
+            </Field>
+          {/if}
+        </div>
+        {#if d.ecs.mode === 'client'}
+          <Notice tone="warn">{t('dns.settings.ecs.clientWarn')}</Notice>
+        {/if}
+      </section>
+    </fieldset>
   </div>
 </Panel>
 

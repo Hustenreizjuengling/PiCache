@@ -10,6 +10,7 @@ import { session } from './lib/session.svelte'
 setApiHooks({
   unauthorized: () => session.lost(),
   misdirected: (message) => session.misdirected(message),
+  forbidden: () => void session.refresh(),
 })
 
 export default mount(App, { target: document.getElementById('app')! })

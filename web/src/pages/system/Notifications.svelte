@@ -22,10 +22,10 @@
 
   const catalog = resource((signal) => api.notifications.events({ signal }))
   const channels = resource((signal) =>
-    session.isAdmin ? api.notifications.channels.list({ signal }) : Promise.resolve(undefined),
+    session.canOperate ? api.notifications.channels.list({ signal }) : Promise.resolve(undefined),
   )
   const log = resource(
-    (signal) => (session.isAdmin ? api.notifications.log(LOG_LIMIT, { signal }) : Promise.resolve(undefined)),
+    (signal) => (session.canOperate ? api.notifications.log(LOG_LIMIT, { signal }) : Promise.resolve(undefined)),
     { interval: 15_000 },
   )
 
@@ -166,7 +166,7 @@
       size="sm"
       label={t('system.notifications.testNamed', { name: c.name })}
       loading={tests[c.id]?.running}
-      disabled={!session.isAdmin}
+      disabled={!session.canOperate}
       onclick={() => sendTest(c)}
     />
     <IconButton
@@ -188,7 +188,7 @@
 {/snippet}
 
 <div class="page">
-  {#if !session.isAdmin}
+  {#if !session.canOperate}
     <Notice tone="info">{t('system.notifications.adminOnly')}</Notice>
   {:else}
     <Panel
@@ -198,7 +198,7 @@
       footer={full ? limitNote : undefined}
     >
       {#snippet actions()}
-        <Button variant="primary" icon="plus" disabled={full || !channels.data} onclick={add}>
+        <Button variant="primary" icon="plus" disabled={!session.isAdmin || full || !channels.data} onclick={add}>
           {t('system.notifications.channels.add')}
         </Button>
       {/snippet}
@@ -227,7 +227,7 @@
       >
         {#snippet empty()}
           <EmptyState icon="bell" title={t('system.notifications.channels.emptyTitle')} text={t('system.notifications.channels.emptyText')} compact>
-            <Button icon="plus" onclick={add}>{t('system.notifications.channels.add')}</Button>
+            <Button icon="plus" disabled={!session.isAdmin} onclick={add}>{t('system.notifications.channels.add')}</Button>
           </EmptyState>
         {/snippet}
       </Table>
@@ -245,7 +245,7 @@
   <EventsPanel events={catalog.data} loading={catalog.loading} error={catalog.error} onretry={() => catalog.refresh()} />
 </div>
 
-{#if session.isAdmin}
+{#if session.canOperate}
   <ChannelDialog
     bind:open={dialogOpen}
     channel={editing}

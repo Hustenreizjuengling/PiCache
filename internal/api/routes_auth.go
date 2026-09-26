@@ -25,15 +25,16 @@ func (s *Server) registerAuthRoutes() {
 	s.route("POST /api/v1/auth/login", permPublic, s.authLogin)
 	s.route("POST /api/v1/auth/logout", permRead, s.authLogout)
 	s.route("GET /api/v1/auth/me", permRead, s.authMe)
-	s.route("POST /api/v1/auth/password", permSession, s.authPassword)
-	s.route("GET /api/v1/auth/sessions", permSession, s.authSessions)
-	s.route("DELETE /api/v1/auth/sessions/{id}", permSession, s.authRevokeSession)
-	s.route("POST /api/v1/auth/totp/begin", permSession, s.authTOTPBegin)
-	s.route("POST /api/v1/auth/totp/confirm", permSession, s.authTOTPConfirm)
-	s.route("POST /api/v1/auth/totp/disable", permSession, s.authTOTPDisable)
-	s.route("GET /api/v1/tokens", permSession, s.tokensList)
-	s.route("POST /api/v1/tokens", permSession, s.tokensCreate)
-	s.route("DELETE /api/v1/tokens/{id}", permSession, s.tokensDelete)
+	// The own account: any session (viewers included), never API tokens.
+	s.route("POST /api/v1/auth/password", permSelf, s.authPassword)
+	s.route("GET /api/v1/auth/sessions", permSelf, s.authSessions)
+	s.route("DELETE /api/v1/auth/sessions/{id}", permSelf, s.authRevokeSession)
+	s.route("POST /api/v1/auth/totp/begin", permSelf, s.authTOTPBegin)
+	s.route("POST /api/v1/auth/totp/confirm", permSelf, s.authTOTPConfirm)
+	s.route("POST /api/v1/auth/totp/disable", permSelf, s.authTOTPDisable)
+	s.route("GET /api/v1/tokens", permSelf, s.tokensList)
+	s.route("POST /api/v1/tokens", permSelf, s.tokensCreate)
+	s.route("DELETE /api/v1/tokens/{id}", permSelf, s.tokensDelete)
 }
 
 func authReqMeta(r *http.Request) auth.ReqMeta {
@@ -49,6 +50,11 @@ type authStatusResponse struct {
 	Language      string     `json:"language"`
 	SetupHints    []string   `json:"setupHints,omitempty"`
 	HTTPSPort     int        `json:"httpsPort"` // port of the bound HTTPS listener, 0 if none
+	// ConfigLocked: PICACHE_CONFIG_LOCKED is on (sessions cannot change the
+	// configuration); DestructiveAPI: PICACHE_DESTRUCTIVE_API is on. Both
+	// false unless authenticated.
+	ConfigLocked   bool `json:"configLocked"`
+	DestructiveAPI bool `json:"destructiveApi"`
 }
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) error {
@@ -69,6 +75,7 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) error {
 	switch {
 	case err == nil:
 		out.Authenticated, out.User, out.Scope, out.TokenAuth = true, &u, p.Scope, p.TokenID != 0
+		out.ConfigLocked, out.DestructiveAPI = s.configLocked(), s.destructiveAllowed()
 	case apperr.KindOf(err) != apperr.KindUnauthorized:
 		s.log.Warn("auth status: authenticate", slog.Any("err", err))
 	}
@@ -91,11 +98,13 @@ func (s *Server) httpsPort() int {
 	return 0
 }
 
-// cookieSecurity reports whether the request arrived over TLS (the session
-// cookie is then named __Host-picache_session) and whether the cookie gets
-// the Secure flag (TLS, or PICACHE_WEB_SECURE_COOKIES behind a TLS proxy).
+// cookieSecurity reports whether the request's effective scheme is https
+// (TLS, or X-Forwarded-Proto of a trusted proxy; the session cookie is then
+// named __Host-picache_session) and whether the cookie gets the Secure flag
+// (https, or PICACHE_WEB_SECURE_COOKIES behind a TLS proxy that is not
+// trusted).
 func (s *Server) cookieSecurity(r *http.Request) (tls, secure bool) {
-	tls = r.TLS != nil
+	tls = isHTTPS(r)
 	return tls, tls || (s.d.Config != nil && s.d.Config.WebSecureCookies)
 }
 
@@ -259,7 +268,7 @@ func (s *Server) authTOTPDisable(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) tokensList(w http.ResponseWriter, r *http.Request) error {
-	list, err := s.d.Auth.Tokens(r.Context())
+	list, err := s.d.Auth.Tokens(r.Context(), principal(r))
 	if err != nil {
 		return err
 	}
@@ -296,7 +305,7 @@ func (s *Server) tokensDelete(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := s.d.Auth.DeleteToken(r.Context(), id); err != nil {
+	if err := s.d.Auth.DeleteToken(r.Context(), principal(r), id); err != nil {
 		return err
 	}
 	s.audit(r, "token.delete", strconv.FormatInt(id, 10), nil)

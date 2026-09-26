@@ -114,9 +114,19 @@ unprivileged Proxmox LXC container.
 
 - English and German UI with dashboard, live query and download streams,
   query log, statistics and health checks with hints.
-- One admin account with optional TOTP two-factor authentication, API tokens
-  (`read`/`admin`) for automation, an audit log, backup and restore
-  (also scheduled, for example to your NAS), and optional Prometheus metrics.
+- Several accounts with the roles admin and viewer (viewers see the pages
+  read-only, except the audit log, notification channels and backup
+  downloads, and change nothing but their own account), optional TOTP
+  two-factor authentication, API tokens (`read`/`admin`) for automation, an audit
+  log, backup and restore (also scheduled, for example to your NAS), and
+  optional Prometheus metrics.
+- Web access limited to your own networks by default, trusted reverse
+  proxies (their `X-Forwarded-For` is read only when you list them), and an
+  optional configuration lock for infrastructure as code.
+- HTTPS for the web UI with a certificate of PiCache's own local CA, which
+  your devices trust once; or upload your own certificate, or point PiCache
+  at certificate files (for example from Let's Encrypt), which it reloads
+  when they are renewed.
 - Notifications through ntfy, Gotify or a webhook (Home Assistant) when the
   storage goes offline, a health check fails, an update is out or installed,
   or a backup fails.
@@ -193,9 +203,8 @@ on how it was built:
   automatic database copy before an upgrade, see
   [Updates](docs/DEPLOYMENT.md#updates).
 
-Not included: DNS-over-HTTPS/TLS for clients, local DNSSEC
-validation, and more than one user account (one admin plus API tokens). TLS
-interception of downloads is never done. Docker Desktop on macOS and Windows
+Not included: DNS-over-HTTPS/TLS for clients and local DNSSEC
+validation. TLS interception of downloads is never done. Docker Desktop on macOS and Windows
 is not a deployment target.
 
 ## Quick start
@@ -326,8 +335,9 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   the REST API, `http.CrossOriginProtection` against CSRF,
   `http.ResponseController` for per-request deadlines and Server-Sent Events
   for the live streams, `http.FileServerFS` over `embed.FS` for the UI, and
-  HTTP/2 for DNS-over-HTTPS; `crypto/tls` with a self-signed ECDSA P-256
-  certificate unless you provide one; `os.Root` for file access in the cache
+  HTTP/2 for DNS-over-HTTPS; `crypto/tls` and `crypto/x509` for the web
+  certificate (a local CA with name constraints, ECDSA P-256, unless you
+  provide a certificate); `os.Root` for file access in the cache
   store and the downloaded snapshots; `log/slog`; `net/netip`;
   `testing/synctest` in tests. Cache hits are sent with `sendfile(2)` where
   possible, and the SNI relay copies with `splice(2)`, both through the
@@ -357,7 +367,7 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Three kinds of SQLite database, all on local disk in the data directory
   (PiCache refuses to open them on NFS or CIFS): `picache.db` holds the
   configuration (settings, lists, rules, clients, groups, local records,
-  services, storage targets), the account, sessions, API tokens and the
+  services, storage targets), the accounts, sessions, API tokens and the
   audit log; `logs.db` holds the query log, cache and SNI events, download
   sessions, statistics rollups and evictions;
   `cache-index/<store-id>.db` indexes one cache store.
@@ -451,6 +461,11 @@ Details, including backup and restore, are in
   never holds `CAP_SYS_ADMIN`.
 - The first account is created with a one-time setup token. Passwords are
   hashed with argon2id, sign-ins are throttled, and TOTP is optional.
+  Viewer accounts and read tokens cannot change anything; accounts and
+  certificates are managed only in an admin's browser session.
+- New installations allow the web UI only from this machine, the private
+  and connected networks and the networks you add; a proxy's
+  `X-Forwarded-For` is read only from addresses you trust.
 - Strict Content-Security-Policy, `HttpOnly` and `SameSite=Strict` session
   cookies, cross-origin protection and a host allowlist against DNS
   rebinding; the resolver blocks rebinding answers for the whole network.
@@ -527,8 +542,10 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
   gespart wurde. Der Cache nutzt die cache-domains-Listen und funktioniert
   mit der Cache-Erkennung von Steam und mit Prefill-Tools.
 - **Sicher voreingestellt:** kein offener Resolver, unprivilegierter Dienst,
-  Einrichtung per Einmal-Token, ein Admin-Konto mit optionaler
-  Zwei-Faktor-Anmeldung, API-Tokens.
+  Einrichtung per Einmal-Token, Weboberfläche nur aus den eigenen Netzen,
+  mehrere Konten (Admins und Betrachter, die nur lesen), optionale
+  Zwei-Faktor-Anmeldung, API-Tokens, HTTPS mit einer eigenen lokalen
+  Zertifizierungsstelle.
 - **DHCP-Server** (optional), falls der Router keinen anderen DNS-Server
   verteilen kann: wird bei Bedarf in der Oberfläche eingeschaltet (keine
   Installationsoption; solange er aus ist, belegt PiCache keinen DHCP-Port),

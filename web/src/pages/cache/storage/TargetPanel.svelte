@@ -241,29 +241,30 @@
     <section class="stack-sm">
       <h3>{t('cache.target.nextSteps')}</h3>
       <div class="row">
-        <Button icon="activity" loading={testing} disabled={!session.isAdmin} onclick={runTest}>{t('cache.target.test')}</Button>
+        <Button icon="activity" loading={testing} disabled={!session.canOperate} onclick={runTest}>{t('cache.target.test')}</Button>
         {#if can.apply}
           <Button icon="upload" loading={busy === 'apply'} disabled={!session.isAdmin || !!busy} onclick={apply}>{t('cache.target.apply')}</Button>
         {/if}
-        {#if can.init}
-          <Button icon="plus" loading={busy === 'init'} disabled={!session.isAdmin || !!busy} onclick={init}>{t('cache.target.init')}</Button>
+        <!-- Preparing a store (also adopting one) may delete its contents: hidden where destructive actions are off. -->
+        {#if can.init && session.canDestroy}
+          <Button icon="plus" loading={busy === 'init'} disabled={!!busy} onclick={init}>{t('cache.target.init')}</Button>
         {/if}
-        {#if can.adopt}
-          <Button icon="check" loading={busy === 'adopt'} disabled={!session.isAdmin || !!busy} onclick={adopt}>{t('cache.target.adopt')}</Button>
+        {#if can.adopt && session.canDestroy}
+          <Button icon="check" loading={busy === 'adopt'} disabled={!!busy} onclick={adopt}>{t('cache.target.adopt')}</Button>
         {/if}
         {#if can.activate}
           <Button variant="primary" icon="power" loading={busy === 'activate'} disabled={!session.isAdmin || !!busy} onclick={activate}>
             {t('cache.target.activate')}
           </Button>
         {/if}
-        {#if session.isAdmin && st.online}
+        {#if session.canOperate && st.online}
           <Button icon="overview" disabled={speedRunning || testing || !!busy} onclick={onspeedtest}>{t('cache.speed.test')}</Button>
         {/if}
       </div>
       {#if !target.active && !can.activate && target.storeId && !st.online}
         <p class="muted small">{t('cache.target.activateNeedsOnline')}</p>
       {/if}
-      {#if session.isAdmin && st.online && speedRunning && speedRun && speedRun.targetId !== target.id}
+      {#if session.canOperate && st.online && speedRunning && speedRun && speedRun.targetId !== target.id}
         <p class="muted small">{t('cache.speed.busyOther', { name: nameOf(speedRun.targetId) })}</p>
       {/if}
     </section>
@@ -312,7 +313,7 @@
       <KeyValue items={details} />
     </section>
 
-    {#if session.isAdmin && target.id !== 'local'}
+    {#if session.canOperate && target.id !== 'local'}
       <section class="stack-sm">
         <h3>{t('cache.snippets.title')}</h3>
         <p class="muted small">{t('cache.snippets.intro')}</p>
@@ -323,8 +324,8 @@
 
   {#snippet actions()}
     <Button icon="edit" disabled={!session.isAdmin} onclick={onedit}>{t('cache.target.edit')}</Button>
-    {#if can.remove}
-      <Button variant="danger" icon="trash" disabled={!session.isAdmin} onclick={remove}>{t('cache.target.delete')}</Button>
+    {#if can.remove && session.canDestroy}
+      <Button variant="danger" icon="trash" onclick={remove}>{t('cache.target.delete')}</Button>
     {/if}
   {/snippet}
 </SidePanel>

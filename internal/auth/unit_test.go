@@ -226,6 +226,8 @@ func TestAuditDetails(t *testing.T) {
 		{"nested objects and arrays", map[string]any{"a": []any{map[string]any{"secret": map[string]any{"k": 1}}, "secret"}},
 			`{"a":[{"secret":"[redacted]"},"secret"]}`},
 		{"values named like secrets stay", map[string]any{"field": "password"}, `{"field":"password"}`},
+		{"PEM members", map[string]any{"keyPem": "-----BEGIN PRIVATE KEY-----", "cert_pem": "x", "subject": "CN=a"},
+			`{"cert_pem":"[redacted]","keyPem":"[redacted]","subject":"CN=a"}`},
 		{"top-level string", "token", `"token"`},
 		{"unmarshalable", map[string]any{"f": func() {}}, `{"error":"details could not be recorded"}`},
 	} {

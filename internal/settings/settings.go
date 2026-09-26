@@ -230,7 +230,31 @@ type Web struct {
 	RedirectToHTTPS    bool     `json:"redirectToHttps"`
 	MetricsEnabled     bool     `json:"metricsEnabled"`
 	Language           string   `json:"language"` // "" = browser default, "en", "de"
+	// AllowedNetworks are addresses or CIDRs (at least /8 IPv4, /32 IPv6)
+	// allowed to use the web UI and API besides the default set
+	// (netutil.WebACL) while RestrictToNetworks is on.
+	AllowedNetworks []string `json:"allowedNetworks"`
+	// RestrictToNetworks allows the web UI and API only from this machine,
+	// the private and connected networks, the DNS allowed networks,
+	// AllowedNetworks and TrustedProxies. On for new installations; a
+	// document stored before 0.11.0 has it off (settings migration v5).
+	RestrictToNetworks bool `json:"restrictToNetworks"`
+	// TrustedProxies are addresses or CIDRs (at least /24 IPv4, /64 IPv6)
+	// of reverse proxies whose X-Forwarded-For and X-Forwarded-Proto
+	// headers are read (netutil.ForwardedClient).
+	TrustedProxies []string `json:"trustedProxies"`
+	// TLSMinVersion is the oldest TLS version the HTTPS listener accepts:
+	// "1.2" or "1.3".
+	TLSMinVersion string `json:"tlsMinVersion"`
 }
+
+// Limits and values of the web section.
+const (
+	MaxWebAllowedNetworks = 64
+	MaxTrustedProxies     = 16
+	TLSVersion12          = "1.2"
+	TLSVersion13          = "1.3"
+)
 
 // Updates configures the release check (docs/ARCHITECTURE.md 14.3). Installing
 // an update always needs an admin action.
@@ -430,6 +454,17 @@ var migrations = []string{
 			AND json_type(doc, '$.dns.fallbackUpstreams') IS NULL
 		THEN json(json_extract(doc, '$.dns.upstreams')) != json('` + upstreamsV4 + `')
 		ELSE 0 END;`,
+	// v5 (0.11.0): the web UI is restricted to the allowed networks by
+	// default (web.restrictToNetworks, true in Defaults). A document stored
+	// by an earlier version keeps the web UI open to every address, so an
+	// upgrade never starts refusing anyone. json_set creates a missing "web"
+	// object itself; a "web" member that is null becomes an object. Like v4
+	// it also converts a document restored from an older backup; a document
+	// that is not valid JSON is left alone.
+	`UPDATE settings SET doc = CASE WHEN json_type(doc, '$.web') = 'null'
+		THEN json_set(doc, '$.web', json('{"restrictToNetworks":false}'))
+		ELSE json_set(doc, '$.web.restrictToNetworks', json('false')) END
+	WHERE CASE WHEN json_valid(doc) THEN json_type(doc, '$.web.restrictToNetworks') IS NULL ELSE 0 END;`,
 }
 
 // Default bootstrap lists: bootstrapV2 until 0.5.x, bootstrapV3 since 0.6.0
@@ -478,6 +513,25 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 	return s, nil
 }
 
+// DecodeStored decodes a stored settings document the way Open does after
+// this version's migrations: on top of Defaults, with web.restrictToNetworks
+// off when the document lacks it (migration v5), normalised. The API judges
+// the settings of a staged restore with it before they are applied.
+func DecodeStored(doc []byte) (*All, error) {
+	cur := Defaults()
+	cur.Web.RestrictToNetworks = false
+	if err := json.Unmarshal(doc, &cur); err != nil {
+		return nil, fmt.Errorf("settings: decode stored document: %w", err)
+	}
+	cur.normalize()
+	return &cur, nil
+}
+
+// Normalize applies the normalisation of Update to a candidate document
+// (trimmed, canonical list entries, duplicates removed), so a caller can
+// judge the values Update would store.
+func (a *All) Normalize() { a.normalize() }
+
 // Created reports whether the settings document was created by this Open
 // (first start); the app then applies environment-detected defaults.
 func (s *Store) Created() bool { return s.created }
@@ -489,6 +543,21 @@ func (s *Store) Get() *All { return s.cur.Load() }
 // result, persists it and notifies listeners. If fn or validation fails,
 // nothing changes.
 func (s *Store) Update(ctx context.Context, fn func(*All) error) (*All, error) {
+	return s.update(ctx, fn, false)
+}
+
+// Recover is Update for a host recovery (the web access reset): fn only
+// moves members to values that are always valid. When the current document
+// is already invalid (Open keeps such a document, e.g. after a validation
+// rule became stricter or a restore), the result is saved anyway with a
+// WARN log: the recovery must work although the web UI where the invalid
+// member would be fixed is out of reach. A valid document is validated as
+// by Update.
+func (s *Store) Recover(ctx context.Context, fn func(*All) error) (*All, error) {
+	return s.update(ctx, fn, true)
+}
+
+func (s *Store) update(ctx context.Context, fn func(*All) error, recovery bool) (*All, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old := s.cur.Load()
@@ -498,7 +567,10 @@ func (s *Store) Update(ctx context.Context, fn func(*All) error) (*All, error) {
 	}
 	next.normalize()
 	if err := next.Validate(); err != nil {
-		return nil, err
+		if !recovery || old.Validate() == nil {
+			return nil, err
+		}
+		s.log.Warn("stored settings are invalid; saving the recovery change anyway, fix them in the UI", slog.Any("err", err))
 	}
 	// The search list depends on dns.localDomain when dhcp.domain is empty;
 	// it is checked only when its own inputs (dhcp.domain, the extra

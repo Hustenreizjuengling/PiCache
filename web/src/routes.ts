@@ -46,7 +46,8 @@ export const routes: RouteDef[] = [
   { path: '/cache/storage', section: 'cache', title: 'common.nav.storage', icon: 'drive', load: () => import('./pages/cache/Storage.svelte') },
   { path: '/cache/settings', section: 'cache', title: 'common.nav.cacheSettings', icon: 'sliders', load: () => import('./pages/cache/CacheSettings.svelte') },
 
-  { path: '/system/account', section: 'system', title: 'common.nav.account', icon: 'lock', load: () => import('./pages/system/Account.svelte') },
+  { path: '/system/account', section: 'system', title: 'common.nav.account', icon: 'user', load: () => import('./pages/system/Account.svelte') },
+  { path: '/system/https', section: 'system', title: 'common.nav.https', icon: 'lock', load: () => import('./pages/system/Https.svelte') },
   { path: '/system/tokens', section: 'system', title: 'common.nav.tokens', icon: 'key', load: () => import('./pages/system/Tokens.svelte') },
   { path: '/system/audit', section: 'system', title: 'common.nav.audit', icon: 'document', load: () => import('./pages/system/Audit.svelte') },
   { path: '/system/backup', section: 'system', title: 'common.nav.backup', icon: 'archive', load: () => import('./pages/system/Backup.svelte') },

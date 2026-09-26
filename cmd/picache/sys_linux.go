@@ -63,3 +63,6 @@ func memoryLimit() int64 {
 	}
 	return 0
 }
+
+// oNoFollow refuses to open a symbolic link as the final path component.
+const oNoFollow = syscall.O_NOFOLLOW

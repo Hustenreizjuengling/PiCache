@@ -159,7 +159,7 @@
   {/snippet}
 
   {#snippet extra()}
-    <Button icon="refresh" loading={refreshing} disabled={!session.isAdmin || saving || !list?.enabled} onclick={refresh}>
+    <Button icon="refresh" loading={refreshing} disabled={!session.canOperate || saving || !list?.enabled} onclick={refresh}>
       {t('dns.lists.updateNow')}
     </Button>
   {/snippet}

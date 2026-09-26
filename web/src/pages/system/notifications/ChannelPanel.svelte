@@ -52,7 +52,7 @@
 
       <section class="stack-sm" aria-label={t('system.notifications.test')}>
         <div class="row">
-          <Button variant="primary" icon="send" loading={test?.running} disabled={!session.isAdmin} onclick={() => ontest(c)}>
+          <Button variant="primary" icon="send" loading={test?.running} disabled={!session.canOperate} onclick={() => ontest(c)}>
             {t('system.notifications.test')}
           </Button>
         </div>

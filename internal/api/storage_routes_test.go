@@ -54,9 +54,11 @@ func (f *storageTestRuntime) EvictNow(context.Context) (cachestore.EvictResult, 
 func (f *storageTestRuntime) StartVerify(bool) error                        { return nil }
 func (f *storageTestRuntime) VerifyState() VerifyState                      { return VerifyState{} }
 func (f *storageTestRuntime) Backup(context.Context, io.Writer, bool) error { return nil }
-func (f *storageTestRuntime) StageRestore(context.Context, io.Reader) error { return nil }
-func (f *storageTestRuntime) Restart()                                      {}
-func (f *storageTestRuntime) Health(context.Context) Health                 { return Health{OK: true} }
+func (f *storageTestRuntime) StageRestore(context.Context, io.Reader) (*settings.All, error) {
+	return nil, nil
+}
+func (f *storageTestRuntime) Restart()                      {}
+func (f *storageTestRuntime) Health(context.Context) Health { return Health{OK: true} }
 
 type storageTestEnv struct {
 	srv  *Server
@@ -76,7 +78,8 @@ func newStorageTestEnv(t *testing.T) *storageTestEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{DataDir: filepath.Join(dir, "data"), CacheDir: filepath.Join(dir, "cache"), MountRoot: filepath.Join(dir, "mnt")}
+	cfg := &config.Config{DataDir: filepath.Join(dir, "data"), CacheDir: filepath.Join(dir, "cache"), MountRoot: filepath.Join(dir, "mnt"),
+		DestructiveAPI: true}
 	for _, p := range []string{cfg.DataDir, cfg.CacheDir, cfg.MountRoot, filepath.Join(cfg.DataDir, "storage-requests")} {
 		if err := os.MkdirAll(p, 0o750); err != nil {
 			t.Fatal(err)
@@ -88,10 +91,7 @@ func newStorageTestEnv(t *testing.T) *storageTestEnv {
 	}
 	t.Cleanup(func() { d.Close() })
 	log := slog.New(slog.DiscardHandler)
-	set, err := settings.Open(ctx, d, log)
-	if err != nil {
-		t.Fatal(err)
-	}
+	set := openOpenSettings(t, d, log)
 	box, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)

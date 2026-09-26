@@ -143,7 +143,9 @@ func CheckBackupSchema(ctx context.Context, q execQuerier) error {
 // log.
 //
 // Columns are copied by name (the live database may use an older or newer
-// auth schema version than the backup).
+// auth schema version than the backup), so the accounts keep their roles;
+// the accounts of a live database from before roles (auth v1) were all
+// admins and stay admins.
 func CarryOverAccounts(ctx context.Context, d *db.DB, livePath string) error {
 	if err := d.Migrate(ctx, "auth", migrations); err != nil {
 		return err
@@ -184,6 +186,18 @@ func CarryOverAccounts(ctx context.Context, d *db.DB, livePath string) error {
 				return fmt.Errorf("keep %s: %w", t, err)
 			}
 			if err := sameCount(ctx, tx, t); err != nil {
+				return err
+			}
+		}
+		// Accounts of a live database before roles (auth v1) were all
+		// admins; copied by name they would get the column default.
+		var hasRole bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pragma_table_info('auth_users', 'live')
+			WHERE name = 'role')`).Scan(&hasRole); err != nil {
+			return err
+		}
+		if !hasRole {
+			if _, err := tx.ExecContext(ctx, `UPDATE main.auth_users SET role = 'admin'`); err != nil {
 				return err
 			}
 		}

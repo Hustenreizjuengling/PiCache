@@ -56,7 +56,7 @@
   }
 </script>
 
-<Button {variant} {size} icon="power" disabled={!session.isAdmin} onclick={ask}>
+<Button {variant} {size} icon="power" disabled={!session.canOperate} onclick={ask}>
   {label ?? t('system.restart.button')}
 </Button>
 

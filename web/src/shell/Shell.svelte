@@ -1,14 +1,16 @@
 <!--
   @component
   The signed-in app: pair strip, sidebar (a top drawer below 900 px), top
-  bar and the current page (loaded on demand).
+  bar, the restrictions the host sets for admins (configuration lock,
+  destructive actions off) and the current page (loaded on demand).
 -->
 <script lang="ts">
   import type { Component } from 'svelte'
   import { t } from '../i18n/index.svelte'
   import { router, setLeavePrompt } from '../lib/router.svelte'
+  import { session } from '../lib/session.svelte'
   import { appStatus, startAppStatus } from '../lib/status.svelte'
-  import { Button, EmptyState, IconButton, Notice, PairStrip, Skeleton, confirm } from '../lib/ui'
+  import { Button, EmptyState, Icon, IconButton, Notice, PairStrip, Skeleton, confirm } from '../lib/ui'
   import { resolve } from '../routes'
   import Brand from './Brand.svelte'
   import Sidebar from './Sidebar.svelte'
@@ -117,6 +119,17 @@
       onmenu={() => (navOpen = !navOpen)}
     />
     <main bind:this={main} tabindex="-1">
+      <!-- Set on the host, so not dismissible: why admin actions are missing or disabled. -->
+      {#if session.canOperate && (session.configLocked || !session.destructiveApi)}
+        <div class="host">
+          {#if session.configLocked}
+            <p class="host-note"><Icon name="lock" size={16} />{t('common.host.configLocked')}</p>
+          {/if}
+          {#if !session.destructiveApi}
+            <p class="host-note"><Icon name="ban" size={16} />{t('common.host.destructiveOff')}</p>
+          {/if}
+        </div>
+      {/if}
       {#if !match}
         <div class="page">
           <EmptyState icon="search" title={t('common.notFound.title')} text={t('common.notFound.text')}>
@@ -202,6 +215,29 @@
     max-width: calc(var(--content-max) + 2 * var(--sp-5));
     padding: var(--sp-5);
     outline: none;
+  }
+  .host {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    margin-bottom: var(--sp-4);
+  }
+  .host-note {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border-left: 3px solid var(--focus);
+    border-radius: var(--r-control);
+    background: color-mix(in srgb, var(--focus) 8%, var(--surface));
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    overflow-wrap: anywhere;
+  }
+  .host-note :global(.icon) {
+    flex: none;
+    margin-top: 2px;
+    color: var(--focus);
   }
   .skip {
     position: absolute;

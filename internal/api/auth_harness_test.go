@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json/v2"
 	"errors"
 	"io"
@@ -31,6 +32,7 @@ type coreRuntime struct {
 	backupErr  error
 	restored   []byte
 	restoreErr error
+	staged     *settings.All // what StageRestore returns as the staged settings
 	restarted  bool
 	tlsAddr    string // bound web-tls listener ("" = none)
 }
@@ -65,15 +67,18 @@ func (f *coreRuntime) Backup(_ context.Context, w io.Writer, _ bool) error {
 	_, err := w.Write(f.backup)
 	return err
 }
-func (f *coreRuntime) StageRestore(_ context.Context, r io.Reader) error {
+func (f *coreRuntime) StageRestore(_ context.Context, r io.Reader) (*settings.All, error) {
 	b, err := io.ReadAll(r)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	f.restored = b
-	return f.restoreErr
+	if f.restoreErr != nil {
+		return nil, f.restoreErr
+	}
+	return f.staged, nil
 }
 func (f *coreRuntime) Restart() {
 	f.mu.Lock()
@@ -92,6 +97,14 @@ type coreEnv struct {
 	rt        *coreRuntime
 	upd       *coreUpdater
 	setupFile string
+	db        *db.DB
+}
+
+// authDB returns the writer pool of the test database (to change rows
+// behind the service's back).
+func (e *coreEnv) authDB(t *testing.T) *sql.DB {
+	t.Helper()
+	return e.db.W
 }
 
 const (
@@ -109,10 +122,7 @@ func newCoreEnv(t *testing.T) *coreEnv {
 	}
 	t.Cleanup(func() { d.Close() })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	set, err := settings.Open(ctx, d, log)
-	if err != nil {
-		t.Fatal(err)
-	}
+	set := openOpenSettings(t, d, log)
 	box, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -125,10 +135,27 @@ func newCoreEnv(t *testing.T) *coreEnv {
 	cfg := &config.Config{
 		DataDir: dir, CacheDir: filepath.Join(dir, "cache"), MountRoot: filepath.Join(dir, "mnt"),
 		WebListen: []string{":8080"}, WebTLSListen: []string{":8443"}, WebHosts: []string{"picache.example"},
+		DestructiveAPI: true,
 	}
 	rt, upd := &coreRuntime{}, &coreUpdater{}
 	srv := New(Deps{Config: cfg, Settings: set, Auth: a, Runtime: rt, Updates: upd, Log: log})
-	return &coreEnv{srv: srv, auth: a, set: set, rt: rt, upd: upd, setupFile: setupFile}
+	return &coreEnv{srv: srv, auth: a, set: set, rt: rt, upd: upd, setupFile: setupFile, db: d}
+}
+
+// openOpenSettings opens the settings with the web UI open to every
+// address (the state of an upgraded installation): httptest requests come
+// from 192.0.2.1, which a new installation's web ACL refuses. The web
+// access tests switch the restriction on themselves.
+func openOpenSettings(t *testing.T, d *db.DB, log *slog.Logger) *settings.Store {
+	t.Helper()
+	set, err := settings.Open(context.Background(), d, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set.Update(context.Background(), func(a *settings.All) error { a.Web.RestrictToNetworks = false; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return set
 }
 
 // coreRequest builds a request to the test host; a non-empty body is sent as JSON.

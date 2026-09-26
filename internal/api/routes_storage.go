@@ -19,15 +19,15 @@ func (s *Server) registerStorageRoutes() {
 	s.route("GET /api/v1/storage/targets/{id}", permRead, s.storageTarget)
 	s.route("POST /api/v1/storage/targets", permAdmin, s.storageCreate)
 	s.route("PUT /api/v1/storage/targets/{id}", permAdmin, s.storageUpdate)
-	s.route("DELETE /api/v1/storage/targets/{id}", permAdmin, s.storageDelete)
-	s.route("POST /api/v1/storage/targets/{id}/test", permAdmin, s.storageTest)
+	s.route("DELETE /api/v1/storage/targets/{id}", permAdmin, s.storageDelete, routeDestructive)
+	s.route("POST /api/v1/storage/targets/{id}/test", permAdmin, s.storageTest, routeExempt)
 	s.route("POST /api/v1/storage/targets/{id}/apply", permAdmin, s.storageApply)
-	s.route("POST /api/v1/storage/targets/{id}/init", permAdmin, s.storageInit)
+	s.route("POST /api/v1/storage/targets/{id}/init", permAdmin, s.storageInit, routeDestructive)
 	s.route("POST /api/v1/storage/targets/{id}/activate", permAdmin, s.storageActivate)
 	s.route("GET /api/v1/storage/targets/{id}/snippets", permAdmin, s.storageSnippets)
-	s.route("POST /api/v1/storage/targets/{id}/benchmark", permAdmin, s.storageBenchmarkStart)
+	s.route("POST /api/v1/storage/targets/{id}/benchmark", permAdmin, s.storageBenchmarkStart, routeExempt)
 	s.route("GET /api/v1/storage/benchmark", permRead, s.storageBenchmark)
-	s.route("DELETE /api/v1/storage/benchmark", permAdmin, s.storageBenchmarkCancel)
+	s.route("DELETE /api/v1/storage/benchmark", permAdmin, s.storageBenchmarkCancel, routeExempt)
 }
 
 // storageTargetID validates the {id} path value ("local" or 32 hex chars).

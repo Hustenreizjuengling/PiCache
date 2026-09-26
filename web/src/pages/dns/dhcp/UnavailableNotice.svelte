@@ -58,7 +58,7 @@
     {#if status.reason}<p class="reason">{status.reason}</p>{/if}
     <p>{t('dns.dhcp.unavailable.socket')}</p>
   </Notice>
-{:else if code === 'restart-required' && session.isAdmin}
+{:else if code === 'restart-required' && session.canOperate}
   <Notice tone="warn">
     {t('dns.dhcp.unavailable.restart')}
     {#snippet actions()}

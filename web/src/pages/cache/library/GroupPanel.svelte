@@ -347,7 +347,9 @@
     <Button icon="download" href={href('/cache/downloads', { group: groupKey, service, range: '90d' })}>
       {t('cache.library.showDownloads')}
     </Button>
-    <Button variant="danger" icon="trash" disabled={!session.isAdmin || !g} onclick={purge}>{t('cache.library.purge')}</Button>
+    {#if session.canDestroy}
+      <Button variant="danger" icon="trash" disabled={!g} onclick={purge}>{t('cache.library.purge')}</Button>
+    {/if}
   {/snippet}
 </SidePanel>
 

@@ -15,8 +15,8 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// maxPause bounds a timed blocking pause.
-const maxPause = 7 * 24 * time.Hour
+// MaxPause bounds a timed blocking pause.
+const MaxPause = 7 * 24 * time.Hour
 
 // syntheticSOA is the SOA of locally generated negative answers:
 // picache.invalid. hostmaster.picache.invalid. 1 1800 900 604800 <ttl>.
@@ -215,8 +215,8 @@ func (s *Server) Blocking() BlockingStatus {
 // SetBlocking enables/disables blocking; pause > 0 disables for that long.
 // A timed pause is persisted and ends automatically.
 func (s *Server) SetBlocking(ctx context.Context, enabled bool, pause time.Duration) (BlockingStatus, error) {
-	if pause < 0 || pause > maxPause {
-		return BlockingStatus{}, apperr.Invalid("pauseSeconds", "must be between 0 and %d", int(maxPause/time.Second))
+	if pause < 0 || pause > MaxPause {
+		return BlockingStatus{}, apperr.Invalid("pauseSeconds", "must be between 0 and %d", int(MaxPause/time.Second))
 	}
 	_, err := s.d.Settings.Update(ctx, func(a *settings.All) error {
 		switch {

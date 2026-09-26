@@ -128,7 +128,6 @@
       icon="logout"
       size="sm"
       label={t('system.account.sessions.revokeNamed', { device: device(s) })}
-      disabled={!session.isAdmin}
       onclick={() => revoke(s)}
     />
   {/if}
@@ -136,7 +135,7 @@
 
 <Panel title={t('system.account.sessions.title')} description={t('system.account.sessions.description')} flush>
   {#snippet actions()}
-    <Button size="sm" icon="logout" disabled={others.length === 0 || !session.isAdmin} onclick={revokeOthers}>
+    <Button size="sm" icon="logout" disabled={others.length === 0} onclick={revokeOthers}>
       {t('system.account.sessions.revokeAll')}
     </Button>
   {/snippet}
@@ -176,7 +175,7 @@
   {/if}
   {#snippet actions()}
     {#if selected}
-      <Button variant="danger" icon="logout" disabled={!session.isAdmin} onclick={() => revoke(selected)}>
+      <Button variant="danger" icon="logout" onclick={() => revoke(selected)}>
         {selected.current ? t('common.account.logout') : t('system.account.sessions.revoke')}
       </Button>
     {/if}

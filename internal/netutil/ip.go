@@ -311,7 +311,7 @@ func AddrFromRemote(remoteAddr string) netip.Addr {
 
 // LocalAddrs returns all addresses of this machine's interfaces.
 func LocalAddrs() []netip.Addr {
-	ifaddrs, err := net.InterfaceAddrs()
+	ifaddrs, err := interfaceAddrs()
 	if err != nil {
 		return nil
 	}

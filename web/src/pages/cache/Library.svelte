@@ -178,8 +178,8 @@
         onchange={(v) => router.setQuery({ search: v, offset: null })}
       />
       <span class="spacer"></span>
-      {#if service}
-        <Button variant="danger" icon="trash" disabled={!session.isAdmin} onclick={purgeService}>
+      {#if service && session.canDestroy}
+        <Button variant="danger" icon="trash" onclick={purgeService}>
           {t('cache.library.purgeService', { name: catalog.name(service) })}
         </Button>
       {/if}

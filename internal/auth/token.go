@@ -20,6 +20,7 @@ const (
 	tokenLen          = len(tokenPrefix) + 64 // "pc_" + hex of 32 random bytes
 	tokenDisplayChars = 7                     // "pc_ab12"
 	maxTokens         = 100
+	maxTokensPerUser  = 20
 	maxTokenNameLen   = 64
 	maxTokenTTL       = 3650 * 24 * time.Hour
 )
@@ -35,9 +36,9 @@ func (a *Service) authToken(ctx context.Context, tok string) (*Principal, error)
 		scope             string
 		expires, lastUsed int64
 	)
-	err := a.db.R.QueryRowContext(ctx, `SELECT t.id, t.user_id, t.scope, t.expires_at, t.last_used, u.username
+	err := a.db.R.QueryRowContext(ctx, `SELECT t.id, t.user_id, t.scope, t.expires_at, t.last_used, u.username, u.role
 		FROM auth_tokens t JOIN auth_users u ON u.id = t.user_id WHERE t.hash = ?`, hashSecret(tok)).
-		Scan(&p.TokenID, &p.UserID, &scope, &expires, &lastUsed, &p.Username)
+		Scan(&p.TokenID, &p.UserID, &scope, &expires, &lastUsed, &p.Username, &p.Role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errNotAuthenticated
 	}
@@ -48,7 +49,12 @@ func (a *Service) authToken(ctx context.Context, tok string) (*Principal, error)
 	if expires != 0 && now.UnixMilli() >= expires {
 		return nil, apperr.Unauthorized("API token expired")
 	}
-	p.Scope = Scope(scope)
+	// An admin token acts with admin rights only while its owner is an
+	// admin (read on every request, like the role of a session).
+	p.Scope = ScopeRead
+	if Scope(scope) == ScopeAdmin && p.Role == RoleAdmin {
+		p.Scope = ScopeAdmin
+	}
 	if now.Sub(db.Time(lastUsed)) >= lastSeenGranularity {
 		if _, err := a.db.W.ExecContext(ctx, `UPDATE auth_tokens SET last_used = ? WHERE id = ?`, now.UnixMilli(), p.TokenID); err != nil {
 			return nil, err
@@ -57,10 +63,19 @@ func (a *Service) authToken(ctx context.Context, tok string) (*Principal, error)
 	return &p, nil
 }
 
-// Tokens lists API tokens.
-func (a *Service) Tokens(ctx context.Context) ([]TokenInfo, error) {
-	rows, err := a.db.R.QueryContext(ctx, `SELECT id, name, scope, prefix, created_at, expires_at, last_used
-		FROM auth_tokens ORDER BY created_at DESC, id DESC`)
+// Tokens lists API tokens with their owners: all of them for an admin,
+// the caller's own for a viewer.
+func (a *Service) Tokens(ctx context.Context, p *Principal) ([]TokenInfo, error) {
+	if p == nil {
+		return nil, errNotAuthenticated
+	}
+	q := `SELECT t.id, t.name, t.scope, t.prefix, t.created_at, t.expires_at, t.last_used, t.user_id, u.username
+		FROM auth_tokens t JOIN auth_users u ON u.id = t.user_id`
+	var args []any
+	if p.Scope != ScopeAdmin {
+		q, args = q+` WHERE t.user_id = ?`, append(args, p.UserID)
+	}
+	rows, err := a.db.R.QueryContext(ctx, q+` ORDER BY t.created_at DESC, t.id DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +84,7 @@ func (a *Service) Tokens(ctx context.Context) ([]TokenInfo, error) {
 	for rows.Next() {
 		var t TokenInfo
 		var created, expires, lastUsed int64
-		if err := rows.Scan(&t.ID, &t.Name, &t.Scope, &t.Prefix, &created, &expires, &lastUsed); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Scope, &t.Prefix, &created, &expires, &lastUsed, &t.UserID, &t.Username); err != nil {
 			return nil, err
 		}
 		t.CreatedAt, t.ExpiresAt, t.LastUsed = db.Time(created), db.Time(expires), db.Time(lastUsed)
@@ -78,10 +93,15 @@ func (a *Service) Tokens(ctx context.Context) ([]TokenInfo, error) {
 	return out, rows.Err()
 }
 
-// CreateToken creates an API token and returns the secret once. It requires
-// the user's password: a token outlives sessions and password changes that
-// keep tokens, so a stolen session alone must not be enough to create one.
+// CreateToken creates an API token of the signed-in user and returns the
+// secret once. It requires the user's password: a token outlives sessions
+// and password changes that keep tokens, so a stolen session alone must not
+// be enough to create one. Viewers can create read tokens only; an account
+// has at most 20 tokens, all accounts together 100.
 func (a *Service) CreateToken(ctx context.Context, p *Principal, currentPassword, name string, scope Scope, ttl time.Duration) (string, TokenInfo, error) {
+	if p == nil {
+		return "", TokenInfo{}, errNotAuthenticated
+	}
 	name = strings.TrimSpace(name)
 	if err := validateTokenName(name); err != nil {
 		return "", TokenInfo{}, err
@@ -89,24 +109,50 @@ func (a *Service) CreateToken(ctx context.Context, p *Principal, currentPassword
 	if scope != ScopeRead && scope != ScopeAdmin {
 		return "", TokenInfo{}, apperr.Invalid("scope", "must be read or admin")
 	}
+	if scope == ScopeAdmin {
+		u, err := a.userByID(ctx, p.UserID)
+		if err != nil {
+			return "", TokenInfo{}, err
+		}
+		if u.Role != RoleAdmin {
+			return "", TokenInfo{}, apperr.Invalid("scope", "viewers can create read tokens only")
+		}
+	}
 	if ttl < 0 || ttl > maxTokenTTL {
 		return "", TokenInfo{}, apperr.Invalid("expiresInDays", "must be between 0 (never) and 3650 days")
 	}
-	if err := a.verifyUserPassword(ctx, p, "currentPassword", currentPassword); err != nil {
+	verified, err := a.verifyUserPassword(ctx, p, "currentPassword", currentPassword)
+	if err != nil {
 		return "", TokenInfo{}, err
 	}
 	raw := make([]byte, 32)
 	rand.Read(raw)
 	secret := tokenPrefix + hex.EncodeToString(raw)
 	now := a.now()
-	info := TokenInfo{Name: name, Scope: scope, Prefix: secret[:tokenDisplayChars], CreatedAt: now.UTC().Truncate(time.Millisecond)}
+	info := TokenInfo{Name: name, Scope: scope, Prefix: secret[:tokenDisplayChars], CreatedAt: now.UTC().Truncate(time.Millisecond),
+		UserID: p.UserID}
 	if ttl > 0 {
 		info.ExpiresAt = now.Add(ttl).UTC().Truncate(time.Millisecond)
 	}
-	err := a.db.Tx(ctx, func(tx *sql.Tx) error {
-		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_tokens`).Scan(&n); err != nil {
+	err = a.db.Tx(ctx, func(tx *sql.Tx) error {
+		// The role, the session and the password again, serialised with
+		// demotions and resets: a token requested while one of them
+		// committed must not outlive it.
+		role, err := recheckCaller(ctx, tx, p, "currentPassword", verified)
+		if err != nil {
 			return err
+		}
+		if scope == ScopeAdmin && role != RoleAdmin {
+			return apperr.Invalid("scope", "viewers can create read tokens only")
+		}
+		var mine, n int
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT username FROM auth_users WHERE id = ?),
+			(SELECT COUNT(*) FROM auth_tokens WHERE user_id = ?), (SELECT COUNT(*) FROM auth_tokens)`, p.UserID, p.UserID).
+			Scan(&info.Username, &mine, &n); err != nil {
+			return err
+		}
+		if mine >= maxTokensPerUser {
+			return apperr.Conflict("at most %d API tokens per account; delete unused ones first", maxTokensPerUser)
 		}
 		if n >= maxTokens {
 			return apperr.Conflict("at most %d API tokens can exist; delete unused ones first", maxTokens)
@@ -126,9 +172,17 @@ func (a *Service) CreateToken(ctx context.Context, p *Principal, currentPassword
 	return secret, info, nil
 }
 
-// DeleteToken revokes an API token.
-func (a *Service) DeleteToken(ctx context.Context, id int64) error {
-	n, err := deleteVerified(ctx, a.db.W, "auth_tokens", "id = ?", id)
+// DeleteToken revokes an API token: any token for an admin, only the
+// caller's own for a viewer (another user's token is "not found").
+func (a *Service) DeleteToken(ctx context.Context, p *Principal, id int64) error {
+	if p == nil {
+		return errNotAuthenticated
+	}
+	where, args := "id = ?", []any{id}
+	if p.Scope != ScopeAdmin {
+		where, args = "id = ? AND user_id = ?", append(args, p.UserID)
+	}
+	n, err := deleteVerified(ctx, a.db.W, "auth_tokens", where, args...)
 	if err != nil {
 		return err
 	}

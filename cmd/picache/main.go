@@ -3,7 +3,9 @@
 //	picache [serve] [flags]               run the server (default)
 //	picache version                       print version information
 //	picache healthcheck [url]             exit 0 if the local web UI and DNS answer
-//	picache reset-password [user]         set a new password for an existing account (reads it from stdin)
+//	picache reset-password [--admin] [user] set a new password for an existing account (reads it from stdin)
+//	picache users                         list the accounts (read-only)
+//	picache web-access --reset            open the web UI to every address again (applied by the service)
 //	picache setup-token                   print the first-run setup token
 //	picache storage apply <id>            (root) write a systemd mount unit for a NAS target
 //	picache storage apply-pending         (root) process mount requests queued by the web UI
@@ -29,10 +31,12 @@ import (
 	neturl "net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/miekg/dns"
@@ -76,6 +80,10 @@ func run(args []string) int {
 		return healthcheck(args)
 	case "reset-password":
 		return resetPassword(args)
+	case "users":
+		return usersCmd(args)
+	case "web-access":
+		return webAccessCmd(args)
 	case "setup-token":
 		return setupToken()
 	case "storage":
@@ -106,9 +114,17 @@ commands:
   version, --version            print version information
   help, --help, -h              print this help
   healthcheck [url]             check the local web endpoint and DNS
-  reset-password [user]         set a new password for user (default admin), read from stdin;
-                                disables TOTP, signs out all sessions and revokes all API tokens.
-                                Unknown names are refused (a user is created only if none exists)
+  reset-password [--admin] [user]
+                                set a new password for user (default admin), read from stdin;
+                                disables TOTP, signs out all sessions and revokes all API tokens
+                                of all accounts. The account keeps its role; --admin makes it an
+                                admin. Unknown names are refused (an admin is created only if no
+                                account exists)
+  users                         list the accounts: id, username, role, two-factor, last sign-in
+  web-access --reset            let every address use the web UI again: turns "Allow the web UI
+                                only from these networks" off, trusts no proxy, accepts TLS 1.2 and
+                                deletes an uploaded certificate. PiCache applies it within a minute
+                                (at once with SIGHUP), or at its next start
   setup-token                   print the first-run setup token
   storage apply <id>            (root) mount a NAS storage target via a systemd mount unit
                                 [--password-stdin] reads the NAS password from stdin
@@ -191,7 +207,9 @@ func serve(args []string) int {
 	setMemoryLimit(log)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = app.Run(ctx, cfg, log)
+	hup := notifyHUP()
+	defer signal.Stop(hup)
+	err = app.Run(ctx, cfg, log, hup)
 	switch {
 	case errors.Is(err, app.ErrRestart):
 		return app.ExitRestart
@@ -200,6 +218,15 @@ func serve(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// notifyHUP subscribes to SIGHUP, which runs the maintenance tick at once
+// (web access reset, web certificate files). serve calls it before any
+// listener is bound: Go's default for SIGHUP ends the process.
+func notifyHUP() chan os.Signal {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	return hup
 }
 
 // setMemoryLimit sets a soft memory limit of 60 % of the cgroup limit (or of
@@ -353,7 +380,7 @@ func dnsCheck() error {
 // CLI never creates an empty database by accident). When run as root it
 // switches to the owner of the data directory first.
 func configDB() (*config.Config, string, error) {
-	cfg, err := config.Load(nil, os.Getenv)
+	cfg, err := config.LoadWithoutSecrets(os.Getenv)
 	if err != nil {
 		return nil, "", fmt.Errorf("configuration error: %w", err)
 	}
@@ -364,10 +391,20 @@ func configDB() (*config.Config, string, error) {
 	return cfg, path, nil
 }
 
+const resetUsage = "usage: picache reset-password [--admin] [user]"
+
 func resetPassword(args []string) int {
-	user := "admin"
-	if len(args) > 0 {
-		user = args[0]
+	user, makeAdmin, named := "admin", false, false
+	for _, a := range args {
+		switch {
+		case a == "--admin" || a == "-admin":
+			makeAdmin = true
+		case strings.HasPrefix(a, "-") || named:
+			fmt.Fprintln(os.Stderr, resetUsage)
+			return 2
+		default:
+			user, named = a, true
+		}
 	}
 	cfg, path, err := configDB()
 	if err != nil {
@@ -415,7 +452,14 @@ func resetPassword(args []string) int {
 		fmt.Fprintln(os.Stderr, "reset password:", err)
 		return 1
 	}
-	res, err := auth.ResetPassword(ctx, d, user, pw)
+	// ResetPassword migrates the auth schema. Run with a new binary before
+	// the service's first start, the pre-upgrade copy for going back must
+	// be made first, as the service would make it.
+	if err := app.PreUpgradeBackup(ctx, d, cfg.DataDir, newLogger(cfg)); err != nil {
+		fmt.Fprintln(os.Stderr, "reset password:", err)
+		return 1
+	}
+	res, err := auth.ResetPassword(ctx, d, user, pw, makeAdmin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reset password:", err)
 		return 1
@@ -437,12 +481,116 @@ func resetSummary(r auth.ResetResult) string {
 	} else if !r.Created {
 		b.WriteString("Two-factor authentication was not enabled.\n")
 	}
+	switch {
+	case r.RoleChanged:
+		b.WriteString("Role: admin (it was a viewer).\n")
+	case r.Role == auth.RoleViewer:
+		b.WriteString("Role: viewer (run again with --admin to make it an admin).\n")
+	default:
+		b.WriteString("Role: admin.\n")
+	}
 	fmt.Fprintf(&b, "%d session(s) signed out and %d API token(s) revoked.\n", r.SessionsRevoked, r.TokensRevoked)
 	return b.String()
 }
 
+// usersCmd lists the accounts (read-only; as root it switches to the owner
+// of the data directory first).
+func usersCmd(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: picache users")
+		return 2
+	}
+	cfg, path, err := configDB()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if err := becomeOwnerOf(cfg.DataDir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	d, err := db.OpenReadOnly(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer d.Close()
+	users, err := auth.ListUsers(context.Background(), d)
+	if err != nil && !strings.Contains(err.Error(), "no such table") {
+		fmt.Fprintln(os.Stderr, "users:", err)
+		return 1
+	}
+	fmt.Print(usersTable(users))
+	return 0
+}
+
+// usersTable formats the accounts for `picache users`.
+func usersTable(users []auth.User) string {
+	if len(users) == 0 {
+		return "No accounts yet: open the web UI and complete the setup (picache setup-token).\n"
+	}
+	var b strings.Builder
+	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tUSERNAME\tROLE\tTWO-FACTOR\tLAST SIGN-IN")
+	for _, u := range users {
+		totp, last := "off", "never"
+		if u.TOTPEnabled {
+			totp = "on"
+		}
+		if !u.LastLoginAt.IsZero() {
+			last = u.LastLoginAt.Local().Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", u.ID, u.Username, u.Role, totp, last)
+	}
+	_ = tw.Flush()
+	return b.String()
+}
+
+const webAccessUsage = "usage: picache web-access --reset"
+
+// webAccessCmd requests a web access reset: it creates the marker
+// <data>/web-access.reset (exclusively, 0600, never through a symbolic
+// link) that the running service applies within a minute (or at its next
+// start). The CLI never writes picache.db: the running service keeps the
+// settings in memory, and its next save would undo such a write.
+func webAccessCmd(args []string) int {
+	if len(args) != 1 || (args[0] != "--reset" && args[0] != "-reset") {
+		fmt.Fprintln(os.Stderr, webAccessUsage)
+		return 2
+	}
+	cfg, _, err := configDB()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if err := becomeOwnerOf(cfg.DataDir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	path := filepath.Join(cfg.DataDir, app.WebAccessResetMarker)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|oNoFollow, 0o600)
+	switch {
+	case errors.Is(err, fs.ErrExist):
+		fmt.Println("A web access reset is already pending.")
+		return 0
+	case errors.Is(err, fs.ErrPermission):
+		fmt.Fprintln(os.Stderr, "permission denied: run `sudo picache web-access --reset` or `docker exec -u 65532:65532 <container> /picache web-access --reset`")
+		return 1
+	case err != nil:
+		fmt.Fprintln(os.Stderr, "web access:", err)
+		return 1
+	}
+	if err := f.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "web access:", err)
+		return 1
+	}
+	fmt.Println("Web access reset requested. PiCache applies it within a minute (at once: sudo systemctl kill -s HUP --kill-whom=main picache; " +
+		"Docker: docker kill -s HUP <container>). If PiCache is not running, it is applied at the next start.")
+	return 0
+}
+
 func setupToken() int {
-	cfg, err := config.Load(nil, os.Getenv)
+	cfg, err := config.LoadWithoutSecrets(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 2
@@ -474,7 +622,7 @@ func storageCmd(args []string) int {
 			return 2
 		}
 		// No database needed: this also cleans up after a deleted target.
-		cfg, err := config.Load(nil, os.Getenv)
+		cfg, err := config.LoadWithoutSecrets(os.Getenv)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "configuration error:", err)
 			return 2

@@ -1,7 +1,8 @@
 <!--
   @component
   DNS response cache: on/off, size, TTL limits and serve-stale, with the
-  live hit rate and "Flush DNS cache".
+  live hit rate and "Flush DNS cache" (admins may flush while the host
+  locks the configuration, so the settings have their own fieldset).
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
@@ -41,9 +42,9 @@
 
 <Panel id="dns-set-cache" title={t('dns.settings.cache.title')} description={t('dns.settings.cache.description')}>
   {#snippet actions()}
-    <Button size="sm" icon="refresh" loading={flushing} disabled={!session.isAdmin} onclick={flush}>{t('dns.settings.cache.flush')}</Button>
+    <Button size="sm" icon="refresh" loading={flushing} disabled={!session.canOperate} onclick={flush}>{t('dns.settings.cache.flush')}</Button>
   {/snippet}
-  <div class="stack">
+  <fieldset class="stack" disabled={!session.isAdmin}>
     {#if cache}
       <p class="small muted">
         {t('dns.settings.cache.stats', {
@@ -74,10 +75,16 @@
         </Field>
       {/if}
     {/if}
-  </div>
+  </fieldset>
 </Panel>
 
 <style>
+  fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
   .grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));

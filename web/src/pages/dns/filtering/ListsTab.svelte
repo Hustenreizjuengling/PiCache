@@ -179,14 +179,14 @@
     size="sm"
     label={t('dns.lists.updateNamed', { name: l.name })}
     loading={refreshing.includes(l.id)}
-    disabled={!session.isAdmin || !l.enabled}
+    disabled={!session.canOperate || !l.enabled}
     onclick={() => refreshOne(l)}
   />
 {/snippet}
 
 <Panel flush title={t('dns.lists.title')} description={t('dns.lists.description')}>
   {#snippet actions()}
-    <Button icon="refresh" loading={refreshingAll || updating} disabled={!session.isAdmin || !lists.data?.length} onclick={refreshAll}>
+    <Button icon="refresh" loading={refreshingAll || updating} disabled={!session.canOperate || !lists.data?.length} onclick={refreshAll}>
       {updating ? t('dns.lists.updatingShort') : t('dns.lists.updateAll')}
     </Button>
     <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.lists.add')}</Button>

@@ -62,6 +62,8 @@ interface Hooks {
   unauthorized?: () => void
   /** The server does not accept this host name (DNS-rebinding guard). */
   misdirected?: (message: string) => void
+  /** A 403: the rights shown may be out of date (a changed role, the host's configuration lock). */
+  forbidden?: () => void
 }
 
 const hooks: Hooks = {}
@@ -170,6 +172,7 @@ export async function request<T>(method: string, path: string, opts: RequestOpti
     // not an ended session.
     if (res.status === 401 && !opts.allowUnauthorized && err.field !== 'password') hooks.unauthorized?.()
     if (res.status === 421) hooks.misdirected?.(err.message)
+    if (res.status === 403) hooks.forbidden?.()
     throw err
   }
   const ct = res.headers.get('Content-Type') ?? ''

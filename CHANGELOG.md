@@ -5,6 +5,105 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Web access stays open after the upgrade.** New installations allow the
+  web UI only from this machine, the private networks, the networks the
+  machine is connected to and the DNS allowed networks. An upgraded
+  installation keeps it open to every address (settings migration 5 sets
+  `web.restrictToNetworks` to `false`); **System → Users & security → Web
+  access** recommends switching the restriction on. Monitors and scrapers of
+  `/healthz` or `/metrics` outside these networks then need an entry in the
+  allowed networks. If you lock yourself out, run `sudo picache web-access
+  --reset` on the host.
+- **Every existing account is an admin** (auth migration 2 adds roles); new
+  accounts can be viewers. A restore keeps the roles of the running
+  instance.
+- **HTTPS certificate:** the existing self-signed certificate stays until 30
+  days before it expires; then (or at once with *Create local CA now* under
+  **System → HTTPS certificate**) PiCache switches to a certificate of its
+  own local CA, which your devices can trust once. The HTTPS listener no
+  longer stays down when a certificate cannot be loaded: PiCache serves a
+  fallback certificate and the health check `tls` fails.
+- **Downgrade:** a version before 0.11.0 refuses the migrated `picache.db`
+  (auth schema 2, settings schema 5) and does not start. Going back needs the
+  copy `<data>/backups/picache-<old version>-<timestamp>.db` that 0.11.0
+  makes at its first start before any migration (the update helper's
+  rollback restores it itself; Docker users restore it before starting an
+  older image).
+
+### Added
+
+- **Web access control:** "Allow the web UI only from these networks"
+  (`web.restrictToNetworks`, `web.allowedNetworks`): connections from
+  other addresses are closed at accept and every request is checked again;
+  refusals are counted and logged. Changes that would lock out your own
+  address are refused. `picache web-access --reset` opens the web UI again
+  from the host (applied within a minute, at once on SIGHUP, or at the next
+  start).
+- **Trusted reverse proxies** (`web.trustedProxies`): their
+  `X-Forwarded-For` and `X-Forwarded-Proto` are read (never `Forwarded`
+  or `X-Real-IP`), so sessions, the audit log, sign-in throttling and the
+  web access see the real client, and a TLS-terminating proxy gets
+  `Secure` cookies without `PICACHE_WEB_SECURE_COOKIES`. DEPLOYMENT.md has
+  Caddy, nginx and Traefik examples.
+- **Accounts with roles:** up to 32 accounts, admins and viewers (read-only;
+  they manage only their own password, two-factor authentication, sessions
+  and read tokens), managed under **System → Users & security**
+  (`/system/users`); at least one admin always remains. `picache users`
+  lists the accounts; `picache reset-password --admin <user>` makes an
+  account an admin. API tokens list their owner; viewers see and delete
+  only their own and create read tokens only; 20 tokens per account.
+- **HTTPS certificates:** a local CA with critical name constraints (only
+  PiCache's own names and addresses) issues the web certificate and renews
+  it; the CA certificate can be downloaded (`/system/tls/ca.crt`) with a
+  trust guide per platform. Upload your own certificate and key
+  (`PUT /system/tls`, over HTTPS only), or use certificate files that
+  PiCache now reloads within a minute when they change (at once on SIGHUP),
+  e.g. from Let's Encrypt with a DNS-01 deploy hook (guide in
+  DEPLOYMENT.md). New health check `tls` (fallback in use, expired or
+  expiring certificate, expiring local CA, names the CA does not cover).
+- **Minimum TLS version** `web.tlsMinVersion` (`1.2` or `1.3`), applied to
+  the next handshake.
+- **Configuration lock** `PICACHE_CONFIG_LOCKED`: browser sessions cannot
+  change the configuration (`config_locked`), admin API tokens can (for
+  infrastructure as code; not an access control). `PICACHE_DESTRUCTIVE_API=false`
+  refuses restores, resets, purges and other bulk deletions through the API.
+  `GET /auth/status` reports both.
+- `GET /system/info` reports `webRefused`, `clientAddress` and
+  `peerAddress`; a restore whose settings would lock you out answers with
+  `webAccessWarning`.
+
+### Changed
+
+- New permission **U** (own account): the password, two-factor
+  authentication, sessions and API token routes work for every browser
+  session (viewers included) and never for API tokens.
+- An admin API token acts with admin rights only while its owner is an
+  admin; a demotion deletes the account's admin tokens and ends its
+  sessions.
+- `picache reset-password` prints the account's role; a username is
+  validated only when an account is created, so any stored name can be
+  reset, and provisioning never stops the start because of a stored name.
+- SIGHUP no longer ends PiCache; it checks the web access reset marker and
+  the certificate files at once.
+- The HTTPS redirect and HSTS follow the effective scheme (a trusted proxy's
+  `X-Forwarded-Proto: https`).
+- A sign-in, API token, password or two-factor change whose password check
+  overlapped a password reset, a demotion or `picache reset-password` is
+  refused instead of surviving it; a sign-in no longer overwrites a password
+  that was reset meanwhile when it upgrades the stored hash.
+- `picache reset-password` run with a new version before its first start
+  makes the pre-upgrade copy of `picache.db` first (it migrates the accounts
+  table), so going back still works.
+- `POST /dns/blocking` refuses a `pauseSeconds` above 604800 before using
+  it (a huge value could turn into a permanent disable).
+- Only `picache serve` reads `PICACHE_ADMIN_PASSWORD_FILE`: the maintenance
+  commands (`web-access --reset`, `users`, `reset-password`, `setup-token`,
+  `update`) ignore it, so a root-only secret file left in a Docker setup no
+  longer breaks the recovery commands.
+
+
 ## [0.10.0] - 2026-09-26
 
 ### Upgrade notes

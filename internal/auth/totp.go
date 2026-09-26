@@ -119,7 +119,7 @@ func (a *Service) TOTPBegin(ctx context.Context, p *Principal, currentPassword s
 	if u.TOTPEnabled {
 		return "", "", apperr.Conflict("two-factor authentication is already enabled; disable it first")
 	}
-	if err := a.verifyUserPassword(ctx, p, "currentPassword", currentPassword); err != nil {
+	if _, err := a.verifyUserPassword(ctx, p, "currentPassword", currentPassword); err != nil {
 		return "", "", err
 	}
 	raw := make([]byte, totpSecretLen)
@@ -156,6 +156,11 @@ func (a *Service) TOTPConfirm(ctx context.Context, p *Principal, code string) er
 		return apperr.Invalid("code", "enter the 6-digit code from your authenticator app")
 	}
 	return a.db.Tx(ctx, func(tx *sql.Tx) error {
+		// The session must still exist: a reset that ended it must not be
+		// followed by an authenticator the caller put on the account.
+		if _, err := recheckCaller(ctx, tx, p, "code", ""); err != nil {
+			return err
+		}
 		var (
 			enabled           bool
 			pending           sql.NullString
@@ -194,10 +199,16 @@ func (a *Service) TOTPConfirm(ctx context.Context, p *Principal, code string) er
 
 // TOTPDisable disables TOTP (requires the password).
 func (a *Service) TOTPDisable(ctx context.Context, p *Principal, password string) error {
-	if err := a.verifyUserPassword(ctx, p, "password", password); err != nil {
+	verified, err := a.verifyUserPassword(ctx, p, "password", password)
+	if err != nil {
 		return err
 	}
-	_, err := a.db.W.ExecContext(ctx,
-		`UPDATE auth_users SET totp_secret = NULL, totp_pending = NULL, totp_pending_at = 0 WHERE id = ?`, p.UserID)
-	return err
+	return a.db.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := recheckCaller(ctx, tx, p, "password", verified); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`UPDATE auth_users SET totp_secret = NULL, totp_pending = NULL, totp_pending_at = 0 WHERE id = ?`, p.UserID)
+		return err
+	})
 }

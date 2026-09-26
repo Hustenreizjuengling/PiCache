@@ -36,6 +36,16 @@ type Config struct {
 	// over TLS always get it.
 	WebSecureCookies bool
 
+	// ConfigLocked (PICACHE_CONFIG_LOCKED, default off) refuses
+	// configuration changes from interactive sessions (the API answers
+	// config_locked); admin API tokens still write. For infrastructure as
+	// code: it is not an access control against admins.
+	ConfigLocked bool
+	// DestructiveAPI (PICACHE_DESTRUCTIVE_API, default on): off refuses the
+	// destructive API routes (restore, DHCP reset, purges, …) for every
+	// principal.
+	DestructiveAPI bool
+
 	RunAs string // PICACHE_RUN_AS "uid:gid": drop privileges after binding when started as root
 
 	LogLevel  slog.Level // PICACHE_LOG_LEVEL: debug|info|warn|error
@@ -121,6 +131,8 @@ func defaults() Config {
 		LogFormat:    "text",
 		AdminUser:    "admin",
 		MountRoot:    "/srv/picache",
+
+		DestructiveAPI: true,
 	}
 	if runtime.GOOS == "linux" {
 		c.DataDir = "/var/lib/picache"
@@ -137,8 +149,21 @@ func defaults() Config {
 // then flags (flags win). getenv is usually os.Getenv. args excludes the
 // program name and subcommand.
 func Load(args []string, getenv func(string) string) (*Config, error) {
+	return load(args, getenv, true)
+}
+
+// LoadWithoutSecrets is Load for the maintenance commands (setup-token,
+// users, reset-password, web-access, update, …): it never reads
+// PICACHE_ADMIN_PASSWORD_FILE, which only serve needs, so a root-only
+// secret file left in place (Docker) cannot break the recovery commands
+// that run as the service user.
+func LoadWithoutSecrets(getenv func(string) string) (*Config, error) {
+	return load(nil, getenv, false)
+}
+
+func load(args []string, getenv func(string) string, secrets bool) (*Config, error) {
 	c := defaults()
-	if err := c.applyEnv(getenv); err != nil {
+	if err := c.applyEnv(getenv, secrets); err != nil {
 		return nil, err
 	}
 
@@ -177,7 +202,7 @@ func Load(args []string, getenv func(string) string) (*Config, error) {
 	return &c, nil
 }
 
-func (c *Config) applyEnv(getenv func(string) string) error {
+func (c *Config) applyEnv(getenv func(string) string, secrets bool) error {
 	str := func(key string, dst *string) {
 		if v := strings.TrimSpace(getenv(key)); v != "" {
 			*dst = v
@@ -213,7 +238,8 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 		}
 		c.LogLevel = lvl
 	}
-	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev, "PICACHE_WEB_SECURE_COOKIES": &c.WebSecureCookies} {
+	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev, "PICACHE_WEB_SECURE_COOKIES": &c.WebSecureCookies,
+		"PICACHE_CONFIG_LOCKED": &c.ConfigLocked, "PICACHE_DESTRUCTIVE_API": &c.DestructiveAPI} {
 		if v := getenv(key); v != "" {
 			b, err := parseSwitch(v)
 			if err != nil {
@@ -233,7 +259,11 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 		}
 	}
 
-	// Secrets: prefer *_FILE (Docker secrets) over plain env.
+	// Secrets: prefer *_FILE (Docker secrets) over plain env; read only
+	// for serve (LoadWithoutSecrets).
+	if !secrets {
+		return nil
+	}
 	if f := getenv("PICACHE_ADMIN_PASSWORD_FILE"); f != "" {
 		b, err := os.ReadFile(f)
 		if err != nil {

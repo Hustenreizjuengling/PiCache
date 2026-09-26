@@ -26,7 +26,7 @@
       bind:checked={includeSecrets}
       label={t('system.backup.download.secrets')}
       description={t('system.backup.download.secretsHelp')}
-      disabled={!session.isAdmin}
+      disabled={!session.canOperate}
     />
     <Notice tone="info" icon="key" title={t('system.backup.download.keyTitle')}>
       <p>{t('system.backup.download.keyText')}</p>
@@ -38,7 +38,7 @@
       {/if}
     </Notice>
     <div class="row">
-      <Button variant="primary" icon="download" href={url} download disabled={!session.isAdmin}>
+      <Button variant="primary" icon="download" href={url} download disabled={!session.canOperate}>
         {t('system.backup.download.button')}
       </Button>
     </div>

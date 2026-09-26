@@ -54,10 +54,10 @@
 
 <Panel title={t('cache.verify.title')} description={t('cache.verify.description')}>
   {#snippet actions()}
-    <Button icon="check" loading={starting} disabled={!session.isAdmin || running || !online || unavailable} onclick={() => start(false)}>
+    <Button icon="check" loading={starting} disabled={!session.canOperate || running || !online || unavailable} onclick={() => start(false)}>
       {t('cache.verify.check')}
     </Button>
-    <Button icon="refresh" disabled={!session.isAdmin || running || starting || !online || unavailable} onclick={() => start(true)}>
+    <Button icon="refresh" disabled={!session.canOperate || running || starting || !online || unavailable} onclick={() => start(true)}>
       {t('cache.verify.repair')}
     </Button>
   {/snippet}

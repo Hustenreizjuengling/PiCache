@@ -4,6 +4,9 @@
   SQLite header), confirm with the current password, upload. The server
   verifies the password and the file and stages it for the next start;
   "Restart now" applies it. The password is dropped when the dialog closes.
+  A restore is destructive: without that right (or where the host turns
+  destructive actions off) only the explanation is shown. When the restored
+  settings would keep this browser out of the web UI, the server says so.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -104,34 +107,39 @@
           />
         {/snippet}
       </Notice>
-    {/if}
-
-    <div class="pick">
-      <input
-        bind:this={input}
-        class="visually-hidden"
-        type="file"
-        accept=".db,.sqlite,.sqlite3,application/octet-stream,application/vnd.sqlite3,application/x-sqlite3"
-        tabindex="-1"
-        aria-hidden="true"
-        onchange={picked}
-      />
-      <Button icon="upload" disabled={!session.isAdmin || uploading} onclick={() => input?.click()}>
-        {file ? t('system.backup.restore.chooseOther') : t('system.backup.restore.choose')}
-      </Button>
-      {#if file}
-        <span class="file">
-          <span class="mono truncate" title={file.name}>{file.name}</span>
-          <span class="small muted nowrap">{formatBytes(file.size)}</span>
-        </span>
+      {#if result.webAccessWarning}
+        <Notice tone="warn" title={t('system.backup.restore.webAccessTitle')}>{result.webAccessWarning}</Notice>
       {/if}
-    </div>
-
-    {#if fileError}
-      <Notice tone="fail" title={t('system.backup.restore.checkFailed')}>{fileError}</Notice>
     {/if}
-    {#if uploadErr}
-      <Notice tone="fail" title={t('system.backup.restore.rejected')}>{errorText(uploadErr)}</Notice>
+
+    {#if session.canDestroy}
+      <div class="pick">
+        <input
+          bind:this={input}
+          class="visually-hidden"
+          type="file"
+          accept=".db,.sqlite,.sqlite3,application/octet-stream,application/vnd.sqlite3,application/x-sqlite3"
+          tabindex="-1"
+          aria-hidden="true"
+          onchange={picked}
+        />
+        <Button icon="upload" disabled={uploading} onclick={() => input?.click()}>
+          {file ? t('system.backup.restore.chooseOther') : t('system.backup.restore.choose')}
+        </Button>
+        {#if file}
+          <span class="file">
+            <span class="mono truncate" title={file.name}>{file.name}</span>
+            <span class="small muted nowrap">{formatBytes(file.size)}</span>
+          </span>
+        {/if}
+      </div>
+
+      {#if fileError}
+        <Notice tone="fail" title={t('system.backup.restore.checkFailed')}>{fileError}</Notice>
+      {/if}
+      {#if uploadErr}
+        <Notice tone="fail" title={t('system.backup.restore.rejected')}>{errorText(uploadErr)}</Notice>
+      {/if}
     {/if}
 
     <ul class="facts small muted">
@@ -140,17 +148,19 @@
       <li>{t('system.backup.restore.factKeep')}</li>
     </ul>
 
-    <div class="row">
-      <Button
-        variant={result ? 'secondary' : 'primary'}
-        icon="archive"
-        loading={uploading}
-        disabled={!file || !!fileError || !session.isAdmin}
-        onclick={restore}
-      >
-        {uploading ? t('system.backup.restore.uploading') : t('system.backup.restore.button')}
-      </Button>
-    </div>
+    {#if session.canDestroy}
+      <div class="row">
+        <Button
+          variant={result ? 'secondary' : 'primary'}
+          icon="archive"
+          loading={uploading}
+          disabled={!file || !!fileError}
+          onclick={restore}
+        >
+          {uploading ? t('system.backup.restore.uploading') : t('system.backup.restore.button')}
+        </Button>
+      </div>
+    {/if}
   </div>
   {#snippet footer()}
     <p class="small muted grow">{t('system.backup.restore.restartHint')}</p>

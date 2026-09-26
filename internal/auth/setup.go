@@ -185,7 +185,7 @@ func (a *Service) Setup(ctx context.Context, token, username, password string, m
 	a.throttle.succeed(ckey)
 	a.finishSetup()
 	a.log.Info("initial setup completed", slog.String("username", username))
-	s, err := a.createSession(ctx, id, meta)
+	s, err := a.createSession(ctx, id, h, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func createFirstUser(ctx context.Context, d *db.DB, username, hash string, nowMs
 		if exists {
 			return errSetupDone()
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO auth_users (username, password_hash, created_at) VALUES (?, ?, ?)`,
+		res, err := tx.ExecContext(ctx, `INSERT INTO auth_users (username, role, password_hash, created_at) VALUES (?, 'admin', ?, ?)`,
 			username, hash, nowMs)
 		if err != nil {
 			return err
@@ -219,13 +219,10 @@ func createFirstUser(ctx context.Context, d *db.DB, username, hash string, nowMs
 }
 
 // Provision creates the first admin from bootstrap config if no user exists.
+// The username and password are validated only when the account is
+// created, so a stored name that a later rule would refuse never stops
+// PiCache (and DNS) from starting.
 func (a *Service) Provision(ctx context.Context, username, password string) error {
-	if err := validateUsername(username); err != nil {
-		return err
-	}
-	if err := validatePassword("password", password); err != nil {
-		return err
-	}
 	required, err := a.SetupRequired(ctx)
 	if err != nil {
 		return err
@@ -233,6 +230,12 @@ func (a *Service) Provision(ctx context.Context, username, password string) erro
 	if !required {
 		a.log.Info("an admin account already exists; the provisioned admin password is ignored (use `picache reset-password` to change it)")
 		return nil
+	}
+	if err := validateUsername(username); err != nil {
+		return err
+	}
+	if err := validatePassword("password", password); err != nil {
+		return err
 	}
 	h, err := a.newHash(ctx, password)
 	if err != nil {
@@ -250,7 +253,9 @@ func (a *Service) Provision(ctx context.Context, username, password string) erro
 // ResetResult reports what ResetPassword changed.
 type ResetResult struct {
 	Username        string // the account whose password was set
-	Created         bool   // no account existed, so this one was created
+	Role            string // its role after the reset
+	RoleChanged     bool   // --admin made a viewer an admin
+	Created         bool   // no account existed, so this one was created (an admin)
 	TOTPDisabled    bool   // two-factor authentication was on and is now off
 	SessionsRevoked int64  // sessions ended (all sessions of all accounts)
 	TokensRevoked   int64  // API tokens deleted (all tokens of all accounts)
@@ -266,15 +271,14 @@ func Usernames(ctx context.Context, d *db.DB) ([]string, error) {
 // the recovery path after a compromise, so it ends every credential that
 // someone else may hold.
 //
-// The account must exist. It is created only while there is no account at
-// all; otherwise a name that matches no account is refused with the
-// existing names, so a typo or the default name never adds a second admin
-// while the real, possibly compromised account stays as it was.
-func ResetPassword(ctx context.Context, d *db.DB, username, password string) (ResetResult, error) {
+// The account must exist; it is found by name case-insensitively, whatever
+// its form. It is created (as an admin, the name validated) only while
+// there is no account at all; otherwise a name that matches no account is
+// refused with the existing names, so a typo or the default name never adds
+// a second admin while the real, possibly compromised account stays as it
+// was. The account keeps its role; makeAdmin (--admin) makes it an admin.
+func ResetPassword(ctx context.Context, d *db.DB, username, password string, makeAdmin bool) (ResetResult, error) {
 	var res ResetResult
-	if err := validateUsername(username); err != nil {
-		return res, err
-	}
 	if err := validatePassword("password", password); err != nil {
 		return res, err
 	}
@@ -293,18 +297,23 @@ func ResetPassword(ctx context.Context, d *db.DB, username, password string) (Re
 			id      int64
 			hadTOTP bool
 		)
-		err = tx.QueryRowContext(ctx, `SELECT id, username, totp_secret IS NOT NULL FROM auth_users WHERE username = ?`, username).
-			Scan(&id, &res.Username, &hadTOTP)
+		// auth_users.username is COLLATE NOCASE: the name is found
+		// case-insensitively.
+		err = tx.QueryRowContext(ctx, `SELECT id, username, role, totp_secret IS NOT NULL FROM auth_users WHERE username = ?`, username).
+			Scan(&id, &res.Username, &res.Role, &hadTOTP)
 		switch {
 		case errors.Is(err, sql.ErrNoRows) && len(names) > 0:
 			return apperr.Invalid("username", "there is no account named %q; existing accounts: %s",
 				username, strings.Join(names, ", "))
 		case errors.Is(err, sql.ErrNoRows):
-			if _, err := tx.ExecContext(ctx, `INSERT INTO auth_users (username, password_hash, created_at) VALUES (?, ?, ?)`,
+			if err := validateUsername(username); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO auth_users (username, role, password_hash, created_at) VALUES (?, 'admin', ?, ?)`,
 				username, h, now); err != nil {
 				return err
 			}
-			res.Username, res.Created = username, true
+			res.Username, res.Role, res.Created = username, RoleAdmin, true
 		case err != nil:
 			return err
 		default:
@@ -313,6 +322,12 @@ func ResetPassword(ctx context.Context, d *db.DB, username, password string) (Re
 				return err
 			}
 			res.TOTPDisabled = hadTOTP
+			if makeAdmin && res.Role != RoleAdmin {
+				if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET role = 'admin' WHERE id = ?`, id); err != nil {
+					return err
+				}
+				res.Role, res.RoleChanged = RoleAdmin, true
+			}
 		}
 		if res.SessionsRevoked, err = execCount(ctx, tx, `DELETE FROM auth_sessions`); err != nil {
 			return err
@@ -327,6 +342,7 @@ func ResetPassword(ctx context.Context, d *db.DB, username, password string) (Re
 			VALUES (?, 'cli', '', 'auth.password_reset', ?, ?)`, now, res.Username, auditDetails(map[string]any{
 			"created": res.Created, "totpDisabled": res.TOTPDisabled,
 			"sessionsRevoked": res.SessionsRevoked, "tokensRevoked": res.TokensRevoked,
+			"role": res.Role, "roleChanged": res.RoleChanged,
 		}))
 		return err
 	})

@@ -3,7 +3,9 @@
   Blocking status in the top bar with the pause menu (30 s / 5 min / 1 h /
   until the next 06:00 on the host's clock / a custom time up to 7 days /
   until re-enabled / resume). The menu says what a pause keeps in force.
-  Pauses longer than a day show their end instead of a countdown.
+  Pauses longer than a day show their end instead of a countdown. Pausing
+  and resuming need admin rights; disabling until re-enabled changes the
+  configuration, so it is missing while the host locks it.
 -->
 <script lang="ts">
   import { t } from '../i18n/index.svelte'
@@ -108,7 +110,9 @@
       { label: t('common.blocking.pause1h'), icon: 'pause', onselect: () => apply(false, 3600, t('common.blocking.pausedToast1h')) },
       { label: t('common.blocking.pauseUntil', { when: hostDayTime(nextHostTime(MORNING)) }), icon: 'clock', onselect: untilMorning },
       { label: t('common.blocking.pauseCustom'), icon: 'clock', onselect: () => (customOpen = true) },
-      { label: t('common.blocking.disable'), icon: 'shield-off', onselect: () => apply(false, undefined, t('common.blocking.disabledToast')) },
+      ...(session.isAdmin
+        ? [{ label: t('common.blocking.disable'), icon: 'shield-off' as const, onselect: () => apply(false, undefined, t('common.blocking.disabledToast')) }]
+        : []),
       { separator: true },
       { note: t('common.blocking.note') },
     ]
@@ -121,7 +125,7 @@
   })
 </script>
 
-<Menu label={t('common.blocking.menu')} {items} align="end" disabled={!blocking || busy || !session.isAdmin}>
+<Menu label={t('common.blocking.menu')} {items} align="end" disabled={!blocking || busy || !session.canOperate}>
   {#snippet trigger()}
     <span class={['state', mode]}>
       <Icon name={mode === 'on' ? 'shield-check' : mode === 'unknown' ? 'shield' : 'shield-off'} size={18} />
@@ -131,7 +135,7 @@
   {/snippet}
 </Menu>
 
-{#if session.isAdmin}
+{#if session.canOperate}
   <DurationDialog
     bind:open={customOpen}
     title={t('common.blocking.customTitle')}

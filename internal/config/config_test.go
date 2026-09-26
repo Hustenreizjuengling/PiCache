@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func envOf(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
@@ -63,5 +66,43 @@ func TestDHCPSwitch(t *testing.T) {
 		if err == nil && c.DHCP != tc.want {
 			t.Fatalf("%q: DHCP = %v", tc.val, c.DHCP)
 		}
+	}
+}
+
+// PICACHE_CONFIG_LOCKED (default off) and PICACHE_DESTRUCTIVE_API (default
+// on) are switches; an invalid value refuses to start and names the
+// variable.
+func TestConfigLockAndDestructiveSwitch(t *testing.T) {
+	c, err := Load(nil, envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir()}))
+	if err != nil || c.ConfigLocked || !c.DestructiveAPI {
+		t.Fatalf("defaults: locked %v destructive %v (%v)", c.ConfigLocked, c.DestructiveAPI, err)
+	}
+	c, err = Load(nil, envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(),
+		"PICACHE_CONFIG_LOCKED": "on", "PICACHE_DESTRUCTIVE_API": "false"}))
+	if err != nil || !c.ConfigLocked || c.DestructiveAPI {
+		t.Fatalf("set: locked %v destructive %v (%v)", c.ConfigLocked, c.DestructiveAPI, err)
+	}
+	for _, key := range []string{"PICACHE_CONFIG_LOCKED", "PICACHE_DESTRUCTIVE_API"} {
+		_, err := Load(nil, envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(), key: "locked"}))
+		if err == nil || !strings.Contains(err.Error(), key) {
+			t.Fatalf("%s=locked: %v", key, err)
+		}
+	}
+}
+
+// Only serve reads PICACHE_ADMIN_PASSWORD_FILE: the maintenance commands
+// load the configuration without it, so a missing or unreadable (root-only)
+// secret file does not break them.
+func TestLoadWithoutSecrets(t *testing.T) {
+	env := envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(), "PICACHE_ADMIN_PASSWORD_FILE": t.TempDir() + "/missing"})
+	if _, err := Load(nil, env); err == nil || !strings.Contains(err.Error(), "PICACHE_ADMIN_PASSWORD_FILE") {
+		t.Fatalf("Load: err = %v, want the password file error", err)
+	}
+	c, err := LoadWithoutSecrets(env)
+	if err != nil {
+		t.Fatalf("LoadWithoutSecrets: %v", err)
+	}
+	if c.AdminPassword != "" || c.AdminPasswordFromEnv {
+		t.Fatalf("secret read: %+v", c)
 	}
 }

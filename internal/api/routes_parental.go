@@ -20,10 +20,10 @@ func (s *Server) registerParentalRoutes() {
 	s.route("GET /api/v1/parental/groups", permRead, s.parentalGroups)
 	s.route("GET /api/v1/parental/groups/{id}", permRead, s.parentalGroup)
 	s.route("PUT /api/v1/parental/groups/{id}", permAdmin, s.parentalUpdate)
-	s.route("PUT /api/v1/parental/groups/{id}/override", permAdmin, s.parentalOverride)
-	s.route("DELETE /api/v1/parental/groups/{id}/override", permAdmin, s.parentalOverrideClear)
-	s.route("PUT /api/v1/parental/groups/{id}/pause", permAdmin, s.parentalPause)
-	s.route("DELETE /api/v1/parental/groups/{id}/pause", permAdmin, s.parentalPauseClear)
+	s.route("PUT /api/v1/parental/groups/{id}/override", permAdmin, s.parentalOverride, routeExempt)
+	s.route("DELETE /api/v1/parental/groups/{id}/override", permAdmin, s.parentalOverrideClear, routeExempt)
+	s.route("PUT /api/v1/parental/groups/{id}/pause", permAdmin, s.parentalPause, routeExempt)
+	s.route("DELETE /api/v1/parental/groups/{id}/pause", permAdmin, s.parentalPauseClear, routeExempt)
 }
 
 var errNoParental = apperr.Unavailable("parental controls are not available")

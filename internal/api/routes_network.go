@@ -165,7 +165,7 @@ type NetworkScan struct {
 // registerNetworkRoutes registers the network check endpoints (docs/API.md).
 func (s *Server) registerNetworkRoutes() {
 	s.route("GET /api/v1/network/check", permRead, s.networkCheck)
-	s.route("POST /api/v1/network/scan", permAdmin, s.networkScan)
+	s.route("POST /api/v1/network/scan", permAdmin, s.networkScan, routeExempt)
 }
 
 var errNoNetwork = apperr.Unavailable("the network check is not available")

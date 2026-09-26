@@ -25,7 +25,7 @@ func TestRunRefusesNetRaw(t *testing.T) {
 	old := dropNetRawFn
 	t.Cleanup(func() { dropNetRawFn = old })
 	dropNetRawFn = func() (error, error) { return nil, errors.New("a raw socket can still be opened") }
-	err := Run(context.Background(), testConfig(t), slog.New(slog.DiscardHandler))
+	err := Run(context.Background(), testConfig(t), slog.New(slog.DiscardHandler), nil)
 	if err == nil || !strings.Contains(err.Error(), "CAP_NET_RAW could not be dropped: a raw socket can still be opened; refusing to run with it") {
 		t.Fatalf("Run = %v", err)
 	}

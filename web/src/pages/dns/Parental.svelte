@@ -189,6 +189,8 @@
     onresume={resume}
     resuming={!!editing && busy.includes(editing.groupId)}
   />
+{/if}
+{#if session.canOperate}
   <UntilDialog bind:open={untilOpen} group={untilGroup} mode={untilMode} onsaved={(g) => (replace(g), announce(g, untilMode))} />
 {/if}
 

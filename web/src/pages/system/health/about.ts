@@ -30,6 +30,7 @@ export const CHECKS: Record<string, CheckInfo> = {
   logs: { label: 'system.health.check.logs', path: '/system/backup', page: 'common.nav.backup' },
   'data-disk': { label: 'system.health.check.data-disk' },
   dhcp: { label: 'system.health.check.dhcp', path: '/dns/dhcp', page: 'common.nav.dhcp' },
+  tls: { label: 'system.health.check.tls', path: '/system/https', page: 'common.nav.https' },
 }
 
 const ORDER: Record<HealthStatus, number> = { fail: 0, warn: 1, ok: 2 }

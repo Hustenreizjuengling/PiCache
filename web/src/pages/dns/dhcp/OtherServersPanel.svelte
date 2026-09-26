@@ -39,7 +39,7 @@
 
 <Panel id="dhcp-other" title={t('dns.dhcp.probe.title')} description={t('dns.dhcp.probe.description')}>
   {#snippet actions()}
-    {#if session.isAdmin}
+    {#if session.canOperate}
       <Button icon="search" loading={probing} disabled={!available || containerOff} onclick={onprobe}>{t('dns.dhcp.probe.button')}</Button>
     {/if}
   {/snippet}

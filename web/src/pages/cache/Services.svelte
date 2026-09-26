@@ -173,7 +173,7 @@
 {/snippet}
 
 <div class="page">
-  {#if !session.isAdmin}
+  {#if !session.canOperate}
     <Notice tone="info">{t('common.state.readOnly')}</Notice>
   {/if}
 

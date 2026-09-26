@@ -45,4 +45,9 @@ var migrations = []string{
 		count    INTEGER NOT NULL DEFAULT 1
 	);
 	CREATE INDEX auth_audit_time ON auth_audit(time);`,
+	// v2 (0.11.0): roles. Existing accounts become admins; an insert that
+	// forgets the role creates a viewer (fail closed).
+	`ALTER TABLE auth_users ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer'
+		CHECK (role IN ('admin', 'viewer'));
+	UPDATE auth_users SET role = 'admin';`,
 }

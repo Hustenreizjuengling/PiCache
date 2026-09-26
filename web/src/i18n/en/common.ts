@@ -26,7 +26,8 @@ export default {
   'nav.storage': 'Storage',
   'nav.cacheSettings': 'Cache settings',
   'nav.system': 'System',
-  'nav.account': 'Account & security',
+  'nav.account': 'Users & security',
+  'nav.https': 'HTTPS certificate',
   'nav.tokens': 'API tokens',
   'nav.audit': 'Audit log',
   'nav.backup': 'Backup & restore',
@@ -160,6 +161,13 @@ export default {
   'language.label': 'Language',
   'account.label': 'Account',
   'account.logout': 'Sign out',
+  'account.role.admin': 'Admin',
+  'account.role.viewer': 'Viewer',
+
+  // restrictions set on the host (shown to admins above every page)
+  'host.configLocked':
+    'Configuration is locked on the host (PICACHE_CONFIG_LOCKED): settings can only be changed with an admin API token.',
+  'host.destructiveOff': 'Destructive actions are disabled on this host (PICACHE_DESTRUCTIVE_API=false).',
 
   // pair strip
   'strip.caption': 'Traffic in the last 15 minutes',

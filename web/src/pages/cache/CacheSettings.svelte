@@ -166,7 +166,7 @@
 </script>
 
 <div class="page">
-  {#if readOnly}
+  {#if !session.canOperate}
     <Notice tone="info">{t('common.state.readOnly')}</Notice>
   {/if}
 

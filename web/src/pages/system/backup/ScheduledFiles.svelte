@@ -2,7 +2,8 @@
   @component
   The scheduled backups stored in the current destination, newest first:
   download one (a plain link: the browser sends the session cookie) or
-  delete it after a confirmation. Read-only principals see the list only.
+  delete it after a confirmation (only where the host allows destructive
+  actions). Read-only principals see the list only.
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
@@ -61,7 +62,7 @@
       value: (f) => f.sizeBytes,
       format: (f) => formatBytes(f.sizeBytes),
     },
-    ...(session.isAdmin
+    ...(session.canOperate
       ? [{ key: 'actions', label: t('common.label.actions'), align: 'right', width: '1%', cell: actionsCell } satisfies Column<ScheduledBackupFile>]
       : []),
   ])
@@ -95,13 +96,15 @@
         >{t('system.backup.scheduled.files.downloadNamed', { name: f.name })}</span
       >
     </Button>
-    <IconButton
-      icon="trash"
-      size="sm"
-      variant="danger"
-      label={t('system.backup.scheduled.files.deleteNamed', { name: f.name })}
-      onclick={() => remove(f)}
-    />
+    {#if session.canDestroy}
+      <IconButton
+        icon="trash"
+        size="sm"
+        variant="danger"
+        label={t('system.backup.scheduled.files.deleteNamed', { name: f.name })}
+        onclick={() => remove(f)}
+      />
+    {/if}
   </span>
 {/snippet}
 

@@ -42,11 +42,11 @@ func (s *Server) registerCacheRoutes() {
 	s.route("GET /api/v1/cache/objects", permRead, s.cacheObjects)
 	s.route("DELETE /api/v1/cache/objects/{id}", permAdmin, s.cacheDeleteObject)
 	s.route("POST /api/v1/cache/objects/{id}/pin", permAdmin, s.cachePinObject)
-	s.route("POST /api/v1/cache/groups/delete", permAdmin, s.cacheDeleteGroup)
+	s.route("POST /api/v1/cache/groups/delete", permAdmin, s.cacheDeleteGroup, routeDestructive)
 	s.route("POST /api/v1/cache/groups/pin", permAdmin, s.cachePinGroup)
-	s.route("POST /api/v1/cache/services/{service}/purge", permAdmin, s.cachePurgeService)
+	s.route("POST /api/v1/cache/services/{service}/purge", permAdmin, s.cachePurgeService, routeDestructive)
 	s.route("POST /api/v1/cache/evict", permAdmin, s.cacheEvict)
-	s.route("POST /api/v1/cache/verify", permAdmin, s.cacheStartVerify)
+	s.route("POST /api/v1/cache/verify", permAdmin, s.cacheStartVerify, routeExempt)
 	s.route("GET /api/v1/cache/verify", permRead, s.cacheVerifyState)
 }
 

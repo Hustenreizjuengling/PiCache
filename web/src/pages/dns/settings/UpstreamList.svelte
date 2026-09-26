@@ -2,7 +2,8 @@
   @component
   An editable list of upstream DNS servers: one row per entry with its
   health and statistics, a Test button (tests the typed address, saved or
-  not), optional order buttons and "Add". Errors of single entries
+  not; admins may test while the host locks the configuration, so the
+  entries are disabled one by one), optional order buttons and "Add". Errors of single entries
   ("dns.upstreams[1]") appear under the entry, errors of the list below it.
 
   <UpstreamList bind:value={d.upstreams} {form} field="dns.upstreams" max={16} {stats} orderable />
@@ -94,22 +95,23 @@
                 aria-label={entryLabel(i + 1)}
                 placeholder="https://dns.example/dns-query"
                 maxlength={512}
+                disabled={!session.isAdmin}
               />
             </div>
-            <Button size="sm" loading={tr?.running} disabled={!session.isAdmin || !u.trim()} onclick={() => test(u)}>
+            <Button size="sm" loading={tr?.running} disabled={!session.canOperate || !u.trim()} onclick={() => test(u)}>
               {t('common.action.test')}
             </Button>
             {#if orderable}
-              <IconButton icon="arrow-up" size="sm" label={t('dns.settings.upstreams.up')} disabled={i === 0} onclick={() => move(i, -1)} />
+              <IconButton icon="arrow-up" size="sm" label={t('dns.settings.upstreams.up')} disabled={!session.isAdmin || i === 0} onclick={() => move(i, -1)} />
               <IconButton
                 icon="arrow-down"
                 size="sm"
                 label={t('dns.settings.upstreams.down')}
-                disabled={i === value.length - 1}
+                disabled={!session.isAdmin || i === value.length - 1}
                 onclick={() => move(i, 1)}
               />
             {/if}
-            <IconButton icon="trash" size="sm" variant="danger" label={t('dns.settings.upstreams.remove')} onclick={() => removeAt(i)} />
+            <IconButton icon="trash" size="sm" variant="danger" label={t('dns.settings.upstreams.remove')} disabled={!session.isAdmin} onclick={() => removeAt(i)} />
           </div>
           {#if err}<p class="err">{err}</p>{/if}
           <div class="meta small">
@@ -147,7 +149,7 @@
   {/if}
   {#if listError}<p class="err">{listError}</p>{/if}
   <div class="row">
-    <Button size="sm" icon="plus" disabled={value.length >= max} onclick={add}>{addLabel}</Button>
+    <Button size="sm" icon="plus" disabled={!session.isAdmin || value.length >= max} onclick={add}>{addLabel}</Button>
     {@render extra?.()}
   </div>
 </div>
