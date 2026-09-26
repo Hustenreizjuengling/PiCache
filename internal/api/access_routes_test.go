@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json/v2"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -126,6 +127,8 @@ func TestWebAccessKeepAliveRefusedAfterRemoval(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Read to EOF: only then does the transport reuse the connection.
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		return resp.StatusCode
 	}
