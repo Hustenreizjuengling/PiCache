@@ -26,6 +26,8 @@ func TestParentalAndNetworkRoutesRegistered(t *testing.T) {
 		{"PUT", "/api/v1/parental/groups/3", "PUT /api/v1/parental/groups/{id}"},
 		{"PUT", "/api/v1/parental/groups/3/override", "PUT /api/v1/parental/groups/{id}/override"},
 		{"DELETE", "/api/v1/parental/groups/3/override", "DELETE /api/v1/parental/groups/{id}/override"},
+		{"PUT", "/api/v1/parental/groups/3/pause", "PUT /api/v1/parental/groups/{id}/pause"},
+		{"DELETE", "/api/v1/parental/groups/3/pause", "DELETE /api/v1/parental/groups/{id}/pause"},
 		{"GET", "/api/v1/network/check", "GET /api/v1/network/check"},
 		{"POST", "/api/v1/network/scan", "POST /api/v1/network/scan"},
 	} {
@@ -83,7 +85,9 @@ func TestParentalRoutes(t *testing.T) {
 		t.Fatalf("groups %d %s", w.Code, w.Body)
 	}
 	for _, name := range []string{`"groupId":1`, `"groupName":"Default"`, `"groupEnabled":true`, `"clientCount":0`,
-		`"blockedServices":[]`, `"schedules":[]`, `"state":{"blockAll":false,"blockedServices":[],"lifted":false,"timeZone":"`, `"utcOffsetMinutes":`} {
+		`"blockedServices":[]`, `"schedules":[]`, `"state":{"blockAll":false,"blockedServices":[],"lifted":false,"paused":false,"timeZone":"`,
+		`"utcOffsetMinutes":`, `"safeSearch":{"google":false,"youtube":"off","bing":false,"duckduckgo":false,"ecosia":false,"yandex":false,"pixabay":false}`,
+		`"categories":{"adult":{"on":false,"state":"off"},"gambling":{"on":false,"state":"off"},"dating":{"on":false,"state":"off"},"piracy":{"on":false,"state":"off"},"bypass":{"on":false,"state":"off"}}`} {
 		if !strings.Contains(w.Body.String(), name) {
 			t.Errorf("list lacks %s: %s", name, w.Body)
 		}
@@ -94,6 +98,8 @@ func TestParentalRoutes(t *testing.T) {
 		{"PUT", path, body},
 		{"PUT", path + "/override", `{"mode":"block","minutes":30}`},
 		{"DELETE", path + "/override", ""},
+		{"PUT", path + "/pause", `{"minutes":30}`},
+		{"DELETE", path + "/pause", ""},
 	} {
 		coreWantError(t, ce.do(rc.method, rc.path, rc.body, readTok), http.StatusForbidden, "forbidden", "")
 	}

@@ -2,7 +2,8 @@
   @component
   "Until a time…" of the quick actions: blocks the internet of a group or
   lifts its restrictions until a clock time (today, or tomorrow when the
-  time has passed today).
+  time has passed today). Lifting says that safe search and protection
+  lists stay on.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -10,7 +11,7 @@
   import { api, toApiError, type ApiError, type GroupControls, type OverrideMode } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { Button, Dialog, Field, Input, Notice } from '$lib/ui'
-  import { toHost } from './hostclock.svelte'
+  import { toHost } from '$lib/hostclock.svelte'
   import { clockOf, nextClock, whenText } from './plan'
 
   interface Props {
@@ -73,6 +74,7 @@
 >
   <form id="until-{auto}" class="stack" onsubmit={submit} novalidate>
     {#if generalError}<Notice tone="fail">{generalError}</Notice>{/if}
+    {#if mode === 'allow'}<p class="small muted">{t('dns.parental.liftKeeps')}</p>{/if}
     <Field
       label={t('dns.parental.untilLabel')}
       error={timeError}

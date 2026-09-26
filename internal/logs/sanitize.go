@@ -162,6 +162,7 @@ func cleanQuery(e QueryEvent, anon bool, now time.Time) QueryEvent {
 		e.UpstreamEDE = &ede
 	}
 	e.ECS = cleanECS(e.ECS, anon)
+	e.Purpose = strings.ToLower(clean(e.Purpose, maxShortLen))
 	return e
 }
 

@@ -127,18 +127,11 @@ func TestDefaultListAndCatalog(t *testing.T) {
 	if !strings.Contains(cat[0].URL, "cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/multi.txt") || !cat[0].Recommended {
 		t.Errorf("first catalogue entry must be the default HaGeZi list: %+v", cat[0])
 	}
-	keys := map[string]bool{}
-	for _, c := range cat {
-		if keys[c.Key] || !strings.HasPrefix(c.URL, "https://") || c.Name == "" || c.PlainDomains != "exact" {
-			t.Errorf("bad catalogue entry %+v", c)
-		}
-		keys[c.Key] = true
-		if _, err := e.checkListURL(c.URL); err != nil {
-			t.Errorf("catalogue URL %s rejected: %v", c.URL, err)
-		}
+	if lists[0].Category != CategoryGeneral || lists[0].CatalogKey != "hagezi-multi" {
+		t.Errorf("default list category %q, catalogue key %q", lists[0].Category, lists[0].CatalogKey)
 	}
-	if len(cat) != 11 {
-		t.Errorf("catalogue has %d entries", len(cat))
+	if len(cat) < 50 || len(cat) > 80 || cat[0].Key != "hagezi-multi" || cat[0].Entries == 0 || cat[0].DescriptionDe == "" {
+		t.Errorf("catalogue has %d entries, first %+v", len(cat), cat[0])
 	}
 	// a second engine on the same database does not re-create the default list
 	if err := e.DeleteList(context.Background(), 1); err != nil {

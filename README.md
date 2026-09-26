@@ -26,18 +26,31 @@ unprivileged Proxmox LXC container.
 **DNS filtering**
 
 - Blocklists in hosts, domain, adblock (ABP) and regex formats (HaGeZi
-  Multi NORMAL by default; OISD, StevenBlack, 1Hosts and more in the
-  built-in catalogue), updated automatically.
+  Multi NORMAL by default), updated automatically. The built-in catalogue
+  offers 68 checked lists by category (security, privacy and vendor
+  telemetry, adult content, gambling, dating, piracy, social networks,
+  encrypted-DNS/VPN bypass, abused TLDs, URL shorteners, stalkerware,
+  regional lists and allowlists), with their size, maintainer and license.
+  A list cannot block a whole top-level domain by mistake.
 - Your own allow and block rules for exact names, subdomains or regular
   expressions. Allow rules and exact or subdomain block rules take precedence
   over the lists. The UI explains which rule or list decided.
 - Groups: clients (by IP, CIDR or MAC) get the lists and rules of their
   groups.
 - Parental controls per group: block apps and sites such as YouTube,
-  TikTok or Roblox from a built-in list, weekly schedules (a bedtime that
-  blocks all internet, or selected apps during homework time), and "block
-  internet now" or "lift restrictions" for a while. Pausing the blocklists
-  does not lift them.
+  TikTok or Roblox from a built-in list of 144 services (video, social,
+  messaging, games, music, AI, dating, gambling, shopping, VPN apps, app
+  stores, file hosting, news), weekly schedules (a bedtime that blocks all
+  internet, or selected apps during homework time), and "block internet
+  now" or "lift restrictions" for a while. **Safe search** for Google,
+  YouTube (moderate or strict), Bing, DuckDuckGo, Ecosia, Yandex and
+  Pixabay, and **category switches** for adult content, gambling, dating,
+  piracy and encrypted-DNS/VPN bypass (through downloaded lists). All of it
+  stays on while blocking is paused; everything works locally, without a
+  cloud service.
+- Pausing: all blocking for 30 s up to 7 days or until the next morning,
+  or the lists and rules of one group; parental controls, safe search and
+  the protection lists stay on.
 - Network check: shows whether all devices in your network use PiCache,
   detects a router that forwards every query or announces itself as IPv6
   DNS server, and gives the steps to fix it (including the FRITZ!Box
@@ -497,8 +510,12 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
   (DoH/DoT) mit Ausweich-DNS, Schutz vor DNS-Rebinding, Abfrageprotokoll
   und Statistiken.
 - **Jugendschutz** pro Gruppe: Dienste wie YouTube, TikTok oder Roblox
-  sperren, Zeitpläne (Schlafenszeit, Hausaufgabenzeit) und „Internet jetzt
-  sperren“ oder „Einschränkungen aufheben“ auf Zeit. Der **Netzwerk-Check**
+  sperren (144 Dienste), Zeitpläne (Schlafenszeit, Hausaufgabenzeit),
+  „Internet jetzt sperren“ oder „Einschränkungen aufheben“ auf Zeit,
+  SafeSearch für Google, YouTube, Bing, DuckDuckGo, Ecosia, Yandex und
+  Pixabay sowie Kategorien (Erwachseneninhalte, Glücksspiel, Dating,
+  Raubkopien, Umgehung per VPN oder verschlüsseltem DNS) über
+  heruntergeladene Listen – alles lokal, ohne Cloud-Dienst. Der **Netzwerk-Check**
   zeigt, ob alle Geräte PiCache nutzen, und erklärt die Einstellungen im
   Router (auch für die FRITZ!Box).
 - **Download-Cache** für Spiele und Updates (Steam, Epic, Battle.net, Riot,

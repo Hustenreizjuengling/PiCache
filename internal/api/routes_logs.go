@@ -26,6 +26,7 @@ func (s *Server) registerLogsRoutes() {
 	s.route("GET /api/v1/stats/top", permRead, s.logsTop)
 	s.route("GET /api/v1/stats/services", permRead, s.logsServiceStats)
 	s.route("GET /api/v1/stats/clients", permRead, s.logsClientStats)
+	s.route("GET /api/v1/stats/purposes", permRead, s.logsPurposes)
 	s.route("GET /api/v1/cache/downloads", permRead, s.logsDownloads)
 	s.route("GET /api/v1/cache/requests", permRead, s.logsCacheRequests)
 	s.route("GET /api/v1/cache/sni-events", permRead, s.logsSNIEvents)
@@ -57,6 +58,20 @@ func (s *Server) logsQueries(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return ok(w, page)
+}
+
+// logsPurposes answers "blocked by purpose": the blocked and safe-search
+// queries of the range by purpose.
+func (s *Server) logsPurposes(w http.ResponseWriter, r *http.Request) error {
+	from, to, err := qRange(r, logsStatsRange)
+	if err != nil {
+		return err
+	}
+	st, err := s.d.Logs.Purposes(r.Context(), from, to)
+	if err != nil {
+		return err
+	}
+	return ok(w, st)
 }
 
 func (s *Server) logsSummary(w http.ResponseWriter, r *http.Request) error {

@@ -56,6 +56,7 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 	qc := newQuery(ctx, msg, client, "lookup", set)
 	qc.steps = &steps
 	qc.id = s.identify(client)
+	s.scope(qc)
 	s.traceClient(qc)
 
 	var res result
@@ -135,9 +136,16 @@ func (s *Server) traceClient(qc *qctx) {
 	switch {
 	case !f.Enabled:
 		qc.note("blocking is disabled")
-	case !qc.blocking && f.PausedUntil != nil:
+	case !f.BlockingActive(qc.start) && f.PausedUntil != nil:
 		qc.note("blocking is paused until " + f.PausedUntil.UTC().Format(time.RFC3339))
+	case !qc.blocking:
+		qc.note("blocking is inactive: filtering is paused for every group of the client")
 	default:
 		qc.note("blocking is active (mode " + f.BlockingMode + ")")
+	}
+	if s.d.Parental != nil {
+		for _, p := range s.d.Parental.PausedGroups(id.GroupIDs, qc.start) {
+			qc.note(fmt.Sprintf("filtering paused for group %s until %s", p.Group, p.Until.UTC().Format(time.RFC3339)))
+		}
 	}
 }

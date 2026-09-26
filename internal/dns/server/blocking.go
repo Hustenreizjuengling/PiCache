@@ -56,24 +56,56 @@ func (s *Server) blocked(qc *qctx, d filter.Decision, status string) result {
 		listID:  d.ListID,
 		ruleID:  d.RuleID,
 		blocked: true,
+		purpose: decisionPurpose(d),
 	}
 }
 
-// parentalBlock applies the parental controls of the client's groups
-// (step 7a). It runs whether or not blocking is active (pausing the lists
-// and rules does not lift a bedtime) and before the download cache answer
-// (a blocked Steam or a bedtime also stops cached downloads). A user allow
-// rule that applies to the client lifts the block.
-func (s *Server) parentalBlock(qc *qctx) (result, bool) {
-	if s.d.Parental == nil {
-		return result{}, false
+// decisionPurpose is the statistics purpose of a filter decision: the
+// list's category ("other" when it has none) or "rule".
+func decisionPurpose(d filter.Decision) string {
+	if d.Source == "rule" {
+		return PurposeRule
 	}
-	d := s.d.Parental.Check(qc.qname, qc.id.GroupIDs, qc.start)
-	if !d.Blocked {
+	if d.Category == "" {
+		return filter.CategoryOther
+	}
+	return d.Category
+}
+
+// parentalBlock applies the parental controls of all the client's groups
+// (step 7a): Parental.Check (block override, block-all schedule, blocked
+// service), then the protection lists (Filter.CheckProtection). It runs
+// whether or not blocking is active (pausing the lists and rules does not
+// lift a bedtime or a protection list) and before the download cache
+// answer (a blocked Steam or a bedtime also stops cached downloads). A
+// user allow rule that applies to the client lifts the block.
+func (s *Server) parentalBlock(qc *qctx) (result, bool) {
+	var (
+		reason, status, until, purpose, trace string
+		listID                                int64
+	)
+	if s.d.Parental != nil {
+		if d := s.d.Parental.Check(qc.qname, qc.id.GroupIDs, qc.start); d.Blocked {
+			reason, status, purpose = d.Reason(), StatusBlockedSchedule, PurposeSchedule
+			if d.Kind == parental.KindService {
+				status, purpose = StatusBlockedService, PurposeService
+			}
+			if !d.Until.IsZero() {
+				until = " until " + d.Until.UTC().Format(time.RFC3339)
+			}
+			trace = "parental: blocked by " + reason + until
+		}
+	}
+	if reason == "" && s.d.Filter != nil {
+		if d := s.d.Filter.CheckProtection(qc.qname, qc.id.GroupIDs); d.Blocked() {
+			reason, status, listID, purpose = d.Name, StatusBlockedList, d.ListID, decisionPurpose(d)
+			trace = fmt.Sprintf("parental: blocked by list %q (%s)", d.Name, d.Category)
+		}
+	}
+	if reason == "" {
 		qc.note("parental: no restriction")
 		return result{}, false
 	}
-	reason := d.Reason()
 	if s.d.Filter != nil {
 		if a := s.d.Filter.CheckRules(qc.qname, qc.id.GroupIDs); a.Action == filter.ActionAllow {
 			if qc.tracing() {
@@ -82,18 +114,11 @@ func (s *Server) parentalBlock(qc *qctx) (result, bool) {
 			return result{}, false
 		}
 	}
-	status := StatusBlockedSchedule
-	if d.Kind == parental.KindService {
-		status = StatusBlockedService
-	}
 	if qc.tracing() {
-		until := ""
-		if !d.Until.IsZero() {
-			until = " until " + d.Until.UTC().Format(time.RFC3339)
-		}
-		qc.note(fmt.Sprintf("parental: blocked by %s%s: %s reply", reason, until, qc.set.Filter.BlockingMode))
+		qc.note(fmt.Sprintf("%s: %s reply", trace, qc.set.Filter.BlockingMode))
 	}
-	return result{msg: blockReply(qc.req, &qc.set.Filter), status: status, reason: reason, blocked: true}, true
+	return result{msg: blockReply(qc.req, &qc.set.Filter), status: status, reason: reason, listID: listID,
+		blocked: true, purpose: purpose}, true
 }
 
 // blockReply answers req according to the blocking mode.
@@ -141,7 +166,12 @@ func blockReply(req *dns.Msg, f *settings.Filter) *dns.Msg {
 }
 
 // specialDomain answers the special domains of ARCHITECTURE 7.1 step 10
-// (Mozilla canary, iCloud Private Relay) with NXDOMAIN.
+// (Mozilla canary, iCloud Private Relay) with NXDOMAIN. Their own settings
+// decide, whether blocking is enabled, paused (globally or for the client's
+// groups) or disabled: a browser that sees the canary unblocked during a
+// pause switches to encrypted DNS and keeps it afterwards, which bypasses
+// parental controls and safe search. Only a name the client's groups
+// allowlist (Filter.Check with all groups → allow) is left alone.
 func (s *Server) specialDomain(qc *qctx) (result, bool) {
 	f := &qc.set.Filter
 	var reason string
@@ -154,6 +184,14 @@ func (s *Server) specialDomain(qc *qctx) (result, bool) {
 	default:
 		return result{}, false
 	}
+	if s.d.Filter != nil {
+		if d := s.d.Filter.Check(qc.qname, qc.id.GroupIDs); d.Action == filter.ActionAllow {
+			if qc.tracing() {
+				qc.note(fmt.Sprintf("special domain %s: allowed by %s %q", reason, d.Source, d.Name))
+			}
+			return result{}, false
+		}
+	}
 	qc.note("special domain " + reason + ": NXDOMAIN")
 	m := newReply(qc.req)
 	m.Rcode = dns.RcodeNameError
@@ -165,7 +203,8 @@ func (s *Server) specialDomain(qc *qctx) (result, bool) {
 func (s *Server) Blocking() BlockingStatus {
 	f := s.d.Settings.Get().Filter
 	now := time.Now()
-	st := BlockingStatus{Enabled: f.BlockingActive(now), Permanent: !f.Enabled}
+	zone, offset := now.In(time.Local).Zone()
+	st := BlockingStatus{Enabled: f.BlockingActive(now), Permanent: !f.Enabled, TimeZone: zone, UTCOffsetMinutes: offset / 60}
 	if f.Enabled && f.PausedUntil != nil && now.Before(*f.PausedUntil) {
 		t := f.PausedUntil.UTC()
 		st.PausedUntil = &t

@@ -300,8 +300,10 @@ func TestPause(t *testing.T) {
 	if r := e.query("udp", "ads.example.com", dns.TypeA); !slices.Equal(answerIPs(r.Answer), []string{"198.51.100.7"}) {
 		t.Errorf("paused: blocked name must be forwarded, got %v", r.Answer)
 	}
-	if r := e.query("udp", "use-application-dns.net", dns.TypeA); r.Rcode != dns.RcodeSuccess {
-		t.Errorf("paused: special domains are not blocked, got %s", dns.RcodeToString[r.Rcode])
+	// Step 10 does not depend on the blocking switch (a browser that sees
+	// the canary unblocked keeps encrypted DNS after the pause).
+	if r := e.query("udp", "use-application-dns.net", dns.TypeA); r.Rcode != dns.RcodeNameError {
+		t.Errorf("paused: the canary is still answered NXDOMAIN, got %s", dns.RcodeToString[r.Rcode])
 	}
 	if r := e.query("udp", "blocked.steamcontent.com", dns.TypeA); !slices.Equal(answerIPs(r.Answer), []string{"192.168.1.10"}) {
 		t.Errorf("paused: user rules do not apply, the download cache answers: %v", r.Answer)
@@ -321,6 +323,9 @@ func TestPause(t *testing.T) {
 	}
 	if r := e.query("udp", "ads.example.com", dns.TypeA); answerIPs(r.Answer)[0] != "198.51.100.7" {
 		t.Errorf("disabled: blocked name must be forwarded, got %v", r.Answer)
+	}
+	if r := e.query("udp", "mask.icloud.com", dns.TypeA); r.Rcode != dns.RcodeNameError {
+		t.Errorf("disabled: iCloud Private Relay is still answered NXDOMAIN, got %s", dns.RcodeToString[r.Rcode])
 	}
 	if st, _ := e.srv.SetBlocking(ctx, true, 0); !st.Enabled || st.Permanent {
 		t.Fatalf("re-enable: %+v", st)

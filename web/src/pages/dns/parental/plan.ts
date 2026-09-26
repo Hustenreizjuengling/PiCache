@@ -1,18 +1,29 @@
 // Helpers for parental controls: days and presets, schedule summaries, the
-// windows of the weekly plan, "until …" texts and the plain-words state of a
-// group. Schedules use host local time; times are shown on the host's
-// clock (hostclock.svelte.ts), which normally is the browser's as well.
+// windows of the weekly plan, "until …" texts, the plain-words state of a
+// group, safe search and the category switches. Schedules use host local
+// time; times are shown on the host's clock ($lib/hostclock.svelte.ts),
+// which normally is the browser's as well.
 
 import { i18n, t, tn } from '$i18n/index.svelte'
-import { DEFAULT_GROUP_ID, type GroupControls, type ParentalSchedule, type ParentalService, type ServiceCategory } from '$lib/api'
+import {
+  DEFAULT_GROUP_ID,
+  type CategorySwitch,
+  type GroupControls,
+  type ListCategory,
+  type ParentalSchedule,
+  type ParentalService,
+  type SafeSearch,
+  type ServiceCategory,
+} from '$lib/api'
 import { formatDateTimeShort, formatTime } from '$lib/format'
 import { formatClock, TIME_RE } from '../../system/backup/schedule'
-import { fromHost, toHost } from './hostclock.svelte'
+import { nextHostTime, toHost } from '$lib/hostclock.svelte'
+import type { IconName } from '$lib/icons'
 
 export { TIME_RE }
 
 export const MAX_SCHEDULES = 10
-export const MAX_SERVICES = 64
+export const MAX_SERVICES = 256
 export const NAME_MAX = 40
 /** Minutes of the "lift / block for …" quick actions. */
 export const QUICK_MINUTES = [30, 60, 120] as const
@@ -20,7 +31,38 @@ export const QUICK_MINUTES = [30, 60, 120] as const
 /** Days in display order, Monday first (values count from 0 = Sunday like the server). */
 export const WEEK: readonly number[] = [1, 2, 3, 4, 5, 6, 0]
 
-export const CATEGORIES: readonly ServiceCategory[] = ['video', 'social', 'messaging', 'gaming', 'music', 'ai']
+/** Service categories in catalogue order, each with a neutral icon (never a brand logo). */
+export const CATEGORIES: readonly ServiceCategory[] = [
+  'video',
+  'social',
+  'messaging',
+  'gaming',
+  'music',
+  'ai',
+  'dating',
+  'gambling',
+  'shopping',
+  'privacy',
+  'software',
+  'hosting',
+  'news',
+]
+
+export const CATEGORY_ICONS: Record<ServiceCategory, IconName> = {
+  video: 'video',
+  social: 'users',
+  messaging: 'chat',
+  gaming: 'gamepad',
+  music: 'music',
+  ai: 'sparkles',
+  dating: 'heart',
+  gambling: 'dice',
+  shopping: 'cart',
+  privacy: 'eye-off',
+  software: 'grid',
+  hosting: 'cloud',
+  news: 'newspaper',
+}
 
 export const PRESETS = [
   { id: 'schoolNights', days: [0, 1, 2, 3, 4] },
@@ -153,11 +195,7 @@ export function whenText(ts: string | Date, form: 'until' | 'at', at: Date = new
 /** The next occurrence of a host clock time ("HH:MM") after now: today, or tomorrow when it has passed. */
 export function nextClock(hhmm: string, at: Date = new Date()): Date | undefined {
   const m = minutesOf(hhmm)
-  if (m < 0) return undefined
-  const now = toHost(at)
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Math.floor(m / 60), m % 60)
-  if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1)
-  return fromHost(d)
+  return m < 0 ? undefined : nextHostTime(m, at)
 }
 
 // ---- the weekly plan
@@ -243,11 +281,20 @@ export function stateText(g: GroupControls, catalog: readonly ParentalService[] 
     return {
       kind: 'lifted',
       text: st.liftedUntil ? t('dns.parental.state.lifted', { when: whenText(st.liftedUntil, 'until', now) }) : t('dns.parental.state.liftedNoEnd'),
+      // Content protection is not lifted by the allow override.
+      next: t('dns.parental.state.liftedKeeps'),
     }
   }
   const services = st.blockedServices ?? []
   if (services.length > 0) {
     return { kind: 'services', text: t('dns.parental.state.services', { services: shortList(serviceNames(services, catalog)) }), next }
+  }
+  // Nothing blocked by the plan: content protection may still apply (always on).
+  const safe = safeSearchNames(g.safeSearch).length > 0
+  const categories = switchesOf(g).some((s) => g.categories[s.id]?.on)
+  if (safe || categories) {
+    const key = safe && categories ? 'onlyBoth' : safe ? 'onlySafeSearch' : 'onlyCategories'
+    return { kind: 'none', text: t(`dns.parental.state.${key}`), next }
   }
   return { kind: 'none', text: t('dns.parental.state.none'), next }
 }
@@ -276,4 +323,56 @@ export function scheduleProblems(s: ParentalSchedule): Partial<Record<'name' | '
   else if (s.start === s.end) p.end = t('dns.parental.schedule.sameTime')
   if (s.block === 'services' && s.services.length === 0) p.services = t('dns.parental.schedule.servicesRequired')
   return p
+}
+
+// ---- safe search
+
+/** The search engines in display order. Their names are brands and stay untranslated. */
+export const ENGINES = ['google', 'youtube', 'bing', 'duckduckgo', 'ecosia', 'yandex', 'pixabay'] as const
+export type Engine = (typeof ENGINES)[number]
+
+export const ENGINE_NAMES: Record<Engine, string> = {
+  google: 'Google',
+  youtube: 'YouTube',
+  bing: 'Bing',
+  duckduckgo: 'DuckDuckGo',
+  ecosia: 'Ecosia',
+  yandex: 'Yandex',
+  pixabay: 'Pixabay',
+}
+
+/** Safe search switched off everywhere (the server's default). */
+export function safeSearchOff(): SafeSearch {
+  return { google: false, youtube: 'off', bing: false, duckduckgo: false, ecosia: false, yandex: false, pixabay: false }
+}
+
+/** The engines that enforce safe search: "Google", "YouTube (strict)", … */
+export function safeSearchNames(s: SafeSearch | undefined): string[] {
+  if (!s) return []
+  return ENGINES.flatMap((e) => {
+    if (e === 'youtube') return s.youtube === 'off' ? [] : [t(`dns.parental.safeSearch.youtubeNamed.${s.youtube}`)]
+    return s[e] ? [ENGINE_NAMES[e]] : []
+  })
+}
+
+// ---- category switches
+
+/**
+ * The category switches in display order, the catalogue key of the list
+ * each one binds and that list's category (categoryPresets in
+ * internal/dns/filter/catalog.go). The server decides what is bound; the key
+ * only finds the list's name and size. A bound list of another category is
+ * no protection list, so the server reports its switch as off.
+ */
+export const SWITCHES: readonly { id: CategorySwitch; catalogKey: string; category: ListCategory }[] = [
+  { id: 'adult', catalogKey: 'oisd-nsfw', category: 'adult' },
+  { id: 'gambling', catalogKey: 'hagezi-gambling-medium', category: 'gambling' },
+  { id: 'dating', catalogKey: 'shadowwhisperer-dating', category: 'dating' },
+  { id: 'piracy', catalogKey: 'hagezi-anti-piracy', category: 'piracy' },
+  { id: 'bypass', catalogKey: 'hagezi-doh-vpn-bypass', category: 'doh-vpn-bypass' },
+]
+
+/** The switches the server offers for a group (a switch it dropped is absent). */
+export function switchesOf(g: GroupControls): typeof SWITCHES {
+  return SWITCHES.filter((s) => !!g.categories?.[s.id])
 }

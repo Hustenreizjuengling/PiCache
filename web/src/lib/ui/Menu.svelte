@@ -7,6 +7,7 @@
     { separator: true },
     { label: 'Delete', icon: 'trash', danger: true, onselect: remove },
   ]} />
+  `{ note: '…' }` adds a short, non-focusable explanation that also describes the menu.
   Icon-only trigger: iconOnly (label becomes the accessible name). Custom trigger content: the `trigger` snippet.
 -->
 <script lang="ts">
@@ -126,6 +127,7 @@
   }
 
   const radio = $derived(items.some((it) => 'label' in it && it.checked !== undefined))
+  const notes = $derived(items.flatMap((it, i) => ('note' in it ? [`${menuId}-note-${i}`] : [])).join(' ') || undefined)
 </script>
 
 <svelte:window onresize={reposition} />
@@ -150,10 +152,22 @@
   {/if}
 </button>
 
-<div bind:this={pop} id={menuId} popover="auto" role="menu" aria-label={label} class="menu" tabindex="-1" onkeydown={onKey}>
+<div
+  bind:this={pop}
+  id={menuId}
+  popover="auto"
+  role="menu"
+  aria-label={label}
+  aria-describedby={notes}
+  class="menu"
+  tabindex="-1"
+  onkeydown={onKey}
+>
   {#each items as it, i (i)}
     {#if 'separator' in it}
       <div role="separator" class="sep"></div>
+    {:else if 'note' in it}
+      <p id="{menuId}-note-{i}" class="note" role="none">{it.note}</p>
     {:else if it.href}
       <a role="menuitem" class={['item', it.danger && 'danger']} href={it.href} tabindex="-1" onclick={() => select(it.onselect)}>
         {#if it.icon}<Icon name={it.icon} size={18} />{/if}<span>{it.label}</span>
@@ -285,5 +299,12 @@
     height: 1px;
     margin: var(--sp-1) 0;
     background: var(--line);
+  }
+  .note {
+    max-width: 300px;
+    padding: var(--sp-1) var(--sp-3) var(--sp-2) var(--sp-2);
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    line-height: 1.4;
   }
 </style>

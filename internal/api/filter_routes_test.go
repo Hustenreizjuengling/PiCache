@@ -33,6 +33,13 @@ func (noNetwork) RoundTrip(*http.Request) (*http.Response, error) {
 // service (for audits) on a temp database; handlers are called directly.
 func newFilterTestServer(t *testing.T) (*Server, *filter.Engine) {
 	t.Helper()
+	s, eng, _ := newFilterTestServerDB(t)
+	return s, eng
+}
+
+// newFilterTestServerDB is newFilterTestServer that also returns the database.
+func newFilterTestServerDB(t *testing.T) (*Server, *filter.Engine, *db.DB) {
+	t.Helper()
 	ctx := context.Background()
 	log := slog.New(slog.DiscardHandler)
 	dir := t.TempDir()
@@ -61,7 +68,7 @@ func newFilterTestServer(t *testing.T) (*Server, *filter.Engine) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Server{d: Deps{Settings: set, Auth: as, Filter: eng, Clients: reg, Log: log}, log: log}, eng
+	return &Server{d: Deps{Settings: set, Auth: as, Filter: eng, Clients: reg, Log: log}, log: log}, eng, d
 }
 
 // callFilter runs h like s.route does after authentication (admin

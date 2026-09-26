@@ -308,12 +308,18 @@ func (m *ruleMatcher) decision(src uint32, action Action, kind string) Decision 
 }
 
 // snapshot is the immutable state read by the DNS hot path. Editing the
-// groups or name of a list swaps only listGroups/listNames (the compiled
-// matcher is shared between snapshots).
+// groups, name or category of a list swaps only listGroups/listNames/
+// listCats/protGroups (the compiled matcher is shared between snapshots).
 type snapshot struct {
 	lists      *listMatcher
 	listNames  []string  // source index → list name
+	listCats   []string  // source index → list category
 	listGroups [][]int64 // source index → group IDs (nil: applies to nobody)
+	// protGroups is listGroups restricted to the protection lists (nil
+	// for every other list), the table of checkProtection; hasProt: at
+	// least one entry is set.
+	protGroups [][]int64
+	hasProt    bool
 	rules      *ruleMatcher
 }
 
@@ -330,7 +336,34 @@ func (s *snapshot) listDecision(src uint32, tier int, kind string) Decision {
 	if int(src) < len(s.listNames) {
 		d.Name = s.listNames[src]
 	}
+	if int(src) < len(s.listCats) {
+		d.Category = s.listCats[src]
+	}
 	return d
+}
+
+// checkProtection applies the list precedence (7.2 steps 6–9 and 11) over
+// the protection lists only (protGroups); there are no user rules, so the
+// list regex/pattern blocks directly follow the domain blocks.
+func (s *snapshot) checkProtection(q string, groups []int64) Decision {
+	if !s.hasProt || len(q) == 0 || len(q) > maxDomainLen || len(groups) == 0 {
+		return Decision{}
+	}
+	var sf suffixHashes
+	sf.compute(q)
+	for t := range numTiers {
+		tr := &s.lists.tiers[t]
+		if src, ok := tr.exact.lookupExact(&sf, groups, s.protGroups); ok {
+			return s.listDecision(src, t, "exact")
+		}
+		if src, ok := tr.subtree.lookupSuffixes(&sf, groups, s.protGroups); ok {
+			return s.listDecision(src, t, "subtree")
+		}
+		if i, ok := tr.pats.lookup(q, groups, s.protGroups); ok {
+			return s.listDecision(tr.pats.pats[i].src, t, "regex")
+		}
+	}
+	return Decision{}
 }
 
 // check implements the precedence of ARCHITECTURE 7.2. With rulesOnly, only

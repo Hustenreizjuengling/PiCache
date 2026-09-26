@@ -36,7 +36,7 @@ func buildSnapshot(t testing.TB, lists []testList, rules []ruleEntry) *snapshot 
 		if kind == "" {
 			kind = "block"
 		}
-		p, err := parseList(context.Background(), strings.NewReader(l.body), kind, "exact")
+		p, err := parseList(context.Background(), strings.NewReader(l.body), testFormat(kind))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -244,7 +244,7 @@ func (s *syntheticList) Read(p []byte) (int, error) {
 
 func buildSynthetic(t testing.TB, n int) (*parsed, *snapshot) {
 	t.Helper()
-	p, err := parseList(context.Background(), &syntheticList{n: n}, "block", "exact")
+	p, err := parseList(context.Background(), &syntheticList{n: n}, testFormat("block"))
 	if err != nil {
 		t.Fatal(err)
 	}

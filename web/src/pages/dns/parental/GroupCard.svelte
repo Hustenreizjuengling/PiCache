@@ -1,33 +1,49 @@
 <!--
   @component
   One group on the parental controls page: name, devices, what applies right
-  now in plain words, the weekly plan, its schedules and the services that
-  are always blocked. Admins get the quick actions (block internet now, lift
-  restrictions, end an override) and Edit; read-only principals see the same
-  without actions.
+  now in plain words, the weekly plan, its schedules, the services that are
+  always blocked, safe search and the category switches (with download
+  warnings), and a badge while its filtering is paused. Admins get the quick
+  actions (block internet now, lift restrictions, end an override, pause
+  filtering, resume) and Edit; read-only principals see the same without
+  actions.
 -->
 <script lang="ts">
-  import { t, tn } from '$i18n/index.svelte'
+  import { t, tn, type MessageKey } from '$i18n/index.svelte'
   import { DEFAULT_GROUP_ID, type GroupControls, type OverrideMode, type ParentalService } from '$lib/api'
   import { href } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
   import { Badge, Button, Menu, type MenuItem } from '$lib/ui'
-  import { blockText, daysText, hasRestrictions, QUICK_MINUTES, serviceNames, stateText, windowText } from './plan'
+  import PauseMenu from '../shared/PauseMenu.svelte'
+  import {
+    blockText,
+    daysText,
+    hasRestrictions,
+    QUICK_MINUTES,
+    safeSearchNames,
+    serviceNames,
+    stateText,
+    switchesOf,
+    whenText,
+    windowText,
+  } from './plan'
   import WeekPlan from './WeekPlan.svelte'
 
   interface Props {
     group: GroupControls
     catalog: readonly ParentalService[] | undefined
     now: Date
-    /** An override request of this group is running. */
+    /** An override or pause request of this group is running. */
     busy?: boolean
     onedit: (g: GroupControls) => void
     /** minutes, or 'until' to ask for a time. */
     onoverride: (g: GroupControls, mode: OverrideMode, minutes: number | 'until') => void
     onend: (g: GroupControls) => void
+    onpaused: (g: GroupControls) => void
+    onresume: (g: GroupControls) => void
   }
 
-  let { group, catalog, now, busy = false, onedit, onoverride, onend }: Props = $props()
+  let { group, catalog, now, busy = false, onedit, onoverride, onend, onpaused, onresume }: Props = $props()
 
   const auto = $props.id()
   const isDefault = $derived(group.groupId === DEFAULT_GROUP_ID)
@@ -36,6 +52,9 @@
   const always = $derived(serviceNames(group.blockedServices ?? [], catalog))
   const enabledSchedules = $derived(schedules.filter((s) => s.enabled))
   const restricted = $derived(hasRestrictions(group))
+  const safe = $derived(safeSearchNames(group.safeSearch))
+  const switches = $derived(switchesOf(group).filter((s) => group.categories[s.id]?.on))
+  const paused = $derived(group.state.paused && !!group.state.pausedUntil)
 
   function durationLabel(m: number): string {
     return m < 60 ? t('dns.parental.forMinutes', { count: m }) : tn('dns.parental.forHours', m / 60)
@@ -46,6 +65,8 @@
       ...QUICK_MINUTES.map((m) => ({ label: durationLabel(m), onselect: () => onoverride(group, mode, m) })),
       { separator: true as const },
       { label: t('dns.parental.untilTime'), icon: 'clock' as const, onselect: () => onoverride(group, mode, 'until') },
+      // Content protection is not lifted by the allow override.
+      ...(mode === 'allow' ? [{ separator: true as const }, { note: t('dns.parental.liftKeeps') }] : []),
     ]
   }
 </script>
@@ -57,6 +78,9 @@
         <h2 id="pc-{auto}">{group.groupName}</h2>
         {#if isDefault}<Badge tone="info">{t('dns.groups.default')}</Badge>{/if}
         {#if !group.groupEnabled}<Badge tone="warn">{t('dns.parental.groupDisabled')}</Badge>{/if}
+        {#if paused && group.state.pausedUntil}
+          <Badge tone="warn" title={t('dns.pause.keeps')}>{t('dns.pause.badge', { when: whenText(group.state.pausedUntil, 'until', now) })}</Badge>
+        {/if}
       </div>
       <p class="meta small muted">
         {#if isDefault}
@@ -81,6 +105,17 @@
           size="sm"
           align="end"
         />
+        {#if paused}
+          <Button size="sm" icon="play" loading={busy} onclick={() => onresume(group)}>{t('dns.pause.resume')}</Button>
+        {:else}
+          <PauseMenu
+            groupId={group.groupId}
+            groupName={group.groupName}
+            clientCount={group.clientCount}
+            disabled={busy || !group.groupEnabled}
+            {onpaused}
+          />
+        {/if}
         <Button size="sm" icon="edit" onclick={() => onedit(group)}>{t('dns.parental.edit')}</Button>
       </div>
     {/if}
@@ -156,6 +191,38 @@
           </ul>
         {/if}
       </section>
+      <section class="stack-sm" aria-labelledby="pc-{auto}-safe">
+        <h3 id="pc-{auto}-safe">{t('dns.parental.safeSearch.title')}</h3>
+        {#if safe.length === 0}
+          <p class="small muted">{t('dns.parental.safeSearch.none')}</p>
+        {:else}
+          <ul class="always">
+            {#each safe as name (name)}<li>{name}</li>{/each}
+          </ul>
+        {/if}
+      </section>
+      {#if switchesOf(group).length > 0}
+        <section class="stack-sm" aria-labelledby="pc-{auto}-cats">
+          <h3 id="pc-{auto}-cats">{t('dns.parental.switch.cardTitle')}</h3>
+          {#if switches.length === 0}
+            <p class="small muted">{t('dns.parental.switch.none')}</p>
+          {:else}
+            <ul class="always">
+              {#each switches as s (s.id)}
+                {@const st = group.categories[s.id]?.state}
+                <li class={{ warn: st === 'pending', fail: st === 'failed' }}>
+                  {t(`dns.parental.switch.${s.id}` as MessageKey)}
+                  {#if st === 'pending'}
+                    <Badge tone="warn" title={t('dns.parental.switch.pending')}>{t('dns.parental.switch.pendingShort')}</Badge>
+                  {:else if st === 'failed'}
+                    <Badge tone="fail" title={t('dns.parental.switch.failed')}>{t('dns.parental.switch.failedShort')}</Badge>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+      {/if}
     </div>
   </div>
 </section>
@@ -318,11 +385,26 @@
     list-style: none;
   }
   .always li {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
     padding: 1px var(--sp-2);
     border: 1px solid var(--line);
     border-radius: var(--r-pill);
     background: var(--surface-2);
     font-size: var(--fs-sm);
+  }
+  .always li.warn {
+    border-color: color-mix(in srgb, var(--warn) 50%, var(--surface));
+    padding-right: 2px;
+  }
+  .always li.fail {
+    border-color: color-mix(in srgb, var(--fail) 50%, var(--surface));
+    padding-right: 2px;
+  }
+  .always li :global(.badge) {
+    height: 18px;
+    border-radius: var(--r-pill);
   }
   @media (max-width: 900px) {
     .body,

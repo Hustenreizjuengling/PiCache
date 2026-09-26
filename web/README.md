@@ -129,12 +129,13 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.upstreams` | `get() test(upstream) flushCache()` |
 | `api.clients` | `list() create(c) update(id,c) remove(id) known(within?)` |
 | `api.groups` | `list() create(g) update(id,g) remove(id)` (403 for group 1, `DEFAULT_GROUP_ID`) |
+| `api.parental` | `services() groups() group(id) update(id, c) setOverride(id, body) clearOverride(id) pause(id, {minutes} \| {until}) resume(id)` (`update` always sends all four members; `pause` replaces a running pause, `resume` also works without one) |
 | `api.filter` | `lists.{list,create,update,remove,refresh(id),refreshAll}`, `catalog()`, `rules.{list(query),create,update,remove}`, `stats()`, `explain(domain, clientIp?)` |
 | `api.downloadCache` | `services() service(id) setEnabled(id,on) setExtraDomains(id,list) createService(s) updateService(id,s) deleteService(id) source() refreshSource() setLabel(groupKey,label) sni()` |
 | `api.cache` | `state() services() groups(q) groupDetail(service,key) objects(q) deleteObject(id) pinObject(id,pinned) deleteGroup(service,key) pinGroup(service,key,pinned) purgeService(service) evict() verify(repair) verifyState() live() active() proxyStats() noSlice() resetNoSlice(host) downloads(q) requests(q) sniEvents(q) evictions(q)` |
 | `api.storage` | `capabilities() targets() target(id) create(t) update(id,t) remove(id) test(id) apply(id) init(id,adopt) activate(id) snippets(id) benchmark(id,sizeMiB?) benchmarkState() cancelBenchmark()` |
 | `api.logs` | `queries(q)` (cursor page) |
-| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?, {group?}) services(range) clients(range, {group?})` – `range` is a preset (`'24h'`) or `{ from, to }`; `group: 'device'` (clients, cache-clients) merges the addresses of one device into one row with `addresses` |
+| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?, {group?}) services(range) clients(range, {group?}) purposes(range)` – `range` is a preset (`'24h'`) or `{ from, to }`; `group: 'device'` (clients, cache-clients) merges the addresses of one device into one row with `addresses` |
 
 Long-running calls (list/source refresh, storage test, starting a storage
 speed test, restore) already carry longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`; so is a stored scheduled backup (`api.backups.fileUrl(name)`).
@@ -239,11 +240,12 @@ All components are keyboard accessible, themed and translated. Props marked
 | `Pager` | offset: `total`, `bind:limit` (50), `bind:offset`, `onchange(offset)`; cursor: `mode="cursor"`, `hasPrev`, `hasNext`, `onprev`, `onnext`, `onfirst`, `count`; `limits` + `onlimit` | Place it directly below the table inside the flush Panel (it draws its own top border). |
 | `SidePanel` | `bind:open`, `title`, `subtitle`, `size` md\|lg, `dismissible`, `onclose`, snippet `actions`, children | Drawer from the right for row details. |
 | `Dialog` | `bind:open`, `title`, `subtitle`, `size` sm\|md\|lg, `dismissible` (true), `onclose`, snippet `actions`, children | Content mounts only while open (forms start fresh). |
+| `DurationDialog` | `bind:open`, `title`, `submitLabel`, `maxMinutes` (7 days), children (the explanation above the fields), `onsubmit(minutes)` | Minutes or hours, shows when it ends on the host's clock; an error thrown by `onsubmit` is shown and keeps the dialog open. "Pause … for a custom time". |
 | `ConfirmDialog` | `bind:open`, `title`, `message`, `confirmLabel`, `cancelLabel`, `danger` (true), `onconfirm` (async; errors stay in the dialog), `oncancel`, children | Prefer `confirm()`. |
 | `confirm(opts)` | `{ title, message?, confirmLabel, cancelLabel?, danger?, action? }` → `Promise<boolean>` | With `action` the dialog runs it with a spinner and shows its error. |
 | `toast` | `toast.success(msg)`, `toast.info(msg)`, `toast.error(errOrMsg)` | While a Dialog/SidePanel is open, toasts show in it (above its footer when they would cover it), so they stay clickable. |
 | `Tabs` | `tabs: TabItem[]` ({id,label,count?,icon?}), `bind:active`, `label`, `onchange(id)`, snippet `children(active)` | Keep `tab` in the URL. |
-| `Menu` | `items: MenuItem[]` ({label, icon?, danger?, disabled?, checked?, href?, onselect?} or {separator:true}), `label`, `icon`, `iconOnly`, `variant` secondary\|ghost, `size`, `align` start\|end (end), `disabled`, snippet `trigger` | Row "more actions" menus: `iconOnly icon="more"`. |
+| `Menu` | `items: MenuItem[]` ({label, icon?, danger?, disabled?, checked?, href?, onselect?}, {separator:true} or {note}), `label`, `icon`, `iconOnly`, `variant` secondary\|ghost, `size`, `align` start\|end (end), `disabled`, snippet `trigger` | Row "more actions" menus: `iconOnly icon="more"`. `{ note: '…' }` is a short, non-focusable explanation between the items that also describes the menu (e.g. what a pause keeps on). |
 | `Tooltip` | `text`, `focusable` (true), children | Never for essential information. |
 | `Stat` | `value`, `label`, `href`, `title`, `tone` | Inline linked number (status sentences), not a card. |
 | `Chart` | `label`, `timestamps` (unix s), `series: ChartSeries[]` ({label, values, pair?, colorVar?, dashed?, fill?}), `stacked`, `height` (220), `yFormat` (formatCompact), `valueFormat`, `loading`, `minMax` (1), `integer` (true) | uPlot; legend doubles as the tooltip; follows theme and width. |
@@ -264,7 +266,8 @@ moon monitor globe logout pause play shield shield-check shield-off alert info
 error success copy external refresh trash edit pin download upload filter more
 sort arrow-up arrow-down overview list users user home sliders layers grid
 drive key lock document archive activity clock eye eye-off link power update
-bell send.
+bell send; neutral category icons (never brand logos) video chat gamepad
+music sparkles heart dice cart cloud newspaper.
 
 CSS utilities (`app.css`): `.page`, `.stack`, `.stack-sm`, `.row`, `.spacer`,
 `.cols-2`, `.toolbar`, `.mono`, `.num`, `.muted`, `.subtle`, `.small`,

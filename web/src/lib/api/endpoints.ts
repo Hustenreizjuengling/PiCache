@@ -195,8 +195,10 @@ const parental = {
   groups: (o?: ReqOpts) => http.get<T.GroupControls[]>('/parental/groups', o),
   group: (id: number, o?: ReqOpts) => http.get<T.GroupControls>(`/parental/groups/${seg(id)}`, o),
   /**
-   * Replaces blocked services and schedules. 400 with field blockedServices,
-   * schedules or schedules[<i>].name|days|start|end|block|services.
+   * Replaces blocked services, schedules, safe search and the category
+   * switches (list assignments). 400 with field blockedServices, schedules,
+   * schedules[<i>].name|days|start|end|block|services or safeSearch.youtube;
+   * 409 when a switch's list is an allowlist or the list limit is reached.
    */
   update: (id: number, c: T.GroupControlsInput, o?: ReqOpts) =>
     http.put<T.GroupControls>(`/parental/groups/${seg(id)}`, c, o),
@@ -205,6 +207,11 @@ const parental = {
     http.put<T.GroupControls>(`/parental/groups/${seg(id)}/override`, body, o),
   /** Ends the override: the plan applies again. */
   clearOverride: (id: number, o?: ReqOpts) => http.del<T.GroupControls>(`/parental/groups/${seg(id)}/override`, o),
+  /** Pauses the group's filtering (replaces a pause; 400 with field minutes or pause.until). */
+  pause: (id: number, body: T.PauseInput, o?: ReqOpts) =>
+    http.put<T.GroupControls>(`/parental/groups/${seg(id)}/pause`, body, o),
+  /** Ends the pause (also without one). */
+  resume: (id: number, o?: ReqOpts) => http.del<T.GroupControls>(`/parental/groups/${seg(id)}/pause`, o),
 }
 
 const network = {
@@ -414,6 +421,9 @@ const stats = {
   /** Per address, or per device with `group: 'device'`. */
   clients: (range: T.RangeArg, { group, ...o }: ClientStatsOpts = {}) =>
     http.get<T.ClientStat[]>('/stats/clients', { ...o, query: { ...rangeQuery(range), group } }),
+  /** Blocked (and safe-search) queries by purpose, counted per hour. */
+  purposes: (range: T.RangeArg = '24h', o?: ReqOpts) =>
+    http.get<T.PurposeStats>('/stats/purposes', { ...o, query: { ...rangeQuery(range) } }),
 }
 
 /** The complete typed API. */

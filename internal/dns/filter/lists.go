@@ -59,8 +59,21 @@ func (e *Engine) list(id int64) (List, error) {
 func (rt *listRT) copy() List {
 	l := rt.List
 	l.GroupIDs = slices.Clone(nonNil(rt.GroupIDs))
+	l.TLDBlocksIgnored = rt.tldBlocksIgnored()
 	return l
 }
+
+// tldBlocksIgnored returns the entries of the loaded copy that the TLD
+// guard ignores (0 while none is loaded in the current format).
+func (rt *listRT) tldBlocksIgnored() int {
+	if rt.parsed == nil || rt.parsed.format != rt.format() {
+		return 0
+	}
+	return rt.parsed.broad
+}
+
+// format returns the parse format of the list's configuration.
+func (rt *listRT) format() listFormat { return formatOf(rt.Kind, rt.PlainDomains, rt.Category) }
 
 func sortedLists(m map[int64]*listRT) []*listRT {
 	out := make([]*listRT, 0, len(m))
@@ -77,12 +90,34 @@ func (e *Engine) CreateList(ctx context.Context, in ListInput) (List, error) {
 	if err != nil {
 		return List{}, err
 	}
+	entry, isCatalog := catalogByURL(in.URL)
+	if isCatalog && in.Kind != entry.Kind {
+		if entry.Kind == "allow" {
+			return List{}, apperr.Invalid("kind", "this catalogue list is an allowlist")
+		}
+		return List{}, apperr.Invalid("kind", "this catalogue list is a blocklist")
+	}
+	fallback := CategoryOther
+	if isCatalog {
+		fallback = entry.Category
+	}
+	if in.Category, err = resolveCategory(in.Category, fallback, in.Kind); err != nil {
+		return List{}, err
+	}
 	if in.GroupIDs == nil {
 		in.GroupIDs = []int64{defaultGroupID}
 	}
+	return e.createList(ctx, in, entry.Key)
+}
+
+// createList inserts a validated list (catalogKey: the catalogue key of its
+// URL, "" if none).
+func (e *Engine) createList(ctx context.Context, in ListInput, catalogKey string) (List, error) {
+	e.listMu.Lock()
+	defer e.listMu.Unlock()
 	now := e.now()
 	var id int64
-	err = e.db.Tx(ctx, func(tx *sql.Tx) error {
+	err := e.db.Tx(ctx, func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM filter_lists`).Scan(&n); err != nil {
 			return err
@@ -93,8 +128,8 @@ func (e *Engine) CreateList(ctx context.Context, in ListInput) (List, error) {
 		if err := checkGroups(ctx, tx, in.GroupIDs); err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO filter_lists (name, url, kind, plain_domains, enabled, comment, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, in.Name, in.URL, in.Kind, in.PlainDomains, in.Enabled, in.Comment, db.Ms(now))
+		res, err := tx.ExecContext(ctx, `INSERT INTO filter_lists (name, url, kind, plain_domains, category, catalog_key, enabled, comment, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, in.Name, in.URL, in.Kind, in.PlainDomains, in.Category, catalogKey, in.Enabled, in.Comment, db.Ms(now))
 		if isUniqueViolation(err) {
 			return apperr.Conflict("a list with this URL already exists")
 		}
@@ -112,6 +147,7 @@ func (e *Engine) CreateList(ctx context.Context, in ListInput) (List, error) {
 	rt := &listRT{
 		List: List{
 			ID: id, Name: in.Name, URL: in.URL, Kind: in.Kind, PlainDomains: in.PlainDomains,
+			Category: in.Category, CatalogKey: catalogKey,
 			Enabled: in.Enabled, GroupIDs: in.GroupIDs, Comment: in.Comment, Status: statusPending,
 			CreatedAt: db.Time(db.Ms(now)),
 		},
@@ -133,6 +169,8 @@ func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, 
 	if err != nil {
 		return List{}, err
 	}
+	e.listMu.Lock()
+	defer e.listMu.Unlock()
 	e.mu.Lock()
 	rt, ok := e.lists[id]
 	var old List
@@ -146,17 +184,27 @@ func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, 
 	if in.GroupIDs == nil {
 		in.GroupIDs = old.GroupIDs
 	}
+	if in.Category, err = resolveCategory(in.Category, old.Category, in.Kind); err != nil {
+		return List{}, err
+	}
 	urlChanged := in.URL != old.URL
+	catalogKey := old.CatalogKey
+	if urlChanged {
+		entry, _ := catalogByURL(in.URL)
+		catalogKey = entry.Key
+	}
 	err = e.db.Tx(ctx, func(tx *sql.Tx) error {
 		if err := checkGroups(ctx, tx, in.GroupIDs); err != nil {
 			return err
 		}
-		query := `UPDATE filter_lists SET name = ?, url = ?, kind = ?, plain_domains = ?, enabled = ?, comment = ?`
+		query := `UPDATE filter_lists SET name = ?, url = ?, kind = ?, plain_domains = ?, category = ?, catalog_key = ?,
+			enabled = ?, comment = ?`
 		if urlChanged {
 			query += `, status = 'pending', last_error = '', last_updated = 0, last_checked = 0, last_success = 0,
 				entries = 0, invalid = 0, unsupported = 0, size_bytes = 0, etag = '', last_modified = '', content_hash = ''`
 		}
-		res, err := tx.ExecContext(ctx, query+` WHERE id = ?`, in.Name, in.URL, in.Kind, in.PlainDomains, in.Enabled, in.Comment, id)
+		res, err := tx.ExecContext(ctx, query+` WHERE id = ?`, in.Name, in.URL, in.Kind, in.PlainDomains, in.Category, catalogKey,
+			in.Enabled, in.Comment, id)
 		if isUniqueViolation(err) {
 			return apperr.Conflict("a list with this URL already exists")
 		}
@@ -178,14 +226,17 @@ func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, 
 	if !ok {
 		return List{}, apperr.NotFound("list", id)
 	}
-	reparse := in.Kind != rt.Kind || in.PlainDomains != rt.PlainDomains
+	oldFormat := rt.format()
 	rt.Name, rt.URL, rt.Kind, rt.PlainDomains = in.Name, in.URL, in.Kind, in.PlainDomains
+	rt.Category, rt.CatalogKey = in.Category, catalogKey
 	rt.Comment, rt.GroupIDs = in.Comment, in.GroupIDs
+	reparse := rt.format() != oldFormat // kind, plainDomains, or a category change into or out of abused-tlds
 	wasEnabled := rt.Enabled
 	rt.Enabled = in.Enabled
 	if urlChanged {
 		rt.List = List{
 			ID: rt.ID, Name: rt.Name, URL: rt.URL, Kind: rt.Kind, PlainDomains: rt.PlainDomains,
+			Category: rt.Category, CatalogKey: rt.CatalogKey,
 			Enabled: rt.Enabled, GroupIDs: rt.GroupIDs, Comment: rt.Comment, Status: statusPending,
 			CreatedAt: rt.CreatedAt,
 		}
@@ -220,6 +271,8 @@ func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, 
 
 // DeleteList removes a list and its cached copy.
 func (e *Engine) DeleteList(ctx context.Context, id int64) error {
+	e.listMu.Lock()
+	defer e.listMu.Unlock()
 	res, err := e.db.W.ExecContext(ctx, `DELETE FROM filter_lists WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -267,9 +320,19 @@ func (e *Engine) validateList(in ListInput) (ListInput, error) {
 	if err := checkText("comment", in.Comment, maxCommentLen); err != nil {
 		return in, err
 	}
-	in.Kind = cmp.Or(strings.ToLower(strings.TrimSpace(in.Kind)), "block")
+	in.Kind = strings.ToLower(strings.TrimSpace(in.Kind))
+	if in.Kind == "" {
+		in.Kind = "block"
+		if c, ok := catalogByURL(in.URL); ok {
+			in.Kind = c.Kind // a catalogue URL takes the entry's kind
+		}
+	}
 	if in.Kind != "block" && in.Kind != "allow" {
 		return in, apperr.Invalid("kind", "must be block or allow")
+	}
+	in.Category = strings.ToLower(strings.TrimSpace(in.Category))
+	if in.Category != "" && !validCategory(in.Category) {
+		return in, apperr.Invalid("category", "must be one of %s or %s", strings.Join(Categories, ", "), CategoryOther)
 	}
 	in.PlainDomains = cmp.Or(strings.ToLower(strings.TrimSpace(in.PlainDomains)), "exact")
 	if in.PlainDomains != "exact" && in.PlainDomains != "subtree" {
@@ -279,6 +342,22 @@ func (e *Engine) validateList(in ListInput) (ListInput, error) {
 		return in, err
 	}
 	return in, nil
+}
+
+// resolveCategory returns the category to store: explicit (validated by
+// validateList) or, when empty, fallback (the catalogue entry's on create,
+// the stored one on update), adjusted to the kind: an allowlist always has
+// "allow" and a blocklist never.
+func resolveCategory(explicit, fallback, kind string) (string, error) {
+	switch {
+	case explicit == "":
+		return categoryForKind(kind, fallback), nil
+	case kind == "allow" && explicit != CategoryAllow:
+		return "", apperr.Invalid("category", "an allowlist always has the category %s", CategoryAllow)
+	case kind == "block" && explicit == CategoryAllow:
+		return "", apperr.Invalid("category", "the category %s is only for allowlists", CategoryAllow)
+	}
+	return explicit, nil
 }
 
 // checkText validates a free-text field.

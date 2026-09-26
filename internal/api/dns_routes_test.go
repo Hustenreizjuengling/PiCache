@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/clients"
@@ -216,6 +218,11 @@ func TestDNSRoutesBlockingAndStatus(t *testing.T) {
 	rec = e.call(t, s.dnsBlockingGet, "GET", "/api/v1/dns/blocking", "")
 	if st := dnsDecode[dnsserver.BlockingStatus](t, rec); st.PausedUntil == nil {
 		t.Errorf("GET blocking %+v", st)
+	}
+	// The host's clock (for "until 06:00" in the UI).
+	zone, offset := time.Now().Zone()
+	if !strings.Contains(rec.Body.String(), `"timeZone":"`+zone+`","utcOffsetMinutes":`+strconv.Itoa(offset/60)) {
+		t.Errorf("blocking status without the host clock: %s", rec.Body)
 	}
 	dnsExpect(t, e.call(t, s.dnsBlockingSet, "POST", "/api/v1/dns/blocking", `{"pauseSeconds":30}`), http.StatusBadRequest)
 	dnsExpect(t, e.call(t, s.dnsBlockingSet, "POST", "/api/v1/dns/blocking", `{"enabled":false,"pauseSeconds":-1}`), http.StatusBadRequest)

@@ -544,6 +544,7 @@ export type QueryStatus =
   | 'blocked-service'
   | 'blocked-upstream'
   | 'blocked-rebind'
+  | 'safesearch'
   | 'refused'
   | 'error'
 
@@ -568,6 +569,10 @@ export interface BlockingStatus {
   enabled: boolean
   pausedUntil?: Timestamp
   permanent: boolean
+  /** Host time zone ("CEST", "UTC"), for pauses "until 06:00" on the host's clock. */
+  timeZone: string
+  /** Its current offset from UTC in minutes (120 for CEST). */
+  utcOffsetMinutes: number
 }
 
 /** netutil.RateLimited */
@@ -823,7 +828,21 @@ export const DEFAULT_GROUP_ID = 1
 
 // ---------------------------------------------------------------- parental controls
 
-export type ServiceCategory = 'video' | 'social' | 'messaging' | 'gaming' | 'music' | 'ai'
+/** Service categories in catalogue order (`software` = app stores, `hosting` = file sharing and cloud storage). */
+export type ServiceCategory =
+  | 'video'
+  | 'social'
+  | 'messaging'
+  | 'gaming'
+  | 'music'
+  | 'ai'
+  | 'dating'
+  | 'gambling'
+  | 'shopping'
+  | 'privacy'
+  | 'software'
+  | 'hosting'
+  | 'news'
 
 /** parental.Service: a service of the built-in catalogue (domains match with subdomains). */
 export interface ParentalService {
@@ -882,10 +901,39 @@ export interface ParentalGroupState {
   lifted: boolean
   liftedUntil?: Timestamp
   next?: ParentalNext
+  /** Filtering of the group is paused (its lists and rules stop applying; independent of blockAll and lifted). */
+  paused: boolean
+  pausedUntil?: Timestamp
   /** Host time zone that schedule times refer to ("CEST", "UTC"). */
   timeZone: string
   /** Its current offset from UTC in minutes (120 for CEST). */
   utcOffsetMinutes: number
+}
+
+export type YoutubeMode = 'off' | 'moderate' | 'strict'
+
+/** parental.SafeSearch: in effect whenever the group is enabled (not lifted by an allow override). */
+export interface SafeSearch {
+  google: boolean
+  youtube: YoutubeMode
+  bing: boolean
+  duckduckgo: boolean
+  ecosia: boolean
+  yandex: boolean
+  pixabay: boolean
+}
+
+/** Category switches: each binds one catalogue list that is assigned to the group. */
+export type CategorySwitch = 'adult' | 'gambling' | 'dating' | 'piracy' | 'bypass'
+
+/**
+ * State of a category switch: `on` = every bound list is enabled and
+ * assigned to the group; `state` pending = no copy downloaded yet, failed =
+ * a bound list failed without a copy.
+ */
+export interface CategoryState {
+  on: boolean
+  state: 'off' | 'active' | 'pending' | 'failed'
 }
 
 /** parental.GroupControls (GET/PUT /parental/groups/{id}). */
@@ -896,19 +944,32 @@ export interface GroupControls {
   clientCount: number
   blockedServices: string[]
   schedules: ParentalSchedule[]
+  /** The stored configuration (always present). */
+  safeSearch: SafeSearch
+  /** Filled from the filter lists; a switch removed from the server is absent. */
+  categories: Partial<Record<CategorySwitch, CategoryState>>
   override?: ParentalOverride
   state: ParentalGroupState
   updatedAt?: Timestamp
 }
 
-/** PUT /parental/groups/{id} */
+/**
+ * PUT /parental/groups/{id}. `safeSearch` and `categories` are optional on
+ * the server (absent or null members keep the stored value or the list
+ * assignment); the UI always sends all four members.
+ */
 export interface GroupControlsInput {
   blockedServices: string[]
   schedules: ParentalSchedule[]
+  safeSearch?: SafeSearch
+  categories?: Partial<Record<CategorySwitch, boolean>>
 }
 
 /** PUT /parental/groups/{id}/override: either minutes (1..10080) or until (≤ 7 days ahead). */
 export type OverrideInput = { mode: OverrideMode; minutes: number } | { mode: OverrideMode; until: Timestamp }
+
+/** PUT /parental/groups/{id}/pause: either minutes (1..10080) or until (in the future, ≤ 7 days ahead). */
+export type PauseInput = { minutes: number } | { until: Timestamp }
 
 // ---------------------------------------------------------------- network check
 
@@ -1338,6 +1399,35 @@ export interface DhcpLogEntry {
 
 export type ListStatus = 'pending' | 'ok' | 'unchanged' | 'failed-cached' | 'failed-empty'
 
+/** Catalogue categories in API and display order. */
+export const CATALOG_CATEGORIES = [
+  'general',
+  'security',
+  'privacy',
+  'adult',
+  'gambling',
+  'dating',
+  'piracy',
+  'social',
+  'doh-vpn-bypass',
+  'abused-tlds',
+  'url-shorteners',
+  'stalkerware',
+  'regional',
+  'allow',
+] as const
+
+export type CatalogCategory = (typeof CATALOG_CATEGORIES)[number]
+
+/** Category of a list: a catalogue category or `other` (user lists only). `allow` ⇔ kind allow. */
+export type ListCategory = CatalogCategory | 'other'
+
+/**
+ * Protection categories: enabled lists of these categories are enforced like
+ * parental controls (also while blocking is paused or disabled).
+ */
+export const PROTECTION_CATEGORIES: readonly ListCategory[] = ['adult', 'gambling', 'dating', 'piracy', 'doh-vpn-bypass']
+
 /** filter.List */
 export interface FilterList {
   id: number
@@ -1348,6 +1438,9 @@ export interface FilterList {
   enabled: boolean
   groupIds: number[]
   comment: string
+  category: ListCategory
+  /** Key of the catalogue entry with exactly this URL ("" for the user's own lists). */
+  catalogKey: string
   status: ListStatus
   lastError?: string
   lastUpdated?: Timestamp
@@ -1358,9 +1451,19 @@ export interface FilterList {
   unsupported: number
   sizeBytes: number
   createdAt: Timestamp
+  /**
+   * Entries of the loaded copy that would block a whole top-level domain and
+   * that the TLD guard ignores (part of `invalid`; 0 while no copy is loaded).
+   * Lists of the category abused-tlds are exempt.
+   */
+  tldBlocksIgnored: number
 }
 
-/** filter.ListInput */
+/**
+ * filter.ListInput. `category` absent or "" means: the catalogue entry's
+ * category on create (else `other`), the stored one on update; `allow` is
+ * stored for every allowlist (400 field "category"/"kind" otherwise).
+ */
 export interface FilterListInput {
   name: string
   url: string
@@ -1369,6 +1472,7 @@ export interface FilterListInput {
   enabled: boolean
   groupIds: number[]
   comment: string
+  category?: ListCategory | ''
 }
 
 export type RuleAction = 'allow' | 'block'
@@ -1433,17 +1537,28 @@ export interface FilterStats {
   updating: boolean
   failedLists: number
   staleLists: number
+  /** Enabled own lists (no catalogue key) with entries the TLD guard ignores. */
+  tldGuardLists: number
 }
 
-/** filter.CatalogEntry */
+/** filter.CatalogEntry (every member always present). */
 export interface CatalogEntry {
   key: string
   name: string
   description: string
+  descriptionDe: string
   url: string
-  category: 'general' | 'security' | 'privacy' | 'other'
+  kind: 'block' | 'allow'
+  category: CatalogCategory
   plainDomains: 'exact' | 'subtree'
+  /** Suggested for its category (listed first). */
   recommended: boolean
+  /** Entry count of the release's verification run. */
+  entries: number
+  maintainer: string
+  /** "" when the maintainer states none. */
+  license: string
+  homepage: string
 }
 
 /** POST /filter/explain */
@@ -2088,6 +2203,19 @@ export interface Series<K extends string = string> {
   step: number
   timestamps: number[]
   values: Partial<Record<K, number[]>>
+}
+
+/**
+ * Purpose of a blocked (or safe-search) query: the list's category for list
+ * decisions, else the mechanism.
+ */
+export type Purpose = ListCategory | 'rule' | 'service' | 'schedule' | 'upstream' | 'rebind' | 'special' | 'safesearch'
+
+/** logs.PurposeStats (GET /stats/purposes): sorted by count, then purpose. */
+export interface PurposeStats {
+  /** Hour-aligned start actually covered. */
+  from: Timestamp
+  purposes: { purpose: Purpose; count: number }[]
 }
 
 export type TopKind = 'domains' | 'blocked' | 'clients' | 'cache-clients' | 'content' | 'upstreams'

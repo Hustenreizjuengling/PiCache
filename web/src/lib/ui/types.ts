@@ -57,6 +57,8 @@ export type MenuItem =
       onselect?: () => void
     }
   | { separator: true }
+  /** A short explanation between the items (not focusable; it also describes the menu). */
+  | { note: string }
 
 /** A tab of Tabs. */
 export interface TabItem {

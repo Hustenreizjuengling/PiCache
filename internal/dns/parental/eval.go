@@ -7,11 +7,21 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// snapshot is the immutable state read by Check: the groups that have at
-// least one restriction (blocked services, an enabled schedule or a block
-// override; Check ignores an override that has ended).
+// snapshot is the immutable state read by the DNS server: the groups that
+// have at least one restriction (blocked services, an enabled schedule or
+// a block override; Check ignores an override that has ended), the groups
+// with any safe search setting (SafeSearch) and the pauses of the groups'
+// filtering (FilterGroups; an elapsed pause is ignored).
 type snapshot struct {
 	groups map[int64]*rules
+	safe   map[int64]*safeGroup
+	pauses map[int64]groupPause
+}
+
+// groupPause is the pause of one group's filtering.
+type groupPause struct {
+	name  string
+	until time.Time
 }
 
 // rules are one group's compiled controls.
@@ -33,14 +43,65 @@ type window struct {
 }
 
 func newSnapshot(rows []row, names map[int64]string) *snapshot {
-	s := &snapshot{groups: map[int64]*rules{}}
+	s := &snapshot{groups: map[int64]*rules{}, safe: map[int64]*safeGroup{}, pauses: map[int64]groupPause{}}
 	for i := range rows {
-		r := compile(&rows[i], names[rows[i].groupID])
-		if r.restricts() {
+		row := &rows[i]
+		name := names[row.groupID]
+		if r := compile(row, name); r.restricts() {
 			s.groups[r.id] = r
+		}
+		if g := compileSafeSearch(row.groupID, name, row.cfg.SafeSearch); g != nil {
+			s.safe[row.groupID] = g
+		}
+		if !row.pauseUntil.IsZero() {
+			s.pauses[row.groupID] = groupPause{name: name, until: row.pauseUntil}
 		}
 	}
 	return s
+}
+
+// FilterGroups returns the groups whose filtering is not paused at now
+// (the filtering groups of a query, ARCHITECTURE 7.1). It returns groupIDs
+// itself, without allocating, when none of them is paused.
+func (e *Engine) FilterGroups(groupIDs []int64, now time.Time) []int64 {
+	s := e.snap.Load()
+	if len(s.pauses) == 0 {
+		return groupIDs
+	}
+	paused := func(g int64) bool {
+		p, ok := s.pauses[g]
+		return ok && now.Before(p.until)
+	}
+	if !slices.ContainsFunc(groupIDs, paused) {
+		return groupIDs
+	}
+	out := make([]int64, 0, len(groupIDs))
+	for _, g := range groupIDs {
+		if !paused(g) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// GroupPause describes a paused group (for the lookup trace).
+type GroupPause struct {
+	GroupID int64
+	Group   string
+	Until   time.Time
+}
+
+// PausedGroups returns the groups of groupIDs whose filtering is paused at
+// now, in the order of groupIDs.
+func (e *Engine) PausedGroups(groupIDs []int64, now time.Time) []GroupPause {
+	s := e.snap.Load()
+	var out []GroupPause
+	for _, g := range groupIDs {
+		if p, ok := s.pauses[g]; ok && now.Before(p.until) {
+			out = append(out, GroupPause{GroupID: g, Group: p.name, Until: p.until})
+		}
+	}
+	return out
 }
 
 // compile turns a stored row into rules (disabled schedules are left out).

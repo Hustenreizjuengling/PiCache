@@ -48,9 +48,17 @@ type qctx struct {
 	proto    string // udp | tcp
 	id       *clients.Identity
 	set      *settings.All
-	blocking bool            // blocking active (not disabled or paused)
-	dec      filter.Decision // Filter.Check result (step 10/11; zero if blocking is off)
+	blocking bool            // blocking active (not disabled or paused, globally or for every group of the client)
+	dec      filter.Decision // Filter.Check result with the filtering groups (steps 7c, 11; zero if blocking is off)
+	decided  bool            // dec is computed
 	steps    *[]string       // pipeline trace (Lookup only)
+	// groups are the filtering groups: the identity's (enabled) groups
+	// without those whose filtering is paused (Parental.FilterGroups; all
+	// groups are qc.id.GroupIDs). The guard of step 7c, steps 8, 11, 14
+	// and the blocked-name check of 14b use them; 7a, 7c, 10 and 14c use
+	// all groups. scoped: groups and blocking are computed (scope).
+	groups []int64
+	scoped bool
 	// recordsOnly: local records only, no DHCP lease names (wpad and
 	// isatap in step 11a).
 	recordsOnly bool
@@ -103,11 +111,34 @@ type result struct {
 	def   bool
 	block *upstream.BlockInfo
 	ede   *upstream.EDE
+	// purpose is the statistics purpose of a list or rule decision (the
+	// list's category or "rule"); the other purposes follow from the
+	// status (purposeOf).
+	purpose string
+}
+
+// scope computes the filtering groups of the query once, after
+// identification: the identity's groups without the paused ones. When the
+// client has groups but all of them are paused, blocking is inactive for
+// the query, like a global pause.
+func (s *Server) scope(qc *qctx) {
+	if qc.scoped {
+		return
+	}
+	qc.scoped = true
+	qc.groups = qc.id.GroupIDs
+	if s.d.Parental != nil {
+		qc.groups = s.d.Parental.FilterGroups(qc.id.GroupIDs, qc.start)
+	}
+	if len(qc.id.GroupIDs) > 0 && len(qc.groups) == 0 {
+		qc.blocking = false
+	}
 }
 
 // process runs ARCHITECTURE 7.1 steps 5a–14c for a validated, admitted and
 // identified query.
 func (s *Server) process(qc *qctx) result {
+	s.scope(qc)
 	if r, ok := s.dns64PTR(qc); ok { // 5a
 		return r
 	}
@@ -124,19 +155,25 @@ func (s *Server) process(qc *qctx) result {
 		qc.note("dropped by dns.droppedDomains (" + entry + ")")
 		return result{drop: true, status: StatusDropped, reason: entry}
 	}
+	if r, ok := s.safeSearch(qc); ok { // 7c
+		return r
+	}
 	if r, ok := s.downloadCacheOverride(qc); ok { // 8 (user rules) + 9
 		return r
 	}
-	if qc.blocking && s.d.Filter != nil {
-		qc.dec = s.d.Filter.Check(qc.qname, qc.id.GroupIDs)
+	if r, ok := s.specialDomain(qc); ok { // 10
+		return r
+	}
+	if qc.blocking && s.d.Filter != nil { // 11
+		if !qc.decided {
+			qc.dec, qc.decided = s.d.Filter.Check(qc.qname, qc.groups), true
+		}
 		if qc.dec.Action == filter.ActionAllow {
 			if qc.tracing() {
 				qc.note(fmt.Sprintf("allowed by %s %q", qc.dec.Source, qc.dec.Name))
 			}
-		} else if r, ok := s.specialDomain(qc); ok { // 10
-			return r
 		}
-		if qc.dec.Blocked() { // 11
+		if qc.dec.Blocked() {
 			return s.blocked(qc, qc.dec, statusFor(qc.dec))
 		}
 	}
@@ -145,6 +182,12 @@ func (s *Server) process(qc *qctx) result {
 		stripIPv6Hints(qc, &r)  // 14a
 		return r
 	}
+	return s.forward(qc)
+}
+
+// forward runs steps 12a–14c: AAAA disabled, conditional forwarding or the
+// default upstreams, and the checks of their answer.
+func (s *Server) forward(qc *qctx) result {
 	if r, ok := s.aaaaDisabled(qc); ok { // 12a
 		return r
 	}
@@ -266,7 +309,7 @@ func (s *Server) inspectCNAMEs(qc *qctx, r *result) {
 			continue
 		}
 		target := normalizeName(c.Target)
-		d := s.d.Filter.Check(target, qc.id.GroupIDs)
+		d := s.d.Filter.Check(target, qc.groups)
 		if !d.Blocked() {
 			continue
 		}

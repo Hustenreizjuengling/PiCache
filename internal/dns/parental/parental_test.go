@@ -76,7 +76,7 @@ func (env *testEnv) group(name string) int64 {
 
 func (env *testEnv) update(id int64, cfg Config) GroupControls {
 	env.t.Helper()
-	gc, err := env.e.Update(context.Background(), id, cfg)
+	gc, err := env.e.Update(context.Background(), id, input(cfg))
 	if err != nil {
 		env.t.Fatalf("update group %d: %v", id, err)
 	}
@@ -145,10 +145,10 @@ func TestValidation(t *testing.T) {
 		{with(func(s *Schedule) { s.Block = BlockServices }), "schedules[0].services"},
 		{with(func(s *Schedule) { s.Block, s.Services = BlockServices, []string{"nope"} }), "schedules[0].services"},
 	} {
-		_, err := env.e.Update(ctx, kids, tc.cfg)
+		_, err := env.e.Update(ctx, kids, input(tc.cfg))
 		wantField(t, err, tc.field)
 	}
-	if _, err := env.e.Update(ctx, 999, Config{}); apperr.KindOf(err) != apperr.KindNotFound {
+	if _, err := env.e.Update(ctx, 999, UpdateInput{}); apperr.KindOf(err) != apperr.KindNotFound {
 		t.Fatalf("unknown group: %v", err)
 	}
 	if _, err := env.e.Get(ctx, 999); apperr.KindOf(err) != apperr.KindNotFound {
@@ -355,4 +355,10 @@ func TestNewFailsWithoutGroups(t *testing.T) {
 	if _, err := New(context.Background(), d, failingGroups{}, nil); !errors.Is(err, errSentinel) {
 		t.Fatalf("New: %v", err)
 	}
+}
+
+// input turns a configuration into a PUT body that replaces the services
+// and schedules and leaves safe search as it is.
+func input(cfg Config) UpdateInput {
+	return UpdateInput{BlockedServices: cfg.BlockedServices, Schedules: cfg.Schedules}
 }

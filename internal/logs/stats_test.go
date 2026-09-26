@@ -79,7 +79,7 @@ func TestRollupsMatchRawEvents(t *testing.T) {
 		switch {
 		case isBlocked(st):
 			raw["blocked"] += n
-		case st == "forwarded" || st == "stale" || st == "local" || st == "special":
+		case st == "forwarded" || st == "stale" || st == "local" || st == "special" || st == "safesearch":
 			raw["allowed"] += n
 		case st == "cached" || st == "override":
 			raw[st] += n

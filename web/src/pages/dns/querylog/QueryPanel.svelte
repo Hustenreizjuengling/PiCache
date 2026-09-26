@@ -7,11 +7,13 @@
   around that moment and block the device (admins, not while client
   addresses are anonymised). Answers blocked by the upstream say why a rule
   cannot help; answers blocked by rebinding protection offer to allow the
-  name.
+  name; safe-search answers point to parental controls. After "Explain",
+  a client in exactly one group other than Default can have that group's
+  filtering paused (admins, not while addresses are anonymised).
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import {
     api,
     DEFAULT_GROUP_ID,
@@ -34,6 +36,7 @@
   import RulePanel from '../filtering/RulePanel.svelte'
   import { confirmBlockDevice } from '../shared/blockClient'
   import MatchList from '../shared/MatchList.svelte'
+  import PauseMenu from '../shared/PauseMenu.svelte'
   import { edeText } from './ede'
 
   interface Props {
@@ -87,6 +90,14 @@
 
   // Anonymised addresses (logs.anonymizeClientIps) name a whole network, not the device.
   const canBlockDevice = $derived(session.isAdmin && !!settings && !settings.logs.anonymizeClientIps)
+
+  // Pausing a group from here is offered only when the client is in exactly one
+  // group and that is not Default (which covers every unknown device).
+  const pauseGroup = $derived.by(() => {
+    const ids = explain?.groupIds ?? []
+    if (!canBlockDevice || ids.length !== 1 || ids[0] === DEFAULT_GROUP_ID) return undefined
+    return groups?.find((g) => g.id === ids[0])
+  })
 
   /** The query name as stored in dns.rebindAllow (lower case, no trailing dot). */
   const rebindName = $derived(event ? event.qname.toLowerCase().replace(/\.$/, '') : '')
@@ -230,6 +241,13 @@
             <Button size="sm" variant="ghost" href={href('/dns/settings', { section: 'protection' })}>{t('dns.queryLog.rebindSetting')}</Button>
           {/snippet}
         </Notice>
+      {:else if event.status === 'safesearch'}
+        <Notice tone="info" title={t('dns.queryLog.safeSearchTitle')}>
+          {t('dns.queryLog.safeSearchText')}
+          {#snippet actions()}
+            <Button size="sm" icon="family" href={href('/dns/parental')}>{t('dns.queryLog.openParental')}</Button>
+          {/snippet}
+        </Notice>
       {/if}
 
       <div class="row">
@@ -278,6 +296,19 @@
         <section class="stack-sm" aria-labelledby="explain-title">
           <h3 id="explain-title">{t('dns.queryLog.explainTitle')}</h3>
           <MatchList matches={explain.matches} {groups} groupIds={explain.groupIds} />
+          {#if pauseGroup}
+            <div class="row">
+              <PauseMenu
+                groupId={pauseGroup.id}
+                groupName={pauseGroup.name}
+                clientCount={pauseGroup.clientCount}
+                label={t('dns.pause.buttonNamed', { group: pauseGroup.name, devices: tn('dns.parental.devices', pauseGroup.clientCount) })}
+                size="md"
+                align="start"
+                onpaused={() => undefined}
+              />
+            </div>
+          {/if}
           <p class="small">
             <a href={href('/dns/filtering', { tab: 'test', domain: event.qname, client: event.clientIp })}>
               {t('dns.queryLog.openTester')}

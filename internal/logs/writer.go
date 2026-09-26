@@ -124,6 +124,7 @@ func (w *writer) addQuery(e QueryEvent) {
 	e = cleanQuery(e, cfg.AnonymizeClientIPs, time.Now())
 	w.roll.addQuery(&e)
 	w.s.top.addQuery(&e)
+	e.Purpose = "" // counted only: not part of the live feed or the query log
 	if !cfg.QueryLogEnabled {
 		return
 	}

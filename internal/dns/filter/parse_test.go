@@ -210,7 +210,7 @@ func TestParseList(t *testing.T) {
 		"||x.example.com^$third-party\r\n" +
 		"not a domain\r\n" +
 		"plain.example.org\r\n"
-	p, err := parseList(context.Background(), strings.NewReader(list), "block", "exact")
+	p, err := parseList(context.Background(), strings.NewReader(list), testFormat("block"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestParseList(t *testing.T) {
 	}
 
 	// an allow list turns every entry into an allow entry
-	p, err = parseList(context.Background(), strings.NewReader("||a.example.com^\n0.0.0.0 b.example.com\n"), "allow", "exact")
+	p, err = parseList(context.Background(), strings.NewReader("||a.example.com^\n0.0.0.0 b.example.com\n"), testFormat("allow"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestParseListRejects(t *testing.T) {
 		"binary-first": {"\x1f\x8b\x08gzip", errBinary},
 		"ok-utf8":      {"! Tïtle: ünïcode comment\n||a.example.com^\n", nil},
 	} {
-		_, err := parseList(context.Background(), strings.NewReader(c.body), "block", "exact")
+		_, err := parseList(context.Background(), strings.NewReader(c.body), testFormat("block"))
 		if !errors.Is(err, c.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, c.want)
 		}
@@ -265,7 +265,7 @@ func TestParseListLongLineAndPatternCap(t *testing.T) {
 	for i := range maxPatterns + 5 {
 		b.WriteString("||ad" + strconv.Itoa(i) + "*.example.com^\n")
 	}
-	p, err := parseList(context.Background(), strings.NewReader(b.String()), "block", "exact")
+	p, err := parseList(context.Background(), strings.NewReader(b.String()), testFormat("block"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestParseListLongLineAndPatternCap(t *testing.T) {
 func TestParseListCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := parseList(ctx, strings.NewReader("||a.example.com^\n"), "block", "exact"); !errors.Is(err, context.Canceled) {
+	if _, err := parseList(ctx, strings.NewReader("||a.example.com^\n"), testFormat("block")); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -329,7 +329,7 @@ func TestParseListHostilePatterns(t *testing.T) {
 	fmt.Fprintf(&b, "||%s^\n", strings.Repeat("a*", 1500))
 	b.WriteString("||ad*.example.com^\n")
 	start := time.Now()
-	p, err := parseList(context.Background(), strings.NewReader(b.String()), "block", "exact")
+	p, err := parseList(context.Background(), strings.NewReader(b.String()), testFormat("block"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestParseListPatternCostBudget(t *testing.T) {
 	for i := range n {
 		fmt.Fprintf(&b, `/\pL{20}x%03d\.example/`+"\n", i)
 	}
-	p, err := parseList(context.Background(), strings.NewReader(b.String()), "block", "exact")
+	p, err := parseList(context.Background(), strings.NewReader(b.String()), testFormat("block"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,3 +366,6 @@ func TestParseListPatternCostBudget(t *testing.T) {
 		t.Errorf("stopped early: total cost %d, one more pattern costs %d", total, last.cost)
 	}
 }
+
+// testFormat is the format of a general list of kind (TLD guard on).
+func testFormat(kind string) listFormat { return formatOf(kind, "exact", CategoryGeneral) }

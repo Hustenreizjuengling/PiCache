@@ -1,6 +1,10 @@
 // Package filter implements blocklists and custom rules: list subscriptions
-// (fetch, parse, compile), user allow/deny rules, group scoping and the
-// hot-path matcher (docs/ARCHITECTURE.md 7.2).
+// (fetch, parse, compile), the list catalogue with its categories and the
+// category switches of the parental controls (SetPresets), user allow/deny
+// rules, group scoping and the hot-path matcher (docs/ARCHITECTURE.md 7.2).
+// An enabled list of a protection category (IsProtection) is also checked
+// on its own by CheckProtection, which the DNS server enforces like
+// parental controls.
 //
 // Tables (picache.db, component "filter"): filter_lists, filter_rules,
 // filter_list_groups(list_id, group_id), filter_rule_groups(rule_id,
@@ -32,6 +36,10 @@
 // when the configured URL host is a private IP literal, never after a
 // redirect to another host. http:// URLs are accepted only for private IP
 // literal hosts.
+//
+// The parser counts a subtree, wildcard or pattern block of a single label
+// or an ICANN public suffix as invalid (every category but abused-tlds), so
+// a broken or hostile list cannot block a whole TLD.
 //
 // $badfilter cancels matching rules of the same list. User rules are
 // bounded (20 000, of which at most 1 000 regular expressions); a list
@@ -82,19 +90,29 @@ type Decision struct {
 	ListID    int64
 	RuleID    int64
 	Name      string // list name or rule pattern, for logs ("blocked by …")
+	Category  string // list decisions: the list's category ("" for rules)
 	Important bool
 }
 
 // Blocked reports whether the decision blocks.
 func (d Decision) Blocked() bool { return d.Action == ActionBlock }
 
-// List is a subscribed block or allow list.
+// List is a subscribed block or allow list. Category is a catalogue
+// category or "other" ("allow" exactly for kind allow); an enabled list of
+// a protection category is enforced like parental controls
+// (CheckProtection). CatalogKey is the key of the catalogue entry with
+// exactly this URL ("" for the user's own lists), set on create and when
+// the URL changes. TLDBlocksIgnored counts the entries of the loaded copy
+// that would block a whole TLD and that the TLD guard ignores (part of
+// Invalid; 0 while no copy is loaded, e.g. for a disabled list).
 type List struct {
 	ID           int64     `json:"id"`
 	Name         string    `json:"name"`
 	URL          string    `json:"url"`
 	Kind         string    `json:"kind"`         // block | allow
 	PlainDomains string    `json:"plainDomains"` // exact | subtree
+	Category     string    `json:"category"`
+	CatalogKey   string    `json:"catalogKey"`
 	Enabled      bool      `json:"enabled"`
 	GroupIDs     []int64   `json:"groupIds"`
 	Comment      string    `json:"comment"`
@@ -108,17 +126,24 @@ type List struct {
 	Unsupported  int       `json:"unsupported"`
 	SizeBytes    int64     `json:"sizeBytes"`
 	CreatedAt    time.Time `json:"createdAt"`
+
+	// Not stored: counted from the loaded copy (listRT.copy).
+	TLDBlocksIgnored int `json:"tldBlocksIgnored"`
 }
 
-// ListInput creates or updates a list. Empty Kind and PlainDomains default
-// to "block" and "exact"; an empty Name is derived from the URL. GroupIDs
-// nil means the Default group on create and "unchanged" on update; an empty
+// ListInput creates or updates a list. An empty Kind takes the kind of
+// the catalogue entry with the same URL, else "block"; an empty
+// PlainDomains defaults to "exact"; an empty Name is derived from the URL.
+// An empty Category takes the catalogue entry's on create (else "other",
+// "allow" for allowlists) and keeps the stored one on update. GroupIDs nil
+// means the Default group on create and "unchanged" on update; an empty
 // non-nil slice means no group (the list applies to nobody).
 type ListInput struct {
 	Name         string  `json:"name"`
 	URL          string  `json:"url"`
 	Kind         string  `json:"kind"`
 	PlainDomains string  `json:"plainDomains"`
+	Category     string  `json:"category"`
 	Enabled      bool    `json:"enabled"`
 	GroupIDs     []int64 `json:"groupIds"`
 	Comment      string  `json:"comment"`
@@ -184,19 +209,28 @@ type Stats struct {
 	CompileMs       int64     `json:"compileMs"`
 	MemoryBytes     int64     `json:"memoryBytes"`
 	Updating        bool      `json:"updating"`
-	FailedLists     int       `json:"failedLists"` // enabled lists in failed-* state
-	StaleLists      int       `json:"staleLists"`  // last success older than 3× update interval
+	FailedLists     int       `json:"failedLists"`   // enabled lists in failed-* state
+	StaleLists      int       `json:"staleLists"`    // last success older than 3× update interval
+	TLDGuardLists   int       `json:"tldGuardLists"` // enabled own lists (no catalogue key) with entries the TLD guard ignores
 }
 
 // CatalogEntry is a curated list suggestion (embedded, no network needed).
+// Entries is the entry count of the verification run at release time (a
+// memory estimate: about EntryBytes per entry).
 type CatalogEntry struct {
-	Key          string `json:"key"`
-	Name         string `json:"name"`
-	Description  string `json:"description"`
-	URL          string `json:"url"`
-	Category     string `json:"category"` // general | security | privacy | other
-	PlainDomains string `json:"plainDomains"`
-	Recommended  bool   `json:"recommended"`
+	Key           string `json:"key"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	DescriptionDe string `json:"descriptionDe"`
+	URL           string `json:"url"`
+	Kind          string `json:"kind"`     // block | allow
+	Category      string `json:"category"` // Categories, never "other"
+	PlainDomains  string `json:"plainDomains"`
+	Recommended   bool   `json:"recommended"` // suggested for its category
+	Entries       int    `json:"entries"`
+	Maintainer    string `json:"maintainer"`
+	License       string `json:"license"` // "" when the maintainer states none
+	Homepage      string `json:"homepage"`
 }
 
 // List status values.
@@ -241,6 +275,7 @@ type Engine struct {
 
 	compileMu sync.Mutex    // serialises list matcher builds
 	ruleMu    sync.Mutex    // serialises rule writes and rule matcher rebuilds
+	listMu    sync.Mutex    // serialises list writes (create, update, delete, SetPresets) with their in-memory update
 	dlSem     chan struct{} // cap 1: serialises downloads and parses of list files
 	explain   chan struct{} // bounds concurrent Explain rescans
 
@@ -263,6 +298,9 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client,
 	if err != nil {
 		return nil, fmt.Errorf("filter: lists dir: %w", err)
 	}
+	if err := backfillCategories(ctx, d, dir); err != nil {
+		return nil, fmt.Errorf("filter: list categories: %w", err)
+	}
 	localDir := filepath.Join(dir, "local")
 	if err := os.MkdirAll(localDir, 0o750); err != nil {
 		return nil, fmt.Errorf("filter: create %s: %w", localDir, err)
@@ -277,7 +315,7 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client,
 		base:    base, cancel: cancel,
 	}
 	e.snap.Store(emptySnapshot)
-	rows, err := loadLists(ctx, d)
+	rows, err := loadLists(ctx, d.R)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -340,6 +378,17 @@ func (e *Engine) CheckRules(qname string, groups []int64) Decision {
 	return e.snap.Load().check(qname, groups, true)
 }
 
+// CheckProtection evaluates only the enabled protection lists (lists of
+// the protection categories) that share a group with groups, with the
+// list precedence of ARCHITECTURE 7.2 (steps 6–9 and 11): user rules and
+// other lists are ignored, so an allowlist never lifts a protection-list
+// block, but a protection list's own @@ entries apply. The DNS server
+// enforces it like parental controls (step 7a). Hot path: lock-free and
+// allocation-free; it returns at once when no protection list is enabled.
+func (e *Engine) CheckProtection(qname string, groups []int64) Decision {
+	return e.snap.Load().checkProtection(qname, groups)
+}
+
 // Stats returns matcher statistics.
 func (e *Engine) Stats() Stats {
 	s := e.snap.Load()
@@ -367,6 +416,9 @@ func (e *Engine) Stats() Stats {
 		if rt.Status == statusFailedCached || rt.Status == statusFailedEmpty {
 			st.FailedLists++
 		}
+		if rt.CatalogKey == "" && rt.tldBlocksIgnored() > 0 {
+			st.TLDGuardLists++
+		}
 		last := rt.LastSuccess
 		if last.IsZero() {
 			last = rt.CreatedAt
@@ -393,13 +445,20 @@ func (e *Engine) publishLocked(lists *listMatcher, rules *ruleMatcher) {
 		lists:      lists,
 		rules:      rules,
 		listNames:  make([]string, len(lists.ids)),
+		listCats:   make([]string, len(lists.ids)),
 		listGroups: make([][]int64, len(lists.ids)),
+		protGroups: make([][]int64, len(lists.ids)),
 	}
 	for i, id := range lists.ids {
 		if rt, ok := e.lists[id]; ok {
 			next.listNames[i] = rt.Name
+			next.listCats[i] = rt.Category
 			if rt.Enabled {
 				next.listGroups[i] = rt.GroupIDs
+				if IsProtection(rt.Category) && len(rt.GroupIDs) > 0 {
+					next.protGroups[i] = rt.GroupIDs
+					next.hasProt = true
+				}
 			}
 		}
 	}

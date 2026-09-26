@@ -1,15 +1,19 @@
 // Package parental implements parental controls per client group
 // (docs/ARCHITECTURE.md 16): services from an embedded catalogue that are
 // always blocked, weekly schedules that block all internet or selected
-// services, and one manual override per group that blocks all internet
-// ("block") or lifts the group's restrictions ("allow") until a time. The
-// DNS server asks Check for every query (ARCHITECTURE 7.1 step 7a).
+// services, one manual override per group that blocks all internet
+// ("block") or lifts the group's restrictions ("allow") until a time, safe
+// search per group and a timed pause of the group's filtering. The DNS
+// server asks Check (7.1 step 7a) and SafeSearch (step 7c) for every query
+// and FilterGroups once per query.
 //
 // Table (picache.db, component "parental"): parental_groups(group_id
 // REFERENCES client_groups(id) ON DELETE CASCADE, config (JSON
-// {blockedServices, schedules}), override_mode, override_until,
-// updated_at). A group without a row has no restrictions; deleting a group
-// deletes its row.
+// {blockedServices, schedules, safeSearch}), override_mode,
+// override_until, updated_at, pause_until). A group without a row has no
+// restrictions; deleting a group deletes its row. The category switches
+// of the API are list assignments of the filter package and never stored
+// here.
 //
 // Rules:
 //   - Only enabled groups apply (the client identity lists enabled groups
@@ -25,6 +29,11 @@
 //     counts as the clock shows it.
 //   - An override lasts at most 7 days. An expired one is ignored and
 //     removed from the table with the next write.
+//   - Safe search and the pause are independent of the override: an allow
+//     override lifts neither safe search nor the protection lists, and a
+//     pause ends only the group's filtering (its lists and rules), never
+//     parental controls or safe search. A pause lasts at most 7 days; an
+//     elapsed one is ignored and removed with the next write.
 //
 // Hot path: Check reads an immutable snapshot (atomic.Pointer) that is
 // rebuilt on every write and on group changes (Reload). When none of the
@@ -66,10 +75,11 @@ const (
 // Limits.
 const (
 	maxSchedules   = 10
-	maxServices    = 64 // per list (blocked services, services of a schedule)
-	maxNameLen     = 40 // schedule names, characters
+	maxServices    = 256 // per list (blocked services, services of a schedule)
+	maxNameLen     = 40  // schedule names, characters
 	maxOverride    = 7 * 24 * time.Hour
 	maxOverrideMin = int(maxOverride / time.Minute)
+	maxPause       = maxOverride // a pause of the group's filtering
 )
 
 // Schedule blocks all internet or selected services on the listed days
@@ -85,10 +95,123 @@ type Schedule struct {
 	Services []string `json:"services"`
 }
 
-// Config is a group's configuration (the body of PUT /parental/groups/{id}).
+// Config is a group's stored configuration.
 type Config struct {
 	BlockedServices []string   `json:"blockedServices"`
 	Schedules       []Schedule `json:"schedules"`
+	SafeSearch      SafeSearch `json:"safeSearch"`
+}
+
+// YouTube restricted mode levels (SafeSearch.YouTube).
+const (
+	YouTubeOff      = "off"
+	YouTubeModerate = "moderate"
+	YouTubeStrict   = "strict"
+)
+
+// SafeSearch is a group's safe search configuration: per search engine
+// whether its restricted mode is enforced (step 7c). A stored
+// configuration without it has everything off.
+type SafeSearch struct {
+	Google     bool   `json:"google"`
+	YouTube    string `json:"youtube"` // off | moderate | strict
+	Bing       bool   `json:"bing"`
+	DuckDuckGo bool   `json:"duckduckgo"`
+	Ecosia     bool   `json:"ecosia"`
+	Yandex     bool   `json:"yandex"`
+	Pixabay    bool   `json:"pixabay"`
+}
+
+// SafeSearchInput changes safe search member by member: a nil member keeps
+// the stored value.
+type SafeSearchInput struct {
+	Google     *bool   `json:"google"`
+	YouTube    *string `json:"youtube"`
+	Bing       *bool   `json:"bing"`
+	DuckDuckGo *bool   `json:"duckduckgo"`
+	Ecosia     *bool   `json:"ecosia"`
+	Yandex     *bool   `json:"yandex"`
+	Pixabay    *bool   `json:"pixabay"`
+}
+
+// CategoriesInput switches the category switches member by member (nil
+// keeps the current list assignment). The API applies it through the
+// filter lists (filter.Engine.SetPresets); parental never stores it.
+type CategoriesInput struct {
+	Adult    *bool `json:"adult"`
+	Gambling *bool `json:"gambling"`
+	Dating   *bool `json:"dating"`
+	Piracy   *bool `json:"piracy"`
+	Bypass   *bool `json:"bypass"`
+}
+
+// Want returns the switches that are set (switch name → on).
+func (c *CategoriesInput) Want() map[string]bool {
+	out := map[string]bool{}
+	if c == nil {
+		return out
+	}
+	for name, v := range map[string]*bool{"adult": c.Adult, "gambling": c.Gambling, "dating": c.Dating,
+		"piracy": c.Piracy, "bypass": c.Bypass} {
+		if v != nil {
+			out[name] = *v
+		}
+	}
+	return out
+}
+
+// UpdateInput is the body of PUT /parental/groups/{id}: blockedServices
+// and schedules replace the stored ones; safeSearch and categories are
+// optional, and so are their members (absent or null keeps the stored
+// value or the current list assignment), so a body of an older client
+// never turns safe search off or removes a group from its lists.
+type UpdateInput struct {
+	BlockedServices []string         `json:"blockedServices"`
+	Schedules       []Schedule       `json:"schedules"`
+	SafeSearch      *SafeSearchInput `json:"safeSearch"`
+	Categories      *CategoriesInput `json:"categories"`
+}
+
+// CategorySwitch is the state of a category switch for a group.
+type CategorySwitch struct {
+	On    bool   `json:"on"`    // every bound list is enabled and assigned to the group
+	State string `json:"state"` // off | active | pending | failed
+}
+
+// Categories are the category switches of a group (whole categories
+// through downloaded lists, filled in by the API from the filter lists).
+type Categories struct {
+	Adult    CategorySwitch `json:"adult"`
+	Gambling CategorySwitch `json:"gambling"`
+	Dating   CategorySwitch `json:"dating"`
+	Piracy   CategorySwitch `json:"piracy"`
+	Bypass   CategorySwitch `json:"bypass"`
+}
+
+// CategorySwitchNames are the names of the category switches (the members
+// of Categories and CategoriesInput).
+var CategorySwitchNames = []string{"adult", "gambling", "dating", "piracy", "bypass"}
+
+// Switch returns a pointer to the switch named name (nil if unknown).
+func (c *Categories) Switch(name string) *CategorySwitch {
+	switch name {
+	case "adult":
+		return &c.Adult
+	case "gambling":
+		return &c.Gambling
+	case "dating":
+		return &c.Dating
+	case "piracy":
+		return &c.Piracy
+	case "bypass":
+		return &c.Bypass
+	}
+	return nil
+}
+
+func offCategories() Categories {
+	off := CategorySwitch{State: "off"}
+	return Categories{Adult: off, Gambling: off, Dating: off, Piracy: off, Bypass: off}
 }
 
 // Override is a manual override of a group.
@@ -105,7 +228,16 @@ type OverrideInput struct {
 	Until   *time.Time `json:"until,omitempty"`
 }
 
+// PauseInput pauses a group's filtering: exactly one of Minutes (1–10080)
+// and Until (in the future, at most 7 days ahead).
+type PauseInput struct {
+	Minutes *int       `json:"minutes,omitempty"`
+	Until   *time.Time `json:"until,omitempty"`
+}
+
 // GroupControls is the parental configuration and state of one group.
+// SafeSearch is in effect whenever the group is enabled; Categories are
+// filled in by the API (all "off" as returned by the engine).
 type GroupControls struct {
 	GroupID         int64      `json:"groupId"`
 	GroupName       string     `json:"groupName"`
@@ -113,6 +245,8 @@ type GroupControls struct {
 	ClientCount     int        `json:"clientCount"`
 	BlockedServices []string   `json:"blockedServices"`
 	Schedules       []Schedule `json:"schedules"`
+	SafeSearch      SafeSearch `json:"safeSearch"`
+	Categories      Categories `json:"categories"`
 	Override        *Override  `json:"override,omitempty"` // active override only
 	State           GroupState `json:"state"`
 	UpdatedAt       time.Time  `json:"updatedAt,omitzero"`
@@ -128,6 +262,11 @@ type GroupState struct {
 	Lifted          bool      `json:"lifted"`             // an allow override is active
 	LiftedUntil     time.Time `json:"liftedUntil,omitzero"`
 	Next            *Change   `json:"next,omitempty"` // next schedule start or end within 7 days
+	// Paused: the group's filtering (its lists and rules, protection
+	// lists excepted) is paused until PausedUntil; independent of BlockAll
+	// and Lifted.
+	Paused      bool      `json:"paused"`
+	PausedUntil time.Time `json:"pausedUntil,omitzero"`
 	// TimeZone and UTCOffsetMinutes describe the host's local time that
 	// schedules use ("CEST", 120), so the UI can show the plan on the
 	// host's clock when the browser is in another zone.
@@ -264,13 +403,15 @@ func (e *Engine) controls(ctx context.Context, id int64) ([]GroupControls, error
 		if id != 0 && g.ID != id {
 			continue
 		}
-		gc := GroupControls{GroupID: g.ID, GroupName: g.Name, GroupEnabled: g.Enabled, ClientCount: g.ClientCount}
+		gc := GroupControls{GroupID: g.ID, GroupName: g.Name, GroupEnabled: g.Enabled, ClientCount: g.ClientCount,
+			Categories: offCategories()}
 		r := byID[g.ID]
 		if r == nil {
 			r = &row{groupID: g.ID, cfg: sanitizeConfig(Config{})}
 		}
 		gc.BlockedServices = r.cfg.BlockedServices
 		gc.Schedules = r.cfg.Schedules
+		gc.SafeSearch = r.cfg.SafeSearch
 		gc.UpdatedAt = r.updated
 		if r.override.Mode != "" && now.Before(r.override.Until) {
 			o := r.override
@@ -278,22 +419,43 @@ func (e *Engine) controls(ctx context.Context, id int64) ([]GroupControls, error
 			gc.Override = &o
 		}
 		gc.State = compile(r, g.Name).state(now, e.loc)
+		if now.Before(r.pauseUntil) {
+			gc.State.Paused, gc.State.PausedUntil = true, r.pauseUntil.UTC()
+		}
 		out = append(out, gc)
 	}
 	return out, nil
 }
 
-// Update replaces a group's blocked services and schedules (the override
-// is kept).
-func (e *Engine) Update(ctx context.Context, id int64, in Config) (GroupControls, error) {
-	cfg, err := validateConfig(in)
+// ValidateUpdate checks the parental part of a PUT body without storing
+// anything: services, schedules and the safe search members.
+func ValidateUpdate(in UpdateInput) error {
+	_, err := validateUpdate(in)
+	return err
+}
+
+// Update replaces a group's blocked services and schedules and changes the
+// safe search members that are set (the override and the pause are kept;
+// in.Categories is applied by the API).
+func (e *Engine) Update(ctx context.Context, id int64, in UpdateInput) (GroupControls, error) {
+	cfg, err := validateUpdate(in)
 	if err != nil {
 		return GroupControls{}, err
 	}
-	if err := e.write(ctx, id, func(w writer) error { return w.saveConfig(cfg) }); err != nil {
+	err = e.write(ctx, id, func(w writer) error {
+		stored, err := w.loadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.SafeSearch = in.SafeSearch.apply(stored.SafeSearch)
+		return w.saveConfig(cfg)
+	})
+	if err != nil {
 		return GroupControls{}, err
 	}
-	return e.Get(ctx, id)
+	// Saved: report it as saved even if the request goes away now (the API
+	// undoes the category switches only when the save failed).
+	return e.Get(context.WithoutCancel(ctx), id)
 }
 
 // SetOverride blocks all internet or lifts the group's restrictions until
@@ -312,6 +474,27 @@ func (e *Engine) SetOverride(ctx context.Context, id int64, in OverrideInput) (G
 // ClearOverride ends the group's override (a no-op if it has none).
 func (e *Engine) ClearOverride(ctx context.Context, id int64) (GroupControls, error) {
 	if err := e.write(ctx, id, func(w writer) error { return w.saveOverride(Override{}) }); err != nil {
+		return GroupControls{}, err
+	}
+	return e.Get(ctx, id)
+}
+
+// SetPause pauses the group's filtering until a time (replacing a pause it
+// has). Parental controls, safe search and protection lists stay in force.
+func (e *Engine) SetPause(ctx context.Context, id int64, in PauseInput) (GroupControls, error) {
+	until, err := validatePause(in, e.now())
+	if err != nil {
+		return GroupControls{}, err
+	}
+	if err := e.write(ctx, id, func(w writer) error { return w.savePause(until) }); err != nil {
+		return GroupControls{}, err
+	}
+	return e.Get(ctx, id)
+}
+
+// ClearPause resumes the group's filtering (a no-op if it is not paused).
+func (e *Engine) ClearPause(ctx context.Context, id int64) (GroupControls, error) {
+	if err := e.write(ctx, id, func(w writer) error { return w.savePause(time.Time{}) }); err != nil {
 		return GroupControls{}, err
 	}
 	return e.Get(ctx, id)

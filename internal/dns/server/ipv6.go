@@ -151,7 +151,7 @@ func (s *Server) dns64Blocked(qc *qctx, name string, check bool) bool {
 	if !check || !qc.blocking || s.d.Filter == nil || qc.dec.Action == filter.ActionAllow {
 		return false
 	}
-	return s.d.Filter.Check(name, qc.id.GroupIDs).Blocked()
+	return s.d.Filter.Check(name, qc.groups).Blocked()
 }
 
 // answerChain follows the CNAME chain of owner through rrs (at most
@@ -198,7 +198,7 @@ func (s *Server) dns64PTR(qc *qctx) (result, bool) {
 	req := qc.req.Copy()
 	req.Question = []dns.Question{{Name: fqdn(name), Qtype: dns.TypePTR, Qclass: dns.ClassINET}}
 	sub := *qc
-	sub.req, sub.q, sub.qname, sub.dec = req, req.Question[0], name, filter.Decision{}
+	sub.req, sub.q, sub.qname, sub.dec, sub.decided = req, req.Question[0], name, filter.Decision{}, false
 	r := s.process(&sub)
 	if r.msg == nil {
 		return r, true

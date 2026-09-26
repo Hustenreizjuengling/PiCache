@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/api"
+	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 )
 
@@ -54,6 +55,29 @@ func (a *App) healthLoop(ctx context.Context) {
 			eval()
 		}
 	}
+}
+
+// blocklistsHealth evaluates the check "blocklists" (first match): nothing
+// loaded while lists fail fails; failed or stale lists warn; more compiled
+// entries than filter.EntryBudget (the memory of a small host) warn; own
+// lists with entries that the TLD guard ignores warn (a list that blocks
+// whole TLDs needs the category abused-tlds).
+func blocklistsHealth(blockingEnabled bool, fs filter.Stats) (status, msg, hint string) {
+	switch {
+	case blockingEnabled && fs.FailedLists > 0 && fs.Entries == 0:
+		return "fail", "no blocklist could be loaded; nothing is blocked", "check the list URLs and the internet connection"
+	case fs.FailedLists > 0:
+		return "warn", fmt.Sprintf("%d list(s) failed to update", fs.FailedLists), "see Filtering → Blocklists"
+	case fs.StaleLists > 0:
+		return "warn", fmt.Sprintf("%d list(s) not updated for a long time", fs.StaleLists), "see Filtering → Blocklists"
+	case fs.Entries > filter.EntryBudget:
+		return "warn", fmt.Sprintf("the blocklists hold %d entries; a small host may run short of memory", fs.Entries),
+			fmt.Sprintf("use fewer or smaller lists (at most about %d entries in total, Filtering → Blocklists)", filter.EntryBudget)
+	case fs.TLDGuardLists > 0:
+		return "warn", fmt.Sprintf("%d own list(s) contain entries that would block a whole top-level domain; they are ignored", fs.TLDGuardLists),
+			"if a list is meant to block whole TLDs, give it the category abused-tlds (Filtering → Blocklists)"
+	}
+	return "ok", "", ""
 }
 
 // fallbackRecent is how long after a fallback answered the health check
@@ -123,17 +147,8 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	add("upstreams", st, msg, hint)
 
 	// Filtering
-	fs := a.filter.Stats()
-	switch {
-	case set.Filter.Enabled && fs.FailedLists > 0 && fs.Entries == 0:
-		add("blocklists", "fail", "no blocklist could be loaded; nothing is blocked", "check the list URLs and the internet connection")
-	case fs.FailedLists > 0:
-		add("blocklists", "warn", fmt.Sprintf("%d list(s) failed to update", fs.FailedLists), "see Filtering → Blocklists")
-	case fs.StaleLists > 0:
-		add("blocklists", "warn", fmt.Sprintf("%d list(s) not updated for a long time", fs.StaleLists), "see Filtering → Blocklists")
-	default:
-		add("blocklists", "ok", "", "")
-	}
+	st, msg, hint = blocklistsHealth(set.Filter.Enabled, a.filter.Stats())
+	add("blocklists", st, msg, hint)
 
 	// DNS rate limiting
 	if top := a.dns.Stats().TopRateLimited; len(top) > 0 {

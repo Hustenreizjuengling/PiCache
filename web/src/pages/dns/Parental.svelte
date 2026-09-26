@@ -1,15 +1,17 @@
 <!--
   @component
   DNS › Parental controls: one card per client group (Default last) with its
-  current state in plain words, the weekly plan, schedules and always-blocked
-  services; quick actions to block the internet now or lift the
-  restrictions for a while; an edit panel; a test for one device; short
-  hints. Parental controls apply even while blocking is paused.
+  current state in plain words, the weekly plan, schedules, always-blocked
+  services, safe search and category switches; quick actions to block the
+  internet now, lift the restrictions or pause the group's filtering for a
+  while; an edit panel; a test for one device; short hints. Parental
+  controls, safe search and protection lists apply even while blocking is
+  paused.
   Query: ?edit=<group id> opens the edit panel of a group.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
-  import { api, DEFAULT_GROUP_ID, resource, type GroupControls, type OverrideMode } from '$lib/api'
+  import { api, DEFAULT_GROUP_ID, resource, type GroupControls, type OverrideMode, type Resource } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { href, router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
@@ -17,15 +19,22 @@
   import ControlsPanel from './parental/ControlsPanel.svelte'
   import GroupCard from './parental/GroupCard.svelte'
   import Hints from './parental/Hints.svelte'
-  import { hostDiffers, hostZone, setHostClock } from './parental/hostclock.svelte'
+  import { hostDiffers, hostZone, setHostClock } from '$lib/hostclock.svelte'
   import { ordered, whenText } from './parental/plan'
   import TestBox from './parental/TestBox.svelte'
   import UntilDialog from './parental/UntilDialog.svelte'
 
-  const groups = resource((signal) => api.parental.groups({ signal }), { interval: 60_000 })
+  // Faster while a category switch waits for its list's first download.
+  const pending = (): boolean =>
+    (groups.data ?? []).some((g) => Object.values(g.categories ?? {}).some((c) => c?.state === 'pending'))
+  const pace = (): number => (pending() ? 10_000 : 60_000)
+  const groups: Resource<GroupControls[]> = resource((signal) => api.parental.groups({ signal }), { interval: pace })
   const catalog = resource((signal) => api.parental.services({ signal }))
   const clients = resource((signal) => api.clients.list({ signal }))
   const known = resource((signal) => api.clients.known('30d', { signal }))
+  // Names and sizes of the lists behind the category switches.
+  const filterCatalog = resource((signal) => api.filter.catalog({ signal }))
+  const lists = resource((signal) => api.filter.lists.list({ signal }), { interval: pace })
 
   // Schedules use the host's clock; the page shows times on it.
   $effect(() => setHostClock(groups.data?.[0]?.state))
@@ -39,7 +48,7 @@
 
   // Reload right after the next change of any group (a window or an override ends), not only every minute.
   $effect(() => {
-    const times = (groups.data ?? []).flatMap((g) => [g.state.until, g.state.liftedUntil, g.state.next?.time])
+    const times = (groups.data ?? []).flatMap((g) => [g.state.until, g.state.liftedUntil, g.state.pausedUntil, g.state.next?.time])
     const next = Math.min(...times.map((x) => (x ? new Date(x).getTime() : Infinity)).filter((x) => x > Date.now()))
     if (!Number.isFinite(next)) return
     const id = setTimeout(() => void groups.refresh(), Math.min(next - Date.now() + 1500, 2 ** 31 - 1))
@@ -54,6 +63,12 @@
 
   function replace(g: GroupControls) {
     groups.set((groups.data ?? []).map((x) => (x.groupId === g.groupId ? g : x)))
+  }
+
+  // Saving can create or change the lists of category switches.
+  function saved(g: GroupControls) {
+    replace(g)
+    void lists.refresh()
   }
 
   // ---- quick actions
@@ -100,6 +115,19 @@
       busy = busy.filter((x) => x !== g.groupId)
     }
   }
+
+  async function resume(g: GroupControls) {
+    busy = [...busy, g.groupId]
+    try {
+      replace(await api.parental.resume(g.groupId))
+      toast.success(t('dns.pause.resumedToast', { group: g.groupName }))
+    } catch (e) {
+      toast.error(e)
+      void groups.refresh()
+    } finally {
+      busy = busy.filter((x) => x !== g.groupId)
+    }
+  }
 </script>
 
 <div class="page">
@@ -137,6 +165,8 @@
         onedit={(x) => router.setQuery({ edit: x.groupId }, { push: true })}
         onoverride={override}
         onend={end}
+        onpaused={replace}
+        onresume={resume}
       />
     {/each}
   {/if}
@@ -152,7 +182,12 @@
     catalog={catalog.data}
     catalogError={catalog.error}
     onretrycatalog={() => catalog.refresh()}
-    onsaved={replace}
+    filterCatalog={filterCatalog.data}
+    lists={lists.data}
+    onsaved={saved}
+    onpaused={replace}
+    onresume={resume}
+    resuming={!!editing && busy.includes(editing.groupId)}
   />
   <UntilDialog bind:open={untilOpen} group={untilGroup} mode={untilMode} onsaved={(g) => (replace(g), announce(g, untilMode))} />
 {/if}

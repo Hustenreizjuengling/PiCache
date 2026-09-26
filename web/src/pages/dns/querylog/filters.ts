@@ -20,13 +20,14 @@ export const ALL_STATUSES: readonly QueryStatus[] = [
   'local',
   'special',
   'override',
+  'safesearch',
   ...BLOCKED_STATUSES,
   'refused',
   'error',
 ]
 
 /** Statuses answered normally (not blocked, refused or failed). */
-export const ALLOWED_STATUSES: readonly QueryStatus[] = ['forwarded', 'cached', 'stale', 'local', 'special', 'override']
+export const ALLOWED_STATUSES: readonly QueryStatus[] = ['forwarded', 'cached', 'stale', 'local', 'special', 'override', 'safesearch']
 
 /** Record types offered by the type filter (others can still come from a link). */
 export const QTYPES = ['A', 'AAAA', 'CNAME', 'HTTPS', 'SVCB', 'MX', 'TXT', 'PTR', 'SRV', 'NS', 'SOA', 'DS', 'DNSKEY', 'ANY']

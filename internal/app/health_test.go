@@ -1,9 +1,11 @@
 package app
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 )
 
@@ -37,6 +39,30 @@ func TestUpstreamHealth(t *testing.T) {
 		st, msg, hint := upstreamHealth(tc.guard, tc.stats, tc.fb, tc.last, now)
 		if st != tc.status || msg != tc.msg || (st != "ok" && hint == "") {
 			t.Errorf("%s: %s %q %q", tc.name, st, msg, hint)
+		}
+	}
+}
+
+func TestBlocklistsHealth(t *testing.T) {
+	for _, tc := range []struct {
+		enabled bool
+		stats   filter.Stats
+		status  string
+		msg     string
+	}{
+		{true, filter.Stats{Entries: 100}, "ok", ""},
+		{true, filter.Stats{FailedLists: 1}, "fail", "no blocklist could be loaded; nothing is blocked"},
+		{false, filter.Stats{FailedLists: 1}, "warn", "1 list(s) failed to update"},
+		{true, filter.Stats{Entries: 100, StaleLists: 2}, "warn", "2 list(s) not updated for a long time"},
+		{true, filter.Stats{Entries: filter.EntryBudget}, "ok", ""},
+		{true, filter.Stats{Entries: filter.EntryBudget + 1}, "warn",
+			fmt.Sprintf("the blocklists hold %d entries; a small host may run short of memory", filter.EntryBudget+1)},
+		{true, filter.Stats{Entries: 100, TLDGuardLists: 1}, "warn",
+			"1 own list(s) contain entries that would block a whole top-level domain; they are ignored"},
+	} {
+		st, msg, _ := blocklistsHealth(tc.enabled, tc.stats)
+		if st != tc.status || msg != tc.msg {
+			t.Errorf("%+v: %s %q, want %s %q", tc.stats, st, msg, tc.status, tc.msg)
 		}
 	}
 }

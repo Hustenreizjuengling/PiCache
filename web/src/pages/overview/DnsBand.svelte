@@ -1,8 +1,9 @@
 <!--
   @component
-  Overview band "DNS": allowed/blocked queries per minute (stacked), top
-  blocked domains and top clients (one row per device with all its
-  addresses; its link shows the queries of every address).
+  Overview band "DNS": allowed/blocked queries per minute (stacked), blocked
+  queries by purpose, top blocked domains and top clients (one row per
+  device with all its addresses; its link shows the queries of every
+  address).
 -->
 <script lang="ts">
   import { t } from '../../i18n/index.svelte'
@@ -13,6 +14,7 @@
   import { Button, Chart } from '../../lib/ui'
   import Band from './Band.svelte'
   import { links } from './links'
+  import PurposeList from './PurposeList.svelte'
   import TopTable from './TopTable.svelte'
   import { topWindow } from './topWindow'
 
@@ -70,6 +72,8 @@
     />
     {#if series.error}<p class="err">{errorText(series.error)}</p>{/if}
   </div>
+
+  <PurposeList {range} />
 
   {#snippet split()}
     <TopTable

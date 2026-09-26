@@ -5,6 +5,98 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Migrations**: filter 2 adds a category and a catalogue key to every
+  list (`category`, `catalogKey`; existing lists get the category of the
+  catalogue entry with the same URL, else `other`, `allow` for
+  allowlists, and `abused-tlds` for an own blocklist whose downloaded copy
+  blocks mostly whole top-level domains); parental 2 adds the pause of a
+  group's filtering (`pause_until`). Nothing else is rewritten; `logs.db`
+  is unchanged.
+- **Lists that block whole top-level domains need the category
+  `abused-tlds`**: the parser now ignores entries such as `||zip^` or
+  `*.co.uk^` in every other list (see Changed). An own list of abused TLDs
+  that is not recognised at the upgrade keeps working only after you give
+  it that category (Filtering → Blocklists); such a list shows how many
+  entries it ignores, and the health check `blocklists` names it.
+- **The HaGeZi DoH/VPN/TOR/Proxy Bypass list is now a protection list**
+  (category `doh-vpn-bypass`): it applies like parental controls, also
+  while blocking is paused or disabled, and the allow override of a group
+  does not lift it. Set its category to `security` (Filtering →
+  Blocklists) to get the old behaviour; the parental switch "Bypass
+  services" then shows off for its groups (the list pauses with blocking),
+  and switching it on gives the list its category back, for all its groups.
+- **Special domains no longer follow the blocking switch**: the Mozilla
+  canary (`use-application-dns.net`) and iCloud Private Relay are answered
+  by their own settings also while blocking is paused or disabled (only an
+  allow rule or allowlist of the client exempts them). A browser that saw
+  the canary unblocked during a pause switched to encrypted DNS and kept
+  it, which bypassed parental controls.
+- **Downgrade**: a version before 0.10.0 refuses the migrated `picache.db`
+  (newer schema) and does not start. Going back needs the copy
+  `<data>/backups/picache-<old version>-<timestamp>.db` that 0.10.0 makes at
+  its first start (the update helper's rollback restores it itself; Docker
+  users restore it before starting an older image). `logs.db` keeps its
+  schema: 0.9.0 ignores the new statistics rows (kind `purpose`) and shows
+  logged safe-search queries with their raw status `safesearch`.
+
+### Added
+
+- **Safe search per group** (parental controls): Google, YouTube
+  restricted mode (moderate or strict), Bing, DuckDuckGo, Ecosia, Yandex
+  and Pixabay are answered with a CNAME to the engine's restricted host,
+  whose own answer is resolved like any other (conditional forwarders,
+  DNS64, rebind protection). HTTPS/SVCB/ANY queries of these names get no
+  data, other types (MX, TXT, DS) are answered normally. New query status
+  `safesearch` (an allowed status). It stays on while blocking is paused
+  or disabled, during a group's allow override and against allow rules;
+  a block of the name for the client (a deny rule, a list) wins.
+- **Category switches** (parental controls): adult content, gambling,
+  dating, piracy and DNS/VPN bypass per group, each through one
+  catalogue list that PiCache downloads (OISD NSFW, HaGeZi Gambling
+  medium, ShadowWhisperer Dating, HaGeZi Anti-Piracy, HaGeZi
+  DoH/VPN/TOR/Proxy Bypass). The PUT body of `/parental/groups/{id}`
+  takes optional `safeSearch` and `categories`; a body without them
+  changes neither.
+- **Protection lists**: every enabled list of the categories `adult`,
+  `gambling`, `dating`, `piracy` and `doh-vpn-bypass` is enforced like
+  parental controls, also while blocking is paused or disabled; an
+  allowlist does not lift it, a user allow rule for the client does.
+- **List catalogue** of 68 lists in categories (general, security,
+  privacy, adult, gambling, dating, piracy, social, DoH/VPN bypass, abused
+  TLDs, URL shorteners, stalkerware, regional, allowlists), each with its
+  maintainer, license, homepage, entry count and an English and German
+  description; every URL was checked for this release. Lists have a
+  category (`filter.List.category`, also for your own lists).
+- **Pause per group**: `PUT/DELETE /parental/groups/{id}/pause` pauses the
+  lists and rules of one group for up to 7 days (audited as
+  `parental.pause` and `parental.pause_clear`); parental controls, safe
+  search and protection lists stay on; the client's other groups still
+  apply. The global pause offers "until 06:00" and custom durations;
+  `/dns/blocking` reports the host's time zone (`timeZone`,
+  `utcOffsetMinutes`).
+- **Blocked services**: 144 services (was 27) in 13 categories, now also
+  dating, gambling, shopping, VPN and proxy apps, app stores, file
+  hosting and news; up to 256 services per group or schedule.
+- **Statistics by purpose** (`GET /stats/purposes`): blocked and
+  safe-search queries by list category, rule, service, schedule,
+  upstream block, rebinding, special domain and safe search.
+- A health warning when the blocklists hold more than 4 000 000 entries
+  (the memory of a 1 GB host).
+
+### Changed
+
+- The list parser counts a subtree, wildcard or pattern block of a single
+  label or of an ICANN public suffix (`||com^`, `*.co.uk`, `||*.com^`,
+  `.com^`, `/\.xyz$/`) as invalid, so one broken or hostile list cannot
+  block a whole top-level domain; lists of the category `abused-tlds` are
+  exempt. `filter.List.tldBlocksIgnored` counts the ignored entries.
+- At start, the counts of a list (`entries`, `invalid`, `unsupported`)
+  follow its cached copy as this version parses it.
+- An empty `kind` of a new list with a catalogue URL takes the entry's kind;
+  a kind that contradicts the catalogue entry is refused (field `kind`).
+
 ## [0.9.0] - 2026-09-26
 
 ### Upgrade notes

@@ -13,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/hustenreizjuengling/picache/internal/clients"
+	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 )
@@ -322,11 +323,51 @@ func (s *Server) logQuery(qc *qctx, res result, reply *dns.Msg) {
 		DNSSEC:     reply.AuthenticatedData,
 		Protocol:   qc.proto,
 		ECS:        clientSubnet(qc.req),
+		Purpose:    purposeOf(res),
 	}
 	if res.ede != nil {
 		e.UpstreamEDE = &logs.UpstreamEDE{Code: int(res.ede.Code), Text: res.ede.Text}
 	}
 	s.d.Logs.LogQuery(e)
+}
+
+// Statistics purposes that are not list categories (ARCHITECTURE 11).
+const (
+	PurposeRule       = "rule"
+	PurposeService    = "service"
+	PurposeSchedule   = "schedule"
+	PurposeUpstream   = "upstream"
+	PurposeRebind     = "rebind"
+	PurposeSpecial    = "special"
+	PurposeSafeSearch = "safesearch"
+)
+
+// purposeOf returns the statistics purpose of a logged query ("" = not
+// counted): the list category or "rule" of a list or rule decision (set by
+// the step), otherwise the mechanism of the status.
+func purposeOf(res result) string {
+	switch res.status {
+	case StatusBlockedList, StatusBlockedRegex, StatusBlockedCNAME:
+		if res.purpose != "" {
+			return res.purpose
+		}
+		return filter.CategoryOther
+	case StatusBlockedRule:
+		return PurposeRule
+	case StatusBlockedService:
+		return PurposeService
+	case StatusBlockedSchedule:
+		return PurposeSchedule
+	case StatusBlockedUpstream:
+		return PurposeUpstream
+	case StatusBlockedRebind:
+		return PurposeRebind
+	case StatusBlockedSpecial:
+		return PurposeSpecial
+	case StatusSafeSearch:
+		return PurposeSafeSearch
+	}
+	return ""
 }
 
 // summarize returns a compact answer summary (≤ 256 bytes), e.g.

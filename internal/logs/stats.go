@@ -321,6 +321,27 @@ func (s *Store) Top(ctx context.Context, kind TopKind, from, to time.Time, limit
 	return nil, apperr.Invalid("kind", "must be one of domains, blocked, clients, cache-clients, content, upstreams")
 }
 
+// maxPurposes bounds the purposes of a range (the in-memory cap per hour).
+const maxPurposes = 64
+
+// Purposes returns the blocked and safe-search queries of [TopFrom(from),
+// to) by purpose, from the hourly top table and the in-memory hour.
+func (s *Store) Purposes(ctx context.Context, from, to time.Time) (PurposeStats, error) {
+	from, to, err := statsRange(from, to)
+	if err != nil {
+		return PurposeStats{}, err
+	}
+	rows, err := s.dnsTop(ctx, dnsTopPurpose, from, to, maxPurposes)
+	if err != nil {
+		return PurposeStats{}, err
+	}
+	out := PurposeStats{From: TopFrom(from), Purposes: make([]PurposeCount, 0, len(rows))}
+	for _, r := range rows {
+		out.Purposes = append(out.Purposes, PurposeCount{Purpose: r.Key, Count: r.Count})
+	}
+	return out, nil
+}
+
 // dnsTop aggregates the hourly DNS top rows of kind k over [from, to),
 // merged with the in-memory current hour, highest count first.
 func (s *Store) dnsTop(ctx context.Context, k dnsKind, from, to time.Time, limit int) ([]dnsTopRow, error) {

@@ -840,26 +840,50 @@ announces PiCache's ULA is fine.
 **DNS → Parental controls** restricts the devices of a client group (for
 example a group "Kids" with the children's phones, tablets and consoles):
 
-- **Blocked services**: apps and sites from a built-in list (YouTube,
-  TikTok, Instagram, Snapchat, WhatsApp, Discord, Roblox, Fortnite,
-  Minecraft, Steam, Netflix, ChatGPT, …) that are always blocked for the
-  group.
+- **Blocked services**: apps and sites from a built-in list of 144
+  services in 13 categories (video, social networks, messaging, games,
+  music, AI, dating, gambling, shopping, VPN and proxy apps, app stores,
+  file hosting, news; for example YouTube, TikTok, Instagram, WhatsApp,
+  Roblox, Fortnite, Steam, Netflix, ChatGPT, Tinder, bet365, NordVPN) that
+  are always blocked for the group.
 - **Schedules** (up to 10 per group): on selected days between two times,
   block all internet (a bedtime, for example school nights Sunday to
   Thursday, 21:00 until 07:00 the next day) or selected services (for
   example YouTube and TikTok during homework time).
+- **Safe search**: per search engine (Google, Bing, DuckDuckGo, Ecosia,
+  Yandex, Pixabay) the restricted mode, and YouTube's restricted mode
+  (moderate or strict). PiCache answers the engine's names with its
+  restricted host (for example `forcesafesearch.google.com`); the query
+  log shows them as *Safe search*.
+- **Category switches**: adult content, gambling, dating, piracy and
+  encrypted-DNS/VPN bypass. Each switch assigns the group to one catalogue
+  list that PiCache downloads (created on first use, visible in
+  **Filtering → Blocklists**; switching off removes the group, the list
+  stays).
+  Unlike blocked services they are not schedulable. Switching one on also
+  enables its list again for other groups that have it.
 - **Block internet now** and **Lift restrictions** for 30 minutes, 1 or
   2 hours or until a time (at most 7 days), and **End** for either.
+- **Pause filtering** of the group (for a while, at most 7 days): the group's
+  lists and rules stop for its devices, its security lists (malware,
+  phishing) included; the devices' other groups still apply.
 - **Test**: a domain and a device show whether and why PiCache blocks it.
 
 A device in several groups gets the restrictions of all its groups; lifting
-restrictions affects only the group it is done for. Parental controls stay
-on while the blocklists are paused (the pause in the header), so a pause
-never ends a bedtime. The Default group applies to every device that is in
-no other group. Blocked queries appear in the query log as *Blocked by
-schedule* or *Blocked service*, with the group and the schedule or service
-as reason. A user allow rule for the group (**Filtering → Rules**) lets a
-name through, for example a school website during bedtime.
+restrictions affects only the group it is done for. **What stays in
+force**: parental controls, safe search and the protection lists (every
+list of the categories adult, gambling, dating, piracy and DNS/VPN bypass,
+also one you add yourself) stay on while blocking is paused or disabled in
+the header and while a group's filtering is paused, so a pause never ends a
+bedtime. "Lift restrictions" lifts only the group's blocked services and
+schedules; safe search and the category switches stay on. The Default
+group applies to every device that is in no other group. Blocked queries
+appear in the query log as *Blocked by schedule*, *Blocked service* or,
+for a protection list, *Blocked by list*, with the group and the schedule,
+service or list as reason. A user allow rule for the group
+(**Filtering → Rules**) lets a name through, for example a school website
+during bedtime or a site a category list blocks by mistake; it does not
+lift safe search.
 
 Things to know:
 
@@ -874,10 +898,26 @@ Things to know:
 - DNS blocking starts when an app looks a name up again, usually within
   minutes; open connections (a running video, a game session) can continue
   until they reconnect.
-- Encrypted DNS and VPN apps bypass PiCache, and so do mobile data and other
-  networks. Add the catalogue list **HaGeZi DoH/VPN/TOR/Proxy Bypass** to
-  the group (**Filtering → Blocklists**), and on the router, if it can,
-  block outgoing DNS (ports 53 and 853) to servers other than PiCache.
+- Encrypted DNS and VPN apps bypass PiCache (parental controls, safe search
+  and the category switches), and so do mobile data and other networks.
+  Switch on the bypass category for the group (the list **HaGeZi
+  DoH/VPN/TOR/Proxy Bypass**), and on the router, if it can, block outgoing
+  DNS (ports 53 and 853) to servers other than PiCache. Since 0.10.0 an
+  existing bypass list applies also while blocking is paused; give it the
+  category *security* (**Filtering → Blocklists**) for the old behaviour.
+  The switch *Bypass services* then shows off for its groups, because the
+  list pauses with blocking; switching it on gives the list its category
+  back, for all its groups.
+- A list meant to block whole top-level domains (`||zip^`, `*.xyz^`) needs
+  the category *Abused top-level domains*: in every other list PiCache
+  ignores such entries, so a broken or hostile list cannot block all of
+  `.com`. The list's details show how many entries it ignores, and the
+  health check *blocklists* names own lists that ignore some.
+- Memory: the category lists are large (the adult list has about 470 000
+  entries). One entry needs about 24 bytes; PiCache warns in the health
+  checks when all lists together hold more than 4 000 000 entries, which
+  peaks at about 250 MiB during a list update, enough for a 1 GB host
+  running PiCache alone.
 
 ---
 

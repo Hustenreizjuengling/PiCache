@@ -1,8 +1,9 @@
 <!--
   @component
-  Blocklists tab: every list with its state, entries, last update and
-  problems; add from the catalogue or by URL, update one or all, enable or
-  disable inline, and open a list for details, settings and Delete.
+  Blocklists tab: every list with its category (protection lists marked),
+  state, entries, last update and problems; add from the catalogue or by
+  URL, update one or all, enable or disable inline, and open a list for
+  details, settings and Delete.
   Query: ?sel=<list id>
 -->
 <script lang="ts">
@@ -12,11 +13,11 @@
   import { formatDateTime, formatNumber, formatRelative } from '$lib/format'
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { Button, Chip, EmptyState, IconButton, Panel, Table, toast, Toggle, type Column } from '$lib/ui'
+  import { Button, Chip, EmptyState, Icon, IconButton, Panel, Table, toast, Toggle, type Column } from '$lib/ui'
   import { groupNames } from '../shared/groups'
   import AddListDialog from './AddListDialog.svelte'
   import ListPanel from './ListPanel.svelte'
-  import { listInput, listStatus, skippedLines } from './listStatus'
+  import { categoryLabel, isProtection, listInput, listStatus, skippedLines } from './listStatus'
 
   interface Props {
     groups: readonly ClientGroup[] | undefined
@@ -55,6 +56,11 @@
     lists.set((lists.data ?? []).filter((x) => x.id !== id))
     router.setQuery({ sel: null })
     onchanged()
+  }
+
+  /** Allowlists by their kind, blocklists by their category. */
+  function categoryText(l: FilterList): string {
+    return l.kind === 'allow' ? t('dns.lists.kind.allow') : categoryLabel(l.category || 'other')
   }
 
   async function setEnabled(l: FilterList, enabled: boolean) {
@@ -103,7 +109,7 @@
   const columns: Column<FilterList>[] = $derived([
     { key: 'enabled', label: t('common.label.enabled'), width: '1%', cell: enabledCell },
     { key: 'name', label: t('common.label.name'), sortable: true, value: (l) => l.name, cell: nameCell },
-    { key: 'kind', label: t('dns.lists.kind'), value: (l) => (l.kind === 'allow' ? t('dns.rules.action.allow') : t('dns.rules.action.block')) },
+    { key: 'category', label: t('dns.lists.categoryLabel'), sortable: true, value: (l) => categoryText(l), cell: categoryCell },
     { key: 'status', label: t('common.label.status'), cell: statusCell },
     {
       key: 'entries',
@@ -132,6 +138,15 @@
   <span class="name">
     <span class="truncate">{l.name}</span>
     <span class="url mono truncate" title={l.url}>{l.url}</span>
+  </span>
+{/snippet}
+
+{#snippet categoryCell(l: FilterList)}
+  <span class="cat nowrap">
+    {categoryText(l)}
+    {#if l.kind === 'block' && isProtection(l.category)}
+      <span class="protect" title={t('dns.lists.protectionNotice')}><Icon name="shield" size={14} label={t('dns.lists.protectionShort')} /></span>
+    {/if}
   </span>
 {/snippet}
 
@@ -225,5 +240,14 @@
     display: block;
     max-width: 28ch;
     color: var(--warning);
+  }
+  .cat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .protect {
+    display: inline-flex;
+    color: var(--text-2);
   }
 </style>

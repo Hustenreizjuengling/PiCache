@@ -72,14 +72,14 @@ func (e *Engine) interval() time.Duration {
 // loadCached parses the cached copies of all enabled lists (at start).
 func (e *Engine) loadCached(ctx context.Context) {
 	type job struct {
-		id          int64
-		kind, plain string
+		id     int64
+		format listFormat
 	}
 	var jobs []job
 	e.mu.Lock()
 	for _, rt := range sortedLists(e.lists) {
 		if rt.Enabled && rt.parsed == nil {
-			jobs = append(jobs, job{rt.ID, rt.Kind, rt.PlainDomains})
+			jobs = append(jobs, job{rt.ID, rt.format()})
 		}
 	}
 	e.mu.Unlock()
@@ -90,7 +90,7 @@ func (e *Engine) loadCached(ctx context.Context) {
 			if err = e.lockDownloads(ctx); err != nil {
 				return
 			}
-			p, err = e.parseFile(ctx, e.cachePath(j.id), j.kind, j.plain)
+			p, err = e.parseFile(ctx, e.cachePath(j.id), j.format)
 			e.unlockDownloads()
 			if ctx.Err() != nil {
 				return
@@ -99,17 +99,30 @@ func (e *Engine) loadCached(ctx context.Context) {
 				e.log.Warn("cannot read the cached copy of a list", slog.Int64("id", j.id), slog.Any("err", err))
 			}
 		}
+		url := "" // set when the stored counts differ from the copy's
 		e.mu.Lock()
 		if rt, ok := e.lists[j.id]; ok && rt.Enabled && rt.parsed == nil {
 			switch {
-			case err == nil && rt.Kind == j.kind && rt.PlainDomains == j.plain:
+			case err == nil && rt.format() == j.format:
 				rt.parsed = p
 				e.parseGen++
+				// A release may parse the same copy differently (e.g. the TLD
+				// guard): show the counts of the copy in effect.
+				if rt.Entries != p.entries || rt.Invalid != p.invalid || rt.Unsupported != p.unsupported {
+					rt.Entries, rt.Invalid, rt.Unsupported = p.entries, p.invalid, p.unsupported
+					url = rt.URL
+				}
 			case err != nil && !rt.LastChecked.IsZero():
 				rt.wantDownload = true // the copy is missing or unreadable: fetch it again now
 			}
 		}
 		e.mu.Unlock()
+		if url != "" {
+			if _, err := e.db.W.ExecContext(ctx, `UPDATE filter_lists SET entries = ?, invalid = ?, unsupported = ? WHERE id = ? AND url = ?`,
+				p.entries, p.invalid, p.unsupported, j.id, url); err != nil && ctx.Err() == nil {
+				e.log.Warn("save list counts", slog.Int64("id", j.id), slog.Any("err", err))
+			}
+		}
 	}
 }
 
@@ -253,7 +266,8 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 		size: cfg.SizeBytes, etag: cfg.etag, lastModified: cfg.lastModified, contentHash: cfg.hash,
 	}
 	hasCache := e.hasCache(id)
-	needParse := cfg.parsed == nil || cfg.parsed.kind != cfg.Kind || cfg.parsed.plain != cfg.PlainDomains
+	format := cfg.format()
+	needParse := cfg.parsed == nil || cfg.parsed.format != format
 	var p *parsed
 	var tmp string
 	if download {
@@ -275,7 +289,7 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 				up.etag, up.lastModified = f.etag, f.lastModified
 			}
 		default:
-			parsedTmp, err := e.parseFile(ctx, f.tmp, cfg.Kind, cfg.PlainDomains)
+			parsedTmp, err := e.parseFile(ctx, f.tmp, format)
 			if err == nil && parsedTmp.entries == 0 && hasCache && cfg.Entries > 0 {
 				// An empty (or comment-only) body where the cached copy has
 				// entries is a server or mirror glitch, or a file caught
@@ -299,7 +313,7 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 		}
 	}
 	if needParse && p == nil && hasCache {
-		cached, err := e.parseFile(ctx, e.cachePath(id), cfg.Kind, cfg.PlainDomains)
+		cached, err := e.parseFile(ctx, e.cachePath(id), format)
 		switch {
 		case ctx.Err() != nil:
 			return false, ctx.Err()
@@ -339,7 +353,7 @@ func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up list
 	rt.Entries, rt.Invalid, rt.Unsupported, rt.SizeBytes = up.entries, up.invalid, up.unsupported, up.size
 	rt.etag, rt.lastModified, rt.hash = up.etag, up.lastModified, up.contentHash
 	rt.jitter = newJitter()
-	changed := p != nil && rt.Enabled && rt.Kind == p.kind && rt.PlainDomains == p.plain
+	changed := p != nil && rt.Enabled && rt.format() == p.format
 	if changed {
 		rt.parsed = p
 		e.parseGen++
@@ -361,12 +375,12 @@ func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up list
 	return changed
 }
 
-// parseFile parses a list file.
-func (e *Engine) parseFile(ctx context.Context, path, kind, plain string) (*parsed, error) {
-	f, err := os.Open(path)
+// parseFile parses a list file in format f.
+func (e *Engine) parseFile(ctx context.Context, path string, f listFormat) (*parsed, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return parseList(ctx, io.LimitReader(f, e.maxBytes), kind, plain)
+	defer file.Close()
+	return parseList(ctx, io.LimitReader(file, e.maxBytes), f)
 }

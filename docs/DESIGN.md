@@ -76,7 +76,7 @@ Scale (1.25 ratio, 15 px base, since dense admin UIs read better slightly smalle
 - Sidebar 232 px; it collapses to a top drawer below 900 px. Content is left-aligned. Tables scroll horizontally inside their panel on small screens and never scroll the page sideways.
 - **Overview** is not a card grid. It reads as a single "status sentence" row followed by two broad bands, one per product half:
   - Row 1: a plain-language status line, e.g. "DNS is answering 42 queries/min · 18 % blocked · cache served 38 GB today, 91 % from disk". Each number links to the matching filtered page.
-  - Band "DNS": the traffic chart (blue/orange stacked), then top blocked domains and top clients side by side.
+  - Band "DNS": the traffic chart (blue/orange stacked), then top blocked domains and top clients side by side, and "Blocked by purpose" as a compact ranked bar list (orange bars, safe search striped blue).
   - Band "Cache": the throughput chart (green hit vs brown WAN), live downloads, and storage (used/free with a "full in ~N days" estimate).
 - **Tables** are the core component: 36 px rows (32 px compact), sticky header, right-aligned numbers, mono cells for machine values, status chips in pair colours, row click opens a side panel (not a new page) with details and actions.
 - **Forms**: labels above fields; help text below in `--text-2`; validation messages from the API `field` path shown next to the field; destructive actions need an explicit confirm dialog that names the object ("Delete list HaGeZi Multi?").

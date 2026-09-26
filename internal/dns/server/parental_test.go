@@ -18,13 +18,50 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// fakeParental blocks the names in block (or every name with all) and
-// records the groups it was asked for.
+// fakeParental blocks the names in block (or every name with all),
+// rewrites the names in safe, pauses the groups in paused and records the
+// groups it was asked for.
 type fakeParental struct {
 	mu     sync.Mutex
 	block  map[string]parental.Decision
 	all    *parental.Decision
+	safe   map[string]parental.SafeSearchRewrite
+	paused map[int64]parental.GroupPause
 	groups [][]int64
+}
+
+func (f *fakeParental) SafeSearch(qname string, _ []int64, _ time.Time) (parental.SafeSearchRewrite, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rw, ok := f.safe[qname]
+	return rw, ok
+}
+
+func (f *fakeParental) FilterGroups(groups []int64, now time.Time) []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.paused) == 0 {
+		return groups
+	}
+	var out []int64
+	for _, g := range groups {
+		if p, ok := f.paused[g]; !ok || !now.Before(p.Until) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+func (f *fakeParental) PausedGroups(groups []int64, now time.Time) []parental.GroupPause {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []parental.GroupPause
+	for _, g := range groups {
+		if p, ok := f.paused[g]; ok && now.Before(p.Until) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (f *fakeParental) Check(qname string, groups []int64, _ time.Time) parental.Decision {

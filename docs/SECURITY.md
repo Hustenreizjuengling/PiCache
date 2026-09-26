@@ -411,16 +411,60 @@ and [§17](ARCHITECTURE.md#17-network-check-internalappnetcheckgo).
   resolver (a DNS server set by hand, encrypted DNS in an app or browser, a
   VPN app, mobile data or another network) is not restricted, and answers
   the device cached before a block, as well as connections that are already
-  open, keep working until they expire or reconnect. The catalogue list
-  "HaGeZi DoH/VPN/TOR/Proxy Bypass" and blocking outgoing DNS (ports 53 and
-  853) to other servers on the router make bypassing harder; neither is
-  complete. Treat parental controls as a help for a household, not as a
-  security boundary against a determined user of the device.
-- **Changes need admin rights and are audited** (`parental.update`,
-  `parental.override`, `parental.override_clear`); read-only users and read
-  tokens see the configuration and the state. Pausing the blocklists does
-  not lift parental controls; only an admin action does. Service domains
-  come from a catalogue compiled into the binary; nothing is downloaded.
+  open, keep working until they expire or reconnect. The category switch
+  for encrypted DNS and VPN bypass (the list "HaGeZi DoH/VPN/TOR/Proxy
+  Bypass") and blocking outgoing DNS (ports 53 and 853) to other servers on
+  the router make bypassing harder; neither is complete. Treat parental
+  controls as a help for a household, not as a security boundary against
+  a determined user of the device.
+- **Safe search is DNS-based too.** PiCache answers the search engines'
+  names with a CNAME to their restricted hosts. An app or browser with its
+  own DNS, a VPN, another network or an engine PiCache does not know gets
+  around it; a page the engine does not classify as adult stays visible.
+  The unrestricted answer is never returned: if the restricted host cannot
+  be resolved, the query fails (SERVFAIL).
+- **Category switches download third-party lists.** Service domains come
+  from a catalogue compiled into the binary, but the category switches
+  (adult content, gambling, dating, piracy, bypass) and every catalogue
+  list are downloaded from their maintainers like any other list. The
+  catalogue's URLs were checked for the release (reachable, parseable,
+  almost no invalid lines); the list content is still the maintainer's,
+  can change at any time and can block too much. The parser refuses to
+  let a list block a whole top-level domain or ICANN public suffix, as a
+  domain entry (`||com^`, `*.co.uk`) or as a pattern (`||*.com^`,
+  `.com^`, `/\.xyz$/`, anything that matches a made-up name directly
+  below such a suffix), except in lists of the category `abused-tlds`;
+  the refused entries are counted per list. A pattern can still block a
+  large part of a TLD (`||a*.com^`). A downloaded list is only ever used
+  for DNS answers.
+- **A category switch is on only while its list is a protection list.**
+  A switch counts its list only while the list is a blocklist of the
+  switch's category; a list that was given another category (for example
+  `security`, which pauses with blocking) or made an allowlist leaves the
+  switch off, and switching on gives the list its category back.
+- **What a pause keeps in force.** Pausing blocking (globally, or the
+  filtering of one group) stops the lists and rules of that scope,
+  **the security lists (malware, phishing) included**. Parental controls,
+  safe search and the protection lists (the categories adult, gambling,
+  dating, piracy and DNS/VPN bypass) stay in force, and so do the
+  special domains (the Firefox DoH canary and iCloud Private Relay), so a
+  browser does not switch to encrypted DNS during a pause and keep it.
+- **Content protection is not lifted by "lift restrictions".** The allow
+  override of a group lifts only its blocked services and schedules. Safe
+  search and protection lists end only when an admin switches them off,
+  disables the group or moves the device out of it; a user allow rule for
+  the device unblocks a single name a protection list blocks by mistake.
+- **Changes need admin rights and are audited** (`parental.update` — with
+  the services, schedules, safe search and category switches —,
+  `parental.override`, `parental.override_clear`, `parental.pause`,
+  `parental.pause_clear`, and `filter.list.create`/`filter.list.update`
+  for the lists a category switch creates or changes, written as soon as
+  the lists changed). If the parental configuration cannot be saved
+  afterwards, the list changes are undone exactly (a list the request
+  created is deleted, a changed list gets its previous state back) and
+  the undo is audited as well (`filter.list.delete`/`filter.list.update`);
+  read-only users and read tokens see the configuration and the state. Pausing the blocklists
+  does not lift parental controls; only an admin action does.
 - **The network check only reads.** It uses the kernel's neighbour table,
   the routing tables, the query statistics PiCache keeps anyway and a PTR
   lookup of the gateway through the router resolver; nothing leaves the

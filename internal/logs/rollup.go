@@ -21,9 +21,12 @@ const (
 	statusLocal     = "local"
 	statusSpecial   = "special"
 	statusOverride  = "override"
-	statusRefused   = "refused"
-	statusError     = "error"
-	blockedPrefix   = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service, blocked-upstream, blocked-rebind
+	// statusSafeSearch: safe search answered with the engine's restricted
+	// host (7.1 step 7c); counted as allowed in the local column.
+	statusSafeSearch = "safesearch"
+	statusRefused    = "refused"
+	statusError      = "error"
+	blockedPrefix    = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service, blocked-upstream, blocked-rebind
 )
 
 // blockedStatuses are the blocked statuses (7.1 steps 7a, 8, 10, 11, 13a, 14,
@@ -35,13 +38,13 @@ var blockedStatuses = []string{
 
 // knownStatuses are the statuses accepted by query-log filters.
 var knownStatuses = append(append([]string{
-	statusForwarded, statusCached, statusStale, statusLocal, statusSpecial, statusOverride},
+	statusForwarded, statusCached, statusStale, statusLocal, statusSpecial, statusOverride, statusSafeSearch},
 	blockedStatuses...), statusRefused, statusError)
 
 // statusClasses are the disjoint series classes; filters accept them as
 // aliases for their statuses.
 var statusClasses = map[string][]string{
-	"allowed":  {statusForwarded, statusStale, statusLocal, statusSpecial},
+	"allowed":  {statusForwarded, statusStale, statusLocal, statusSpecial, statusSafeSearch},
 	"cached":   {statusCached},
 	"override": {statusOverride},
 	"blocked":  blockedStatuses,
@@ -76,7 +79,7 @@ func (c *dnsCounts) add(status string, durationUs int64) {
 		c.cached++
 	case status == statusStale:
 		c.stale++
-	case status == statusLocal:
+	case status == statusLocal, status == statusSafeSearch: // no column of its own (no logs.db migration)
 		c.local++
 	case status == statusSpecial:
 		c.special++

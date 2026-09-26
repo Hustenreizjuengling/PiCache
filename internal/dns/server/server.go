@@ -2,8 +2,10 @@
 // pipeline of docs/ARCHITECTURE.md 7.1: ACL, blocked clients, rate limit,
 // hardening, client identity (with EDNS from trusted forwarders),
 // special-use names, local records (and the names of DHCP leases,
-// Deps.Leases), parental controls, dropped domains, download cache answers,
-// special domains, filtering, single-label names, conditional forwarding /
+// Deps.Leases), parental controls and protection lists, dropped domains,
+// safe search, download cache answers, special domains, filtering (with
+// the filtering groups: a paused group's lists and rules stop),
+// single-label names, conditional forwarding /
 // router resolver, upstream resolution, upstream blocks, bogus NXDOMAIN,
 // CNAME inspection, DNS rebinding protection, reply shaping and logging.
 // It also owns local DNS records and conditional forwarders. Health probes
@@ -82,8 +84,11 @@ const (
 	StatusBlockedUpstream = "blocked-upstream"
 	// StatusBlockedRebind: DNS rebinding protection (step 14c).
 	StatusBlockedRebind = "blocked-rebind"
-	StatusRefused       = "refused"
-	StatusError         = "error"
+	// StatusSafeSearch: safe search answered the name with a CNAME to the
+	// search engine's restricted host (step 7c); not a blocked status.
+	StatusSafeSearch = "safesearch"
+	StatusRefused    = "refused"
+	StatusError      = "error"
 	// StatusDropped: the query gets no answer (a blocked client, a dropped
 	// domain); reported by Lookup only, never logged.
 	StatusDropped = "dropped"
@@ -106,6 +111,8 @@ const (
 type Filter interface {
 	Check(qname string, groups []int64) filter.Decision
 	CheckRules(qname string, groups []int64) filter.Decision
+	// CheckProtection evaluates only the protection lists (step 7a).
+	CheckProtection(qname string, groups []int64) filter.Decision
 	Explain(ctx context.Context, qname string, groups []int64) ([]filter.Match, error)
 }
 
@@ -136,6 +143,13 @@ type Upstream interface {
 // Parental is the part of *parental.Engine the server uses.
 type Parental interface {
 	Check(qname string, groups []int64, now time.Time) parental.Decision
+	// SafeSearch returns the safe search rewrite of a name (step 7c).
+	SafeSearch(qname string, groups []int64, now time.Time) (parental.SafeSearchRewrite, bool)
+	// FilterGroups returns the groups whose filtering is not paused
+	// (groups itself when none is).
+	FilterGroups(groups []int64, now time.Time) []int64
+	// PausedGroups lists the paused groups (for the lookup trace).
+	PausedGroups(groups []int64, now time.Time) []parental.GroupPause
 }
 
 // QueryLogger is the part of *logs.Store the server uses.
@@ -253,11 +267,15 @@ type LookupResult struct {
 	Matches    []filter.Match `json:"matches"` // all filter matches
 }
 
-// BlockingStatus is the global blocking state.
+// BlockingStatus is the global blocking state. TimeZone and
+// UTCOffsetMinutes describe the host's clock ("CEST", 120), so the UI can
+// offer "until 06:00" on the host's clock.
 type BlockingStatus struct {
-	Enabled     bool       `json:"enabled"` // effective now
-	PausedUntil *time.Time `json:"pausedUntil,omitempty"`
-	Permanent   bool       `json:"permanent"` // disabled until re-enabled
+	Enabled          bool       `json:"enabled"` // effective now
+	PausedUntil      *time.Time `json:"pausedUntil,omitempty"`
+	Permanent        bool       `json:"permanent"` // disabled until re-enabled
+	TimeZone         string     `json:"timeZone"`
+	UTCOffsetMinutes int        `json:"utcOffsetMinutes"`
 }
 
 // CacheIPStatus describes the addresses of the download cache DNS answers.

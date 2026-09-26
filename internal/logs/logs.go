@@ -12,7 +12,9 @@
 //     and fans events out to live subscribers (buffer 256, dropped when full).
 //   - Rollups: dns_minute / dns_hourly (counts by status class), cache_minute
 //     / cache_hourly (bytes by service), dns_top_hourly (kind domain |
-//     blocked | client | upstream, top 1000 keys per hour and kind) and
+//     blocked | client | upstream | purpose, top 1000 keys per hour and
+//     kind; purpose counts blocked and safe-search queries by the purpose
+//     the DNS server sets, QueryEvent.Purpose) and
 //     cache_top_hourly (kind client | content). Top/ClientStats/ServiceStats/
 //     Summary read only rollups. Minute rollups are kept 48 h, hourly ones
 //     settings.Logs.StatsRetentionDays.
@@ -117,6 +119,12 @@ type QueryEvent struct {
 	// option, e.g. "203.0.113.0/24"; at most /16 or /48 while client
 	// addresses are anonymised); "" if none.
 	ECS string `json:"ecs,omitempty"`
+	// Purpose is what a blocked or safe-search query was stopped for (a
+	// list category, "rule", "service", "schedule", "upstream", "rebind",
+	// "special" or "safesearch"; "" = not counted), set by the DNS server.
+	// It is counted in the hourly top table (kind purpose) but not stored
+	// with the query, and it is not part of the live feed or the query log.
+	Purpose string `json:"-"`
 }
 
 // UpstreamEDE is an Extended DNS Error (RFC 8914) of an upstream reply.
@@ -226,8 +234,9 @@ type Summary struct {
 
 // Series is a time series set aligned on Timestamps (unix seconds, bucket
 // start). DNS keys are disjoint and sum to all queries: "allowed"
-// (forwarded, stale, local, special), "cached", "override", "blocked" (all
-// blocked-*), "other" (refused, error). Cache keys (bytes): "hit", "wan", "sni".
+// (forwarded, stale, local, special, safesearch), "cached", "override",
+// "blocked" (all blocked-*), "other" (refused, error). Cache keys (bytes):
+// "hit", "wan", "sni".
 type Series struct {
 	Step       int64                `json:"step"` // seconds
 	Timestamps []int64              `json:"timestamps"`
@@ -257,6 +266,20 @@ type TopItem struct {
 	// when the clients or cache-clients list is grouped by device (API
 	// ?group=device; Key is then the most active address).
 	Addresses []string `json:"addresses,omitempty"`
+}
+
+// PurposeStats are the blocked and safe-search queries of a range by
+// purpose (GET /stats/purposes), most first, then by purpose. From is the
+// hour-aligned start the counts actually cover (like Summary.TopFrom).
+type PurposeStats struct {
+	From     time.Time      `json:"from"`
+	Purposes []PurposeCount `json:"purposes"`
+}
+
+// PurposeCount is the number of queries of one purpose.
+type PurposeCount struct {
+	Purpose string `json:"purpose"`
+	Count   int64  `json:"count"`
 }
 
 // Download is a download session: requests of one client for one content

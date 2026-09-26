@@ -1,7 +1,8 @@
 <!--
   @component
-  Details of a filter list (download state, entries, skipped lines, last
-  error) with its settings, "Update now" and Delete.
+  Details of a filter list (category, download state, entries, skipped
+  lines, last error) with its settings, "Update now" and Delete. A
+  protection list says that it is enforced like parental controls.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -13,7 +14,7 @@
   import { Button, Chip, confirm, KeyValue, Notice, toast } from '$lib/ui'
   import FormPanel from '../shared/FormPanel.svelte'
   import ListFields from './ListFields.svelte'
-  import { listInput, listStatus } from './listStatus'
+  import { categoryLabel, isProtection, listInput, listStatus } from './listStatus'
 
   interface Props {
     open?: boolean
@@ -34,6 +35,7 @@
     enabled: true,
     groupIds: [],
     comment: '',
+    category: '',
   })
   let saving = $state(false)
   let refreshing = $state(false)
@@ -133,8 +135,15 @@
           <span class="mono small">{list.lastError}</span>
         </Notice>
       {/if}
+      {#if list.kind === 'block' && isProtection(list.category)}
+        <Notice tone="info" icon="shield">{t('dns.lists.protectionNotice')}</Notice>
+      {/if}
+      {#if list.tldBlocksIgnored > 0}
+        <Notice tone="warn">{tn('dns.lists.tldIgnored', list.tldBlocksIgnored)}</Notice>
+      {/if}
       <KeyValue
         items={[
+          { label: t('dns.lists.categoryLabel'), value: categoryLabel(list.category || 'other') },
           { label: t('dns.lists.entries'), value: formatNumber(list.entries) },
           { label: t('dns.lists.invalid'), value: formatNumber(list.invalid) },
           { label: t('dns.lists.unsupported'), value: formatNumber(list.unsupported) },

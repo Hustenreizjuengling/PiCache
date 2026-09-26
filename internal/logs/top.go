@@ -20,13 +20,16 @@ const (
 	dnsTopBlocked                 // blocked queries per domain
 	dnsTopClient                  // queries (and blocked) per client
 	dnsTopUpstream                // queries and duration per upstream
+	dnsTopPurpose                 // blocked and safe-search queries per purpose (QueryEvent.Purpose)
 	numDNSKinds
 )
 
 var (
-	dnsKindNames = [numDNSKinds]string{"domain", "blocked", "client", "upstream"}
+	// dnsKindNames are stored in logs_dns_top_hourly.kind; a version that
+	// does not know a kind ignores its rows.
+	dnsKindNames = [numDNSKinds]string{"domain", "blocked", "client", "upstream", "purpose"}
 	// dnsKindCaps bound the distinct keys counted per hour in memory.
-	dnsKindCaps = [numDNSKinds]int{16384, 16384, 4096, 256}
+	dnsKindCaps = [numDNSKinds]int{16384, 16384, 4096, 256, 64}
 )
 
 // Cache top kinds (logs_cache_top_hourly.kind).
@@ -166,6 +169,10 @@ func (t *topSet) addQuery(e *QueryEvent) {
 		u.Count++
 		u.DurationUs += e.DurationUs
 		u.LastSeen = max(u.LastSeen, ts)
+	}
+	if p := t.dnsEntry(dnsTopPurpose, e.Purpose); p != nil {
+		p.Count++
+		p.LastSeen = max(p.LastSeen, ts)
 	}
 }
 

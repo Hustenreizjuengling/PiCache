@@ -153,7 +153,7 @@ func (s *Server) downloadCacheOverride(qc *qctx) (result, bool) {
 		return result{}, false
 	}
 	if qc.blocking && s.d.Filter != nil { // 8
-		if d := s.d.Filter.CheckRules(qc.qname, qc.id.GroupIDs); d.Blocked() {
+		if d := s.d.Filter.CheckRules(qc.qname, qc.groups); d.Blocked() {
 			qc.note("download service " + svc + " matched, but a user rule blocks it")
 			return s.blocked(qc, d, statusFor(d)), true
 		}

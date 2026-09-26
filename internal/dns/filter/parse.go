@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -141,13 +143,123 @@ const (
 	lineOK                            // produced entries
 	lineInvalid                       // malformed
 	lineUnsupported                   // valid syntax PiCache does not support
+	lineBroad                         // a block of a whole TLD that the TLD guard refuses (counted as invalid)
 )
+
+// listFormat is the list configuration a parse result depends on.
+type listFormat struct {
+	kind, plain string // block | allow, exact | subtree
+	// tldGuard counts subtree, wildcard and pattern blocks of a single
+	// label or of an ICANN public suffix ("||com^", "*.co.uk", a plain
+	// "co.uk" in subtree mode, "||*.com^", "/\.xyz$/"; broadDomain,
+	// broadPattern) as invalid, so one broken or hostile list cannot block
+	// a whole TLD. Every category but abused-tlds has it.
+	tldGuard bool
+}
+
+// formatOf returns the parse format of a list.
+func formatOf(kind, plain, category string) listFormat {
+	return listFormat{kind: kind, plain: plain, tldGuard: category != CategoryAbusedTLDs}
+}
 
 // lineParser parses single list lines. It reuses its entry buffer, so the
 // entries returned by parse are valid until the next call.
 type lineParser struct {
 	plainSubtree bool
+	tldGuard     bool
 	buf          []entry
+}
+
+func newLineParser(f listFormat) lineParser {
+	return lineParser{plainSubtree: f.plain == "subtree", tldGuard: f.tldGuard}
+}
+
+// broadDomain reports whether a subtree block of d would cover a whole TLD
+// or public suffix: d is a single label or an ICANN public suffix
+// (golang.org/x/net/publicsuffix; private suffixes such as github.io are
+// ordinary domains here).
+func broadDomain(d string) bool {
+	if !strings.Contains(d, ".") {
+		return true
+	}
+	ps, icann := publicsuffix.PublicSuffix(d)
+	return icann && ps == d
+}
+
+// probeLabel is a made-up label: a pattern that matches a name made of it
+// directly below a public suffix blocks (about) every name there.
+const probeLabel = "zz9probe"
+
+// probeSuffixes are probed for every block pattern, besides the ICANN
+// public suffixes its literals name, so a pattern without such a literal
+// (/./, /^[a-z0-9-]+\.[a-z]+$/) is caught for the largest TLDs too.
+var probeSuffixes = []string{"com", "net", "org", "de", "co.uk"}
+
+// broadPattern reports whether the pattern entry e would block a whole TLD
+// or ICANN public suffix: it matches "zz9probe.<suffix>" or
+// "www.zz9probe.<suffix>" for one of probeSuffixes or for the ICANN public
+// suffix that a literal of the pattern names ("*.co.uk^", "||*.com^",
+// ".xyz^", /\.(top|xyz)$/, "||app*^"). The pattern is compiled only when a
+// probe name contains its required literal. A pattern that does not
+// compile is left to parseList, which refuses it anyway.
+func broadPattern(e *entry) bool {
+	tree, err := syntax.Parse(e.source(), syntax.Perl)
+	if err != nil || regexCost(tree) > maxRegexCost {
+		return false
+	}
+	var re *regexp.Regexp
+	compiled := false
+	matches := func(suffix string) bool {
+		for _, name := range [...]string{probeLabel + "." + suffix, "www." + probeLabel + "." + suffix} {
+			if !strings.Contains(name, e.lit) {
+				continue // every match contains the literal
+			}
+			if !compiled {
+				compiled = true
+				re, _ = regexp.Compile(e.source())
+			}
+			if re != nil && re.MatchString(name) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, s := range probeSuffixes {
+		if matches(s) {
+			return true
+		}
+	}
+	return anyLiteral(tree, func(lit string) bool {
+		s := icannSuffix(lit)
+		return s != "" && matches(s)
+	})
+}
+
+// anyLiteral reports whether fn holds for a literal of re (lower-case).
+func anyLiteral(re *syntax.Regexp, fn func(string) bool) bool {
+	if re.Op == syntax.OpLiteral {
+		return fn(strings.ToLower(string(re.Rune)))
+	}
+	for _, sub := range re.Sub {
+		if anyLiteral(sub, fn) {
+			return true
+		}
+	}
+	return false
+}
+
+// icannSuffix returns the ICANN public suffix of the name a pattern literal
+// ends with, "" if there is none (".co.uk" → "co.uk", "ads.example.com" →
+// "com", "doubleclick" → "").
+func icannSuffix(lit string) string {
+	d := strings.Trim(lit, ".")
+	if d == "" {
+		return ""
+	}
+	if ps, icann := publicsuffix.PublicSuffix(d); icann {
+		return ps
+	}
+	return ""
 }
 
 // parse parses one line (without line terminator).
@@ -245,8 +357,7 @@ func (p *lineParser) parseRegex(s string) ([]entry, lineStatus) {
 		return nil, lineUnsupported // before Simplify, which expands repetitions
 	}
 	e.lit = requiredLiteral(re.Simplify())
-	p.buf = append(p.buf, e)
-	return p.buf, lineOK
+	return p.add(e)
 }
 
 // parseOptions applies "$important,badfilter"; any other option makes the
@@ -321,7 +432,14 @@ func (p *lineParser) parseABP(s string) ([]entry, lineStatus) {
 	return p.add(e)
 }
 
+// add appends e unless the TLD guard refuses it: a subtree or pattern
+// block (not an @@ or $badfilter entry) that covers a whole TLD or ICANN
+// public suffix.
 func (p *lineParser) add(e entry) ([]entry, lineStatus) {
+	if p.tldGuard && !e.allow && !e.badfilter &&
+		(e.kind == kindSubtree && broadDomain(e.domain) || e.kind == kindPattern && broadPattern(&e)) {
+		return nil, lineBroad
+	}
 	p.buf = append(p.buf, e)
 	return p.buf, lineOK
 }
@@ -452,11 +570,12 @@ type parsedPattern struct {
 // parsed is the parse result of one list file. It is kept in memory so the
 // matcher can be rebuilt without re-reading files.
 type parsed struct {
-	kind, plain string                // list configuration it was parsed with
+	format      listFormat            // list configuration it was parsed with
 	sets        [numTiers][2][]uint64 // [tier][exact|subtree]: sorted, unique hashes
 	pats        []parsedPattern       // in file order, unique per tier
 	entries     int                   // unique entries (domains + patterns)
-	invalid     int                   // malformed lines
+	invalid     int                   // malformed lines and the blocks the TLD guard refused
+	broad       int                   // of invalid: blocks of a whole TLD that the TLD guard refused
 	unsupported int                   // unsupported rules (modifiers, URL rules, pattern caps)
 }
 
@@ -544,12 +663,12 @@ type badKey struct {
 	re         string // patterns
 }
 
-// parseList parses a list file. kind is the list kind (block|allow), plain
-// the plainDomains flag (exact|subtree).
-func parseList(ctx context.Context, r io.Reader, kind, plain string) (*parsed, error) {
-	res := &parsed{kind: kind, plain: plain}
-	lp := lineParser{plainSubtree: plain == "subtree"}
-	allowList := kind == "allow"
+// parseList parses a list file in format f (the list kind, the
+// plainDomains flag and the TLD guard).
+func parseList(ctx context.Context, r io.Reader, f listFormat) (*parsed, error) {
+	res := &parsed{format: f}
+	lp := newLineParser(f)
+	allowList := f.kind == "allow"
 	var bad map[badKey]struct{}
 	seenPats := map[string]struct{}{} // tier + source
 	var cost int64                    // of the compiled patterns (≤ maxPatternCost)
@@ -562,6 +681,10 @@ func parseList(ctx context.Context, r io.Reader, kind, plain string) (*parsed, e
 		switch st {
 		case lineInvalid:
 			res.invalid++
+			return
+		case lineBroad:
+			res.invalid++
+			res.broad++
 			return
 		case lineUnsupported:
 			res.unsupported++

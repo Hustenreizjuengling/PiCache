@@ -71,6 +71,17 @@ export const icons = {
   send: 'M17 3L3 8.5l6 2.5 2.5 6zM17 3l-8 8',
   /** An address tag: handing out addresses (DHCP). */
   tag: `M3.5 3.5h6l7 7-6 6-7-7z${circle(7, 7, 1.25)}`,
+  // Neutral category icons of the parental service catalogue (never brand logos).
+  video: 'M2.5 4.5h15v11h-15zM8.5 7.5v5l4-2.5z',
+  chat: 'M3.5 4h13v9h-7l-4 3.5V13h-2z',
+  gamepad: 'M6 6.5h8a3.5 3.5 0 0 1 3.4 4.3l-.8 3.2a1.8 1.8 0 0 1-3 .8L12 13H8l-1.6 1.8a1.8 1.8 0 0 1-3-.8l-.8-3.2A3.5 3.5 0 0 1 6 6.5zM6.5 9v3M5 10.5h3M12.5 9.5h0M14.5 11.5h0',
+  music: `M7.5 15V5l9-1.5V13${circle(5.5, 15, 2)}${circle(14.5, 13, 2)}`,
+  sparkles: 'M9 3l1.4 3.6L14 8l-3.6 1.4L9 13l-1.4-3.6L4 8l3.6-1.4zM15 12.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z',
+  heart: 'M10 16.5S3 12.3 3 7.6A3.6 3.6 0 0 1 10 6a3.6 3.6 0 0 1 7 1.6c0 4.7-7 8.9-7 8.9z',
+  dice: 'M4 4h12v12H4zM7 7h0M13 7h0M10 10h0M7 13h0M13 13h0',
+  cart: `M2.5 3.5h2l1.8 9h9l1.7-6.5H5.3${circle(7.5, 16, 1)}${circle(14, 16, 1)}`,
+  cloud: 'M6 15.5a3.5 3.5 0 0 1-.4-7A4.5 4.5 0 0 1 14.3 7a3.8 3.8 0 0 1 .2 8.5z',
+  newspaper: 'M3.5 4h10v11.5H5a1.5 1.5 0 0 1-1.5-1.5zM13.5 7.5h3v6.5a1.5 1.5 0 0 1-3 0M6 7h5M6 10h5M6 13h3',
 } as const
 
 export type IconName = keyof typeof icons

@@ -2,7 +2,8 @@
   @component
   "Test a device": looks up a domain as a device would right now (POST
   /dns/lookup, not logged) and says whether it is blocked and why, with the
-  parental controls step of the trace and a link to the full trace.
+  parental controls, safe search and pause steps of the trace and a link
+  to the full trace.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -100,11 +101,22 @@
         return t('dns.parental.test.blockedUpstream', { reason })
       case 'blocked-rebind':
         return t('dns.parental.test.blockedRebind', { reason })
+      case 'safesearch':
+        return t('dns.parental.test.safeSearch', { reason })
+      // E.g. safe search fails closed: the device gets SERVFAIL, never the unrestricted answer.
+      case 'error':
+        return reason ? t('dns.parental.test.error', { name: r.name, reason }) : t('dns.parental.test.errorNoReason', { name: r.name })
+      case 'refused':
+        return reason ? t('dns.parental.test.refused', { name: r.name, reason }) : t('dns.parental.test.refusedNoReason', { name: r.name })
+      case 'blocked-list':
+        // A protection list (category switch or list of a protection category) blocks at the parental step.
+        if (r.steps.some((s) => s.startsWith('parental: blocked by list'))) return t('dns.parental.test.blockedProtection', { reason })
     }
     if (blocked) return r.reason ? t('dns.parental.test.blockedOther', { reason: r.reason }) : t('dns.parental.test.blockedOtherNoReason')
     return t('dns.parental.test.allowed', { name: r.name })
   })
-  const trace = $derived(result?.steps.filter((s) => /^parental\b/i.test(s)) ?? [])
+  // The steps of parental controls, safe search and paused group filtering.
+  const trace = $derived(result?.steps.filter((s) => /^(parental|safe search|filtering paused)\b/i.test(s)) ?? [])
   const groupNames = $derived(
     result ? result.groupIds.map((id) => groups?.find((g) => g.groupId === id)?.groupName ?? `#${id}`).join(', ') : '',
   )

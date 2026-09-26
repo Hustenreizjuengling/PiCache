@@ -3,8 +3,13 @@ package filter
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -13,6 +18,8 @@ import (
 
 // migrations of component "filter" (append-only). Version 1 also creates the
 // default list (HaGeZi Multi NORMAL) and links it to the Default group.
+// Version 2 adds the category and catalogue key of a list; New fills them
+// for existing lists (backfillCategories).
 var migrations = []string{
 	`CREATE TABLE filter_lists (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused: the matcher refers to list IDs
@@ -63,6 +70,99 @@ var migrations = []string{
 	VALUES (1, 'HaGeZi Multi NORMAL', 'https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/multi.txt',
 		'block', 'exact', 1, 'Default list', CAST(strftime('%s', 'now') AS INTEGER) * 1000);
 	INSERT INTO filter_list_groups (list_id, group_id) SELECT 1, id FROM client_groups WHERE id = 1;`,
+	`ALTER TABLE filter_lists ADD COLUMN category TEXT NOT NULL DEFAULT '';
+	ALTER TABLE filter_lists ADD COLUMN catalog_key TEXT NOT NULL DEFAULT '';`,
+}
+
+// backfillCategories gives every list with an empty category the category
+// and key of the catalogue entry with exactly the same URL. Without one it
+// gets "allow" for allowlists (an allowlist always has "allow", a blocklist
+// never), "abused-tlds" for a blocklist whose cached copy in dir blocks
+// mostly whole TLDs (it did so before the TLD guard, which would now drop
+// those entries), and "other" otherwise. Idempotent: only rows with an
+// empty category are touched.
+func backfillCategories(ctx context.Context, d *db.DB, dir string) error {
+	type fill struct {
+		id                   int64
+		category, key, plain string
+	}
+	var fills []fill
+	rows, err := d.R.QueryContext(ctx, `SELECT id, url, kind, plain_domains FROM filter_lists WHERE category = ''`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var url, kind string
+		f := fill{category: CategoryOther}
+		if err := rows.Scan(&f.id, &url, &kind, &f.plain); err != nil {
+			rows.Close()
+			return err
+		}
+		if c, ok := catalogByURL(url); ok {
+			f.category, f.key = c.Category, c.Key
+		}
+		f.category = categoryForKind(kind, f.category)
+		fills = append(fills, f)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	if len(fills) == 0 {
+		return nil
+	}
+	for i, f := range fills {
+		if f.category == CategoryOther && mostlyTLDs(ctx, filepath.Join(dir, strconv.FormatInt(f.id, 10)+".txt"), f.plain) {
+			fills[i].category = CategoryAbusedTLDs
+		}
+	}
+	return d.Tx(ctx, func(tx *sql.Tx) error {
+		for _, f := range fills {
+			if _, err := tx.ExecContext(ctx, `UPDATE filter_lists SET category = ?, catalog_key = ? WHERE id = ? AND category = ''`,
+				f.category, f.key, f.id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// mostlyTLDs reports whether the list file at path (a blocklist with the
+// given plainDomains mode) blocks mostly whole TLDs: the TLD guard would
+// refuse at least half of its entries.
+func mostlyTLDs(ctx context.Context, path, plain string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	lp := newLineParser(formatOf("block", plain, CategoryOther))
+	broad, total := 0, 0
+	err = scanLines(ctx, io.LimitReader(f, maxListBytes), func(line []byte, long bool) {
+		if long {
+			return
+		}
+		entries, st := lp.parse(string(line))
+		switch st {
+		case lineBroad:
+			broad++
+			total++
+		case lineOK:
+			total += len(entries)
+		}
+	})
+	return err == nil && broad > 0 && 2*broad >= total
+}
+
+// categoryForKind returns category adjusted to the list kind: allowlists
+// always have "allow", a blocklist with "allow" gets "other".
+func categoryForKind(kind, category string) string {
+	switch {
+	case kind == "allow":
+		return CategoryAllow
+	case category == CategoryAllow || category == "":
+		return CategoryOther
+	}
+	return category
 }
 
 // querier is implemented by *sql.DB and *sql.Tx.
@@ -71,13 +171,14 @@ type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-const listColumns = `id, name, url, kind, plain_domains, enabled, comment, status, last_error,
+const listColumns = `id, name, url, kind, plain_domains, category, catalog_key, enabled, comment, status, last_error,
 	last_updated, last_checked, last_success, entries, invalid, unsupported, size_bytes,
 	etag, last_modified, content_hash, created_at`
 
-// loadLists reads all lists with their groups.
-func loadLists(ctx context.Context, d *db.DB) ([]*listRT, error) {
-	rows, err := d.R.QueryContext(ctx, `SELECT `+listColumns+` FROM filter_lists ORDER BY id`)
+// loadLists reads all lists with their groups (q: the read pool, or the
+// transaction that is about to change them).
+func loadLists(ctx context.Context, q querier) ([]*listRT, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+listColumns+` FROM filter_lists ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("filter: load lists: %w", err)
 	}
@@ -86,7 +187,7 @@ func loadLists(ctx context.Context, d *db.DB) ([]*listRT, error) {
 	for rows.Next() {
 		rt := &listRT{}
 		var updated, checked, success, created int64
-		if err := rows.Scan(&rt.ID, &rt.Name, &rt.URL, &rt.Kind, &rt.PlainDomains, &rt.Enabled, &rt.Comment,
+		if err := rows.Scan(&rt.ID, &rt.Name, &rt.URL, &rt.Kind, &rt.PlainDomains, &rt.Category, &rt.CatalogKey, &rt.Enabled, &rt.Comment,
 			&rt.Status, &rt.LastError, &updated, &checked, &success, &rt.Entries, &rt.Invalid,
 			&rt.Unsupported, &rt.SizeBytes, &rt.etag, &rt.lastModified, &rt.hash, &created); err != nil {
 			return nil, fmt.Errorf("filter: load lists: %w", err)
@@ -97,7 +198,7 @@ func loadLists(ctx context.Context, d *db.DB) ([]*listRT, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("filter: load lists: %w", err)
 	}
-	groups, err := loadGroupMap(ctx, d.R, `SELECT list_id, group_id FROM filter_list_groups ORDER BY list_id, group_id`)
+	groups, err := loadGroupMap(ctx, q, `SELECT list_id, group_id FROM filter_list_groups ORDER BY list_id, group_id`)
 	if err != nil {
 		return nil, err
 	}

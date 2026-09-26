@@ -6,7 +6,8 @@
 <script lang="ts">
   import { t, tn } from '../../i18n/index.svelte'
   import type { Summary, SystemOverview } from '../../lib/api'
-  import { formatBytes, formatNumber, formatPercent, formatTime } from '../../lib/format'
+  import { formatBytes, formatDateTimeShort, formatNumber, formatPercent, formatTime, sameDay } from '../../lib/format'
+  import { toHost } from '../../lib/hostclock.svelte'
   import { Skeleton, Stat, Trans } from '../../lib/ui'
   import { links } from './links'
 
@@ -18,6 +19,12 @@
     return v < 10 ? Math.round(v * 10) / 10 : Math.round(v)
   })
   const blocking = $derived(overview?.blocking)
+  // On the host's clock like the top bar; a pause into another day names the day.
+  const pausedText = $derived.by(() => {
+    if (!blocking?.pausedUntil) return ''
+    const until = toHost(new Date(blocking.pausedUntil))
+    return sameDay(until, toHost(new Date())) ? formatTime(until) : formatDateTimeShort(until)
+  })
 </script>
 
 <p class="sentence">
@@ -45,7 +52,7 @@
       <span class="sep" aria-hidden="true">·</span>
       <span class="clause warn">
         {#if blocking.pausedUntil && !blocking.permanent}
-          {t('overview.sentence.paused', { time: formatTime(blocking.pausedUntil) })}
+          {t('overview.sentence.paused', { time: pausedText })}
         {:else}
           {t('overview.sentence.blockingOff')}
         {/if}

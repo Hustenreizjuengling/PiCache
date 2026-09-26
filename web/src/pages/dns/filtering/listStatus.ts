@@ -1,8 +1,15 @@
-// Display helpers for filter list states.
+// Display helpers for filter lists: download states, categories and sizes.
 
-import { t } from '$i18n/index.svelte'
-import type { FilterList, FilterListInput, ListStatus } from '$lib/api'
+import { t, tn, type MessageKey } from '$i18n/index.svelte'
+import { PROTECTION_CATEGORIES, type FilterList, type FilterListInput, type ListCategory, type ListStatus } from '$lib/api'
+import { formatBytes, formatNumber } from '$lib/format'
 import type { Tone } from '$lib/ui'
+
+/** Memory of one list entry, about (matcher plus the kept parse result; ARCHITECTURE 7.2). */
+export const ENTRY_BYTES = 24
+
+/** Lists with more entries than this are marked "Large". */
+export const LARGE_ENTRIES = 1_000_000
 
 /** Tone and label of a list's download state. */
 export function listStatus(status: ListStatus): { tone: Tone; label: string } {
@@ -35,5 +42,23 @@ export function listInput(l: FilterList): FilterListInput {
     enabled: l.enabled,
     groupIds: [...l.groupIds],
     comment: l.comment,
+    category: l.category,
   }
+}
+
+/** The name of a list category ("Adult content"); unknown ones as they are. */
+export function categoryLabel(c: string): string {
+  const key = `dns.lists.category.${c}` as MessageKey
+  const s = t(key)
+  return s === key ? c : s
+}
+
+/** Lists of these categories are enforced like parental controls (also while blocking is paused). */
+export function isProtection(c: string | undefined): boolean {
+  return !!c && (PROTECTION_CATEGORIES as readonly string[]).includes(c as ListCategory)
+}
+
+/** "470,000 entries · about 11 MB of memory". */
+export function entriesText(entries: number): string {
+  return tn('dns.lists.entriesMemory', entries, { count: formatNumber(entries), size: formatBytes(entries * ENTRY_BYTES) })
 }

@@ -129,28 +129,67 @@ type fakeFilter struct {
 	mu      sync.Mutex
 	check   map[string]filter.Decision
 	rules   map[string]filter.Decision
+	protect map[string]filter.Decision // CheckProtection
 	matches []filter.Match
+	// checked records the groups Check was asked with, per name.
+	checked map[string][][]int64
+	// scoped: the decisions for the name apply only to this group.
+	scoped map[string]int64
 }
 
 func newFakeFilter() *fakeFilter {
-	return &fakeFilter{check: map[string]filter.Decision{}, rules: map[string]filter.Decision{}}
+	return &fakeFilter{check: map[string]filter.Decision{}, rules: map[string]filter.Decision{},
+		protect: map[string]filter.Decision{}, checked: map[string][][]int64{}, scoped: map[string]int64{}}
+}
+
+// applies reports whether the decisions for qname apply to groups (f.mu held).
+func (f *fakeFilter) applies(qname string, groups []int64) bool {
+	g, ok := f.scoped[qname]
+	return !ok || slices.Contains(groups, g)
 }
 
 // Check returns check[qname] (the full-precedence decision) if set, else
 // the user rule decision.
-func (f *fakeFilter) Check(qname string, _ []int64) filter.Decision {
+func (f *fakeFilter) Check(qname string, groups []int64) filter.Decision {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.checked[qname] = append(f.checked[qname], slices.Clone(groups))
+	if !f.applies(qname, groups) {
+		return filter.Decision{}
+	}
 	if d, ok := f.check[qname]; ok {
 		return d
 	}
 	return f.rules[qname]
 }
 
-func (f *fakeFilter) CheckRules(qname string, _ []int64) filter.Decision {
+func (f *fakeFilter) CheckRules(qname string, groups []int64) filter.Decision {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if !f.applies(qname, groups) {
+		return filter.Decision{}
+	}
 	return f.rules[qname]
+}
+
+func (f *fakeFilter) CheckProtection(qname string, groups []int64) filter.Decision {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.applies(qname, groups) {
+		return filter.Decision{}
+	}
+	return f.protect[qname]
+}
+
+// lastChecked returns the groups of the last Check of qname.
+func (f *fakeFilter) lastChecked(qname string) []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.checked[qname]
+	if len(c) == 0 {
+		return nil
+	}
+	return c[len(c)-1]
 }
 
 func (f *fakeFilter) Explain(context.Context, string, []int64) ([]filter.Match, error) {

@@ -11,7 +11,7 @@
   import { i18n, t } from '$i18n/index.svelte'
   import type { ParentalSchedule, ParentalService } from '$lib/api'
   import { formatClock } from '../../system/backup/schedule'
-  import { toHost } from './hostclock.svelte'
+  import { toHost } from '$lib/hostclock.svelte'
   import { blockText, clockOf, dayName, planSegments, rowOf, WEEK, type Segment } from './plan'
 
   interface Props {

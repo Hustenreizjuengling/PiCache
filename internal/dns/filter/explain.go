@@ -76,25 +76,25 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 	}
 
 	type job struct {
-		id          int64
-		name        string
-		kind, plain string
-		groups      []int64
+		id     int64
+		name   string
+		format listFormat
+		groups []int64
 	}
 	var jobs []job
 	e.mu.Lock()
 	for _, rt := range sortedLists(e.lists) {
 		if rt.Enabled && rt.parsed != nil {
-			jobs = append(jobs, job{rt.ID, rt.Name, rt.Kind, rt.PlainDomains, slices.Clone(nonNil(rt.GroupIDs))})
+			jobs = append(jobs, job{rt.ID, rt.Name, rt.format(), slices.Clone(nonNil(rt.GroupIDs))})
 		}
 	}
 	e.mu.Unlock()
 	for _, j := range jobs {
-		err := e.scanList(ctx, e.cachePath(j.id), j.kind, j.plain, q, func(en *entry, line string) {
+		err := e.scanList(ctx, e.cachePath(j.id), j.format, q, func(en *entry, line string) {
 			if len(line) > maxPatternShown {
 				line = line[:maxPatternShown]
 			}
-			tier := en.tier(j.kind == "allow")
+			tier := en.tier(j.format.kind == "allow")
 			kind := "regex"
 			switch en.kind {
 			case kindExact:
@@ -137,7 +137,7 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 
 // scanList rescans a cached list file and calls fn for every entry matching
 // q that is not cancelled by a $badfilter rule of the same list.
-func (e *Engine) scanList(ctx context.Context, path, kind, plain, q string, fn func(en *entry, line string)) error {
+func (e *Engine) scanList(ctx context.Context, path string, format listFormat, q string, fn func(en *entry, line string)) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -150,8 +150,8 @@ func (e *Engine) scanList(ctx context.Context, path, kind, plain, q string, fn f
 	}
 	var hits []hit
 	bad := map[badKey]struct{}{}
-	lp := lineParser{plainSubtree: plain == "subtree"}
-	allowList := kind == "allow"
+	lp := newLineParser(format)
+	allowList := format.kind == "allow"
 	err = scanLines(ctx, io.LimitReader(f, e.maxBytes), func(line []byte, long bool) {
 		if long {
 			return
