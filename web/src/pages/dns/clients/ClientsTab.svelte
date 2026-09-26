@@ -17,6 +17,7 @@
   import { Badge, BulkBar, Button, Chip, EmptyState, IconButton, Panel, Table, type Column } from '$lib/ui'
   import AddressList from '../shared/AddressList.svelte'
   import { runBatch } from '../shared/batch'
+  import { identifierText } from '../shared/clientid'
   import { groupNames } from '../shared/groups'
   import ClientPanel from './ClientPanel.svelte'
   import { clientTotals, type Totals } from './clientStats'
@@ -101,9 +102,10 @@
 
 {#snippet nameCell(c: Row)}
   {@const extra = c.totals.addresses.filter((a) => !c.identifiers.includes(a))}
+  {@const ids = c.identifiers.map(identifierText).join(', ')}
   <span class="name">
     <span class="truncate strong">{c.name}</span>
-    <span class="ids mono truncate" title={c.identifiers.join(', ')}>{c.identifiers.join(', ')}</span>
+    <span class="ids mono truncate" title={ids}>{ids}</span>
     {#if extra.length > 0}<span class="ids mono"><AddressList addresses={extra} first="" /></span>{/if}
   </span>
 {/snippet}

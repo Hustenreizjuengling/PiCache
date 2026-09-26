@@ -3,6 +3,7 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -27,9 +28,39 @@ const (
 	dohIdleTimeout = 60 * time.Second
 )
 
+// errNoPin fails a TLS handshake whose verified chain has no certificate
+// listed in the stamp's hashes.
+var errNoPin = errors.New("no certificate of the verified chain matches the DNS stamp's hashes")
+
+// clientTLS returns the TLS configuration of an encrypted upstream: the
+// system roots (roots nil) and, for a stamp with certificate hashes, the
+// hashes enforced in addition to the normal verification (one
+// certificate of the verified chain must have a listed SHA-256 of its TBS
+// part; never InsecureSkipVerify).
+func clientTLS(serverName string, minVersion uint16, roots *x509.CertPool, pins [][32]byte) *tls.Config {
+	c := &tls.Config{ServerName: serverName, MinVersion: minVersion, RootCAs: roots}
+	if len(pins) > 0 {
+		c.VerifyConnection = func(cs tls.ConnectionState) error {
+			for _, chain := range cs.VerifiedChains {
+				for _, cert := range chain {
+					sum := sha256.Sum256(cert.RawTBSCertificate)
+					for _, p := range pins {
+						if sum == p {
+							return nil
+						}
+					}
+				}
+			}
+			return errNoPin
+		}
+	}
+	return c
+}
+
 // dohTransport is DNS over HTTPS (RFC 8484): POST with ID 0 over HTTP/2
 // (HTTP/1.1 if the server does not offer h2). The hostname is resolved via
-// the bootstrap servers only; environment proxies are never used.
+// the bootstrap servers only (a stamp's address is dialled directly);
+// environment proxies are never used.
 type dohTransport struct {
 	url    string
 	tr     *http.Transport
@@ -37,12 +68,12 @@ type dohTransport struct {
 }
 
 func newDoH(spec settings.UpstreamSpec, boot *bootstrap, roots *x509.CertPool) *dohTransport {
-	d := &bootDialer{boot: boot}
+	d := &bootDialer{boot: boot, fixed: spec.DialAddr}
 	tr := &http.Transport{
 		Proxy:                  nil,
 		DialContext:            d.DialContext,
 		ForceAttemptHTTP2:      true,
-		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
+		TLSClientConfig:        clientTLS("", tls.VersionTLS12, roots, spec.Pins),
 		TLSHandshakeTimeout:    defaultAttemptTimeout,
 		MaxIdleConns:           4,
 		MaxIdleConnsPerHost:    2,
@@ -61,15 +92,24 @@ func newDoH(spec settings.UpstreamSpec, boot *bootstrap, roots *x509.CertPool) *
 }
 
 func (t *dohTransport) exchange(ctx context.Context, q *dns.Msg, wire []byte) (*dns.Msg, error) {
+	return exchangeHTTP(ctx, t.client, t.url, q, wire)
+}
+
+func (t *dohTransport) close() { t.tr.CloseIdleConnections() }
+
+// exchangeHTTP posts one query (ID 0) to a DoH URL through client (HTTP/2
+// or HTTP/3) and reads the reply: status 200, the DNS media type, at most
+// 64 KiB, ID 0 (set back to q.Id).
+func exchangeHTTP(ctx context.Context, client *http.Client, u string, q *dns.Msg, wire []byte) (*dns.Msg, error) {
 	body := bytes.Clone(wire)
 	body[0], body[1] = 0, 0 // RFC 8484 4.1: ID 0 for cache friendliness
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", dohMediaType)
 	req.Header.Set("Accept", dohMediaType)
-	res, err := t.client.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {
@@ -102,31 +142,43 @@ func (t *dohTransport) exchange(ctx context.Context, q *dns.Msg, wire []byte) (*
 	return m, nil
 }
 
-func (t *dohTransport) close() { t.tr.CloseIdleConnections() }
-
 // bootDialer dials host:port with the host resolved via the bootstrap
-// servers (IP literals are dialled directly).
-type bootDialer struct{ boot *bootstrap }
+// servers (IP literals are dialled directly). With fixed (a DNS stamp's
+// address) that address is dialled whatever the host is.
+type bootDialer struct {
+	boot  *bootstrap
+	fixed netip.AddrPort
+}
 
-func (d *bootDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+// addrs returns the addresses and the port to dial for address.
+func (d *bootDialer) addrs(ctx context.Context, address string) ([]netip.Addr, uint16, error) {
+	if d.fixed.IsValid() {
+		return []netip.Addr{d.fixed.Addr()}, d.fixed.Port(), nil
+	}
 	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil || port == 0 {
-		return nil, fmt.Errorf("invalid port %q", portStr)
+		return nil, 0, fmt.Errorf("invalid port %q", portStr)
 	}
-	var addrs []netip.Addr
 	if ip, err := netip.ParseAddr(host); err == nil {
-		addrs = []netip.Addr{ip}
-	} else if addrs, err = d.boot.lookup(ctx, host); err != nil {
+		return []netip.Addr{ip}, uint16(port), nil
+	}
+	addrs, err := d.boot.lookup(ctx, host)
+	return addrs, uint16(port), err
+}
+
+func (d *bootDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	addrs, port, err := d.addrs(ctx, address)
+	if err != nil {
 		return nil, err
 	}
 	var nd net.Dialer
 	lastErr := errNoAddrs
 	for _, a := range addrs {
-		c, err := nd.DialContext(ctx, network, netip.AddrPortFrom(a, uint16(port)).String())
+		c, err := nd.DialContext(ctx, network, netip.AddrPortFrom(a, port).String())
 		if err == nil {
 			return c, nil
 		}

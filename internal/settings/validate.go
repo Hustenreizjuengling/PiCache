@@ -16,28 +16,80 @@ import (
 
 // UpstreamSpec is a parsed upstream resolver address.
 type UpstreamSpec struct {
-	Raw     string // original string
-	Proto   string // udp | tcp | tls | https
-	Host    string // hostname or IP literal (lower-case, without brackets)
+	Raw   string // original string (a stamp byte for byte)
+	Proto string // udp | tcp | tls | https | quic | h3 | dnscrypt (stamps: https, tls, quic or dnscrypt)
+	// Host is the host name or IP literal (lower-case, without brackets):
+	// the TLS name of DoT, DoH, DoQ and HTTP/3 (SNI and verification),
+	// the provider name of a DNSCrypt stamp.
+	Host    string
 	Port    int
-	URL     string // full URL for https
+	URL     string // the request URL of https and h3 ("https://…")
 	IsIPLit bool   // Host is an IP literal
+	// Stamp: the upstream is a DNS stamp (sdns://). DialAddr is the
+	// stamp's address (invalid: none; the host name is resolved through
+	// the bootstrap servers); Pins are its certificate hashes (SHA-256 of
+	// a certificate's TBS part), enforced in addition to the normal
+	// verification; ProviderName and ProviderKey describe a DNSCrypt
+	// resolver.
+	Stamp        bool
+	DialAddr     netip.AddrPort
+	Pins         [][32]byte
+	ProviderName string
+	ProviderKey  [32]byte
 }
 
 // Addr returns host:port.
 func (u UpstreamSpec) Addr() string { return net.JoinHostPort(u.Host, strconv.Itoa(u.Port)) }
 
+// NeedsBootstrap reports whether the upstream's host name must be resolved
+// through the bootstrap servers: not for IP literals and stamps with an
+// address.
+func (u UpstreamSpec) NeedsBootstrap() bool { return !u.IsIPLit && !u.DialAddr.IsValid() }
+
+// Display returns the name of the upstream for status, logs, metrics and
+// block reasons: the configured string, for a stamp
+// "sdns:<dnscrypt|doh|dot|doq>:<host>" (never the stamp itself, its
+// address or a DoH path).
+func (u UpstreamSpec) Display() string {
+	if !u.Stamp {
+		return u.Raw
+	}
+	kind := map[string]string{"dnscrypt": "dnscrypt", "https": "doh", "tls": "dot", "quic": "doq"}[u.Proto]
+	return "sdns:" + kind + ":" + u.Host
+}
+
+// UpstreamDisplay returns the display name of an upstream string
+// (UpstreamSpec.Display; the string itself when it does not parse).
+func UpstreamDisplay(s string) string {
+	spec, err := ParseUpstream(s)
+	if err != nil {
+		if isStamp(strings.TrimSpace(s)) {
+			return "sdns:invalid"
+		}
+		return s
+	}
+	return spec.Display()
+}
+
 // ParseUpstream parses and validates an upstream string. Plain DNS
 // upstreams (udp/tcp) may be given by name; whether such a name may be used
 // (PublicUpstreamName) depends on the local domain and is checked by the
-// callers.
+// callers. A DNS stamp (sdns://, parseStamp) is recognised before the URL
+// is parsed and kept byte for byte.
 //
-//	9.9.9.9 | 9.9.9.9:53 | [2620:fe::fe]:53 | dns.example | udp://… | tcp://… | tls://dns.quad9.net[:853] | https://dns.quad9.net/dns-query
+//	9.9.9.9 | 9.9.9.9:53 | [2620:fe::fe]:53 | dns.example | udp://… | tcp://… | tls://dns.quad9.net[:853] |
+//	https://dns.quad9.net/dns-query | quic://dns.example[:853] | h3://dns.example/dns-query | sdns://…
 func ParseUpstream(s string) (UpstreamSpec, error) {
 	s = strings.TrimSpace(s)
 	spec := UpstreamSpec{Raw: s}
 	if s == "" {
 		return spec, errors.New("empty upstream")
+	}
+	if isStamp(s) {
+		if err := parseStamp(s, &spec); err != nil {
+			return UpstreamSpec{Raw: s}, err
+		}
+		return spec, nil
 	}
 	if !strings.Contains(s, "://") {
 		s = "udp://" + s
@@ -54,10 +106,10 @@ func ParseUpstream(s string) (UpstreamSpec, error) {
 	}
 	_, ipErr := netip.ParseAddr(spec.Host)
 	spec.IsIPLit = ipErr == nil
-	defPort := map[string]int{"udp": 53, "tcp": 53, "tls": 853, "https": 443}
+	defPort := map[string]int{"udp": 53, "tcp": 53, "tls": 853, "https": 443, "quic": 853, "h3": 443}
 	p, ok := defPort[spec.Proto]
 	if !ok {
-		return spec, errors.New("scheme must be udp, tcp, tls or https")
+		return spec, errors.New("scheme must be udp, tcp, tls, https, quic, h3 or sdns")
 	}
 	spec.Port = p
 	if ps := u.Port(); ps != "" {
@@ -80,12 +132,19 @@ func ParseUpstream(s string) (UpstreamSpec, error) {
 		if u.Path != "" && u.Path != "/" {
 			return spec, errors.New("DoT upstreams take no path")
 		}
-	case "https":
+	case "quic":
+		if u.Path != "" && u.Path != "/" {
+			return spec, errors.New("DoQ upstreams take no path")
+		}
+	case "https", "h3":
 		if u.Path == "" || u.Path == "/" {
 			u.Path = "/dns-query"
 		}
 		if u.User != nil || u.Fragment != "" {
 			return spec, errors.New("DoH URL must not contain credentials or fragment")
+		}
+		if spec.Proto == "h3" {
+			u.Scheme = "https" // the request URL; HTTP/3 is chosen by the transport
 		}
 		spec.URL = u.String()
 	}
@@ -186,6 +245,7 @@ func (a *All) normalize() {
 	}
 	d.ServerNameAddresses.IPv4 = normalizeList(d.ServerNameAddresses.IPv4, normalizeAddrOrPrefix)
 	d.ServerNameAddresses.IPv6 = normalizeList(d.ServerNameAddresses.IPv6, normalizeAddrOrPrefix)
+	d.Encrypted.ServerName = NormalizeServerName(d.Encrypted.ServerName)
 	f := &a.Filter
 	for _, s := range []*string{&f.BlockingIPv4, &f.BlockingIPv6} {
 		if *s = strings.TrimSpace(*s); strings.EqualFold(*s, SelfAddress) {
@@ -285,7 +345,7 @@ func (a *All) Validate() error {
 			if err != nil {
 				return apperr.Invalid(field, "%v", err)
 			}
-			if spec.IsIPLit {
+			if !spec.NeedsBootstrap() {
 				continue
 			}
 			needBootstrap = true
@@ -382,6 +442,9 @@ func (a *All) Validate() error {
 		return apperr.Invalid("dns.localizeRecords", "must be off, first or only")
 	}
 	if err := d.ServerNameAddresses.validate(); err != nil {
+		return err
+	}
+	if err := d.validateEncrypted(); err != nil {
 		return err
 	}
 

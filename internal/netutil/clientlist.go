@@ -7,14 +7,15 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// ClientList matches client addresses and MAC addresses against a list of
-// IP addresses, CIDRs and MAC addresses (the entries of dns.blockedClients,
-// settings.ParseBlockedClient). It is immutable and safe for concurrent
+// ClientList matches client addresses, MAC addresses and ClientIDs against
+// a list of IP addresses, CIDRs, MAC addresses and clientid:<ClientID>
+// entries (the entries of dns.blockedClients, settings.ParseBlockedClient). It is immutable and safe for concurrent
 // use; a match reports the first entry of the list (in list order) that
 // equals or contains the address, or equals the MAC.
 type ClientList struct {
 	ips   map[netip.Addr]int // single addresses → index
 	macs  map[string]int     // MAC → index
+	ids   map[string]int     // ClientID (without the prefix) → index
 	cidrs []clientCIDR       // in list order
 	raw   []string           // the entries (normalised)
 }
@@ -27,7 +28,7 @@ type clientCIDR struct {
 // NewClientList compiles entries; entries that do not parse are skipped
 // (settings.Validate rejects them earlier).
 func NewClientList(entries []string) *ClientList {
-	l := &ClientList{ips: map[netip.Addr]int{}, macs: map[string]int{}}
+	l := &ClientList{ips: map[netip.Addr]int{}, macs: map[string]int{}, ids: map[string]int{}}
 	for _, s := range entries {
 		e, ok := settings.ParseBlockedClient(s)
 		if !ok {
@@ -35,6 +36,12 @@ func NewClientList(entries []string) *ClientList {
 		}
 		i := len(l.raw)
 		l.raw = append(l.raw, e)
+		if id, ok := strings.CutPrefix(e, settings.ClientIDPrefix); ok {
+			if _, dup := l.ids[id]; !dup {
+				l.ids[id] = i
+			}
+			continue
+		}
 		switch p, err := netip.ParsePrefix(e); {
 		case err == nil:
 			l.cidrs = append(l.cidrs, clientCIDR{prefix: p, index: i})
@@ -82,6 +89,22 @@ func (l *ClientList) MatchMAC(mac string) (string, bool) {
 		return "", false
 	}
 	i, ok := l.macs[strings.ToLower(mac)]
+	if !ok {
+		return "", false
+	}
+	return l.raw[i], true
+}
+
+// HasClientIDs reports whether the list has clientid: entries.
+func (l *ClientList) HasClientIDs() bool { return l != nil && len(l.ids) > 0 }
+
+// MatchClientID returns the clientid: entry of a ClientID (normalised,
+// without the prefix; "" never matches).
+func (l *ClientList) MatchClientID(id string) (string, bool) {
+	if l == nil || id == "" {
+		return "", false
+	}
+	i, ok := l.ids[id]
 	if !ok {
 		return "", false
 	}

@@ -23,7 +23,7 @@ const (
 // idle connections. One query at a time per connection (no pipelining).
 type dotTransport struct {
 	host string     // TLS server name (hostname or IP literal)
-	ip   netip.Addr // valid if the upstream is an IP literal
+	ip   netip.Addr // valid if the upstream is an IP literal or a stamp with an address
 	port uint16
 	boot *bootstrap
 	conf *tls.Config
@@ -40,16 +40,15 @@ type idleConn struct {
 
 func newDoT(spec settings.UpstreamSpec, boot *bootstrap, roots *x509.CertPool) *dotTransport {
 	t := &dotTransport{host: spec.Host, port: uint16(spec.Port), boot: boot}
-	if spec.IsIPLit {
+	switch {
+	case spec.DialAddr.IsValid():
+		t.ip, t.port = spec.DialAddr.Addr(), spec.DialAddr.Port()
+	case spec.IsIPLit:
 		t.ip, _ = netip.ParseAddr(spec.Host)
 	}
-	t.conf = &tls.Config{
-		ServerName:         spec.Host,
-		NextProtos:         []string{"dot"},
-		MinVersion:         tls.VersionTLS12,
-		RootCAs:            roots,
-		ClientSessionCache: tls.NewLRUClientSessionCache(dotMaxIdle),
-	}
+	t.conf = clientTLS(spec.Host, tls.VersionTLS12, roots, spec.Pins)
+	t.conf.NextProtos = []string{"dot"}
+	t.conf.ClientSessionCache = tls.NewLRUClientSessionCache(dotMaxIdle)
 	return t
 }
 

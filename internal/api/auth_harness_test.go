@@ -34,7 +34,8 @@ type coreRuntime struct {
 	restoreErr error
 	staged     *settings.All // what StageRestore returns as the staged settings
 	restarted  bool
-	tlsAddr    string // bound web-tls listener ("" = none)
+	tlsAddr    string              // bound web-tls listener ("" = none)
+	bound      map[string][]string // further bound roles (dot, doh)
 }
 
 func (f *coreRuntime) StartedAt() time.Time    { return time.Now().Add(-time.Hour) }
@@ -47,6 +48,9 @@ func (f *coreRuntime) Listeners() ListenerInfo {
 	bound := map[string][]string{"web": {"127.0.0.1:8080"}}
 	if f.tlsAddr != "" {
 		bound["web-tls"] = []string{f.tlsAddr}
+	}
+	for role, addrs := range f.bound {
+		bound[role] = addrs
 	}
 	return ListenerInfo{Bound: bound}
 }

@@ -51,7 +51,7 @@
           <ul class="ups">
             {#each s.upstreams as u (u.upstream)}
               <li>
-                <span class="mono u">{u.upstream}</span>
+                <span class="mono u">{u.name || u.upstream}</span>
                 <span class="meta small">
                   <Chip size="sm" tone={u.healthy ? 'ok' : 'fail'} label={u.healthy ? t('dns.settings.upstreams.healthy') : t('dns.settings.upstreams.failing')} />
                   <span class="muted">

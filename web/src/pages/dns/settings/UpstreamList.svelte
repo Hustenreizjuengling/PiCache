@@ -95,7 +95,7 @@
                 invalid={!!err}
                 aria-label={entryLabel(i + 1)}
                 placeholder="https://dns.example/dns-query"
-                maxlength={512}
+                maxlength={1024}
                 disabled={!session.isAdmin}
               />
             </div>
@@ -117,6 +117,8 @@
           {#if err}<p class="err">{err}</p>{/if}
           <div class="meta small">
             {#if st}
+              <!-- A DNS stamp is named by its protocol and host, as in the logs and statistics. -->
+              {#if st.name && st.name !== st.upstream}<span class="mono subtle">{st.name}</span>{/if}
               <Chip size="sm" tone={st.healthy ? 'ok' : 'fail'} label={st.healthy ? t('dns.settings.upstreams.healthy') : t('dns.settings.upstreams.failing')} />
               <span class="muted">
                 {t('dns.settings.upstreams.stats', {

@@ -22,11 +22,17 @@ type Config struct {
 	DataDir  string // PICACHE_DATA_DIR: databases, keys, lists (local disk!)
 	CacheDir string // PICACHE_CACHE_DIR: default local cache store
 
-	DNSListen      []string // PICACHE_DNS_LISTEN, default ":53"
-	CacheListen    []string // PICACHE_CACHE_LISTEN, default ":80"
-	SNIListen      []string // PICACHE_SNI_LISTEN, default ":443" (empty disables)
-	WebListen      []string // PICACHE_WEB_LISTEN, default ":8080"
-	WebTLSListen   []string // PICACHE_WEB_TLS_LISTEN, default ":8443" (empty disables)
+	DNSListen    []string // PICACHE_DNS_LISTEN, default ":53"
+	CacheListen  []string // PICACHE_CACHE_LISTEN, default ":80"
+	SNIListen    []string // PICACHE_SNI_LISTEN, default ":443" (empty disables)
+	WebListen    []string // PICACHE_WEB_LISTEN, default ":8080"
+	WebTLSListen []string // PICACHE_WEB_TLS_LISTEN, default ":8443" (empty disables)
+	// DoTListen (PICACHE_DOT_LISTEN, default ":853") serves DNS over TLS
+	// while dns.encrypted.dot is on (bound either way, so the switch needs
+	// no restart); DoHListen (PICACHE_DOH_LISTEN, default off) serves only
+	// DNS over HTTPS (/dns-query) while dns.encrypted.doh is on.
+	DoTListen      []string
+	DoHListen      []string
 	WebTLSCertFile string   // PICACHE_WEB_TLS_CERT (optional, else self-signed)
 	WebTLSKeyFile  string   // PICACHE_WEB_TLS_KEY
 	WebHosts       []string // PICACHE_WEB_HOSTS: extra allowed Host names for the UI
@@ -127,6 +133,7 @@ func defaults() Config {
 		SNIListen:    []string{":443"},
 		WebListen:    []string{":8080"},
 		WebTLSListen: []string{":8443"},
+		DoTListen:    []string{":853"},
 		LogLevel:     slog.LevelInfo,
 		LogFormat:    "text",
 		AdminUser:    "admin",
@@ -176,6 +183,8 @@ func load(args []string, getenv func(string) string, secrets bool) (*Config, err
 	sniListen := fs.String("sni-listen", strings.Join(c.SNIListen, ","), "SNI pass-through listen addresses (PICACHE_SNI_LISTEN)")
 	webListen := fs.String("web-listen", strings.Join(c.WebListen, ","), "web UI listen addresses (PICACHE_WEB_LISTEN)")
 	webTLSListen := fs.String("web-tls-listen", strings.Join(c.WebTLSListen, ","), "web UI HTTPS listen addresses (PICACHE_WEB_TLS_LISTEN)")
+	dotListen := fs.String("dot-listen", strings.Join(c.DoTListen, ","), "DNS over TLS listen addresses (PICACHE_DOT_LISTEN)")
+	dohListen := fs.String("doh-listen", strings.Join(c.DoHListen, ","), "DNS over HTTPS listen addresses (PICACHE_DOH_LISTEN)")
 	logLevel := fs.String("log-level", c.LogLevel.String(), "log level (PICACHE_LOG_LEVEL)")
 	dev := fs.Bool("dev", c.Dev, "development mode (PICACHE_DEV)")
 	if err := fs.Parse(args); err != nil {
@@ -190,6 +199,8 @@ func load(args []string, getenv func(string) string, secrets bool) (*Config, err
 	c.SNIListen = splitList(*sniListen)
 	c.WebListen = splitList(*webListen)
 	c.WebTLSListen = splitList(*webTLSListen)
+	c.DoTListen = splitList(*dotListen)
+	c.DoHListen = splitList(*dohListen)
 	lvl, err := parseLevel(*logLevel)
 	if err != nil {
 		return nil, err
@@ -222,6 +233,8 @@ func (c *Config) applyEnv(getenv func(string) string, secrets bool) error {
 	list("PICACHE_SNI_LISTEN", &c.SNIListen)
 	list("PICACHE_WEB_LISTEN", &c.WebListen)
 	list("PICACHE_WEB_TLS_LISTEN", &c.WebTLSListen)
+	list("PICACHE_DOT_LISTEN", &c.DoTListen)
+	list("PICACHE_DOH_LISTEN", &c.DoHListen)
 	str("PICACHE_WEB_TLS_CERT", &c.WebTLSCertFile)
 	str("PICACHE_WEB_TLS_KEY", &c.WebTLSKeyFile)
 	list("PICACHE_WEB_HOSTS", &c.WebHosts)

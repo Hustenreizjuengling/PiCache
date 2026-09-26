@@ -406,7 +406,7 @@ func validateClient(in ClientInput) (ClientInput, []identifier, error) {
 		return in, nil, err
 	}
 	if len(in.Identifiers) == 0 {
-		return in, nil, apperr.Invalid("identifiers", "at least one IP address, CIDR or MAC address is required")
+		return in, nil, apperr.Invalid("identifiers", "at least one IP address, CIDR, MAC address or ClientID is required")
 	}
 	if len(in.Identifiers) > maxIdentifiers {
 		return in, nil, apperr.Invalid("identifiers", "at most %d identifiers are allowed", maxIdentifiers)
@@ -416,7 +416,7 @@ func validateClient(in ClientInput) (ClientInput, []identifier, error) {
 	for i, raw := range in.Identifiers {
 		id, ok := parseIdentifier(raw)
 		if !ok {
-			return in, nil, apperr.Invalid(fmt.Sprintf("identifiers[%d]", i), "must be an IP address, a CIDR (e.g. 192.168.1.0/24) or a MAC address")
+			return in, nil, apperr.Invalid(fmt.Sprintf("identifiers[%d]", i), "must be an IP address, a CIDR (e.g. 192.168.1.0/24), a MAC address or clientid:<ClientID>")
 		}
 		if seen[id.value] {
 			continue

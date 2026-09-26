@@ -286,7 +286,7 @@ host's LAN IP for the download cache's DNS answers. The image
 `/usr/share/doc/picache/` (copy them out with
 `docker cp picache:/usr/share/doc/picache/ .`). The container:
 
-- starts as root only to bind ports 53, 80 and 443 and, while the DHCP
+- starts as root only to bind ports 53, 80, 443 and 853 and, while the DHCP
   server is switched on, the DHCP ports and (with router advertisements on)
   the raw ICMPv6 socket (Docker gives non-root users no ambient
   capabilities), then drops to `PICACHE_RUN_AS=65532:65532` before it opens
@@ -335,8 +335,9 @@ MAC; the router resolver must be set explicitly; and the DHCP server is not
 available (DHCP broadcasts do not cross the bridge). The
 [local CA](#the-local-ca) cannot cover the host's LAN IP either: the
 container does not know it, so browsers keep warning for
-`https://<host IP>:8443` even after you trust the CA. Use host networking
-whenever you can.
+`https://<host IP>:8443` even after you trust the CA. The bridge compose file
+publishes `853:853/tcp` for DNS over TLS. Use host networking whenever you
+can.
 
 **This server's names** (`picache`, `picache.<local domain>`) are answered
 with PiCache's address on the client's network. In a bridge network PiCache
@@ -482,7 +483,8 @@ an admin: run `picache reset-password --admin <user>` on the host`.
 
 ## HTTPS certificates
 
-PiCache serves the HTTPS listener (`:8443`) with, in this order:
+PiCache serves the HTTPS listener (`:8443`), and the DoT and DoH listeners of
+[Encrypted DNS](#encrypted-dns), with the same certificate, in this order:
 
 1. **Certificate files** named by `PICACHE_WEB_TLS_CERT` and
    `PICACHE_WEB_TLS_KEY` (for example from [Let's Encrypt](#lets-encrypt));
@@ -500,7 +502,8 @@ it does not cover (browsers warn for those).
 
 ### The local CA
 
-At its first start with an HTTPS listener PiCache creates a small
+At its first start with a TLS listener (the HTTPS web listener, or the DoT
+or DoH listener when `PICACHE_WEB_TLS_LISTEN=off`) PiCache creates a small
 certification authority in `<data>/tls/` and issues its HTTPS certificate
 with it (renewed automatically 30 days before it expires). Trust the CA once
 on each device and the browser warnings are gone, also after renewals:
@@ -523,7 +526,8 @@ download it under **System → HTTPS certificate** (or from
 
 The CA can sign certificates only for PiCache's own names (`localhost`,
 `picache`, the host name and the DNS server names, also with the local
-domain) and its own addresses; its name constraints are marked critical, so
+domain, and the server name of encrypted DNS with the names below it) and
+its own addresses; its name constraints are marked critical, so
 devices refuse anything else it might sign (your router, other LAN devices,
 public names). When a new server name or a new address appears, the page and
 the health check say that the CA does not cover it: *Create a new local CA*
@@ -620,10 +624,14 @@ never stops PiCache). **Docker:** bind-mount the directory read-only (e.g.
 `PICACHE_WEB_TLS_CERT=/tls/fullchain.pem` and `PICACHE_WEB_TLS_KEY=/tls/privkey.pem`,
 and use `docker kill -s HUP picache` in the hook.
 
+For [Encrypted DNS](#encrypted-dns) add the server name (and, for DoT
+ClientIDs, `*.<server name>`) to the certificate: Android's Private DNS and
+browsers need a publicly trusted certificate for it.
+
 ### Minimum TLS version
 
 **System → Users & security → Web access** can require TLS 1.3
-(`web.tlsMinVersion`, default 1.2). It applies to the next connection;
+(`web.tlsMinVersion`, default 1.2); it applies to DoT and DoH too. It applies to the next connection;
 older clients can then no longer connect over HTTPS (the HTTP port is not
 affected). PiCache refuses the change from a browser that is itself
 connected with TLS 1.2.
@@ -648,14 +656,20 @@ sessions and the audit log) and the scheme:
   `X-Forwarded-Proto` only from these addresses (never `Forwarded` or
   `X-Real-IP`), right-most entry first;
 - the live streams under `/api/v1/stream/` need HTTP/1.1 without buffering
-  and a long read timeout (one hour).
+  and a long read timeout (one hour);
+- DNS over HTTPS (`/dns-query`, [Encrypted DNS](#encrypted-dns)) can be
+  forwarded like the rest (HTTP/1.1 or HTTP/2 to PiCache, `X-Forwarded-For`
+  appended, `X-Forwarded-Proto` set; no buffering settings needed): PiCache
+  answers it for the client the proxy names, which must be allowed by the
+  DNS access list too.
 
 With the proxy trusted, `X-Forwarded-Proto: https` makes the session cookie
 `Secure` and the HTTPS redirect is not applied, so
 `PICACHE_WEB_SECURE_COOKIES` is not needed.
 
 **Caddy** (sets the headers itself; Caddy ignores a client's
-`X-Forwarded-For` unless you configure trusted proxies there):
+`X-Forwarded-For` unless you configure trusted proxies there; `/dns-query`
+is forwarded with everything else):
 
 ```text
 picache.example.com {
@@ -687,11 +701,19 @@ server {
         proxy_buffering off;
         proxy_read_timeout 3600s;
     }
+    location /dns-query {
+        proxy_pass http://192.168.1.10:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+    }
 }
 ```
 
 **Traefik** (file provider; Traefik sets `X-Forwarded-For` and
-`X-Forwarded-Proto` and keeps the host with `passHostHeader`):
+`X-Forwarded-Proto` and keeps the host with `passHostHeader`; `/dns-query`
+takes the same router):
 
 ```yaml
 http:
@@ -721,6 +743,163 @@ Pitfalls:
   any address.
 - A proxy that passes a client's `X-Forwarded-For` through without appending
   its peer lets clients choose their address.
+- DoH through a proxy that is not trusted is refused (403): it would make
+  every DoH client loopback, which the DNS rate limit exempts.
+
+---
+
+## Encrypted DNS
+
+PiCache can answer the devices of your network over **DNS over TLS** (DoT,
+port 853) and **DNS over HTTPS** (DoH, `https://<name>:8443/dns-query`) in
+addition to plain DNS on port 53. Both are off by default and switched on
+under **DNS → DNS settings → Encrypted DNS**, where the page also shows the
+DoH URLs, the DoT host name, the certificate and step-by-step instructions
+for every platform.
+
+### The server name
+
+Devices reach encrypted DNS by a name: `dns.encrypted.serverName`, for
+example `picache.lan` (the page suggests `picache.<local domain>`). PiCache
+answers this name itself (and `<ClientID>.<name>`, below) with its own
+address, so devices that ask the network's DNS find it. Choose a name used
+only by PiCache: a certificate for it (and the local CA, if it permits the
+name) covers every name below it. The name must not be the local domain, a
+search domain, a parent of either, an IP address or a special-use name
+(`localhost`, `invalid`, `onion`, `arpa`; names below `home.arpa` are fine).
+
+### Certificates
+
+DoT and DoH use the certificate of the HTTPS web listener
+([HTTPS certificates](#https-certificates)); `PICACHE_WEB_TLS_CERT` serves
+every TLS listener. Devices verify it against the server name:
+
+- **Android's Private DNS and most browsers** need a publicly trusted
+  certificate for the server name. Use the [Let's Encrypt](#lets-encrypt)
+  guide with the server name as the name (a name in a domain you own, e.g.
+  `dns.home.example.com`; no local DNS record and no allowed-host entry are
+  needed, PiCache answers the server name itself and accepts it). For DoT
+  ClientIDs the certificate must also cover `*.<server name>`, which needs
+  the DNS-01 challenge (`-d dns.home.example.com -d '*.dns.home.example.com'`).
+- **The local CA** covers the server name and, while DoT is on,
+  `*.<server name>`, but only on devices that trust it. A CA created before
+  the server name was set does not permit it: the page offers *Create a new
+  local CA* (devices must trust the new CA again). A server name that is a
+  parent of an allowed host (`web.allowedHosts`, `PICACHE_WEB_HOSTS`) is left
+  out of the CA on purpose; use a public certificate for it.
+
+DoT and DoH count as *serving* only while the certificate can be used (not a
+fallback after a failed load, not expired). The health check *Encrypted DNS*
+names the problem.
+
+### Setting up the devices
+
+- **Android 9 or later:** Settings → Network & internet → Private DNS →
+  *Private DNS provider hostname*: the server name (or
+  `<ClientID>.<server name>`). Android uses port 853 only and needs a
+  publicly trusted certificate.
+- **iPhone, iPad and Mac:** install a configuration profile. Under
+  *Set up devices → Apple configuration profile* (below *Encrypted DNS* in
+  DNS → DNS settings) choose DoH or DoT, optionally a ClientID
+  and the names of your home Wi-Fi networks (the device then uses PiCache
+  only there and its normal DNS elsewhere; *Use everywhere* is only for
+  devices that reach PiCache over a VPN), then *Create link* and open the
+  link (or scan the QR code) on the device: allow the download and install
+  the profile under Settings → General → VPN & Device Management. The
+  profile is unsigned, so iOS shows it as not verified. The link is valid
+  for 15 minutes and points at `https://<server name>:8443/…`, so the device
+  must resolve the server name through PiCache and trust the certificate.
+  Apple devices use DoT on port 853 only.
+- **Windows 11:** Settings → Network & internet → *adapter* → DNS server
+  assignment → Edit: PiCache's IP address, *Encrypted only (DNS over
+  HTTPS)*, and the DoH URL as the template.
+- **Firefox:** Settings → Privacy & Security → DNS over HTTPS → *Max
+  Protection* → Custom: the DoH URL.
+- **Chrome and Edge:** Settings → Privacy and security → Security → *Use
+  secure DNS* → Custom: the DoH URL.
+- **Linux with systemd-resolved:** in `/etc/systemd/resolved.conf`
+  `DNS=<address>#<server name>` and `DNSOverTLS=yes`, then
+  `systemctl restart systemd-resolved`.
+
+A DoT listener on another port than 853 (`PICACHE_DOT_LISTEN`) serves only
+clients that can set a port.
+
+### ClientIDs
+
+A **ClientID** is a device ID the device sends itself: as the first label
+of the DoT server name (`kids-tablet.<server name>`) or in the DoH path
+(`/dns-query/kids-tablet`). Add it to a client as the identifier
+`clientid:kids-tablet` (**DNS → Clients & groups**); **Seen** lists the
+ClientIDs devices sent since the start. It helps with devices whose
+addresses change (private Wi-Fi addresses, IPv6 privacy addresses) and with
+devices behind a VPN or NAT.
+
+What a ClientID does **not** do: it identifies, it never authenticates. DoT
+sends it in cleartext, and anyone who knows or guesses it can send it. It
+decides the client only when PiCache does not already identify the device
+by its address or MAC address; a device identified that way stays its client
+whatever ClientID it sends, so parental controls on it hold. A ClientID can
+never unblock a device; `clientid:<id>` entries of the blocked clients drop
+the queries that carry it.
+
+### Discovery (DDR)
+
+Devices that support discovery of designated resolvers (RFC 9462; Windows 11,
+recent Apple systems) ask plain DNS for `_dns.resolver.arpa` and upgrade to
+DoH or DoT by themselves. PiCache answers it while DoT or DoH is serving and
+only when the served certificate contains the IP address the device asked
+(verified discovery): the local CA's certificate does (on devices that trust
+the CA), a public certificate usually does not. The page shows why DDR is
+not active.
+
+### Switching plain DNS off
+
+With **Plain DNS (port 53)** switched off (`dns.plainDns`), devices that send
+plain DNS to PiCache get REFUSED (with the Extended DNS Error 18 "plain DNS is
+disabled on this server; use DoT or DoH"), so they fail over to another DNS
+server at once. This machine is not affected (its own resolver,
+`picache healthcheck`, the Docker health check), and devices can still look
+up the server name, `<ClientID>.<server name>` and `_dns.resolver.arpa` to
+find the encrypted endpoints. Before you switch it off:
+
+- PiCache's DHCP server (and its IPv6 announcements) still announces PiCache
+  as the devices' plain DNS server;
+- a router that forwards its clients' DNS to PiCache (plain DNS) stops
+  getting answers;
+- devices without DoT or DoH settings lose DNS through PiCache.
+
+Plain DNS can only be switched off while DoT or DoH is on and its listener
+is running. If nothing serves later (a DoT bind failed after a reboot, the
+certificate expired, a restore on another host), PiCache serves plain DNS
+again for everyone, logs an error and the health check *Encrypted DNS* fails
+until DoT or DoH serves again.
+
+### Away from home
+
+Encrypted DNS is served only to the networks of the DNS access list, like
+plain DNS: PiCache is not a resolver for the Internet. Devices away from
+home use a VPN: Tailscale's `100.64.0.0/10` is allowed by default, a
+WireGuard network is added to **Allowed networks** (`dns.allowedNetworks`);
+DoT or DoH with a ClientID then identifies them. Never switch on *Allow all
+networks* for this, and never forward the web ports (8080/8443) to the
+Internet. If you forward a port for networks you listed in
+`dns.allowedNetworks`, forward only 853 or the port of `PICACHE_DOH_LISTEN`.
+
+### DoH through a reverse proxy
+
+A TLS-terminating proxy in the trusted proxies can forward `/dns-query` to
+the plain web listener ([Behind a reverse proxy](#behind-a-reverse-proxy));
+PiCache answers it for the client the proxy names. Without a trusted proxy
+that sends `X-Forwarded-Proto: https`, `/dns-query` on the plain HTTP
+listener answers 404 (never a redirect). A proxy on the same host that is
+not trusted gets 403 for DoH.
+
+### Listeners
+
+| Variable | Default | |
+|---|---|---|
+| `PICACHE_DOT_LISTEN` | `:853` | DoT. Bound even while DoT is off (connections are closed at once then), so the switch needs no restart; a port clash is reported only while DoT is on. Docker bridge networking publishes `853:853/tcp` (`docker-compose.bridge.yml`). |
+| `PICACHE_DOH_LISTEN` | `off` | A DoH-only HTTPS listener, e.g. `:4443`, or `192.168.1.5:443` when the SNI pass-through (`PICACHE_SNI_LISTEN=:443`, bound first) listens on another address. It serves only `/dns-query`. DoH is always also served on `PICACHE_WEB_TLS_LISTEN`. |
 
 ---
 
@@ -1391,7 +1570,8 @@ DNS on the host's LAN address instead of all addresses:
 
 ### Other ports
 
-A clash on 80, 443, 8080 or 8443 does not stop PiCache. The listener is
+A clash on 80, 443, 853, 8080 or 8443 does not stop PiCache (a clash on 853,
+the DoT port, is reported only while DoT is switched on). The listener is
 skipped, the error is logged and **System → Health & about** shows it.
 Without the :80 listener, the download cache's DNS answers stay off. At
 least one of the two web listeners must work. Free the port, or move the
@@ -1907,6 +2087,18 @@ comes from the build: releases report their tag, `make` reports
 the compose files pass no `VERSION` build argument. Before you upgrade such
 a build, download a backup (**System → Backup & restore**).
 
+### Upgrading to 0.14.0
+
+0.14.0 adds [Encrypted DNS](#encrypted-dns) and changes nothing until DoT or
+DoH is switched on, with these visible effects: port 853 is bound at every
+start (connections are closed at once while DoT is off; a clash on 853 is
+reported only while DoT is on); Docker bridge users publish `853:853/tcp` to
+use DoT (the bridge compose file does); an installation with
+`PICACHE_WEB_TLS_LISTEN=off` now gets the local CA at its first start (the
+DoT listener is a TLS listener). The settings keep their version (plain DNS
+on, DoT and DoH off, no server name); `picache.db` has no schema step, and
+`logs.db` gets one column for the ClientID of a query (no table rewrite).
+
 ### Going back to an earlier version
 
 After a successful update, the previous program stays in
@@ -1925,7 +2117,7 @@ sudo systemctl start picache
 ```
 
 Pick the copy named after the version you go back to. An older binary cannot
-be expected to open a database that a newer version has migrated. A version before 0.13.0 refuses the `picache.db` of 0.13.0 (clients schema v4, filter schema v3, dns schema v3) and does not start: go back with the copy 0.13.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image; rules, IP rules, records and group resolvers created with 0.13.0 are then gone. Its `logs.db` stays readable (rows with the new status `blocked-ip` show the raw status and count as blocked). A version before 0.11.0 refuses the `picache.db` of 0.11.0 (auth schema v2 with roles, settings schema v5) and does not start: go back with the copy 0.11.0 made at its first start (`picache-<old version>-<timestamp>.db`, made before any migration; `picache reset-password` of 0.11.0 run before that start makes it instead); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image; accounts, web access settings and certificates created with 0.11.0 are then gone (the files in `<data>/tls/` stay; 0.10 serves the current `cert.pem`). A version before 0.9.0 refuses the `picache.db` of 0.9.0 or later (newer schema) and does not start: go back with the copy 0.9.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image. An older version cannot open the newer `logs.db` either and sets it aside, so the query log and the statistics start fresh after such a downgrade. Changes to
+be expected to open a database that a newer version has migrated. Going back from 0.14.0 to 0.13.0 works without the copy (0.14.0 has no `picache.db` schema step): 0.13.0 sets the newer `logs.db` aside as `logs.db.broken-<timestamp>` (the query log, the statistics and the warning history start fresh; after upgrading again you can stop PiCache and move the file, with its `-wal` and `-shm` files, back); plain DNS is on and DoT/DoH are gone; `clientid:` identifiers are skipped (a client with only ClientIDs never matches) and 0.13.0 refuses to save such a client until they are removed; `clientid:` entries of the blocked clients and upstreams with `quic://`, `h3://` or `sdns://` make the stored settings invalid for 0.13.0 (it starts with a warning, but refuses every settings change until they are removed) and 0.13.0 skips those entries, so a default, forwarder or group upstream list with only such upstreams has none (SERVFAIL; group lists fail closed). Remove the new entries before you go back, or restore the copy 0.14.0 made at its first start. Backups made by 0.14.0 are accepted by 0.13.0 with the same effects. A version before 0.13.0 refuses the `picache.db` of 0.13.0 (clients schema v4, filter schema v3, dns schema v3) and does not start: go back with the copy 0.13.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image; rules, IP rules, records and group resolvers created with 0.13.0 are then gone. Its `logs.db` stays readable (rows with the new status `blocked-ip` show the raw status and count as blocked). A version before 0.11.0 refuses the `picache.db` of 0.11.0 (auth schema v2 with roles, settings schema v5) and does not start: go back with the copy 0.11.0 made at its first start (`picache-<old version>-<timestamp>.db`, made before any migration; `picache reset-password` of 0.11.0 run before that start makes it instead); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image; accounts, web access settings and certificates created with 0.11.0 are then gone (the files in `<data>/tls/` stay; 0.10 serves the current `cert.pem`). A version before 0.9.0 refuses the `picache.db` of 0.9.0 or later (newer schema) and does not start: go back with the copy 0.9.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image. An older version cannot open the newer `logs.db` either and sets it aside, so the query log and the statistics start fresh after such a downgrade. Changes to
 the configuration made since the upgrade are lost. With Docker, set the
 previous image tag in the compose file and restore the copy from the
 `picache-data` volume the same way.
@@ -2178,8 +2370,10 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_CACHE_LISTEN` | `:80` | Download cache over HTTP. If it is off or cannot bind, the download cache's DNS answers stay inactive. |
 | `PICACHE_SNI_LISTEN` | `:443` | HTTPS (SNI) pass-through of the download cache. |
 | `PICACHE_WEB_LISTEN` | `:8080` | Web UI and API over HTTP. |
-| `PICACHE_WEB_TLS_LISTEN` | `:8443` | Web UI and API over HTTPS. At least one web listener is required. |
-| `PICACHE_WEB_TLS_CERT` | – | PEM certificate (with its intermediates) for the HTTPS listener. PiCache reloads it within a minute when the files change (at once on SIGHUP), keeps the previous certificate while a pair cannot be loaded, and serves its local CA's certificate while none could be loaded yet ([HTTPS certificates](#https-certificates)). Without it, PiCache serves an uploaded certificate or one of its local CA in `<data>/tls/`. |
+| `PICACHE_WEB_TLS_LISTEN` | `:8443` | Web UI and API over HTTPS, and DNS over HTTPS at `/dns-query` while DoH is on. At least one web listener is required. |
+| `PICACHE_DOT_LISTEN` | `:853` | DNS over TLS while `dns.encrypted.dot` is on ([Encrypted DNS](#encrypted-dns)); bound either way, a clash is reported only while DoT is on. |
+| `PICACHE_DOH_LISTEN` | `off` | A listener for DNS over HTTPS only (`/dns-query`), e.g. `:4443`; `:443` clashes with the SNI pass-through. |
+| `PICACHE_WEB_TLS_CERT` | – | PEM certificate (with its intermediates) for every TLS listener (the HTTPS web listener, DoT and DoH). PiCache reloads it within a minute when the files change (at once on SIGHUP), keeps the previous certificate while a pair cannot be loaded, and serves its local CA's certificate while none could be loaded yet ([HTTPS certificates](#https-certificates)). Without it, PiCache serves an uploaded certificate or one of its local CA in `<data>/tls/`. |
 | `PICACHE_WEB_TLS_KEY` | – | PEM private key; set together with the certificate. Both files must be readable by the service user. |
 | `PICACHE_WEB_HOSTS` | – | Comma-separated extra host names allowed for the web UI (DNS-rebinding protection), e.g. a reverse-proxy name. Can also be set in the web settings. |
 | `PICACHE_CONFIG_LOCKED` | `off` | `on`: configuration changes from browser sessions are refused (`config_locked`); admin API tokens still write ([Web access and accounts](#web-access-and-accounts)). Not an access control against admins. |
@@ -2201,7 +2395,8 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 
 `picache serve` also accepts flags that override the environment:
 `--data-dir`, `--cache-dir`, `--dns-listen`, `--cache-listen`,
-`--sni-listen`, `--web-listen`, `--web-tls-listen`, `--log-level`, `--dev`.
+`--sni-listen`, `--web-listen`, `--web-tls-listen`, `--dot-listen`,
+`--doh-listen`, `--log-level`, `--dev`.
 
 ---
 

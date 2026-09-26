@@ -32,6 +32,8 @@
   const info = resource((signal) => api.system.info({ signal }), { interval: 60_000 })
   const host = resource((signal) => api.system.host({ signal }), { interval: 60_000 })
   const databases = resource((signal) => api.system.databases({ signal }), { interval: 60_000 })
+  // Whether DoT and DoH are switched on: a failed dot/doh listener only matters then.
+  const encrypted = resource((signal) => api.dns.encrypted({ signal }), { interval: 60_000 })
   const thresholds = settingsForm('health')
 
   // ?section=… (e.g. the warnings badge in the top bar) scrolls there once the panels above have loaded.
@@ -162,7 +164,10 @@
     </div>
   </div>
 
-  <ListenersPanel listeners={info.data?.listeners} />
+  <ListenersPanel
+    listeners={info.data?.listeners}
+    encrypted={encrypted.data && { dot: encrypted.data.dot.enabled, doh: encrypted.data.doh.enabled }}
+  />
 
   {#if session.canOperate}
     <SupportBundle />

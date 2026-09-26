@@ -28,7 +28,7 @@ CacheDirectory=picache
 CacheDirectoryMode=0750
 ReadWritePaths=-/srv/picache
 
-# Bind :53, :80 and :443 (and UDP 67 and 547 while the DHCP server is
+# Bind :53, :80, :443 and :853 (and UDP 67 and 547 while the DHCP server is
 # switched on in the web UI, also later at run time) as an unprivileged user.
 # CAP_NET_RAW only opens the raw ICMPv6 socket at start while IPv6 router
 # advertisements are on; PiCache drops it on every thread right after start

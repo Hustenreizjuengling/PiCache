@@ -320,7 +320,7 @@ func (s *Server) dnsBlockClient(w http.ResponseWriter, r *http.Request) error {
 	}
 	entry, valid := settings.ParseBlockedClient(in.Client)
 	if !valid {
-		return apperr.Invalid("client", "must be an IP address, a CIDR (at least /8 for IPv4, /32 for IPv6) or a MAC address")
+		return apperr.Invalid("client", settings.ErrBlockedClient)
 	}
 	cur := s.d.Settings.Get()
 	protected := s.d.DNS.ProtectedClients(cur.DNS.EDNSClientTrusted, s.neighbourMAC)
@@ -330,7 +330,7 @@ func (s *Server) dnsBlockClient(w http.ResponseWriter, r *http.Request) error {
 		return apperr.Invalid("client", "%s", why)
 	}
 	ip, _ := netip.ParseAddr(entry)
-	if in.Device && ip.IsValid() {
+	if in.Device && ip.IsValid() { // device is ignored for clientid: entries
 		if mac, found := s.neighbourMAC(ip); found {
 			if m, ok := settings.NormalizeMAC(mac); ok && dnsserver.BlockedClientLockout(m, protected) == "" {
 				entry = m
@@ -366,6 +366,9 @@ func (s *Server) dnsBlockClient(w http.ResponseWriter, r *http.Request) error {
 // address a device entry was derived from) or the same MAC.
 func matchingBlockedClient(list []string, entry string, ip netip.Addr) (string, bool) {
 	cl := netutil.NewClientList(list)
+	if id, ok := strings.CutPrefix(entry, settings.ClientIDPrefix); ok {
+		return cl.MatchClientID(id)
+	}
 	if p, err := settings.ParsePrefix(entry); err == nil {
 		for _, e := range list {
 			if q, err := settings.ParsePrefix(e); err == nil && q.Bits() <= p.Bits() && q.Contains(p.Addr()) {
@@ -388,7 +391,7 @@ func matchingBlockedClient(list []string, entry string, ip netip.Addr) (string, 
 func (s *Server) dnsUnblockClient(w http.ResponseWriter, r *http.Request) error {
 	entry, valid := settings.ParseBlockedClient(r.URL.Query().Get("entry"))
 	if !valid {
-		return apperr.Invalid("entry", "must be an IP address, a CIDR or a MAC address")
+		return apperr.Invalid("entry", settings.ErrBlockedClient)
 	}
 	next, err := s.d.Settings.Update(r.Context(), func(a *settings.All) error {
 		list := settings.NormalizeBlockedClients(a.DNS.BlockedClients)
@@ -499,12 +502,16 @@ func (s *Server) clientsKnown(w http.ResponseWriter, r *http.Request) error {
 		}
 		ip, _ := netip.ParseAddr(k.IP)
 		out[i].BlockedBy, _ = blocked.Match(ip, k.MAC)
+		if out[i].BlockedBy == "" {
+			out[i].BlockedBy, _ = blocked.MatchClientID(k.DNSClientID)
+		}
 	}
 	return ok(w, out)
 }
 
 // knownView is a row of GET /clients/known: BlockedBy is the first
-// dns.blockedClients entry that matches its address or MAC.
+// dns.blockedClients entry that matches its address or MAC, else the
+// clientid: entry of its last ClientID.
 type knownView struct {
 	clients.Known
 	BlockedBy string `json:"blockedBy,omitempty"`
@@ -635,10 +642,16 @@ func (s *Server) checkGroupUpstreams(upstreams []string, preset *string) error {
 	d := s.d.Settings.Get().DNS
 	for i, u := range upstreams {
 		spec, err := settings.ParseUpstream(u)
-		if err != nil || spec.IsIPLit {
+		if err != nil {
 			continue // the clients package reports a syntax error
 		}
 		field := fmt.Sprintf("upstreams[%d]", i)
+		if settings.SelfUpstream(spec, &d) {
+			return apperr.Invalid(field, "%s", settings.ErrSelfUpstream)
+		}
+		if !spec.NeedsBootstrap() {
+			continue
+		}
 		if (spec.Proto == "udp" || spec.Proto == "tcp") && !settings.PublicUpstreamName(spec.Host, d.LocalDomain) {
 			return apperr.Invalid(field, "%s", settings.ErrPlainUpstreamName)
 		}

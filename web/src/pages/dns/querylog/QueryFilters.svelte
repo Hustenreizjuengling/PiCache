@@ -1,8 +1,8 @@
 <!--
   @component
   Query log toolbar: time range (presets up to the retention, a custom
-  window), client, domain, status, record type, upstream, reply code and
-  DNSSEC. Text filters apply after a short pause in typing (or Enter) once
+  window), client, domain, status, record type, upstream, reply code,
+  DNSSEC and the ClientID of DoT and DoH queries. Text filters apply after a short pause in typing (or Enter) once
   they are long enough for the server; everything lives in the URL. A
   device filter (several client addresses, from the overview or the clients
   page) shows as "Device with N addresses" with a button to remove it.
@@ -14,6 +14,7 @@
   import { isCustom, rangeParams, type CustomRange } from '$lib/range'
   import type { QueryPatch } from '$lib/router.svelte'
   import { Button, CustomRangeDialog, Field, Icon, IconButton, Input, Select, TimeRangePicker } from '$lib/ui'
+  import { normalizeClientId } from '../shared/clientid'
   import {
     CLEAR_FILTERS,
     DEFAULT_RANGE,
@@ -22,6 +23,7 @@
     MIN_SEARCH,
     QTYPES,
     validClient,
+    validClientId,
     validDomain,
     type QueryFilters,
   } from './filters'
@@ -39,7 +41,7 @@
     /** logs.queryLogRetentionHours (limits the presets and the custom range); undefined while unknown. */
     retentionHours?: number
     /** Validation messages from the server, by filter. */
-    errors?: { client?: string; domain?: string }
+    errors?: { client?: string; domain?: string; dnsClientId?: string }
     onchange: (patch: QueryPatch) => void
   }
 
@@ -50,7 +52,7 @@
   /** Narrow screens: filters are collapsed unless opened (open at first when some are set). */
   let expanded = $state(untrack(() => hasFilters(filters)))
   const active = $derived(
-    [filters.domain, filters.qtype, filters.upstream, filters.dnssec].filter(Boolean).length +
+    [filters.domain, filters.qtype, filters.upstream, filters.dnssec, filters.dnsClientId].filter(Boolean).length +
       (filters.client.length > 0 ? 1 : 0) +
       (filters.status.length > 0 ? 1 : 0) +
       (filters.rcode.length > 0 ? 1 : 0),
@@ -71,6 +73,7 @@
 
   let clientText = $state(untrack(() => singleClient))
   let domainText = $state(untrack(() => filters.domain))
+  let clientIdText = $state(untrack(() => filters.dnsClientId))
   let timer: ReturnType<typeof setTimeout> | undefined
 
   // Filters changed from outside (links, the details panel, "Clear filters").
@@ -86,10 +89,17 @@
       if (d !== domainText.trim()) domainText = d
     })
   })
+  $effect(() => {
+    const id = filters.dnsClientId
+    untrack(() => {
+      if (id !== normalizeClientId(clientIdText)) clientIdText = id
+    })
+  })
   $effect(() => () => clearTimeout(timer))
 
   const clientHint = $derived(validClient(clientText) ? undefined : t('dns.queryLog.filter.tooShort', { min: MIN_SEARCH }))
   const domainHint = $derived(validDomain(domainText) ? undefined : t('dns.queryLog.filter.tooShort', { min: MIN_SEARCH }))
+  const clientIdHint = $derived(validClientId(clientIdText) ? undefined : t('dns.queryLog.filter.clientIdInvalid'))
 
   function applyText() {
     clearTimeout(timer)
@@ -98,6 +108,8 @@
     const d = domainText.trim()
     if (!device && validClient(c) && c !== singleClient) patch.client = c
     if (validDomain(d) && d !== filters.domain) patch.domain = d
+    const id = normalizeClientId(clientIdText)
+    if (validClientId(id) && id !== filters.dnsClientId) patch.dnsClientId = id
     if (Object.keys(patch).length > 0) onchange(patch)
   }
 
@@ -136,6 +148,7 @@
     clearTimeout(timer)
     clientText = ''
     domainText = ''
+    clientIdText = ''
     onchange(CLEAR_FILTERS)
   }
 </script>
@@ -236,6 +249,23 @@
           value={filters.dnssec}
           options={dnssecOptions}
           onchange={(e) => onchange({ dnssec: e.currentTarget.value })}
+        />
+      </Field>
+    </div>
+    <div class="f">
+      <Field label={t('dns.queryLog.filter.clientId')} error={clientIdHint ?? errors.dnsClientId}>
+        <Input
+          type="search"
+          size="sm"
+          mono
+          bind:value={clientIdText}
+          placeholder={t('dns.queryLog.filter.clientIdPlaceholder')}
+          maxlength={63}
+          autocapitalize="off"
+          spellcheck={false}
+          oninput={schedule}
+          onkeydown={onKey}
+          onblur={applyText}
         />
       </Field>
     </div>

@@ -45,7 +45,8 @@ type qctx struct {
 	// ednsMAC: the identity's MAC came from the EDNS options of a trusted
 	// forwarder (otherwise from the neighbour table, the MAC of client).
 	ednsMAC  bool
-	proto    string // udp | tcp
+	proto    string // udp | tcp | dot | doh | lookup
+	clientID string // the ClientID the query carried (DoT, DoH; "" = none)
 	id       *clients.Identity
 	set      *settings.All
 	blocking bool            // blocking active (not disabled or paused, globally or for every group of the client)
@@ -111,6 +112,8 @@ type result struct {
 	edeText string
 	// drop: no answer at all (dns.droppedDomains): UDP drop, TCP close.
 	drop bool
+	// plainOff: REFUSED because plain DNS is closed (step 3a): EDE 18.
+	plainOff bool
 	// def: the answer came from the default set (steps 13a, 13b, 14c);
 	// block is the upstream's own block of it, ede the upstream reply's
 	// EDE (any set).

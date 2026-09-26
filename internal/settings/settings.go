@@ -138,7 +138,31 @@ type DNS struct {
 	// ServerNameAddresses answer this server's names (serverNames) instead
 	// of the detected addresses, per family (empty = automatic).
 	ServerNameAddresses ServerNameAddresses `json:"serverNameAddresses"`
+
+	// PlainDNS serves DNS over UDP and TCP (port 53) to other devices.
+	// false closes it (REFUSED) while DoT or DoH is serving; plain DNS
+	// stays open while neither is (fail open).
+	PlainDNS bool `json:"plainDns"`
+	// Encrypted configures DNS over TLS and DNS over HTTPS for clients.
+	Encrypted EncryptedDNS `json:"encrypted"`
 }
+
+// EncryptedDNS configures the encrypted DNS PiCache serves to clients
+// (docs/ARCHITECTURE.md 19): DoT on PICACHE_DOT_LISTEN, DoH on the web
+// listeners and PICACHE_DOH_LISTEN. ServerName is the name clients use
+// for both; PiCache answers it itself (lower-case, no trailing dot).
+type EncryptedDNS struct {
+	DoT        bool   `json:"dot"`
+	DoH        bool   `json:"doh"`
+	ServerName string `json:"serverName"`
+}
+
+// Enabled reports whether DoT or DoH is switched on.
+func (e EncryptedDNS) Enabled() bool { return e.DoT || e.DoH }
+
+// MaxServerNameLen bounds dns.encrypted.serverName so that
+// "<ClientID>." (at most 64 characters) still fits a 253-character name.
+const MaxServerNameLen = 189
 
 // ServerNameAddresses are the addresses this server's names are answered
 // with (dns.serverNameAddresses); each family is used when it is not empty.

@@ -159,16 +159,20 @@ type Identity struct {
 	IgnoreStats         bool // not counted in the statistics
 }
 
-// Known is a client address that has been seen recently.
+// Known is a client address that has been seen recently. DNSClientID is
+// the last ClientID the address sent since the start (DoT, DoH); for an
+// address that identifies no configured client by itself, ClientID and
+// Name come from the client that has that ClientID.
 type Known struct {
-	IP        string    `json:"ip"`
-	MAC       string    `json:"mac,omitempty"`
-	Hostname  string    `json:"hostname,omitempty"` // from PTR (of this address, else of another one with the same MAC)
-	ClientID  int64     `json:"clientId,omitempty"`
-	Name      string    `json:"name,omitempty"`
-	FirstSeen time.Time `json:"firstSeen"`
-	LastSeen  time.Time `json:"lastSeen"`
-	Queries   int64     `json:"queries"`
+	IP          string    `json:"ip"`
+	MAC         string    `json:"mac,omitempty"`
+	Hostname    string    `json:"hostname,omitempty"` // from PTR (of this address, else of another one with the same MAC)
+	ClientID    int64     `json:"clientId,omitempty"`
+	Name        string    `json:"name,omitempty"`
+	DNSClientID string    `json:"dnsClientId,omitempty"`
+	FirstSeen   time.Time `json:"firstSeen"`
+	LastSeen    time.Time `json:"lastSeen"`
+	Queries     int64     `json:"queries"`
 }
 
 // PTRResolver resolves the hostname of a client address (router / local PTR upstreams).
@@ -212,6 +216,7 @@ type Registry struct {
 
 	seenMu    sync.Mutex
 	seen      *lru[netip.Addr, *seenEntry]
+	dnsIDs    *lru[string, *seenClientID]          // ClientIDs seen since the start (under seenMu)
 	seenEvery atomic.Pointer[func() time.Duration] // logs.flushSeconds (nil: seenFlushEvery)
 
 	namesMu sync.Mutex
@@ -254,6 +259,7 @@ func New(ctx context.Context, cdb, ldb *db.DB, log *slog.Logger) (*Registry, err
 		log:      log.With(slog.String("component", "clients")),
 		cache:    newLRU[netip.Addr, cachedIdentity](maxCacheEntries),
 		seen:     newLRU[netip.Addr, *seenEntry](maxSeenEntries),
+		dnsIDs:   newLRU[string, *seenClientID](maxSeenClientIDs),
 		names:    newLRU[netip.Addr, hostName](maxNameEntries),
 		queued:   make(map[netip.Addr]struct{}),
 		queue:    make(chan netip.Addr, maxPTRQueue),

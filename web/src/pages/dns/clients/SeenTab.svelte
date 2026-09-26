@@ -6,13 +6,15 @@
   Unconfigured devices can be added as a client in one step (MAC address
   plus IPv4 and ULA addresses). A device's panel shows its activity over the
   range. Admins can block a device's DNS queries
-  (by its MAC address when known) or lift the entries that block it.
+  (by its MAC address when known) or lift the entries that block it. A
+  device whose address sent a ClientID (DoT, DoH) shows "via ClientID";
+  the ClientIDs seen since the start follow in their own panel.
   Query: ?tab=seen&within=24h|7d|30d&ip=<address> (selects the device with that address)
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { t } from '$i18n/index.svelte'
-  import type { Client, ClientGroup, ClientInput, ClientStat, KnownClient, Resource } from '$lib/api'
+  import { api, resource, type Client, type ClientGroup, type ClientInput, type ClientStat, type KnownClient, type Resource } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { href, router } from '$lib/router.svelte'
@@ -22,7 +24,9 @@
   import { clientValues } from '../querylog/filters'
   import AddressList from '../shared/AddressList.svelte'
   import { confirmBlockDevice, confirmUnblock } from '../shared/blockClient'
+  import { CLIENT_ID_PREFIX } from '../shared/clientid'
   import ActivityChart from './ActivityChart.svelte'
+  import ClientIdsPanel from './ClientIdsPanel.svelte'
   import ClientPanel from './ClientPanel.svelte'
   import { clientFromKnown, deviceTotals, seenDevices, seriesKey, type SeenDevice, type Totals, type TrafficRange } from './clientStats'
 
@@ -47,6 +51,10 @@
   let addOpen = $state(false)
   let addPreset = $state.raw<Partial<ClientInput>>({})
 
+  // The ClientIDs seen since the start (their panel below): refreshed after a
+  // client is saved, so an added ClientID no longer shows as unknown.
+  const dnsClientIds = resource((signal) => api.clients.dnsClientIds({ signal }), { interval: 60_000 })
+
   const rows = $derived<Row[] | undefined>(known.data && seenDevices(known.data).map((d) => ({ ...d, stat: deviceTotals(d.addresses, stats) })))
   const selIp = $derived(router.param('ip').trim().toLowerCase())
   const selected = $derived(selIp ? rows?.find((d) => d.addresses.includes(selIp)) : undefined)
@@ -62,8 +70,14 @@
     addOpen = true
   }
 
+  function addClientId(id: string) {
+    addPreset = { name: id, identifiers: [CLIENT_ID_PREFIX + id] }
+    addOpen = true
+  }
+
   function saved() {
     router.setQuery({ ip: null })
+    void dnsClientIds.refresh()
     onchanged()
   }
 
@@ -139,13 +153,16 @@
 {/snippet}
 
 {#snippet clientCell(d: Row)}
-  {#if d.clientId}
-    <a href={href('/dns/clients', { sel: d.clientId })}>{clientName(d) ?? `#${d.clientId}`}</a>
-  {:else}
-    <Button size="sm" variant="ghost" icon="plus" disabled={!session.isAdmin} onclick={() => addAsClient(d)}>
-      {t('dns.seen.addAsClient')}
-    </Button>
-  {/if}
+  <span class="client-cell">
+    {#if d.clientId}
+      <a href={href('/dns/clients', { sel: d.clientId })}>{clientName(d) ?? `#${d.clientId}`}</a>
+    {:else}
+      <Button size="sm" variant="ghost" icon="plus" disabled={!session.isAdmin} onclick={() => addAsClient(d)}>
+        {t('dns.seen.addAsClient')}
+      </Button>
+    {/if}
+    {#if d.dnsClientId}<span class="via small muted">{t('dns.seen.viaClientId', { id: d.dnsClientId })}</span>{/if}
+  </span>
 {/snippet}
 
 {#snippet seenCell(d: Row)}
@@ -189,6 +206,8 @@
       {/snippet}
     </Table>
   </Panel>
+
+  <ClientIdsPanel seen={dnsClientIds} {clients} onadd={addClientId} />
 </div>
 
 <SidePanel
@@ -204,6 +223,7 @@
           { label: t('dns.seen.hostname'), value: selected.hostname },
           { label: t('dns.seen.mac'), value: selected.mac, mono: true },
           { label: t('common.label.client'), value: clientName(selected) ?? t('dns.seen.notConfigured') },
+          ...(selected.dnsClientId ? [{ label: t('dns.seen.clientIds.clientId'), value: selected.dnsClientId, mono: true }] : []),
           { label: t('dns.seen.firstSeen'), value: formatDateTime(selected.firstSeen) },
           { label: t('common.label.lastSeen'), value: formatDateTime(selected.lastSeen) },
           { label: t('dns.seen.queriesSeen'), value: formatNumber(selected.queries) },
@@ -271,6 +291,15 @@
 <ClientPanel bind:open={addOpen} preset={addPreset} {groups} {range} onsaved={saved} />
 
 <style>
+  .client-cell {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .via {
+    white-space: nowrap;
+  }
   .addr-cell {
     display: inline-flex;
     flex-wrap: wrap;

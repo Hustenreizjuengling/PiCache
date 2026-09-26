@@ -255,7 +255,7 @@ type errorBody struct {
 func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	var aw errAlreadyWritten
 	if errors.As(err, &aw) {
-		log.Debug("write response", slog.String("path", r.URL.Path), slog.Any("err", aw.error))
+		log.Debug("write response", slog.String("path", logPath(r)), slog.Any("err", aw.error))
 		return
 	}
 	status, code := http.StatusInternalServerError, "internal"
@@ -284,11 +284,11 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 			body.Error.Field = ae.Field
 		}
 		if ae.Err != nil {
-			log.Info("request error", slog.String("path", r.URL.Path), slog.String("kind", code), slog.Any("cause", ae.Err))
+			log.Info("request error", slog.String("path", logPath(r)), slog.String("kind", code), slog.Any("cause", ae.Err))
 		}
 	}
 	if status == http.StatusInternalServerError {
-		log.Error("internal error", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("err", err))
+		log.Error("internal error", slog.String("method", r.Method), slog.String("path", logPath(r)), slog.Any("err", err))
 		body.Error.Message = "internal error (see server log)"
 	}
 	body.Error.Code = code

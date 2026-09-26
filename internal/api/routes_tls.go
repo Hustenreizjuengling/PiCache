@@ -46,8 +46,9 @@ type TLSUpload struct {
 	Reason  string `json:"reason,omitempty"` // no-listener | env-override | plain-http (when not allowed)
 }
 
-// TLSStatus is the state of the HTTPS listener's certificate
-// (GET /system/tls). Source is "none" exactly when Listener is false.
+// TLSStatus is the state of the certificate of the TLS listeners (the web
+// UI over HTTPS, DoT, DoH; GET /system/tls). Listener reports that any of
+// them is bound; Source is "none" exactly when Listener is false.
 type TLSStatus struct {
 	Listener        bool         `json:"listener"`
 	Source          string       `json:"source"`       // files | uploaded | local-ca | self-signed | none: the source of the served certificate
@@ -100,7 +101,11 @@ func (s *Server) registerTLSRoutes() {
 	s.route("GET /api/v1/system/tls/ca.crt", permPublic, s.tlsCACert)
 }
 
-var errNoHTTPSListener = apperr.Conflict("no HTTPS listener: PICACHE_WEB_TLS_LISTEN is off")
+var errNoHTTPSListener = apperr.Conflict(ErrNoTLSListener)
+
+// ErrNoTLSListener is the message of the certificate changes without any
+// TLS listener (the web UI over HTTPS, DoT or DoH).
+const ErrNoTLSListener = "no TLS listener: PICACHE_WEB_TLS_LISTEN, PICACHE_DOT_LISTEN and PICACHE_DOH_LISTEN are off"
 
 // ErrNoUploadedCertificate answers DELETE /system/tls without an uploaded
 // certificate.

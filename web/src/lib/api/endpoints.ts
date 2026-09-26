@@ -129,13 +129,13 @@ const users = {
     http.del(`/system/users/${seg(id)}`, { ...o, body: { currentPassword } }),
 }
 
-/** The HTTPS certificate of the web UI. */
+/** The certificate of the TLS listeners (HTTPS web UI, DoT and DoH). */
 const tls = {
   status: (o?: ReqOpts) => http.get<T.TlsStatus>('/system/tls', o),
   /**
    * Uploads a certificate chain (PEM, leaf first) and its unencrypted key;
    * only over HTTPS. 400 with field certPem, keyPem, currentPassword or body;
-   * 409 without an HTTPS listener or while PICACHE_WEB_TLS_CERT is set.
+   * 409 without a TLS listener or while PICACHE_WEB_TLS_CERT is set.
    */
   upload: (body: { certPem: string; keyPem: string; currentPassword: string }, o?: ReqOpts) =>
     http.put<T.TlsStatus>('/system/tls', body, o),
@@ -194,6 +194,30 @@ const dns = {
   stats: (o?: ReqOpts) => http.get<T.DnsStats>('/dns/stats', o),
   cacheIps: (o?: ReqOpts) => http.get<T.CacheIPStatus>('/dns/cache-ips', o),
   router: (o?: ReqOpts) => http.get<T.RouterStatus>('/dns/router', o),
+  /** DoT, DoH and plain DNS: serving state, endpoints, certificate, DDR and counts (503 while unavailable). */
+  encrypted: (o?: ReqOpts) => http.get<T.EncryptedDnsStatus>('/dns/encrypted', o),
+  /**
+   * The Apple configuration profile as a file; only over HTTPS or from this
+   * machine (else 409). 400 with field protocol, dnsClientId or ssids; 409
+   * while the protocol is not serving.
+   */
+  profile: ({ protocol, dnsClientId, ssids, addresses }: T.ProfileOptions, o?: ReqOpts) =>
+    http.getFile('/dns/profile.mobileconfig', {
+      ...o,
+      query: { protocol, dnsClientId, ssid: ssids, addresses: addresses || undefined },
+    }),
+  /**
+   * A link to the profile for the device itself (the server name over
+   * HTTPS; 15 minutes, reusable). The checks of profile(); 409 without the
+   * HTTPS web listener. Allowed while the host locks the configuration.
+   */
+  createProfileLink: (body: T.ProfileOptions, o?: ReqOpts) => http.post<T.ProfileLink>('/dns/profile-links', body, o),
+  /**
+   * The profile behind a link (public; the device opens the link itself).
+   * 404 for an unknown or expired token, the 409s of profile(), 429 when
+   * throttled.
+   */
+  profileFromLink: (token: string, o?: ReqOpts) => http.getFile(`/dns/profile-links/${seg(token)}`, o),
   records: {
     list: (o?: ReqOpts) => http.get<T.DnsRecord[]>('/dns/records', o),
     create: (r: T.DnsRecordInput, o?: ReqOpts) => http.post<T.DnsRecord>('/dns/records', r, o),
@@ -240,6 +264,8 @@ const clients = {
   remove: (id: number, o?: ReqOpts) => http.del(`/clients/${seg(id)}`, o),
   /** Addresses seen within `within` (e.g. "30d"). */
   known: (within?: string, o?: ReqOpts) => http.get<T.KnownClient[]>('/clients/known', { ...o, query: { within } }),
+  /** ClientIDs sent over DoT and DoH since the start, newest first. */
+  dnsClientIds: (o?: ReqOpts) => http.get<T.SeenDnsClientId[]>('/clients/dns-client-ids', o),
   /** Deletes the clients (action "delete" only; all or nothing). */
   batch: (req: T.BatchRequest, o?: ReqOpts) => http.post<T.BatchResult>('/clients/batch', req, o),
 }

@@ -11,7 +11,7 @@
   import { errorText, fieldError } from '$lib/errors'
   import { session } from '$lib/session.svelte'
   import { Button, Chip, CopyButton, Dialog, Field, Input, Notice, Panel, Skeleton, toast } from '$lib/ui'
-  import QrCode from '../QrCode.svelte'
+  import QrCode from '$lib/ui/QrCode.svelte'
 
   let { user, onchange }: { user?: User; onchange: () => void } = $props()
 

@@ -45,6 +45,8 @@ services:
       - "53:53/tcp"
       - "80:80/tcp"
       - "443:443/tcp"
+      # DNS over TLS (used while DoT is switched on under DNS -> DNS settings)
+      - "853:853/tcp"
       - "8080:8080/tcp"
       - "8443:8443/tcp"
     read_only: true

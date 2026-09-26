@@ -268,19 +268,19 @@ export default {
 
   // https certificate
   'https.loadError': 'The certificate status could not be loaded',
-  'https.noListener': 'No HTTPS listener (PICACHE_WEB_TLS_LISTEN is off)',
+  'https.noListener': 'No TLS listener (PICACHE_WEB_TLS_LISTEN, PICACHE_DOT_LISTEN and PICACHE_DOH_LISTEN are off)',
   'https.changedTitle': 'The HTTPS certificate changed',
   'https.changedText':
     'This page still uses its connection with the previous certificate. Once this device trusts the new one (for the local CA: download and trust it below), reload the page; if the browser asks, accept the new certificate once.',
   'https.noListenerText':
-    'PiCache serves the web UI over plain HTTP only. Set PICACHE_WEB_TLS_LISTEN (e.g. :8443) and restart PiCache to add an HTTPS port.',
+    'PiCache serves the web UI over plain HTTP only, and neither DNS over TLS nor DNS over HTTPS. Set PICACHE_WEB_TLS_LISTEN (e.g. :8443) or PICACHE_DOT_LISTEN (e.g. :853) and restart PiCache.',
   'https.source.files': 'Certificate files',
   'https.source.uploaded': 'Uploaded',
   'https.source.local-ca': 'Local CA',
   'https.source.self-signed': 'Self-signed',
   'https.source.none': 'None',
   'https.cert.title': 'Certificate in use',
-  'https.cert.description': 'What the HTTPS port shows to browsers.',
+  'https.cert.description': 'What the HTTPS port shows to browsers. DNS over TLS and DNS over HTTPS serve the same certificate.',
   'https.cert.checkedAt': 'Checked {time}',
   'https.cert.errorTitle': 'The configured certificate cannot be used',
   'https.cert.fallback': 'A fallback certificate is served until it is fixed.',
@@ -391,8 +391,12 @@ export default {
     'PICACHE_WEB_TLS_CERT is set: the certificate files on the host are used (reloaded within a minute).',
   'https.upload.plainTitle': 'Upload over HTTPS',
   'https.upload.plainText': 'The private key is only sent over an encrypted connection. Open this page over HTTPS:',
+  'https.upload.plainNoWebTls':
+    'Uploading needs the HTTPS web listener or a browser on this machine; or use certificate files (PICACHE_WEB_TLS_CERT).',
   'https.upload.letsEncrypt':
     'Let’s Encrypt: PiCache has no ACME client. Renew with acme.sh or lego (DNS challenge) into files set with PICACHE_WEB_TLS_CERT and PICACHE_WEB_TLS_KEY; PiCache loads renewed files within a minute. docs/DEPLOYMENT.md has a guide.',
+  'https.upload.encryptedDns':
+    'Encrypted DNS: Android’s Private DNS and most browsers need a publicly trusted certificate for the server name of DNS settings; the local CA’s certificate works only on devices that trust it. ClientIDs over DoT need a certificate that also covers *.<server name>: the local CA’s certificate does, from Let’s Encrypt only with the DNS challenge.',
   'https.upload.delete': 'Delete uploaded certificate',
   'https.upload.deleteTitle': 'Delete the uploaded certificate?',
   'https.upload.deleteText':
@@ -480,6 +484,7 @@ export default {
   'backup.restore.stagedTitle': 'The backup is checked and ready',
   'backup.restore.stagedText': 'Restart PiCache to apply it. Until then the current configuration stays active.',
   'backup.restore.webAccessTitle': 'This browser may be locked out after the restart',
+  'backup.restore.dnsTitle': 'Plain DNS after the restart',
   'backup.restore.restartNow': 'Restart now',
   'backup.restore.restartText':
     'PiCache restarts and applies the restored backup. Everyone is signed out; sign in again with your account.',
@@ -735,6 +740,7 @@ export default {
   'health.check.data-disk': 'Data disk',
   'health.check.dhcp': 'DHCP server',
   'health.check.tls': 'HTTPS certificate',
+  'health.check.encrypted-dns': 'Encrypted DNS',
   'health.check.host': 'Host resources',
   'health.check.network': 'Network setup',
 
@@ -779,12 +785,17 @@ export default {
   'health.listeners.listening': 'Listening',
   'health.listeners.failed': 'Failed',
   'health.listeners.off': 'Off',
+  'health.listeners.unused': 'Not in use',
+  'health.listeners.unusedDot': 'Not used while DNS over TLS is off.',
+  'health.listeners.unusedDoh': 'Not used while DNS over HTTPS is off.',
   'health.listener.dns-udp': 'DNS (UDP)',
   'health.listener.dns-tcp': 'DNS (TCP)',
   'health.listener.cache': 'Download cache (HTTP)',
   'health.listener.sni': 'Download cache (HTTPS pass-through)',
   'health.listener.web': 'Web interface (HTTP)',
   'health.listener.web-tls': 'Web interface (HTTPS)',
+  'health.listener.dot': 'DNS over TLS',
+  'health.listener.doh': 'DNS over HTTPS (own port)',
 
   'health.warnings.title': 'Warning history',
   'health.warnings.description':

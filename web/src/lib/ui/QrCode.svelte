@@ -1,11 +1,13 @@
 <!--
   @component
-  A QR code for `text`, encoded in the browser (./qr.ts) and drawn as SVG.
+  A QR code for `text`, encoded in the browser (lib/qr.ts) and drawn as SVG.
   Always dark on white with a quiet zone, which scanners need in both themes.
-  Shows `fallback` when the text is too long for a QR code.
+  Shows `fallback` when the text is too long for a QR code. Imported from
+  its file, not from the kit index: only the pages that show a code load
+  the encoder.
 -->
 <script lang="ts">
-  import { encodeQr, qrPath } from './qr'
+  import { encodeQr, qrPath } from '../qr'
 
   interface Props {
     text: string

@@ -277,19 +277,19 @@ const de: Messages<typeof en> = {
 
   // HTTPS-Zertifikat
   'https.loadError': 'Der Zertifikatsstatus konnte nicht geladen werden',
-  'https.noListener': 'Kein HTTPS-Listener (PICACHE_WEB_TLS_LISTEN ist aus)',
+  'https.noListener': 'Kein TLS-Listener (PICACHE_WEB_TLS_LISTEN, PICACHE_DOT_LISTEN und PICACHE_DOH_LISTEN sind aus)',
   'https.changedTitle': 'Das HTTPS-Zertifikat hat sich geändert',
   'https.changedText':
     'Diese Seite nutzt noch ihre Verbindung mit dem bisherigen Zertifikat. Sobald dieses Gerät dem neuen vertraut (bei der lokalen CA: unten herunterladen und ihr vertrauen), lade die Seite neu; falls der Browser fragt, akzeptiere das neue Zertifikat einmal.',
   'https.noListenerText':
-    'PiCache liefert die Weboberfläche nur über unverschlüsseltes HTTP aus. Setze PICACHE_WEB_TLS_LISTEN (z. B. :8443) und starte PiCache neu, um einen HTTPS-Port hinzuzufügen.',
+    'PiCache liefert die Weboberfläche nur über einfaches HTTP aus und bietet weder DNS over TLS noch DNS over HTTPS an. Setze PICACHE_WEB_TLS_LISTEN (z. B. :8443) oder PICACHE_DOT_LISTEN (z. B. :853) und starte PiCache neu.',
   'https.source.files': 'Zertifikatsdateien',
   'https.source.uploaded': 'Hochgeladen',
   'https.source.local-ca': 'Lokale CA',
   'https.source.self-signed': 'Selbstsigniert',
   'https.source.none': 'Keins',
   'https.cert.title': 'Verwendetes Zertifikat',
-  'https.cert.description': 'Was der HTTPS-Port den Browsern zeigt.',
+  'https.cert.description': 'Was der HTTPS-Port Browsern zeigt. DNS over TLS und DNS over HTTPS nutzen dasselbe Zertifikat.',
   'https.cert.checkedAt': 'Geprüft {time}',
   'https.cert.errorTitle': 'Das eingerichtete Zertifikat lässt sich nicht verwenden',
   'https.cert.fallback': 'Bis das behoben ist, wird ein Ersatzzertifikat ausgeliefert.',
@@ -402,8 +402,12 @@ const de: Messages<typeof en> = {
     'PICACHE_WEB_TLS_CERT ist gesetzt: Die Zertifikatsdateien auf dem Host werden verwendet (innerhalb einer Minute neu geladen).',
   'https.upload.plainTitle': 'Über HTTPS hochladen',
   'https.upload.plainText': 'Der private Schlüssel wird nur über eine verschlüsselte Verbindung gesendet. Öffne diese Seite über HTTPS:',
+  'https.upload.plainNoWebTls':
+    'Zum Hochladen brauchst du den HTTPS-Listener der Weboberfläche oder einen Browser auf diesem Rechner; oder nutze Zertifikatsdateien (PICACHE_WEB_TLS_CERT).',
   'https.upload.letsEncrypt':
     'Let’s Encrypt: PiCache hat keinen ACME-Client. Erneuere mit acme.sh oder lego (DNS-Challenge) in Dateien, die du mit PICACHE_WEB_TLS_CERT und PICACHE_WEB_TLS_KEY einträgst; PiCache lädt erneuerte Dateien innerhalb einer Minute. docs/DEPLOYMENT.md hat eine Anleitung.',
+  'https.upload.encryptedDns':
+    'Verschlüsseltes DNS: Privates DNS von Android und die meisten Browser brauchen ein öffentlich vertrauenswürdiges Zertifikat für den Servernamen aus den DNS-Einstellungen; das Zertifikat der lokalen CA funktioniert nur auf Geräten, die ihr vertrauen. ClientIDs über DoT brauchen ein Zertifikat, das auch *.<Servername> abdeckt: Das der lokalen CA tut das, eines von Let’s Encrypt nur mit der DNS-Challenge.',
   'https.upload.delete': 'Hochgeladenes Zertifikat löschen',
   'https.upload.deleteTitle': 'Hochgeladenes Zertifikat löschen?',
   'https.upload.deleteText':
@@ -495,6 +499,7 @@ const de: Messages<typeof en> = {
   'backup.restore.stagedText':
     'Starte PiCache neu, um sie zu übernehmen. Bis dahin bleibt die aktuelle Konfiguration aktiv.',
   'backup.restore.webAccessTitle': 'Dieser Browser ist nach dem Neustart vielleicht ausgesperrt',
+  'backup.restore.dnsTitle': 'Unverschlüsseltes DNS nach dem Neustart',
   'backup.restore.restartNow': 'Jetzt neu starten',
   'backup.restore.restartText':
     'PiCache startet neu und übernimmt die wiederhergestellte Sicherung. Alle werden abgemeldet; melde dich danach wieder mit deinem Konto an.',
@@ -755,6 +760,7 @@ const de: Messages<typeof en> = {
   'health.check.data-disk': 'Datenplatte',
   'health.check.dhcp': 'DHCP-Server',
   'health.check.tls': 'HTTPS-Zertifikat',
+  'health.check.encrypted-dns': 'Verschlüsseltes DNS',
   'health.check.host': 'Ressourcen des Hosts',
   'health.check.network': 'Netzwerk-Einrichtung',
 
@@ -800,12 +806,17 @@ const de: Messages<typeof en> = {
   'health.listeners.listening': 'Lauscht',
   'health.listeners.failed': 'Fehlgeschlagen',
   'health.listeners.off': 'Aus',
+  'health.listeners.unused': 'Nicht in Gebrauch',
+  'health.listeners.unusedDot': 'Wird nicht genutzt, solange DNS over TLS aus ist.',
+  'health.listeners.unusedDoh': 'Wird nicht genutzt, solange DNS over HTTPS aus ist.',
   'health.listener.dns-udp': 'DNS (UDP)',
   'health.listener.dns-tcp': 'DNS (TCP)',
   'health.listener.cache': 'Download-Cache (HTTP)',
   'health.listener.sni': 'Download-Cache (HTTPS-Durchleitung)',
   'health.listener.web': 'Weboberfläche (HTTP)',
   'health.listener.web-tls': 'Weboberfläche (HTTPS)',
+  'health.listener.dot': 'DNS over TLS',
+  'health.listener.doh': 'DNS over HTTPS (eigener Port)',
 
   'health.warnings.title': 'Warnverlauf',
   'health.warnings.description':

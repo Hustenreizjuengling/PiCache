@@ -12,6 +12,8 @@ export interface CheckInfo {
   path?: string
   /** Navigation title of that page. */
   page?: MessageKey
+  /** Query of the link, e.g. the section of the page to scroll to. */
+  query?: Record<string, string>
 }
 
 export const CHECKS: Record<string, CheckInfo> = {
@@ -33,6 +35,12 @@ export const CHECKS: Record<string, CheckInfo> = {
   network: { label: 'system.health.check.network', path: '/dns/network', page: 'common.nav.network' },
   dhcp: { label: 'system.health.check.dhcp', path: '/dns/dhcp', page: 'common.nav.dhcp' },
   tls: { label: 'system.health.check.tls', path: '/system/https', page: 'common.nav.https' },
+  'encrypted-dns': {
+    label: 'system.health.check.encrypted-dns',
+    path: '/dns/settings',
+    page: 'common.nav.dnsSettings',
+    query: { section: 'encrypted' },
+  },
 }
 
 const ORDER: Record<HealthStatus, number> = { fail: 0, warn: 1, ok: 2 }
@@ -53,6 +61,8 @@ export const LISTENER_ROLES: { role: string; label: MessageKey; env: string }[] 
   { role: 'sni', label: 'system.health.listener.sni', env: 'PICACHE_SNI_LISTEN' },
   { role: 'web', label: 'system.health.listener.web', env: 'PICACHE_WEB_LISTEN' },
   { role: 'web-tls', label: 'system.health.listener.web-tls', env: 'PICACHE_WEB_TLS_LISTEN' },
+  { role: 'dot', label: 'system.health.listener.dot', env: 'PICACHE_DOT_LISTEN' },
+  { role: 'doh', label: 'system.health.listener.doh', env: 'PICACHE_DOH_LISTEN' },
 ]
 
 export type KeyKind = 'systemd' | 'docker' | 'file' | 'memory'

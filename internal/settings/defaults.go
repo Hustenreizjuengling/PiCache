@@ -42,6 +42,8 @@ func Defaults() All {
 			LocalRecordsEnabled:    true,
 			LocalizeRecords:        LocalizeFirst,
 			ServerNameAddresses:    ServerNameAddresses{IPv4: []string{}, IPv6: []string{}},
+			PlainDNS:               true,
+			Encrypted:              EncryptedDNS{},
 		},
 		Filter: Filter{
 			Enabled:                 true,

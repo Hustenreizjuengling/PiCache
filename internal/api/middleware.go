@@ -16,6 +16,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/config"
+	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
@@ -47,7 +48,7 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler {
 					panic(v)
 				}
-				s.log.Error("panic in handler", slog.String("path", r.URL.Path), slog.Any("panic", v), slog.String("stack", string(debug.Stack())))
+				s.log.Error("panic in handler", slog.String("path", logPath(r)), slog.Any("panic", v), slog.String("stack", string(debug.Stack())))
 				http.Error(w, "internal error", http.StatusInternalServerError)
 			}
 		}()
@@ -80,8 +81,9 @@ func (s *Server) setSecurityHeaders(w http.ResponseWriter, https bool) {
 }
 
 // httpsRedirect redirects plain-HTTP requests to the HTTPS listener when
-// settings.Web.RedirectToHTTPS is on (never /healthz, and never a request
-// whose effective scheme is https: a trusted TLS-terminating proxy).
+// settings.Web.RedirectToHTTPS is on (never /healthz or the DoH paths, and
+// never a request whose effective scheme is https: a trusted
+// TLS-terminating proxy).
 func (s *Server) httpsRedirect(next http.Handler) http.Handler {
 	port := ""
 	if len(s.d.Config.WebTLSListen) > 0 {
@@ -90,7 +92,7 @@ func (s *Server) httpsRedirect(next http.Handler) http.Handler {
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isHTTPS(r) && port != "" && r.URL.Path != "/healthz" && s.d.Settings.Get().Web.RedirectToHTTPS {
+		if !isHTTPS(r) && port != "" && r.URL.Path != "/healthz" && !dnsserver.IsDoHPath(r.URL.Path) && s.d.Settings.Get().Web.RedirectToHTTPS {
 			host := r.Host
 			if h, _, err := net.SplitHostPort(host); err == nil {
 				host = h
@@ -110,8 +112,9 @@ func (s *Server) httpsRedirect(next http.Handler) http.Handler {
 }
 
 // hostAllowlist defends against DNS rebinding: the Host header must be an IP
-// literal, localhost, this machine's hostname, a configured server name or
-// an explicitly allowed host.
+// literal, localhost, this machine's hostname, a configured server name,
+// the server name of encrypted DNS (not the names below it) or an
+// explicitly allowed host.
 type hostAllowlist struct {
 	cfg     *config.Config
 	allowed atomic.Pointer[[]string]
@@ -151,6 +154,7 @@ func (h *hostAllowlist) rebuild(s *settings.All) {
 	for _, n := range s.DNS.ServerNames {
 		add(n)
 	}
+	add(s.DNS.Encrypted.ServerName)
 	for _, n := range s.Web.AllowedHosts {
 		add(n)
 	}

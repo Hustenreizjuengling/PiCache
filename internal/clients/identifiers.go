@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // Identifier kinds stored in client_identifiers.kind.
@@ -13,6 +14,9 @@ const (
 	kindIP   = "ip"
 	kindCIDR = "cidr"
 	kindMAC  = "mac"
+	// kindClientID is a ClientID of encrypted DNS, stored as
+	// "clientid:<ClientID>" (docs/ARCHITECTURE.md 19).
+	kindClientID = "clientid"
 )
 
 // identifier is a parsed, normalised client identifier.
@@ -23,12 +27,23 @@ type identifier struct {
 	prefix netip.Prefix // kindCIDR
 }
 
-// parseIdentifier normalises an IP address, a CIDR or an EUI-48 MAC address.
-// IPs are unmapped and lose their zone; a CIDR is masked (a full-length
-// prefix becomes an IP); MACs become lower-case colon-separated.
+// parseIdentifier normalises an IP address, a CIDR, an EUI-48 MAC address
+// or clientid:<ClientID>. IPs are unmapped and lose their zone; a CIDR is
+// masked (a full-length prefix becomes an IP); MACs become lower-case
+// colon-separated; a ClientID becomes lower-case (the prefix too).
 func parseIdentifier(s string) (identifier, bool) {
 	s = strings.TrimSpace(s)
-	if s == "" || len(s) > 64 {
+	if s == "" || len(s) > len(settings.ClientIDPrefix)+63 {
+		return identifier{}, false
+	}
+	if len(s) > len(settings.ClientIDPrefix) && strings.EqualFold(s[:len(settings.ClientIDPrefix)], settings.ClientIDPrefix) {
+		id, ok := settings.ParseClientIDEntry(s)
+		if !ok {
+			return identifier{}, false
+		}
+		return identifier{kind: kindClientID, value: settings.ClientIDPrefix + id}, true
+	}
+	if len(s) > 64 {
 		return identifier{}, false
 	}
 	if strings.Contains(s, "/") {

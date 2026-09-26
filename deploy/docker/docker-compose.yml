@@ -10,8 +10,8 @@
 # identify clients by MAC address. Use docker-compose.bridge.yml only if you
 # cannot use it.
 #
-# Port conflicts: PiCache needs 53/udp+tcp (DNS), 80 and 443 (download cache)
-# and 8080/8443 (web UI) on the host.
+# Port conflicts: PiCache needs 53/udp+tcp (DNS), 80 and 443 (download cache),
+# 853 (DNS over TLS) and 8080/8443 (web UI) on the host.
 #   - Port 53 is often taken by systemd-resolved's stub listener
 #     (127.0.0.53), dnsmasq, bind9, unbound or another DNS filter. DNS is
 #     mandatory, so the container then exits with "port 53 is in use". Fix:
@@ -20,7 +20,8 @@
 #     environment below).
 #   - A clash on 80/443/8080/8443 is logged and shown under
 #     System -> Health & about; DNS keeps running. Free the port or change
-#     PICACHE_*_LISTEN.
+#     PICACHE_*_LISTEN. A clash on 853 (another DNS-over-TLS server) is
+#     reported only while DoT is switched on (PICACHE_DOT_LISTEN).
 #
 # Security: the container starts as root only to bind the ports, then drops to
 # 65532:65532 before touching any file. Keep the capability and read-only
@@ -82,6 +83,10 @@ services:
     #   PICACHE_WEB_HOSTS: "picache.lan"
     #   # Port 53 conflict: listen on specific addresses instead of all.
     #   PICACHE_DNS_LISTEN: "192.168.1.5:53,127.0.0.1:53"
+    #   # DNS over TLS (default :853) and a DoH-only HTTPS listener (default
+    #   # off; :443 is the SNI pass-through's, so use another port).
+    #   PICACHE_DOT_LISTEN: ":853"
+    #   PICACHE_DOH_LISTEN: ":4443"
     #   # Create the first admin from a Docker secret instead of the setup
     #   # token (at least 10 characters). The file is read as root before
     #   # the privilege drop and without CAP_DAC_OVERRIDE, so on the host it

@@ -290,9 +290,27 @@ type fakeClients struct {
 	mu        sync.Mutex
 	ids       map[netip.Addr]*clients.Identity
 	byMAC     map[string]*clients.Identity // IdentifyDerived with a MAC
+	byID      map[string]*clients.Identity // IdentifyDNSClientID
 	seen      map[netip.Addr]int
 	transient map[netip.Addr]int
 	derived   []derivedCall
+	seenIDs   map[string]netip.Addr // SeenDNSClientID
+}
+
+func (f *fakeClients) IdentifyDNSClientID(id string) (*clients.Identity, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.byID[id]
+	return c, ok
+}
+
+func (f *fakeClients) SeenDNSClientID(ip netip.Addr, id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.seenIDs == nil {
+		f.seenIDs = map[string]netip.Addr{}
+	}
+	f.seenIDs[id] = ip
 }
 
 type derivedCall struct {
@@ -497,7 +515,7 @@ func (e *testEnv) serve() *testEnv {
 	e.udp, e.tcp = pc.LocalAddr().String(), ln.Addr().String()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- e.srv.Serve(ctx, []net.PacketConn{pc}, []net.Listener{ln}) }()
+	go func() { done <- e.srv.Serve(ctx, []net.PacketConn{pc}, []net.Listener{ln}, nil) }()
 	e.t.Cleanup(func() {
 		cancel()
 		select {

@@ -224,6 +224,10 @@ env_template() {
 # a certificate is set).
 #PICACHE_WEB_LISTEN=:8080
 #PICACHE_WEB_TLS_LISTEN=:8443
+# DNS over TLS for devices (serves while DoT is switched on in the web UI).
+#PICACHE_DOT_LISTEN=:853
+# DNS over HTTPS on an own port (DoH is served on PICACHE_WEB_TLS_LISTEN too).
+#PICACHE_DOH_LISTEN=off
 # Own certificate and key (PEM), readable by the picache group (0640 root:picache).
 #PICACHE_WEB_TLS_CERT=/etc/picache/tls/cert.pem
 #PICACHE_WEB_TLS_KEY=/etc/picache/tls/key.pem
@@ -612,7 +616,7 @@ check_ports() {
 			fi
 		fi
 	fi
-	for port in 80 443 8080 8443; do
+	for port in 80 443 853 8080 8443; do
 		if [ -n "$(listeners_on t "$port")" ]; then
 			warn "TCP port $port is used by another program. PiCache keeps running without
 that listener (see System -> Health & about); free the port or change the

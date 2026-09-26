@@ -26,10 +26,11 @@ const (
 
 // upstream is one configured resolver.
 type upstream struct {
-	name string // the configured string (stats key)
-	host string // UpstreamSpec.Host: names the upstream in block reasons (never a DoH path)
-	t    transport
-	st   *upstreamStats
+	name    string // the configured string (stats key)
+	display string // UpstreamSpec.Display: names it in logs, errors, Info and metrics (never a stamp)
+	host    string // UpstreamSpec.Host: names the upstream in block reasons (never a DoH path)
+	t       transport
+	st      *upstreamStats
 }
 
 // upstreamSet is an ordered list of upstreams plus the cache namespace for
@@ -48,11 +49,11 @@ func (r *Resolver) buildSet(kind string, list []string, boot *bootstrap, prev ma
 	for _, raw := range list {
 		spec, err := settings.ParseUpstream(raw)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%q: %w", raw, err))
+			errs = append(errs, fmt.Errorf("%q: %w", settings.UpstreamDisplay(raw), err))
 			continue
 		}
 		if len(s.ups) == maxUpstreamsPerSet {
-			errs = append(errs, fmt.Errorf("%q: more than %d upstreams", raw, maxUpstreamsPerSet))
+			errs = append(errs, fmt.Errorf("%q: more than %d upstreams", spec.Display(), maxUpstreamsPerSet))
 			continue
 		}
 		st := prev[spec.Raw]
@@ -62,7 +63,7 @@ func (r *Resolver) buildSet(kind string, list []string, boot *bootstrap, prev ma
 				prev[spec.Raw] = st // shared with the other sets of this generation
 			}
 		}
-		s.ups = append(s.ups, &upstream{name: spec.Raw, host: spec.Host, t: r.newTransport(spec, boot), st: st})
+		s.ups = append(s.ups, &upstream{name: spec.Raw, display: spec.Display(), host: spec.Host, t: r.newTransport(spec, boot), st: st})
 	}
 	s.id = kind + "\x00" + joinKey(s.names())
 	return s, errs
@@ -79,6 +80,12 @@ func (r *Resolver) newTransport(spec settings.UpstreamSpec, boot *bootstrap) tra
 		return newDoT(spec, boot, r.opts.rootCAs)
 	case "https":
 		return newDoH(spec, boot, r.opts.rootCAs)
+	case "quic":
+		return newDoQ(spec, boot, r.opts.rootCAs, r.opts.quicIdle)
+	case "h3":
+		return newH3(spec, boot, r.opts.rootCAs, r.opts.quicIdle)
+	case "dnscrypt":
+		return newDNSCrypt(spec)
 	}
 	t := &plainTransport{addr: spec.Addr(), tcpOnly: spec.Proto == "tcp"}
 	if !spec.IsIPLit {
@@ -91,6 +98,15 @@ func (s *upstreamSet) names() []string {
 	out := make([]string, len(s.ups))
 	for i, u := range s.ups {
 		out[i] = u.name
+	}
+	return out
+}
+
+// displays returns the display names of the upstreams (for the log).
+func (s *upstreamSet) displays() []string {
+	out := make([]string, len(s.ups))
+	for i, u := range s.ups {
+		out[i] = u.display
 	}
 	return out
 }
@@ -154,11 +170,12 @@ func (s *upstreamStats) score() float64 {
 	return max(rtt, 1) * (1 + f) * (1 + f)
 }
 
-func (s *upstreamStats) snapshot(name string) UpstreamStat {
+func (s *upstreamStats) snapshot(name, display string) UpstreamStat {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return UpstreamStat{
 		Upstream:    name,
+		Name:        display,
 		Queries:     s.queries.Load(),
 		Errors:      s.errors.Load(),
 		AvgRTTMs:    msFloat(time.Duration(s.ewmaMs * float64(time.Millisecond))),
@@ -171,7 +188,7 @@ func (s *upstreamStats) snapshot(name string) UpstreamStat {
 // exchangeResult is a verified upstream reply.
 type exchangeResult struct {
 	msg      *dns.Msg
-	upstream string
+	upstream string // UpstreamSpec.Display of the answering upstream
 	host     string // UpstreamSpec.Host of the answering upstream
 	rtt      time.Duration
 	fallback bool       // answered by a fallback upstream
@@ -333,21 +350,21 @@ func (r *Resolver) attempt(ctx context.Context, u *upstream, q *dns.Msg, wire []
 	u.st.queries.Add(1)
 	if err == nil && m.Rcode == dns.RcodeRefused {
 		r.recordFailure(u, errRefused)
-		return exchangeResult{msg: m, upstream: u.name, host: u.host, rtt: rtt}, nil
+		return exchangeResult{msg: m, upstream: u.display, host: u.host, rtt: rtt}, nil
 	}
 	if err != nil {
 		r.recordFailure(u, err)
-		return exchangeResult{}, fmt.Errorf("%s: %w", u.name, err)
+		return exchangeResult{}, fmt.Errorf("%s: %w", u.display, err)
 	}
 	if u.st.success(rtt) {
-		r.log.Info("upstream recovered", slog.String("upstream", u.name))
+		r.log.Info("upstream recovered", slog.String("upstream", u.display))
 	}
-	return exchangeResult{msg: m, upstream: u.name, host: u.host, rtt: rtt}, nil
+	return exchangeResult{msg: m, upstream: u.display, host: u.host, rtt: rtt}, nil
 }
 
 func (r *Resolver) recordFailure(u *upstream, err error) {
 	if u.st.failure(err, time.Now()) {
-		r.log.Warn("upstream is failing", slog.String("upstream", u.name), slog.Any("err", err))
+		r.log.Warn("upstream is failing", slog.String("upstream", u.display), slog.Any("err", err))
 	}
 }
 

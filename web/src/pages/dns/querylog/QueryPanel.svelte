@@ -17,7 +17,9 @@
   "Only for this device" creates the rule for a group that holds only the
   client (admins, not while addresses are anonymised). Answers blocked for
   an address in them link the list or IP rule and explain that an allow
-  rule for the name lifts the check.
+  rule for the name lifts the check. DoT and DoH entries name their
+  ClientID (with a filter for it); a query refused because plain DNS is
+  off links to the encrypted DNS settings.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -63,6 +65,8 @@
   let { open = $bindable(false), event, groups, lists, settings, onsettings, onfilter }: Props = $props()
 
   const CACHE_WINDOW = 5 * 60 // seconds before and after the query
+  /** The reason of queries refused while plain DNS is off (dns.plainDns). */
+  const PLAIN_DNS_OFF = 'plain-dns-off'
   /** The query name of entries recorded while logs.hideDomains was on. */
   const HIDDEN = 'hidden'
 
@@ -93,6 +97,7 @@
   $effect(() => () => ctrl?.abort())
 
   const blocked = $derived(!!event && isBlockedStatus(event.status))
+  const protocolName = $derived(event ? t(`dns.queryLog.protocolName.${event.protocol}`) : '')
   /** The domain was not recorded (privacy setting "Hide domains"). */
   const hidden = $derived(event?.qname === HIDDEN)
   // An allow rule cannot lift an upstream's block: the upstream sent no usable answer.
@@ -268,7 +273,11 @@
         <dt>{t('dns.queryLog.duration')}</dt>
         <dd>{formatMicros(event.durationUs)}</dd>
         <dt>{t('dns.queryLog.protocol')}</dt>
-        <dd>{event.protocol.toUpperCase()}{event.dnssec ? ` · ${t('dns.queryLog.dnssec')}` : ''}</dd>
+        <dd>{protocolName}{event.dnssec ? ` · ${t('dns.queryLog.dnssec')}` : ''}</dd>
+        {#if event.dnsClientId}
+          <dt>{t('dns.queryLog.clientId')}</dt>
+          <dd class="mono">{event.dnsClientId}</dd>
+        {/if}
       </KeyValue>
 
       {#if event.status === 'blocked-upstream'}
@@ -293,6 +302,13 @@
               </span>
             {/if}
             <Button size="sm" variant="ghost" href={href('/dns/settings', { section: 'protection' })}>{t('dns.queryLog.rebindSetting')}</Button>
+          {/snippet}
+        </Notice>
+      {:else if event.status === 'refused' && event.reason === PLAIN_DNS_OFF}
+        <Notice tone="info" title={t('dns.queryLog.plainOffTitle')}>
+          {t('dns.queryLog.plainOffText')}
+          {#snippet actions()}
+            <Button size="sm" icon="lock" href={href('/dns/settings', { section: 'encrypted' })}>{t('dns.queryLog.openEncrypted')}</Button>
           {/snippet}
         </Notice>
       {:else if event.status === 'blocked-ip'}
@@ -340,6 +356,12 @@
         <Button size="sm" variant="ghost" icon="filter" onclick={() => filterBy({ client: event.clientIp })}>
           {t('dns.queryLog.onlyClient')}
         </Button>
+        {#if event.dnsClientId}
+          {@const id = event.dnsClientId}
+          <Button size="sm" variant="ghost" icon="filter" onclick={() => filterBy({ dnsClientId: id })}>
+            {t('dns.queryLog.onlyClientId')}
+          </Button>
+        {/if}
       </div>
 
       {#if deviceResult}

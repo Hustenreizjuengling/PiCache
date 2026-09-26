@@ -80,7 +80,7 @@
               <p class="small muted">{t('system.health.checks.hint', { hint: c.hint })}</p>
             {/if}
             {#if c.status !== 'ok' && info?.path && info.page}
-              <a class="small" href={href(info.path)}>{t('system.health.checks.goTo', { page: t(info.page) })}</a>
+              <a class="small" href={href(info.path, info.query)}>{t('system.health.checks.goTo', { page: t(info.page) })}</a>
             {/if}
           </div>
         </li>

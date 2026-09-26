@@ -5,6 +5,122 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Databases:** `picache.db` has no schema step. The settings keep their
+  version: `dns.plainDns` (`true`) and `dns.encrypted`
+  (`{dot:false, doh:false, serverName:""}`) load with these defaults.
+  ClientIDs of clients are rows of `client_identifiers` with the kind
+  `clientid` and the value `clientid:<id>`. `logs.db` gets logs migration 5,
+  which adds the column `dns_client_id` to `logs_queries` (no table
+  rewrite). The ClientIDs devices sent stay in memory.
+- **Visible after the upgrade:** `:853` is bound (`PICACHE_DOT_LISTEN`;
+  connections are closed at accept while DoT is off; a port clash is logged
+  at the start and reported by the health check only while DoT is on).
+  Docker bridge users publish `853:853/tcp` to use DoT (the bridge compose
+  file does). Installations with `PICACHE_WEB_TLS_LISTEN=off` now get the
+  local CA at the first start (the DoT listener is a TLS listener).
+  Nothing else changes until DoT or DoH is switched on.
+- **API:** `upstream.UpstreamStat` gains `name` (the display name; `upstream`
+  stays the configured entry, a DNS stamp shows as `sdns:<protocol>:<host>`
+  in `name`), `logs.QueryEvent` gains `dnsClientId` and the `protocol`
+  values `dot` and `doh`, the CSV export a column `dnsClientId` after `ecs`.
+  The 409 without a TLS listener (`PUT /system/tls`,
+  `POST /system/tls/local-ca`) now reads "no TLS listener:
+  PICACHE_WEB_TLS_LISTEN, PICACHE_DOT_LISTEN and PICACHE_DOH_LISTEN are
+  off".
+- **Downgrade:** 0.13 works without the pre-upgrade copy, with these
+  effects: it sets the newer `logs.db` aside as `logs.db.broken-<ts>` (the
+  query log, statistics and warning history start fresh; after upgrading
+  again the file can be moved back by hand while PiCache is stopped); plain
+  DNS is on and DoT and DoH are gone; `clientid:` identifiers are skipped (a
+  client with only ClientIDs never matches) and 0.13 refuses to save such a
+  client until they are removed; `clientid:` entries of
+  `dns.blockedClients` and upstream entries with `quic://`, `h3://` or
+  `sdns://` make the stored settings invalid for 0.13 (it opens them with a
+  warning and refuses every settings save until they are removed) and 0.13
+  skips those entries: a default set, forwarder or group set with only such
+  upstreams has none (SERVFAIL; group sets fail closed). Remove the new
+  entries before going back, or restore the copy
+  `<data>/backups/picache-<old version>-<timestamp>.db` made at the first
+  start. Backups made by 0.14 are accepted by 0.13 with the same effects.
+  A save by 0.13 drops `dns.plainDns` and `dns.encrypted`; upgrading again
+  restores their defaults (DoT and DoH off, plain DNS on).
+
+### Added
+
+- **DNS over TLS for clients** (`dns.encrypted.dot`, `PICACHE_DOT_LISTEN`,
+  default `:853`): RFC 7858 with the certificate of the web UI, behind the
+  DNS access list at accept (before TLS), 32 connections per client and
+  1024 per listener, queries of a connection answered one after another,
+  EDNS padding (RFC 8467).
+- **DNS over HTTPS for clients** (`dns.encrypted.doh`): RFC 8484 GET and
+  POST at `/dns-query` on the HTTPS web listeners, on dedicated listeners
+  (`PICACHE_DOH_LISTEN`, off by default; nothing but `/dns-query`) and
+  behind a trusted reverse proxy; 64 requests in flight per client,
+  cross-site browser requests refused, `Cache-Control` from the answer's
+  TTLs.
+- **Server name** (`dns.encrypted.serverName`): the name devices use for
+  DoT and DoH, checked against the local domain and the search domains;
+  PiCache answers it (and `<ClientID>.<serverName>`) with its own
+  addresses. The local CA includes it and, while DoT is on,
+  `*.<serverName>`; a name that equals or is a parent of the local domain,
+  a search domain or an allowed web host is left out of a new local CA.
+- **ClientIDs:** the first label of the DoT server name
+  (`<id>.<serverName>`) or the DoH path (`/dns-query/<id>`) names a device.
+  Clients take `clientid:<id>` identifiers (`clients.Client.identifiers`)
+  and `dns.blockedClients` takes `clientid:<id>` entries. A ClientID only
+  identifies devices that PiCache does not already identify by address or
+  MAC; it never authenticates and never unblocks. The query log and its
+  export show and filter the ClientID (`dnsClientId`), the lookup can test
+  one, `GET /clients/dns-client-ids` lists the ClientIDs seen since the
+  start and `GET /clients/known` shows them (`dnsClientId`).
+- **Discovery of Designated Resolvers** (RFC 9462): `_dns.resolver.arpa`
+  SVCB answers name the server name with DoT and DoH (only for its own
+  addresses covered by the certificate, verified discovery), so Windows 11,
+  Android and Apple devices can upgrade to encrypted DNS by themselves.
+- **Plain DNS switch** (`dns.plainDns`): off answers other devices REFUSED
+  (EDE 18 "Prohibited", reason `plain-dns-off`) over UDP and TCP while DoT
+  or DoH is serving; this machine, the server name, its ClientID names and
+  `_dns.resolver.arpa` stay answered. It fails open: while nothing
+  encrypted is serving, plain DNS serves everyone, an error is logged and
+  the health check fails.
+- **Configuration profiles for Apple devices**
+  (`GET /dns/profile.mobileconfig`, over HTTPS or on the host itself):
+  DoH or DoT, an optional ClientID, the home Wi-Fi names the profile
+  applies on (the device uses its normal DNS elsewhere; without names:
+  everywhere) and optionally PiCache's addresses (`ServerAddresses`); links
+  for a QR code (`POST /dns/profile-links`,
+  `GET /dns/profile-links/{token}`), valid and reusable for 15 minutes,
+  kept in memory.
+- **Status of encrypted DNS** (`GET /dns/encrypted`): what is enabled and
+  serving, the listeners, the URLs and host names for devices, the
+  certificate (usable, covering the server name and the wildcard), the
+  plain DNS switch and DDR. Health check `encrypted-dns`; the listeners
+  check and `/system/info` know the roles `dot` and `doh`.
+- **More upstream protocols:** DNS over QUIC (`quic://host[:port]`, RFC
+  9250), DNS over HTTPS over HTTP/3 (`h3://host[:port]/path`) and DNS
+  stamps (`sdns://…`) of DNSCrypt, DoH, DoT and DoQ resolvers, including
+  DNSCrypt v2 (XSalsa20-Poly1305 and XChaCha20-Poly1305) and the stamps'
+  certificate hashes as pins in addition to the normal verification.
+  Everywhere upstreams are accepted (default and fallback upstreams,
+  forwarders, group upstreams). An upstream that names PiCache itself is
+  refused.
+
+### Changed
+
+- **Dependencies:** `github.com/quic-go/quic-go` (with
+  `github.com/quic-go/qpack`) for the DoQ and HTTP/3 upstreams, only as a
+  client: PiCache never listens on QUIC.
+- The certificate of the web UI (certificate files, an upload, the local
+  CA or self-signed) serves every TLS listener: the web UI, DoT and DoH;
+  `web.tlsMinVersion` applies to all of them.
+- A restore whose settings switch plain DNS off while no listener of this
+  host serves their encrypted protocols warns (`dnsWarning`).
+- The support bundle keeps the switches of encrypted DNS, scrubs the server
+  name like the other host names and reduces DNS stamps to
+  `sdns:<protocol>:<host>`.
+
 ## [0.13.0] - 2026-09-26
 
 ### Upgrade notes

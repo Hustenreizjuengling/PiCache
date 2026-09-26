@@ -118,7 +118,10 @@ const usage = `
 usage: picache [command] [flags]
 
 commands:
-  serve                         run PiCache (default)
+  serve                         run PiCache (default). Flags override the PICACHE_* variables:
+                                --data-dir, --cache-dir, --dns-listen, --cache-listen, --sni-listen,
+                                --web-listen, --web-tls-listen, --dot-listen (DNS over TLS, default
+                                :853), --doh-listen (DNS over HTTPS only, default off), --log-level
   version, --version            print version information
   help, --help, -h              print this help
   healthcheck [url]             check the local web endpoint and DNS

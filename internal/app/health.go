@@ -11,6 +11,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/api"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // healthLoop evaluates health every 60 s, logs every status change once and
@@ -123,6 +124,24 @@ func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, l
 	return "ok", "", ""
 }
 
+// listenersHealth evaluates the check "listeners": a listener that could
+// not be bound warns; a failed DoT or DoH listener counts only while the
+// protocol is switched on.
+func listenersHealth(li api.ListenerInfo, e settings.EncryptedDNS) (status, msg, hint string) {
+	var roles []string
+	for r, err := range li.Failed {
+		if (r == "dot" && !e.DoT) || (r == "doh" && !e.DoH) {
+			continue
+		}
+		roles = append(roles, r+": "+err)
+	}
+	if len(roles) == 0 {
+		return "ok", "", ""
+	}
+	sort.Strings(roles)
+	return "warn", fmt.Sprint(roles), "free the port or change the PICACHE_*_LISTEN setting, then restart"
+}
+
 // Health returns the last evaluated health (evaluating now if none yet).
 func (a *App) Health(ctx context.Context) api.Health {
 	if h := a.health.Load(); h != nil {
@@ -144,19 +163,11 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 
 	// Listeners
 	li := a.Listeners()
-	if len(li.Failed) > 0 {
-		roles := make([]string, 0, len(li.Failed))
-		for r := range li.Failed {
-			roles = append(roles, r+": "+li.Failed[r])
-		}
-		sort.Strings(roles)
-		add("listeners", "warn", fmt.Sprint(roles), "free the port or change the PICACHE_*_LISTEN setting, then restart")
-	} else {
-		add("listeners", "ok", "", "")
-	}
+	st, msg, hint := listenersHealth(li, set.DNS.Encrypted)
+	add("listeners", st, msg, hint)
 
 	// Upstreams (+ clock guard, fallbacks)
-	st, msg, hint := upstreamHealth(a.up.ClockGuard(), a.up.Stats(), a.up.FallbackStats(), a.up.LastFallback(), time.Now(), a.up.GroupStats())
+	st, msg, hint = upstreamHealth(a.up.ClockGuard(), a.up.Stats(), a.up.FallbackStats(), a.up.LastFallback(), time.Now(), a.up.GroupStats())
 	add("upstreams", st, msg, hint)
 
 	// Filtering
@@ -223,11 +234,16 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 		add("data-disk", "fail", fmt.Sprintf("only %d MiB free in %s", free>>20, a.cfg.DataDir), "free space on the data disk")
 	}
 
-	// Web certificate (only while an HTTPS listener is bound)
+	// The certificate of the TLS listeners (only while one is bound)
 	if a.webTLS != nil {
 		if st, msg, hint, show := a.webTLS.health(time.Now()); show {
 			add("tls", st, msg, hint)
 		}
+	}
+
+	// Encrypted DNS (while DoT or DoH is on or plain DNS is off)
+	if st, msg, hint, show := a.encryptedHealth(); show {
+		add("encrypted-dns", st, msg, hint)
 	}
 
 	// DHCP server (only when it is enabled or available)

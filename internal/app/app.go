@@ -114,8 +114,17 @@ type App struct {
 	host        atomic.Pointer[hostinfo.Info] // the last sample
 
 	web    *netutil.WebAccess // the web ACL (listeners and API)
-	webTLS *webTLS            // the certificate of the HTTPS listener
-	hup    <-chan os.Signal   // SIGHUP: run the maintenance tick now (nil: never)
+	webTLS *webTLS            // the certificate of the TLS listeners (web UI over HTTPS, DoT, DoH)
+	// encState is the state of encrypted DNS the DNS server reads
+	// (refreshEncrypted); encFailOpen: plain DNS is off but nothing
+	// encrypted serves (logged once per change). encMu serialises the
+	// refreshes (tick, certificate swap, settings change), so the last one
+	// always publishes the latest state; it is taken last (under the
+	// settings store's and webTLS's locks) and takes no other lock.
+	encMu       sync.Mutex
+	encState    atomic.Pointer[dnsserver.EncryptedState]
+	encFailOpen atomic.Bool
+	hup         <-chan os.Signal // SIGHUP: run the maintenance tick now (nil: never)
 	// The web access reset marker: resetApplied once a marker that could
 	// not be deleted was applied (once per start); resetMarkerWarned once a
 	// marker that is no regular file was logged.
@@ -286,8 +295,10 @@ func (a *App) build(ctx context.Context) error {
 	}
 	a.acl = netutil.NewACLWatcher(a.set)
 	a.web = netutil.NewWebAccess(a.set, log)
-	a.webTLS = newWebTLS(a.cfg.DataDir, a.cfg.WebTLSCertFile, a.cfg.WebTLSKeyFile, len(a.ln.webTLS) > 0, a.cfg.WebHosts,
+	a.webTLS = newWebTLS(a.cfg.DataDir, a.cfg.WebTLSCertFile, a.cfg.WebTLSKeyFile, a.ln.tlsBound(), a.cfg.WebHosts,
 		a.instanceID, a.set, func() bool { return a.dns != nil && a.dns.BridgeNetwork() }, log)
+	a.webTLS.onSwap = a.refreshEncrypted // the first snapshot is built when the listeners serve
+	a.set.Subscribe(func(_, _ *settings.All) { a.refreshEncrypted() })
 	host, _ := os.Hostname()
 	if a.notify, err = notify.New(ctx, a.cdb, a.box,
 		notify.Options{InstanceID: a.instanceID, Hostname: host, Version: version.Version}, log); err != nil {
@@ -395,7 +406,8 @@ func (a *App) build(ctx context.Context) error {
 	if a.dns, err = dnsserver.New(ctx, dnsserver.Deps{
 		DB: a.cdb, Settings: a.set, Upstream: a.up, Filter: a.filter, Clients: a.clients,
 		Services: a.services, Parental: a.parental, Logs: a.logs, ACL: a.acl, DownloadCacheReady: a.downloadCacheReady,
-		Container: a.storage.Capabilities().Container, Neighbours: a.clients.Neighbours, Leases: a.dhcp, Log: log,
+		Container: a.storage.Capabilities().Container, Neighbours: a.clients.Neighbours, Leases: a.dhcp,
+		Encrypted: a.encrypted, Log: log,
 	}); err != nil {
 		return fmt.Errorf("dns: %w", err)
 	}
@@ -425,7 +437,8 @@ func (a *App) build(ctx context.Context) error {
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
 		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
 		Parental: a.parental, Network: a.network, DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, AppLog: a.appLog, Diag: a,
-		UI: webui.Handler(), Log: log,
+		Encrypted: a,
+		UI:        webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil
@@ -560,7 +573,10 @@ func (a *App) serve(ctx context.Context) error {
 	for _, ln := range a.ln.dnsTCP {
 		dnsTCP = append(dnsTCP, netutil.LimitListener(ln, aclFn, 32, 1024))
 	}
-	goRun("dns", func() error { return a.dns.Serve(ctx, a.ln.dnsUDP, dnsTCP) })
+	// DoT and the dedicated DoH listeners (docs/ARCHITECTURE.md 19).
+	a.refreshEncrypted()
+	dot, dohServers := a.serveEncrypted(goRun)
+	goRun("dns", func() error { return a.dns.Serve(ctx, a.ln.dnsUDP, dnsTCP, dot) })
 	for _, ln := range a.ln.sni {
 		limited := netutil.LimitListener(ln, aclFn, 256, 4096)
 		goRun("sni", func() error { return a.sni.Serve(ctx, limited) })
@@ -580,6 +596,8 @@ func (a *App) serve(ctx context.Context) error {
 		goRun("cache", func() error { return cacheSrv.Serve(limited) })
 	}
 
+	servers = append(servers, dohServers...)
+
 	newWeb := func() *http.Server {
 		return &http.Server{
 			Handler:           a.api.Handler(),
@@ -588,7 +606,10 @@ func (a *App) serve(ctx context.Context) error {
 			WriteTimeout:      120 * time.Second,
 			IdleTimeout:       120 * time.Second,
 			MaxHeaderBytes:    32 << 10,
-			ErrorLog:          slog.NewLogLogger(a.log.Handler(), slog.LevelDebug),
+			// DoH on the web listeners is bounded per request; HTTP/2
+			// streams per connection are bounded here.
+			HTTP2:    &http.HTTP2Config{MaxConcurrentStreams: 32},
+			ErrorLog: slog.NewLogLogger(a.log.Handler(), slog.LevelDebug),
 		}
 	}
 	// The web listeners close connections from addresses outside the web

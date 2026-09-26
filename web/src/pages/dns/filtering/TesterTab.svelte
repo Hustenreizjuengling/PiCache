@@ -5,8 +5,9 @@
   step of the trace and every list or rule entry that matches the domain,
   with the decisive one marked (with their query types, exceptions,
   inversion and answer, and the entries that match the name but not this
-  query type or name).
-  Query: ?domain=…&client=<ip>&qtype=A
+  query type or name). With a ClientID the query counts as a DoT or DoH
+  query of that client carrying it.
+  Query: ?domain=…&client=<ip>&qtype=A&dnsClientId=<ClientID>
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -18,6 +19,7 @@
   import { session } from '$lib/session.svelte'
   import { isBlockedStatus } from '$lib/traffic'
   import { Button, EmptyState, Field, Input, KeyValue, Notice, Panel, QueryStatusChip, Select } from '$lib/ui'
+  import { isClientId, normalizeClientId } from '../shared/clientid'
   import { groupNames } from '../shared/groups'
   import { asciiDomain } from '../shared/input'
   import MatchList from '../shared/MatchList.svelte'
@@ -31,27 +33,33 @@
   const reqName = $derived(router.param('domain').trim())
   const reqType = $derived(router.param('qtype').trim().toUpperCase() || 'A')
   const reqClient = $derived(router.param('client').trim())
+  const reqClientId = $derived(normalizeClientId(router.param('dnsClientId')))
 
   const result = resource((signal) =>
     reqName
-      ? api.dns.lookup({ name: reqName, type: reqType, clientIp: reqClient || undefined }, { signal })
+      ? api.dns.lookup(
+          { name: reqName, type: reqType, clientIp: reqClient || undefined, dnsClientId: reqClientId || undefined },
+          { signal },
+        )
       : Promise.resolve(undefined),
   )
 
   let domain = $state(untrack(() => reqName))
   let qtype = $state(untrack(() => reqType))
   let client = $state(untrack(() => reqClient))
+  let clientId = $state(untrack(() => reqClientId))
   let submitted = $state(false)
   let ruleOpen = $state(false)
   let rulePreset = $state.raw<Partial<FilterRuleInput>>({})
 
   // Links from the query log change the URL while this tab is open.
   $effect(() => {
-    const [n, ty, c] = [reqName, reqType, reqClient]
+    const [n, ty, c, id] = [reqName, reqType, reqClient, reqClientId]
     untrack(() => {
       domain = n
       qtype = ty
       client = c
+      clientId = id
     })
   })
 
@@ -59,6 +67,10 @@
     fieldError(result.error, 'name') ?? (submitted && !domain.trim() ? t('common.field.required') : undefined),
   )
   const clientError = $derived(fieldError(result.error, 'clientIp'))
+  const clientIdInvalid = $derived(!!normalizeClientId(clientId) && !isClientId(normalizeClientId(clientId)))
+  const clientIdError = $derived(
+    clientIdInvalid ? t('dns.settings.encrypted.clientIdInvalid') : fieldError(result.error, 'dnsClientId'),
+  )
   const otherError = $derived(
     result.error && (!result.error.field || result.error.field === 'type') ? errorText(result.error) : undefined,
   )
@@ -71,10 +83,11 @@
     e.preventDefault()
     submitted = true
     const name = asciiDomain(domain)
-    if (!name) return
+    if (!name || clientIdInvalid) return
     domain = name
-    const patch = { domain: name, qtype: qtype === 'A' ? null : qtype, client: client.trim() }
-    if (name === reqName && (patch.qtype ?? 'A') === reqType && patch.client === reqClient) void result.refresh()
+    const id = normalizeClientId(clientId)
+    const patch = { domain: name, qtype: qtype === 'A' ? null : qtype, client: client.trim(), dnsClientId: id }
+    if (name === reqName && (patch.qtype ?? 'A') === reqType && patch.client === reqClient && id === reqClientId) void result.refresh()
     else router.setQuery(patch)
   }
 
@@ -109,6 +122,19 @@
       <div class="client">
         <Field label={t('dns.tester.client')} optional error={clientError}>
           <Input bind:value={client} mono placeholder={t('dns.tester.clientPlaceholder')} maxlength={64} autocomplete="off" />
+        </Field>
+      </div>
+      <div class="clientid">
+        <Field label={t('dns.tester.clientId')} optional error={clientIdError}>
+          <Input
+            bind:value={clientId}
+            mono
+            placeholder={t('dns.tester.clientIdPlaceholder')}
+            maxlength={63}
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck={false}
+          />
         </Field>
       </div>
       <div class="go">
@@ -201,6 +227,9 @@
   .client {
     flex: 1 1 200px;
   }
+  .clientid {
+    flex: 1 1 160px;
+  }
   .go {
     padding-top: 26px;
   }
@@ -227,7 +256,8 @@
   @media (max-width: 480px) {
     .domain,
     .type,
-    .client {
+    .client,
+    .clientid {
       flex: 1 1 100%;
     }
     .go {

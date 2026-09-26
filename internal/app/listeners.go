@@ -26,6 +26,8 @@ type listeners struct {
 	sni    []net.Listener
 	web    []net.Listener
 	webTLS []net.Listener
+	dot    []net.Listener    // DNS over TLS (PICACHE_DOT_LISTEN)
+	doh    []net.Listener    // DNS over HTTPS only (PICACHE_DOH_LISTEN)
 	failed map[string]string // role → error for non-fatal bind failures
 	// dhcp are the DHCP sockets the markers ask for (UDP 67 and 547 while
 	// DHCP is switched on, the raw ICMPv6 socket while router
@@ -37,8 +39,10 @@ type listeners struct {
 }
 
 // bindListeners binds every configured address. DNS failures and "no web
-// listener at all" are fatal; cache, SNI and extra web listeners fail softly
-// (logged, reported in health) so a port clash never takes DNS down.
+// listener at all" are fatal; cache, SNI, extra web, DoT and DoH listeners
+// fail softly (logged, reported in health) so a port clash never takes DNS
+// down. DoT and DoH are bound whether they are switched on or not (the
+// switches need no restart).
 func (a *App) bindListeners() error {
 	l := &a.ln
 	l.failed = map[string]string{}
@@ -59,6 +63,11 @@ func (a *App) bindListeners() error {
 			ln, err := net.Listen("tcp", addr)
 			if err != nil {
 				e := bindErr(label, addr, err)
+				if p := portOf(addr); role == "doh" && isAddrInUse(err) && p != "" && hasPort(l.sni, p) {
+					// The default PICACHE_SNI_LISTEN=:443 is bound first.
+					e = fmt.Errorf("bind %s on %s: %w (port %s is used by the SNI pass-through of the download cache: "+
+						"set PICACHE_SNI_LISTEN=off, give PICACHE_DOH_LISTEN another port, or bind each to its own address)", label, addr, err, p)
+				}
 				a.log.Error("listener not started", slog.String("role", role), slog.Any("err", e))
 				l.failed[role] = e.Error()
 				continue
@@ -73,6 +82,8 @@ func (a *App) bindListeners() error {
 	if len(l.web) == 0 && len(l.webTLS) == 0 {
 		return errors.New("no web UI listener could be bound: " + fmt.Sprint(l.failed))
 	}
+	soft("dot", "DNS over TLS", a.cfg.DoTListen, &l.dot)
+	soft("doh", "DNS over HTTPS", a.cfg.DoHListen, &l.doh)
 	// The DHCP sockets the markers of the DHCP service ask for (nothing
 	// with PICACHE_DHCP=off, everything with the legacy on).
 	l.dhcp = dhcp.OpenAtStart(dhcp.StartOptions{OptOut: a.cfg.DHCP == config.DHCPOff, Legacy: a.cfg.DHCP == config.DHCPOn,
@@ -99,6 +110,28 @@ func bindErr(role, addr string, err error) error {
 	return fmt.Errorf("bind %s on %s: %w%s", role, addr, err, hint)
 }
 
+// portOf returns the port of host:port ("" if it does not parse).
+func portOf(addr string) string {
+	_, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+// hasPort reports whether a listener is bound to port p.
+func hasPort(ls []net.Listener, p string) bool {
+	for _, ln := range ls {
+		if portOf(ln.Addr().String()) == p {
+			return true
+		}
+	}
+	return false
+}
+
+// tlsBound reports whether any TLS listener (web-tls, dot, doh) is bound.
+func (l *listeners) tlsBound() bool { return len(l.webTLS)+len(l.dot)+len(l.doh) > 0 }
+
 func (l *listeners) info() api.ListenerInfo {
 	addrs := func(ls []net.Listener) []string {
 		out := make([]string, 0, len(ls))
@@ -119,6 +152,7 @@ func (l *listeners) info() api.ListenerInfo {
 		Bound: map[string][]string{
 			"dns-udp": udp, "dns-tcp": addrs(l.dnsTCP), "cache": addrs(l.cache),
 			"sni": addrs(l.sni), "web": addrs(l.web), "web-tls": addrs(l.webTLS),
+			"dot": addrs(l.dot), "doh": addrs(l.doh),
 		},
 		Failed: failed,
 	}
@@ -130,7 +164,7 @@ func (l *listeners) closeAll() {
 		for _, pc := range l.dnsUDP {
 			_ = pc.Close()
 		}
-		for _, group := range [][]net.Listener{l.dnsTCP, l.cache, l.sni, l.web, l.webTLS} {
+		for _, group := range [][]net.Listener{l.dnsTCP, l.cache, l.sni, l.web, l.webTLS, l.dot, l.doh} {
 			for _, ln := range group {
 				_ = ln.Close()
 			}

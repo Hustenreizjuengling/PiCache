@@ -16,6 +16,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/listing"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 const (
@@ -297,7 +298,7 @@ const (
 
 // queryWhere builds the conditions of a query-log filter (without the
 // cursor): the range (default the last hour), clients, domain, statuses,
-// query type, upstream, rcodes and the AD flag.
+// query type, upstream, rcodes, the AD flag and the ClientID.
 func queryWhere(f *QueryFilter) (where, error) {
 	var w where
 	to := f.To
@@ -360,6 +361,13 @@ func queryWhere(f *QueryFilter) (where, error) {
 	if f.DNSSEC != nil {
 		w.add("dnssec = ?", *f.DNSSEC)
 	}
+	if v := strings.TrimSpace(f.DNSClientID); v != "" {
+		id, ok := settings.NormalizeClientID(v)
+		if !ok {
+			return w, apperr.Invalid("dnsClientId", "must be a ClientID")
+		}
+		w.add("dns_client_id = ?", id)
+	}
 	return w, nil
 }
 
@@ -389,7 +397,8 @@ func rcodeFilter(in []string) ([]string, error) {
 
 // queryColumns are the columns scanQuery reads (id and ts first).
 const queryColumns = `id, ts, client_ip, client_name, qname, qtype, status, rcode, reason, list_id,
-		rule_id, service, upstream, duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs, upstream_answer`
+		rule_id, service, upstream, duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs, upstream_answer,
+		dns_client_id`
 
 // scanQuery reads a row of queryColumns.
 func scanQuery(r *sql.Rows) (QueryEvent, int64, int64, error) {
@@ -399,7 +408,7 @@ func scanQuery(r *sql.Rows) (QueryEvent, int64, int64, error) {
 	var edeText string
 	err := r.Scan(&e.ID, &ts, &e.ClientIP, &e.ClientName, &e.QName, &e.QType, &e.Status, &e.RCode, &e.Reason,
 		&e.ListID, &e.RuleID, &e.Service, &e.Upstream, &e.DurationUs, &e.Answer, &e.DNSSEC, &e.Protocol,
-		&edeCode, &edeText, &e.ECS, &e.UpstreamAnswer)
+		&edeCode, &edeText, &e.ECS, &e.UpstreamAnswer, &e.DNSClientID)
 	if edeCode >= 0 {
 		e.UpstreamEDE = &UpstreamEDE{Code: edeCode, Text: edeText}
 	}

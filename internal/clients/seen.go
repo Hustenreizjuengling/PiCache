@@ -33,9 +33,10 @@ var seenMigrations = []string{
 // seenEntry is the in-memory activity of one address.
 type seenEntry struct {
 	first, last time.Time
-	pending     int64 // queries not yet written to logs.db
-	total       int64 // queries since start (used when logs.db is unavailable)
-	transient   bool  // last recorded by SeenTransient: never written to logs.db
+	pending     int64  // queries not yet written to logs.db
+	total       int64  // queries since start (used when logs.db is unavailable)
+	transient   bool   // last recorded by SeenTransient: never written to logs.db
+	dnsClientID string // the last ClientID the address sent (memory only)
 }
 
 // Seen records activity of ip (in memory; flushed to logs.db periodically
@@ -236,6 +237,9 @@ func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, er
 	}
 	r.seenMu.Lock()
 	r.seen.each(func(ip netip.Addr, e *seenEntry) bool {
+		if k, ok := byIP[ip]; ok {
+			k.DNSClientID = e.dnsClientID
+		}
 		if e.last.Before(since) {
 			return true
 		}
@@ -245,7 +249,7 @@ func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, er
 			if r.ldb != nil && !e.transient {
 				q = e.pending
 			}
-			byIP[ip] = &Known{IP: ip.String(), FirstSeen: e.first.UTC(), LastSeen: e.last.UTC(), Queries: q}
+			byIP[ip] = &Known{IP: ip.String(), FirstSeen: e.first.UTC(), LastSeen: e.last.UTC(), Queries: q, DNSClientID: e.dnsClientID}
 			return true
 		}
 		if e.last.After(k.LastSeen) {
@@ -269,7 +273,11 @@ func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, er
 		if h := r.hostname(ip); h != "" {
 			k.Hostname = h
 		}
-		if c := r.match(snap, ip, k.MAC); c != nil {
+		c := r.match(snap, ip, k.MAC)
+		if c == nil {
+			c = snap.clientOfClientID(k.DNSClientID)
+		}
+		if c != nil {
 			k.ClientID, k.Name = c.id, c.name
 		}
 		out = append(out, *k)

@@ -1,9 +1,10 @@
 <!--
   @component
-  HTTPS certificate of the web UI: the certificate in use and which of
-  PiCache's names and addresses it covers, the local CA (download, trust
-  guide, creating a new one) and uploading your own certificate. Without
-  an HTTPS listener (PICACHE_WEB_TLS_LISTEN off) only a notice. When a
+  HTTPS certificate of the web UI, DoT and DoH: the certificate in use and
+  which of PiCache's names and addresses it covers, the local CA (download,
+  trust guide, creating a new one) and uploading your own certificate.
+  Without any TLS listener (PICACHE_WEB_TLS_LISTEN, PICACHE_DOT_LISTEN and
+  PICACHE_DOH_LISTEN off) only a notice. When a
   change here replaces the certificate this page itself was loaded with,
   it says to trust the new one and reload: the open connection keeps the
   old certificate, and background requests over a new connection fail

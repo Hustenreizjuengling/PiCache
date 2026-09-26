@@ -106,3 +106,32 @@ func TestLoadWithoutSecrets(t *testing.T) {
 		t.Fatalf("secret read: %+v", c)
 	}
 }
+
+// PICACHE_DOT_LISTEN (default :853) and PICACHE_DOH_LISTEN (default off)
+// are lists like the other listeners: off, none and - mean no socket; the
+// flags win over the environment.
+func TestEncryptedDNSListeners(t *testing.T) {
+	for _, tc := range []struct {
+		dot, doh         string
+		args             []string
+		wantDoT, wantDoH string
+	}{
+		{"", "", nil, ":853", ""},
+		{"off", "", nil, "", ""},
+		{"none", ":4443", nil, "", ":4443"},
+		{"-", "192.168.1.5:443, [::1]:4443", nil, "", "192.168.1.5:443,[::1]:4443"},
+		{":8853", "off", []string{"--dot-listen", "off", "--doh-listen", ":4443"}, "", ":4443"},
+	} {
+		c, err := Load(tc.args, envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(),
+			"PICACHE_DOT_LISTEN": tc.dot, "PICACHE_DOH_LISTEN": tc.doh}))
+		if err != nil {
+			t.Fatalf("%+v: %v", tc, err)
+		}
+		if got := strings.Join(c.DoTListen, ","); got != tc.wantDoT {
+			t.Fatalf("%+v: DoT %q", tc, got)
+		}
+		if got := strings.Join(c.DoHListen, ","); got != tc.wantDoH {
+			t.Fatalf("%+v: DoH %q", tc, got)
+		}
+	}
+}

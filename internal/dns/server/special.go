@@ -32,6 +32,15 @@ func serverName(set *settings.All, name string) bool {
 	return false
 }
 
+// encryptedServerName reports whether name is the server name of
+// encrypted DNS (dns.encrypted.serverName) or <ClientID>.<serverName>:
+// answered like this server's names; other names below it take the
+// normal path.
+func encryptedServerName(set *settings.All, name string) bool {
+	_, ok := settings.ServerNameMatch(set.DNS.Encrypted.ServerName, name)
+	return ok
+}
+
 // ownPTRName is the PTR target for this server's own addresses.
 func ownPTRName(set *settings.All) (string, bool) {
 	if len(set.DNS.ServerNames) == 0 {
@@ -49,6 +58,9 @@ func ownPTRName(set *settings.All) (string, bool) {
 // from blocking.
 func (s *Server) specialUse(qc *qctx) (result, bool) {
 	name := qc.qname
+	if name == ddrName && qc.qtype == dns.TypeSVCB {
+		return s.ddrAnswer(qc), true
+	}
 	if v4, v6, what, ok := s.specialAddrs(qc, name); ok {
 		if len(v4) == 0 && len(v6) == 0 {
 			qc.note("special-use name " + what + ": NODATA")
@@ -76,6 +88,9 @@ func (s *Server) specialAddrs(qc *qctx, name string) (v4, v6 []netip.Addr, what 
 	case serverName(qc.set, name):
 		v4, v6 := s.serverNameAddrs(qc)
 		return v4, v6, "this server's own name", true
+	case encryptedServerName(qc.set, name):
+		v4, v6 := s.serverNameAddrs(qc)
+		return v4, v6, "this server's own name (dns.encrypted.serverName)", true
 	case inZone(name, "resolver.arpa"):
 		return nil, nil, "resolver.arpa", true
 	}
@@ -246,7 +261,7 @@ func (s *Server) localZoneAnswer(qc *qctx, zone string, router bool) result {
 func (s *Server) routeName(qc *qctx, name string, q dns.Question) (*dns.Msg, upstream.Info, error) {
 	_, private := s.privateReverseZone(name)
 	_, router, local := s.localZone(qc.set, name)
-	special := inZone(name, "localhost") || inZone(name, "resolver.arpa") || serverName(qc.set, name)
+	special := inZone(name, "localhost") || inZone(name, "resolver.arpa") || serverName(qc.set, name) || encryptedServerName(qc.set, name)
 	if f := s.fwd.Load().match(name, private || local || special); f != nil && !f.def {
 		return s.exchange(qc, q, f.upstreams, f.ips)
 	}

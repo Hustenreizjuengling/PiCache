@@ -68,7 +68,7 @@ import (
 // Info describes how a response was obtained. Block, EDE and Fallback are
 // stored with a cached answer and returned by cache and stale hits too.
 type Info struct {
-	Upstream string        // upstream that answered ("" for cache hits)
+	Upstream string        // display name of the upstream that answered ("" for cache hits)
 	Cached   bool          // served from the response cache
 	Stale    bool          // served stale (refresh in background)
 	RTT      time.Duration // upstream round-trip time (0 for cache hits)
@@ -83,9 +83,13 @@ type Info struct {
 	Fallback bool
 }
 
-// UpstreamStat is per-upstream health for the UI.
+// UpstreamStat is per-upstream health for the UI. Upstream is the
+// configured string (the UI matches it with the settings); Name is its
+// display name (settings.UpstreamSpec.Display: a DNS stamp as
+// sdns:<protocol>:<host>, never the stamp).
 type UpstreamStat struct {
 	Upstream    string    `json:"upstream"`
+	Name        string    `json:"name"`
 	Queries     int64     `json:"queries"`
 	Errors      int64     `json:"errors"`
 	AvgRTTMs    float64   `json:"avgRttMs"` // EWMA
@@ -159,12 +163,15 @@ type options struct {
 	publicFilter func(ctx context.Context, addrs []netip.Addr) ([]netip.Addr, error)
 	// probeDial dials a fastest-address probe (nil = net.Dialer).
 	probeDial func(ctx context.Context, network, address string) (net.Conn, error)
+	// quicIdle is the idle timeout of QUIC connections (DoQ, HTTP/3).
+	quicIdle time.Duration
 }
 
 func defaultOptions() options {
 	return options{
 		plainPort: 53,
 		attempt:   defaultAttemptTimeout,
+		quicIdle:  quicIdleTimeout,
 		buildDate: parseBuildDate(version.Date),
 	}
 }
@@ -382,9 +389,9 @@ func (r *Resolver) rebuild(d settings.DNS) {
 	}
 	var fallbacks []string
 	if ds.fallback != nil {
-		fallbacks = ds.fallback.names()
+		fallbacks = ds.fallback.displays()
 	}
-	r.log.Info("upstreams configured", slog.Any("upstreams", normal.names()), slog.Any("fallbacks", fallbacks),
+	r.log.Info("upstreams configured", slog.Any("upstreams", normal.displays()), slog.Any("fallbacks", fallbacks),
 		slog.Int("bootstrap", len(boot.servers)))
 }
 
@@ -517,7 +524,7 @@ func setStats(set *upstreamSet) []UpstreamStat {
 	}
 	out := make([]UpstreamStat, 0, len(set.ups))
 	for _, u := range set.ups {
-		out = append(out, u.st.snapshot(u.name))
+		out = append(out, u.st.snapshot(u.name, u.display))
 	}
 	return out
 }

@@ -40,7 +40,9 @@ var expectedClasses = func() map[string]routeClass {
 		"POST /api/v1/storage/targets/{id}/test", "POST /api/v1/storage/targets/{id}/benchmark", "DELETE /api/v1/storage/benchmark",
 		"POST /api/v1/cache/verify",
 		"PUT /api/v1/system/log/level", "DELETE /api/v1/system/log/level", "POST /api/v1/system/events/{id}/ack",
-		"POST /api/v1/system/events/ack-all", "POST /api/v1/system/support-bundle")
+		"POST /api/v1/system/events/ack-all", "POST /api/v1/system/support-bundle",
+		// 0.14.0: a profile link changes no configuration.
+		"POST /api/v1/dns/profile-links")
 	add(routeClass{lock: lockPause}, "POST /api/v1/dns/blocking")
 	add(none,
 		"POST /api/v1/auth/setup", "POST /api/v1/auth/login", "POST /api/v1/auth/logout", "POST /api/v1/dns/lookup",

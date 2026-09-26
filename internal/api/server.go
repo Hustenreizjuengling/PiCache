@@ -83,7 +83,8 @@ type Health struct {
 }
 
 // ListenerInfo describes bound and failed listeners by role
-// (dns-udp, dns-tcp, cache, sni, web, web-tls).
+// (dns-udp, dns-tcp, cache, sni, web, web-tls, dot, doh; Bound has every
+// role, [] when none is bound).
 type ListenerInfo struct {
 	Bound  map[string][]string `json:"bound"`
 	Failed map[string]string   `json:"failed,omitempty"` // role → error (non-DNS binds are not fatal)
@@ -152,7 +153,10 @@ type Deps struct {
 	Parental *parental.Engine // nil: the parental group endpoints answer 503
 	Network  Network          // nil: the network check endpoints answer 503
 	DHCP     DHCP             // nil: the DHCP endpoints answer 503
-	TLS      WebTLS           // nil: no HTTPS listener
+	TLS      WebTLS           // nil: no TLS listener
+	// Encrypted is the state of encrypted DNS for clients (nil: GET
+	// /dns/encrypted answers 503 and profiles cannot be made).
+	Encrypted EncryptedDNS
 	// WebAccess is the web ACL shared with the listeners (stage 1); nil:
 	// New builds one from Settings.
 	WebAccess *netutil.WebAccess
@@ -189,12 +193,18 @@ type Server struct {
 	// across its two transactions: the undo of a refused request must not
 	// delete a client or group that a concurrent request reused.
 	deviceMu sync.Mutex
+
+	// links are the profile links of encrypted DNS (in memory).
+	links *profileLinks
+	// searchDomains reads the resolv.conf search domains (nil:
+	// netutil.ResolvConfSearch; replaced in tests).
+	searchDomains func() []string
 }
 
 // New builds the handler with all routes and middleware.
 func New(d Deps) *Server {
 	s := &Server{d: d, log: d.Log.With(slog.String("component", "api")), mux: http.NewServeMux(),
-		exportMaxRows: exportMaxRows, exportMaxTime: exportMaxTime}
+		exportMaxRows: exportMaxRows, exportMaxTime: exportMaxTime, links: newProfileLinks()}
 	s.hosts = newHostAllowlist(d.Config, d.Settings)
 	s.web = d.WebAccess
 	if s.web == nil {
@@ -227,6 +237,7 @@ func New(d Deps) *Server {
 	s.registerNetworkRoutes()
 	s.registerDHCPRoutes()
 	s.registerDiagRoutes()
+	s.registerEncryptedRoutes()
 
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, s.log, errNotFoundRoute)

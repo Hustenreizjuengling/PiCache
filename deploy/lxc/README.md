@@ -77,6 +77,12 @@ pct exec 120 -- picache setup-token
 Do not use `--with-host-apply` in an unprivileged container. The installer
 skips it there, because the helper cannot mount anything (see step 4).
 
+If the Proxmox firewall is enabled for the container, allow the ports your
+devices use: 53 (UDP and TCP), 80 and 443 (download cache), 8080/8443 (web
+UI) and, for DNS over TLS (DoT, switched on under **DNS → DNS settings →
+Encrypted DNS**), TCP 853. DNS over HTTPS uses 8443 (or the port of
+`PICACHE_DOH_LISTEN`).
+
 ## 3. Local cache disk (optional)
 
 To keep the cache off the root disk, give the container a dedicated volume

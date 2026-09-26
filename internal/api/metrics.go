@@ -127,7 +127,11 @@ func writeMetrics(w io.Writer, m metricsSnapshot) {
 	if len(m.Upstreams) > 0 {
 		family("picache_upstream_rtt_ms", "gauge", "Smoothed round-trip time of each DNS upstream in milliseconds.")
 		for _, u := range m.Upstreams {
-			fmt.Fprintf(w, "picache_upstream_rtt_ms{upstream=\"%s\"} %s\n", promEscapeLabel(u.Upstream), promFloat(u.AvgRTTMs))
+			name := u.Name // the display name: never a DNS stamp
+			if name == "" {
+				name = u.Upstream
+			}
+			fmt.Fprintf(w, "picache_upstream_rtt_ms{upstream=\"%s\"} %s\n", promEscapeLabel(name), promFloat(u.AvgRTTMs))
 		}
 	}
 

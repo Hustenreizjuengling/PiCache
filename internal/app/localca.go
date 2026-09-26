@@ -34,11 +34,38 @@ const (
 // addresses (A) and the extra hosts of the web settings (E).
 type hostIdentity struct {
 	hostname    string       // lower-case, "" if unknown
-	names       []string     // N: localhost, picache, the host name, dns.serverNames; single-label ones also with the local and search domains
+	names       []string     // N: localhost, picache, the host name, dns.serverNames; single-label ones also with the local and search domains; dns.encrypted.serverName
 	addrs       []netip.Addr // A: 127.0.0.1, ::1 and the stable private addresses of up, non-virtual interfaces
 	extra       []string     // E: web.allowedHosts and PICACHE_WEB_HOSTS
 	localDomain string
 	search      []string
+	// serverName is dns.encrypted.serverName ("" if unset); while dot
+	// (dns.encrypted.dot) is on the leaf also covers *.<serverName>
+	// (DoT ClientIDs).
+	serverName string
+	dot        bool
+}
+
+// wildcardProbe is the label *.<serverName> is checked with
+// (VerifyHostname does not take wildcards).
+const wildcardProbe = "picache-probe"
+
+// serverNameExcluded reports whether a new CA leaves the server name out
+// of its constraints: it equals or is a parent of the local domain, a
+// search domain or an entry of E (such a name usually has a public
+// certificate of its own). It is then reported not covered, and no new CA
+// would change that.
+func (id hostIdentity) serverNameExcluded() bool {
+	sn := id.serverName
+	if sn == "" || broadName(sn, id.localDomain, id.search) {
+		return true
+	}
+	for _, e := range id.extra {
+		if e == sn || strings.HasSuffix(e, "."+sn) {
+			return true
+		}
+	}
+	return false
 }
 
 // ownNames returns N for a host name, the settings and the resolv.conf
@@ -67,6 +94,7 @@ func ownNames(hostname string, s *settings.All, search []string) []string {
 	for _, n := range s.DNS.ServerNames {
 		add(n)
 	}
+	add(s.DNS.Encrypted.ServerName)
 	return out
 }
 
@@ -105,12 +133,16 @@ func extraHosts(s *settings.All, webHosts []string) []string {
 	return out
 }
 
-// hostList returns N ∪ A ∪ E as sorted strings: names alphabetically, then
-// addresses.
+// hostList returns N ∪ A ∪ E as sorted strings: names alphabetically
+// (*.<serverName> while DoT is on), then addresses.
 func (id hostIdentity) hostList() []string {
 	var names []string
 	var addrs []netip.Addr
-	for _, n := range slices.Concat(id.names, id.extra) {
+	all := slices.Concat(id.names, id.extra)
+	if id.serverName != "" && id.dot {
+		all = append(all, "*."+id.serverName)
+	}
+	for _, n := range all {
 		if ip, err := netip.ParseAddr(strings.Trim(n, "[]")); err == nil {
 			if ip = netutil.Canon(ip); !slices.Contains(addrs, ip) {
 				addrs = append(addrs, ip)
@@ -138,7 +170,11 @@ func (id hostIdentity) hostList() []string {
 func (id hostIdentity) coverage(leaf *x509.Certificate) (covered, notCovered []string) {
 	covered, notCovered = []string{}, []string{}
 	for _, h := range id.hostList() {
-		if leaf != nil && leaf.VerifyHostname(h) == nil {
+		check := h
+		if rest, ok := strings.CutPrefix(h, "*."); ok {
+			check = wildcardProbe + "." + rest
+		}
+		if leaf != nil && leaf.VerifyHostname(check) == nil {
 			covered = append(covered, h)
 		} else {
 			notCovered = append(notCovered, h)
@@ -154,6 +190,9 @@ func (id hostIdentity) coverage(leaf *x509.Certificate) (covered, notCovered []s
 // whole, so IP addresses are never unconstrained.
 func (id hostIdentity) caConstraints() (names []string, permitted, excluded []*net.IPNet) {
 	for _, n := range id.names {
+		if n == id.serverName && id.serverNameExcluded() {
+			continue // it would permit names of other hosts (the constraint covers the subtree)
+		}
 		if !broadName(n, id.localDomain, id.search) {
 			names = append(names, n)
 		}
@@ -217,13 +256,19 @@ func permitsAddr(ca *x509.Certificate, ip netip.Addr) bool {
 	return false
 }
 
-// leafSANs returns (N ∪ A) ∩ the CA's constraints, and the entries outside
-// them (renewal needed: only a new CA covers them).
+// leafSANs returns (N ∪ A) ∩ the CA's constraints (with *.<serverName>
+// while DoT is on), and the entries outside them (renewal needed: only a
+// new CA covers them; not a server name that a new CA leaves out too).
 func (id hostIdentity) leafSANs(ca *x509.Certificate) (names []string, addrs []netip.Addr, outside []string) {
 	for _, n := range id.names {
-		if permitsName(ca, n) {
+		switch {
+		case permitsName(ca, n):
 			names = append(names, n)
-		} else {
+			if n == id.serverName && id.dot && permitsName(ca, "*."+n) {
+				names = append(names, "*."+n)
+			}
+		case n == id.serverName && id.serverNameExcluded():
+		default:
 			outside = append(outside, n)
 		}
 	}

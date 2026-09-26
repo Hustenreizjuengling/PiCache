@@ -44,8 +44,8 @@ unprivileged Proxmox LXC container.
 - Blocking by answer address: lists of malicious server addresses and your
   own IP rules block answers that point at them; broad and private
   networks can never be blocked by a list.
-- Groups: clients (by IP, CIDR or MAC) get the lists and rules of their
-  groups; "Only for this device" in the query log makes a rule for one
+- Groups: clients (by IP, CIDR, MAC or ClientID) get the lists and rules of
+  their groups; "Only for this device" in the query log makes a rule for one
   device. A group can use its own upstream resolver, such as a family-safe
   DNS service (Cloudflare for Families, OpenDNS FamilyShield, CleanBrowsing).
 - Parental controls per group: block apps and sites such as YouTube,
@@ -87,11 +87,23 @@ unprivileged Proxmox LXC container.
   names and reverse lookups from your router. Address lookups of bare names
   such as `nas` are answered from the local domain and never sent to the
   internet.
-- Encrypted upstreams (DNS-over-HTTPS and DNS-over-TLS; plain UDP/TCP too,
-  also by host name) with load balancing, a fallback resolver of another
-  operator for outages, a response cache and serve-stale. Quad9 (which
-  blocks malware) by default; blocks of the upstream show as blocked in the
-  query log.
+- Encrypted upstreams (DNS-over-HTTPS, DNS-over-TLS, DNS-over-QUIC, DNS
+  over HTTP/3 and DNSCrypt, also as DNS stamps `sdns://` with certificate
+  pins; plain UDP/TCP too, also by host name) with load balancing, a
+  fallback resolver of another operator for outages, a response cache and
+  serve-stale. Quad9 (which blocks malware) by default; blocks of the
+  upstream show as blocked in the query log.
+- Encrypted DNS for your devices: DNS-over-TLS on port 853
+  (`PICACHE_DOT_LISTEN`) and DNS-over-HTTPS at `/dns-query` on the web
+  ports or on a port of its own (`PICACHE_DOH_LISTEN`), switched on in the
+  web UI with a server name (Android Private DNS, iPhone/iPad/Mac, Windows
+  11, browsers). ClientIDs in the server name or the DoH path tell devices
+  apart that share an address (they identify a device, they do not
+  authenticate it); Discovery of Designated Resolvers (DDR) lets devices
+  upgrade to encrypted DNS by themselves; configuration profiles for
+  Apple devices, also as a QR code link. Plain DNS can be switched off for
+  everyone but this machine (it stays on while no encrypted protocol is
+  serving).
 - IPv6 on par with IPv4: clients configured by IPv4 address are recognised
   over IPv6 too (privacy addresses included), statistics per device instead
   of per address, the router over IPv6, an opt-in trust of the networks the
@@ -100,7 +112,7 @@ unprivileged Proxmox LXC container.
 - Safe by default: not an open resolver (private networks only), rate limits
   (optionally per network), private reverse zones never leak upstream, and
   DNS rebinding protection for answers that point public names at your LAN.
-  Clients can be blocked by address, network or MAC.
+  Clients can be blocked by address, network, MAC or ClientID.
 
 **Download cache**
 
@@ -231,7 +243,8 @@ on how it was built:
   automatic database copy before an upgrade, see
   [Updates](docs/DEPLOYMENT.md#updates).
 
-Not included: DNS-over-HTTPS/TLS for clients and local DNSSEC
+Not included: DNS-over-QUIC, DNSCrypt and DNS over HTTP/3 for clients
+(PiCache serves DNS-over-TLS and DNS-over-HTTPS) and local DNSSEC
 validation. TLS interception of downloads is never done. Docker Desktop on macOS and Windows
 is not a deployment target.
 
@@ -306,7 +319,7 @@ flowchart LR
     admin["Admin: browser or API token"]
 
     subgraph picache["picache: one process"]
-        dns["DNS :53<br/>UDP and TCP"]
+        dns["DNS :53 UDP and TCP<br/>DoT :853, DoH /dns-query"]
         pipeline["Local records, download cache answers,<br/>rules and blocklists"]
         resolver["Upstream resolver<br/>and response cache"]
         proxy["HTTP cache :80"]
@@ -430,7 +443,7 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   and their unit files on request of the web UI.
 - Docker: a multi-stage build (Node 22 and Go 1.27 Alpine stages) into
   `gcr.io/distroless/static-debian13` (no shell). The container starts as
-  root only to bind ports 53, 80 and 443 (and, while the DHCP server is
+  root only to bind ports 53, 80, 443 and 853 (and, while the DHCP server is
   switched on, the DHCP ports and the raw socket for IPv6 router
   advertisements), then drops to `65532:65532` before it opens its data and
   checks that it cannot regain root. The compose file uses host networking,
@@ -552,8 +565,12 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
   Abfragetyp, mit eigener Antwort, Import und Export), Sperren nach
   Antwortadresse, Gruppen pro Client, „Nur für dieses Gerät“, lokale
   DNS-Einträge (auch SRV, MX, PTR, HTTPS, pro Gruppe, Import aus einer
-  hosts-Datei), verschlüsselte Upstreams (DoH/DoT) mit Ausweich-DNS, ein
-  eigener Resolver pro Gruppe (etwa ein familienfreundlicher DNS-Dienst),
+  hosts-Datei), verschlüsselte Upstreams (DoH, DoT, DoQ, HTTP/3, DNSCrypt,
+  DNS-Stamps) mit Ausweich-DNS, ein eigener Resolver pro Gruppe (etwa ein
+  familienfreundlicher DNS-Dienst), verschlüsseltes DNS für die eigenen
+  Geräte (DNS-over-TLS auf Port 853 und DNS-over-HTTPS, mit ClientIDs, DDR
+  und Konfigurationsprofilen für Apple-Geräte; unverschlüsseltes DNS lässt
+  sich abschalten),
   Schutz vor DNS-Rebinding, Abfrageprotokoll und Statistiken.
 - **Jugendschutz** pro Gruppe: Dienste wie YouTube, TikTok oder Roblox
   sperren (144 Dienste), Zeitpläne (Schlafenszeit, Hausaufgabenzeit),

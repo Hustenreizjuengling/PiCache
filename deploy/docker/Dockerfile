@@ -82,8 +82,9 @@ ENV PICACHE_DATA_DIR=/data \
     PICACHE_RUN_AS=65532:65532 \
     PICACHE_MOUNT_ROOT=/srv/picache
 VOLUME ["/data", "/cache"]
-# DNS, download cache (HTTP, SNI pass-through), web UI (HTTP, HTTPS).
-EXPOSE 53/udp 53/tcp 80/tcp 443/tcp 8080/tcp 8443/tcp
+# DNS, download cache (HTTP, SNI pass-through), web UI (HTTP, HTTPS),
+# DNS over TLS.
+EXPOSE 53/udp 53/tcp 80/tcp 443/tcp 853/tcp 8080/tcp 8443/tcp
 # Root only until the listeners are bound; see the header.
 USER 0:0
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

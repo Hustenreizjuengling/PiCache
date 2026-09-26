@@ -1,7 +1,9 @@
 <!--
   @component
   The network listeners (bootstrap configuration, restart required to
-  change): bound addresses, bind failures and listeners that are off.
+  change): bound addresses, bind failures and listeners that are off. A
+  failed DoT or DoH listener shows as not in use while its protocol is
+  switched off (the listeners health check ignores it then).
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -9,7 +11,13 @@
   import { Chip, Panel, Table, type Column } from '$lib/ui'
   import { LISTENER_ROLES } from './about'
 
-  let { listeners }: { listeners?: ListenerInfo } = $props()
+  interface Props {
+    listeners?: ListenerInfo
+    /** dns.encrypted.dot/doh (GET /dns/encrypted); undefined: unknown, failures show as failed. */
+    encrypted?: { dot: boolean; doh: boolean }
+  }
+
+  let { listeners, encrypted }: Props = $props()
 
   interface Row {
     role: string
@@ -17,6 +25,15 @@
     env: string
     addresses: string[]
     error?: string
+    /** Why a failed listener does not matter now (its protocol is off). */
+    unused?: string
+  }
+
+  /** The note for a failed dot/doh listener while its protocol is off. */
+  function unusedNote(role: string): string | undefined {
+    if (role === 'dot' && encrypted && !encrypted.dot) return t('system.health.listeners.unusedDot')
+    if (role === 'doh' && encrypted && !encrypted.doh) return t('system.health.listeners.unusedDoh')
+    return undefined
   }
 
   const rows = $derived.by((): Row[] | undefined => {
@@ -31,6 +48,7 @@
       ...r,
       addresses: bound[r.role] ?? [],
       error: failed[r.role],
+      unused: failed[r.role] ? unusedNote(r.role) : undefined,
     }))
   })
 
@@ -43,7 +61,9 @@
 </script>
 
 {#snippet statusCell(r: Row)}
-  {#if r.error}
+  {#if r.error && r.unused}
+    <Chip tone="neutral" size="sm" label={t('system.health.listeners.unused')} />
+  {:else if r.error}
     <Chip tone="fail" size="sm" label={t('system.health.listeners.failed')} />
   {:else if r.addresses.length > 0}
     <Chip tone="ok" size="sm" label={t('system.health.listeners.listening')} />
@@ -53,7 +73,9 @@
 {/snippet}
 
 {#snippet addressCell(r: Row)}
-  {#if r.error}
+  {#if r.error && r.unused}
+    <span class="subtle small wrap">{r.unused} {r.error}</span>
+  {:else if r.error}
     <span class="err small">{r.error}</span>
   {:else if r.addresses.length > 0}
     <span class="mono">{r.addresses.join(', ')}</span>
@@ -63,12 +85,15 @@
 {/snippet}
 
 <Panel title={t('system.health.listeners.title')} description={t('system.health.listeners.description')} flush>
-  <Table {columns} {rows} key={(r) => r.role} loading={!rows} caption={t('system.health.listeners.title')} compact skeletonRows={6} />
+  <Table {columns} {rows} key={(r) => r.role} loading={!rows} caption={t('system.health.listeners.title')} compact skeletonRows={8} />
 </Panel>
 
 <style>
   .err {
     color: var(--danger);
+    overflow-wrap: anywhere;
+  }
+  .wrap {
     overflow-wrap: anywhere;
   }
 </style>

@@ -4,7 +4,7 @@
   ones, trusting every network this machine is connected to (public IPv6
   prefixes too, followed when the provider changes them), the dangerous
   "answer everyone" switch (behind a confirmation), refusing ANY queries,
-  blocked clients (DNS only) and trusted forwarders whose EDNS options
+  blocked clients (DNS only; also ClientIDs of DoT and DoH) and trusted forwarders whose EDNS options
   identify the devices behind them.
 -->
 <script lang="ts">
@@ -76,7 +76,7 @@
           help={t('dns.settings.access.blockedHelp')}
           error={lineError(form.saveError, 'dns.blockedClients')}
         >
-          <LinesInput bind:value={d.blockedClients} rows={4} placeholder={'192.168.1.66\naa:bb:cc:dd:ee:ff'} />
+          <LinesInput bind:value={d.blockedClients} rows={4} placeholder={'192.168.1.66\naa:bb:cc:dd:ee:ff\nclientid:old-tablet'} />
         </Field>
         {#if stats && stats.blockedClients > 0}
           <p class="small muted">{tn('dns.settings.access.blockedCount', stats.blockedClients, { count: formatNumber(stats.blockedClients) })}</p>

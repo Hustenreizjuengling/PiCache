@@ -4,6 +4,9 @@ import (
 	"cmp"
 	"net/netip"
 	"slices"
+	"strings"
+
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // snapshot is the immutable identification state built from picache.db.
@@ -13,6 +16,7 @@ type snapshot struct {
 	byIP          map[netip.Addr]*clientEntry
 	cidrs         []cidrEntry // longest prefix first, then highest client ID
 	byMAC         map[string]*clientEntry
+	byClientID    map[string]*clientEntry // ClientID (without the prefix) → client
 }
 
 type clientEntry struct {
@@ -34,6 +38,7 @@ func newSnapshot(groups []Group, clients []Client) *snapshot {
 		groupEnabled: make(map[int64]bool, len(groups)),
 		byIP:         map[netip.Addr]*clientEntry{},
 		byMAC:        map[string]*clientEntry{},
+		byClientID:   map[string]*clientEntry{},
 	}
 	for _, g := range groups {
 		s.groupEnabled[g.ID] = g.Enabled
@@ -57,6 +62,8 @@ func newSnapshot(groups []Group, clients []Client) *snapshot {
 				s.cidrs = append(s.cidrs, cidrEntry{prefix: id.prefix, client: e})
 			case kindMAC:
 				s.byMAC[id.value] = e
+			case kindClientID:
+				s.byClientID[strings.TrimPrefix(id.value, settings.ClientIDPrefix)] = e
 			}
 		}
 	}

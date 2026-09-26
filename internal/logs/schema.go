@@ -2,9 +2,14 @@ package logs
 
 import (
 	"context"
+	"slices"
 
 	"github.com/hustenreizjuengling/picache/internal/db"
 )
+
+// Migrations returns the schema steps of component "logs" (the upgrade
+// tests build the schema of an older release with a prefix of them).
+func Migrations() []string { return slices.Clone(migrations) }
 
 // migrations of component "logs". Append only: a released step is never
 // edited (v1 keeps the column names of 0.1.x, later steps rename them). All
@@ -237,6 +242,10 @@ var migrations = []string{
 		last_seen  INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (bucket, kind, service, key)
 	) WITHOUT ROWID;`,
+	// v5 (0.14.0): the ClientID of a DoT or DoH query (docs/ARCHITECTURE.md
+	// 19). Adding a column with a constant default does not rewrite the
+	// table.
+	`ALTER TABLE logs_queries ADD COLUMN dns_client_id TEXT NOT NULL DEFAULT '';`,
 }
 
 // enableAutoVacuum switches a brand-new logs.db to incremental auto-vacuum so

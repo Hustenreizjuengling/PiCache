@@ -144,7 +144,7 @@ func TestDNSCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- srv.Serve(ctx, []net.PacketConn{pc}, []net.Listener{ln}) }()
+	go func() { done <- srv.Serve(ctx, []net.PacketConn{pc}, []net.Listener{ln}, nil) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {

@@ -1,6 +1,7 @@
-// A small QR code encoder (ISO/IEC 18004) for otpauth:// URIs, so the TOTP
-// secret never leaves the browser for rendering. Byte mode, error correction
-// level M, versions 1–10 (up to 213 bytes; an otpauth URI is at most ~180).
+// A small QR code encoder (ISO/IEC 18004) for otpauth:// URIs and profile
+// links, so a TOTP secret never leaves the browser for rendering. Byte mode,
+// error correction level M, versions 1–10 (up to 213 bytes; an otpauth URI is
+// at most ~180).
 // The structure follows the well-known reference algorithm: encode the data,
 // add Reed–Solomon error correction per block, interleave, place the modules
 // and pick the mask with the lowest penalty.

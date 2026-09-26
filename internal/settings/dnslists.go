@@ -129,14 +129,26 @@ func broadEnough(p netip.Prefix) bool {
 	return (p.Addr().Is4() && p.Bits() >= 8) || (p.Addr().Is6() && p.Bits() >= 32)
 }
 
+// ErrBlockedClient is the validation message of a dns.blockedClients entry.
+const ErrBlockedClient = "must be an IP address, CIDR, MAC address or clientid:<ClientID>"
+
 // ParseBlockedClient normalises an entry of dns.blockedClients: an IP
 // address (canonical, unmapped), a CIDR (masked; at least /8 for IPv4, /32
-// for IPv6) or a MAC address (lower-case with colons; "-" separators are
-// accepted). IPv6 zones, the all-zero MAC and group (multicast) MACs are
-// refused.
+// for IPv6), a MAC address (lower-case with colons; "-" separators are
+// accepted) or clientid:<ClientID> (lower-case). IPv6 zones, the all-zero
+// MAC and group (multicast) MACs are refused.
 func ParseBlockedClient(s string) (string, bool) {
 	s = strings.ToLower(strings.TrimSpace(s))
-	if s == "" || len(s) > 64 {
+	if s == "" || len(s) > len(ClientIDPrefix)+63 {
+		return "", false
+	}
+	if strings.HasPrefix(s, ClientIDPrefix) {
+		if id, ok := ParseClientIDEntry(s); ok {
+			return ClientIDPrefix + id, true
+		}
+		return "", false
+	}
+	if len(s) > 64 {
 		return "", false
 	}
 	if p, ok := parseAddrOrPrefix(s); ok {
@@ -410,8 +422,7 @@ func (d *DNS) validateLists() error {
 	}
 	for i, s := range d.BlockedClients {
 		if _, ok := ParseBlockedClient(s); !ok {
-			return apperr.Invalid(idx("dns.blockedClients", i),
-				"must be an IP address, a CIDR (at least /8 for IPv4, /32 for IPv6) or a MAC address")
+			return apperr.Invalid(idx("dns.blockedClients", i), ErrBlockedClient)
 		}
 	}
 	for i, s := range d.DroppedDomains {

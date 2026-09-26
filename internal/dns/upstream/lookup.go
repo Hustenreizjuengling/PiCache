@@ -257,7 +257,7 @@ func (r *Resolver) Test(ctx context.Context, upstream string) TestResult {
 		return res
 	}
 	boot := r.def.Load().boot
-	if !spec.IsIPLit && len(boot.servers) == 0 {
+	if spec.NeedsBootstrap() && len(boot.servers) == 0 {
 		res.Error = "a bootstrap server is required to resolve " + spec.Host
 		return res
 	}

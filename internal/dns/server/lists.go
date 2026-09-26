@@ -401,7 +401,8 @@ func clientSubnet(req *dns.Msg) string {
 
 // identifyClient runs steps 4a and 5 for a query: a trusted source may
 // name its client by EDNS (address and/or MAC); without a derived address
-// the client is the source.
+// the client is the source. A ClientID decides only when that finds no
+// configured client (applyClientID).
 func (s *Server) identifyClient(qc *qctx) {
 	var addr netip.Addr
 	var mac string
@@ -423,6 +424,7 @@ func (s *Server) identifyClient(qc *qctx) {
 	default:
 		qc.id = s.identify(qc.source)
 	}
+	s.applyClientID(qc)
 }
 
 // ecsFor returns the client subnet sent to the default upstreams for qc

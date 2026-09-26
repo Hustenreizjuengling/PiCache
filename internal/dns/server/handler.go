@@ -28,52 +28,103 @@ const (
 	maxSummaryLen = 256
 )
 
+// Transport protocols of a query (logs.QueryEvent.protocol).
+const (
+	ProtoUDP = "udp"
+	ProtoTCP = "tcp"
+	ProtoDoT = "dot"
+	ProtoDoH = "doh"
+)
+
 // dnsHandler adapts the server to miekg's dns.Handler.
 type dnsHandler struct {
-	s   *Server
-	ctx context.Context // cancelled when Serve ends
+	s     *Server
+	ctx   context.Context // cancelled when Serve ends
+	proto string          // ProtoDoT on the DoT listeners; "" = UDP or TCP by the peer
 }
 
-// ServeDNS runs the request pipeline (ARCHITECTURE 7.1) for one query.
+// queryConn describes where a query came from: the transport protocol,
+// the source (the transport peer; for DoH the effective client) and the
+// ClientID it carried (DoT: the SNI, DoH: the path; "" = none). overload,
+// when set, reports that too many queries are in flight instead of the
+// SERVFAIL a TCP client gets (DoH answers 503).
+type queryConn struct {
+	proto    string
+	source   netip.Addr
+	clientID string
+	overload func()
+}
+
+// stream reports whether replies travel over a stream (TCP, DoT, DoH):
+// never truncated, and a dropped query closes the connection (DoH: resets
+// the stream).
+func (c queryConn) stream() bool { return c.proto != ProtoUDP }
+
+// encrypted reports DoT and DoH (EDNS padding, ClientIDs, no plain-DNS gate).
+func (c queryConn) encrypted() bool { return c.proto == ProtoDoT || c.proto == ProtoDoH }
+
+// ServeDNS runs the request pipeline (ARCHITECTURE 7.1) for one query over
+// UDP, TCP or DoT.
 func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
-	s := h.s
+	c := queryConn{proto: h.proto, source: netutil.AddrFromNet(w.RemoteAddr())}
+	if c.proto == "" {
+		c.proto = ProtoUDP
+		if _, isTCP := w.RemoteAddr().(*net.TCPAddr); isTCP {
+			c.proto = ProtoTCP
+		}
+	}
+	if c.proto == ProtoDoT {
+		// Checked again per query: switching DoT off closes the
+		// connections of the listener too.
+		if !h.s.d.Settings.Get().DNS.Encrypted.DoT {
+			_ = w.Close()
+			return
+		}
+		c.clientID = h.s.sniClientID(w)
+	}
+	h.s.serve(h.ctx, w, req, c)
+}
+
+// serve runs the pipeline for one query from c.
+func (s *Server) serve(ctx context.Context, w dns.ResponseWriter, req *dns.Msg, c queryConn) {
 	// miekg does not recover handler panics; one bad query must not stop DNS.
 	defer func() {
 		if v := recover(); v != nil {
 			s.log.Error("panic while answering a DNS query", slog.Any("panic", v), slog.String("stack", string(debug.Stack())))
 		}
 	}()
-	_, isTCP := w.RemoteAddr().(*net.TCPAddr)
-	proto := "udp"
-	if isTCP {
-		proto = "tcp"
-	}
-	ip := netutil.AddrFromNet(w.RemoteAddr())
+	stream := c.stream()
+	ip := c.source
 
 	// Health probes are answered like localhost before anything is counted,
 	// limited, recorded or logged.
 	if s.healthProbe(req, ip) {
-		qc := newQuery(h.ctx, req, ip, proto, s.d.Settings.Get())
-		_ = w.WriteMsg(s.shape(qc, s.addrAnswer(qc, localhostV4, localhostV6), isTCP))
+		qc := newQuery(ctx, req, ip, c.proto, s.d.Settings.Get())
+		_ = w.WriteMsg(s.shape(qc, s.addrAnswer(qc, localhostV4, localhostV6), stream))
 		return
 	}
 	s.queries.Add(1)
 
 	// 2. ACL first, so nothing is ever sent to disallowed sources (UDP is
-	// additionally filtered before parsing, TCP at accept).
+	// additionally filtered before parsing, TCP and DoT at accept, DoH
+	// before the pipeline).
 	if !s.allowed(ip) {
 		s.refused.Add(1)
 		s.refusedSrc.add(ip, time.Now())
-		if isTCP {
+		if stream {
 			_ = w.Close()
 		}
 		return
 	}
-	// 2a. Blocked sources (dns.blockedClients): no answer, the TCP
-	// connection is closed; not logged, not seen, not refused.
-	if _, blocked := s.blockedSource(ip); blocked {
+	// 2a. Blocked sources and blocked ClientIDs (dns.blockedClients): no
+	// answer, the connection is closed; not logged, not seen, not refused.
+	_, blocked := s.blockedSource(ip)
+	if !blocked && c.clientID != "" {
+		_, blocked = s.blockedClientID(c.clientID)
+	}
+	if blocked {
 		s.blockedClients.Add(1)
-		if isTCP {
+		if stream {
 			_ = w.Close()
 		}
 		return
@@ -88,11 +139,12 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		_ = w.WriteMsg(m)
 		return
 	}
-	qc := newQuery(h.ctx, req, ip, proto, set)
+	qc := newQuery(ctx, req, ip, c.proto, set)
+	qc.clientID = c.clientID
 	if rcode, reason := validate(req); rcode >= 0 {
 		s.refused.Add(1)
 		qc.id = s.identify(ip)
-		s.reply(w, qc, s.refusal(qc, rcode, reason), isTCP)
+		s.reply(w, qc, s.refusal(qc, rcode, reason), stream)
 		return
 	}
 
@@ -103,7 +155,7 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			s.log.Warn("client exceeds the DNS rate limit; its queries are dropped (if it is a router or another DNS server forwarding to PiCache, add it to dns.rateLimitExempt)",
 				slog.String("client", netutil.RateKey(ip, set.DNS.RateLimitIPv4Prefix, set.DNS.RateLimitIPv6Prefix).String()))
 		}
-		if isTCP {
+		if stream {
 			m := newReply(req)
 			m.Rcode = dns.RcodeRefused
 			_ = w.WriteMsg(s.shape(qc, result{msg: m}, true))
@@ -111,10 +163,25 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
+	// 3a. Plain DNS closed (dns.plainDns off while DoT or DoH serves):
+	// other devices get REFUSED over UDP and TCP, except for the names
+	// that bootstrap encrypted DNS; this machine is exempt.
+	if !c.encrypted() && s.plainClosed(set) && !s.plainExempt(ip) && !plainBootstrapName(set, qc.qname) {
+		s.refused.Add(1)
+		qc.id = s.identify(ip)
+		res := s.refusal(qc, dns.RcodeRefused, ReasonPlainDNSOff)
+		res.plainOff = true
+		s.reply(w, qc, res, stream)
+		return
+	}
+
 	if s.inFlight.Add(1) > maxInFlight {
 		s.inFlight.Add(-1)
 		s.overloaded.Add(1)
-		if isTCP {
+		switch {
+		case c.overload != nil:
+			c.overload()
+		case stream:
 			m := newReply(req)
 			m.Rcode = dns.RcodeServerFailure
 			_ = w.WriteMsg(s.shape(qc, result{msg: m}, true))
@@ -127,17 +194,18 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if set.DNS.RefuseANY && qc.qtype == dns.TypeANY {
 		s.refused.Add(1)
 		qc.id = s.identify(ip)
-		s.reply(w, qc, s.refusal(qc, dns.RcodeNotImplemented, "ANY queries are refused"), isTCP)
+		s.reply(w, qc, s.refusal(qc, dns.RcodeNotImplemented, "ANY queries are refused"), stream)
 		return
 	}
 
-	// 4a + 5. Identify: a trusted forwarder may name its client in EDNS.
+	// 4a + 5. Identify: a trusted forwarder may name its client in EDNS;
+	// a ClientID decides only when the source identifies no client.
 	s.identifyClient(qc)
 	// Blocked identities (a MAC, an address from EDNS): dropped like
 	// blocked sources, before anything is recorded.
 	if _, blocked := s.blockedIdentity(qc); blocked {
 		s.blockedClients.Add(1)
-		if isTCP {
+		if stream {
 			_ = w.Close()
 		}
 		return
@@ -145,27 +213,30 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Clients excluded from the raw data (ignoreLogs) are not recorded as
 	// seen; while client addresses are anonymised, or neither the query log
 	// nor the statistics are kept, the activity is kept in memory only
-	// (nothing is written to logs.db).
+	// (nothing is written to logs.db). ClientIDs stay in memory.
 	if s.d.Clients != nil && !qc.id.IgnoreLogs {
 		if lg := &set.Logs; lg.AnonymizeClientIPs || (!lg.QueryLogEnabled && !lg.StatsEnabled) {
 			s.d.Clients.SeenTransient(qc.client)
 		} else {
 			s.d.Clients.Seen(qc.client)
 		}
+		if qc.clientID != "" {
+			s.d.Clients.SeenDNSClientID(qc.client, qc.clientID)
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(h.ctx, queryTimeout)
+	qctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
-	qc.ctx = ctx
+	qc.ctx = qctx
 	res := s.process(qc)
 	if res.drop { // 7b: dns.droppedDomains
 		s.dropped.Add(1)
-		if isTCP {
+		if stream {
 			_ = w.Close()
 		}
 		return
 	}
-	s.reply(w, qc, res, isTCP)
+	s.reply(w, qc, res, stream)
 }
 
 // HealthProbeName is the name `picache healthcheck` (the Docker
@@ -188,14 +259,21 @@ func (s *Server) healthProbe(req *dns.Msg, ip netip.Addr) bool {
 		(ip.IsLoopback() || s.host.Load().isOwn(ip)) && s.allowed(ip)
 }
 
-// reply shapes, sends and logs the result.
-func (s *Server) reply(w dns.ResponseWriter, qc *qctx, res result, isTCP bool) {
+// reply shapes, sends and logs the result; answered DoT and DoH queries
+// are counted.
+func (s *Server) reply(w dns.ResponseWriter, qc *qctx, res result, stream bool) {
 	if res.msg == nil {
 		return
 	}
-	m := s.shape(qc, res, isTCP)
+	m := s.shape(qc, res, stream)
 	if err := w.WriteMsg(m); err != nil {
 		s.log.Debug("write DNS reply", slog.String("client", qc.source.String()), slog.Any("err", err))
+	}
+	switch qc.proto {
+	case ProtoDoT:
+		s.dotAnswered.Add(1)
+	case ProtoDoH:
+		s.dohAnswered.Add(1)
 	}
 	s.logQuery(qc, res, m)
 }
@@ -233,8 +311,9 @@ func (s *Server) refusal(qc *qctx, rcode int, reason string) result {
 
 // shape applies ARCHITECTURE 7.1 step 15: our OPT only for EDNS clients,
 // DNSSEC records only for DO clients, AD only if requested, EDE 15 on
-// blocked replies, truncation to the client's UDP size.
-func (s *Server) shape(qc *qctx, res result, isTCP bool) *dns.Msg {
+// blocked replies (EDE 18 while plain DNS is closed), truncation to the
+// client's UDP size (never over a stream), EDNS padding for DoT and DoH.
+func (s *Server) shape(qc *qctx, res result, stream bool) *dns.Msg {
 	m := res.msg
 	m.Id = qc.req.Id
 	m.Response = true
@@ -252,7 +331,7 @@ func (s *Server) shape(qc *qctx, res result, isTCP bool) *dns.Msg {
 		m.Rcode = dns.RcodeServerFailure // extended rcodes need EDNS
 	}
 	size := dns.MaxMsgSize
-	if !isTCP {
+	if !stream {
 		size = dns.MinMsgSize
 	}
 	if opt != nil {
@@ -268,12 +347,51 @@ func (s *Server) shape(qc *qctx, res result, isTCP bool) *dns.Msg {
 			o := m.IsEdns0()
 			o.Option = append(o.Option, &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeBlocked, ExtraText: strings.ToValidUTF8(text, "?")})
 		}
-		if !isTCP {
+		if res.plainOff {
+			o := m.IsEdns0()
+			o.Option = append(o.Option, &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeProhibited, ExtraText: plainOffText})
+		}
+		if !stream {
 			size = min(max(int(opt.UDPSize()), dns.MinMsgSize), ourUDPSize)
 		}
 	}
 	m.Truncate(size)
+	if opt != nil && (qc.proto == ProtoDoT || qc.proto == ProtoDoH) && hasPadding(opt) {
+		pad(m)
+	}
 	return m
+}
+
+// plainOffText is the EDE 18 text of the REFUSED replies while plain DNS
+// is closed.
+const plainOffText = "plain DNS is disabled on this server; use DoT or DoH"
+
+// paddingBlock is the block size replies are padded to (RFC 8467 4.1).
+const paddingBlock = 468
+
+// hasPadding reports whether an OPT record carries the Padding option.
+func hasPadding(opt *dns.OPT) bool {
+	for _, o := range opt.Option {
+		if o.Option() == dns.EDNS0PADDING {
+			return true
+		}
+	}
+	return false
+}
+
+// pad adds a Padding option (RFC 7830) to the reply's OPT record so that
+// the reply is a multiple of 468 bytes (never beyond the largest message).
+func pad(m *dns.Msg) {
+	o := m.IsEdns0()
+	if o == nil {
+		return
+	}
+	n := m.Len() + 4 // the option header
+	fill := (paddingBlock - n%paddingBlock) % paddingBlock
+	if n+fill > dns.MaxMsgSize {
+		return
+	}
+	o.Option = append(o.Option, &dns.EDNS0_PADDING{Padding: make([]byte, fill)})
 }
 
 func dropOPT(rrs []dns.RR) []dns.RR {
@@ -310,26 +428,27 @@ func (s *Server) logQuery(qc *qctx, res result, reply *dns.Msg) {
 	}
 	answer := summarize(reply.Answer)
 	e := logs.QueryEvent{
-		Time:       qc.start.UTC(),
-		ClientIP:   qc.client.String(),
-		ClientName: qc.id.Name,
-		QName:      qc.qname,
-		QType:      typeString(qc.qtype),
-		Status:     res.status,
-		RCode:      rcodeString(reply.Rcode),
-		Reason:     res.reason,
-		ListID:     res.listID,
-		RuleID:     res.ruleID,
-		Service:    res.service,
-		Upstream:   res.upstream,
-		DurationUs: time.Since(qc.start).Microseconds(),
-		Answer:     answer,
-		DNSSEC:     reply.AuthenticatedData,
-		Protocol:   qc.proto,
-		ECS:        clientSubnet(qc.req),
-		Purpose:    purposeOf(res),
-		NoLog:      qc.id.IgnoreLogs,
-		NoStats:    qc.id.IgnoreStats,
+		Time:        qc.start.UTC(),
+		ClientIP:    qc.client.String(),
+		ClientName:  qc.id.Name,
+		QName:       qc.qname,
+		QType:       typeString(qc.qtype),
+		Status:      res.status,
+		RCode:       rcodeString(reply.Rcode),
+		Reason:      res.reason,
+		ListID:      res.listID,
+		RuleID:      res.ruleID,
+		Service:     res.service,
+		Upstream:    res.upstream,
+		DurationUs:  time.Since(qc.start).Microseconds(),
+		Answer:      answer,
+		DNSSEC:      reply.AuthenticatedData,
+		Protocol:    qc.proto,
+		ECS:         clientSubnet(qc.req),
+		DNSClientID: qc.clientID,
+		Purpose:     purposeOf(res),
+		NoLog:       qc.id.IgnoreLogs,
+		NoStats:     qc.id.IgnoreStats,
 	}
 	if res.upstreamAnswer != "" && res.upstreamAnswer != answer {
 		e.UpstreamAnswer = res.upstreamAnswer

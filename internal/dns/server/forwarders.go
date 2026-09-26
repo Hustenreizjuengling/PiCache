@@ -98,16 +98,20 @@ func (t *fwdTable) match(name string, explicitOnly bool) *fwdEntry {
 	return nil
 }
 
-// upstreamIPs returns the IP literals among upstream specs.
+// upstreamIPs returns the IP literals among upstream specs and the
+// addresses of DNS stamps (dialled directly).
 func upstreamIPs(specs []string) []netip.Addr {
 	var out []netip.Addr
 	for _, u := range specs {
 		spec, err := settings.ParseUpstream(u)
-		if err != nil || !spec.IsIPLit {
-			continue
-		}
-		if ip, err := netip.ParseAddr(spec.Host); err == nil {
-			out = append(out, ip.Unmap().WithZone(""))
+		switch {
+		case err != nil:
+		case spec.DialAddr.IsValid():
+			out = append(out, spec.DialAddr.Addr().Unmap())
+		case spec.IsIPLit:
+			if ip, err := netip.ParseAddr(spec.Host); err == nil {
+				out = append(out, ip.Unmap().WithZone(""))
+			}
 		}
 	}
 	return out
@@ -288,7 +292,10 @@ func (rules forwarderRules) validateForwarder(in ForwarderInput) (ForwarderInput
 		if err != nil {
 			return in, apperr.Invalid(fmt.Sprintf("upstreams[%d]", i), "%v", err)
 		}
-		if !spec.IsIPLit {
+		if settings.SelfUpstream(spec, &rules.set.DNS) {
+			return in, apperr.Invalid(fmt.Sprintf("upstreams[%d]", i), "%s", settings.ErrSelfUpstream)
+		}
+		if spec.NeedsBootstrap() {
 			if (spec.Proto == "udp" || spec.Proto == "tcp") && !settings.PublicUpstreamName(spec.Host, rules.set.DNS.LocalDomain, rules.search...) {
 				return in, apperr.Invalid(fmt.Sprintf("upstreams[%d]", i), "%s", settings.ErrPlainUpstreamName)
 			}

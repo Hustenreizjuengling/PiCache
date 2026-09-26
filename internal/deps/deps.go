@@ -7,6 +7,8 @@ package deps
 
 import (
 	_ "github.com/miekg/dns"
+	_ "github.com/quic-go/quic-go"
+	_ "github.com/quic-go/quic-go/http3"
 	_ "golang.org/x/crypto/argon2"
 	_ "golang.org/x/crypto/chacha20poly1305"
 	_ "golang.org/x/net/idna"

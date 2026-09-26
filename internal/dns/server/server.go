@@ -19,10 +19,14 @@
 //
 // Serving: UDP with (&dns.Server{PacketConn: pc, Handler: h}).ActivateAndServe()
 // (miekg replies from the query's destination address via IP_PKTINFO) and TCP
-// with Listener: ln, MaxTCPQueries 128, IdleTimeout 8 s. No custom
-// ReadFrom/WriteTo loops; a reader decorator drops UDP packets from sources
-// outside the ACL and from blocked sources before they are parsed. The rate
-// limiter is swept every 10 s.
+// with Listener: ln, MaxTCPQueries 128, IdleTimeout 8 s. DoT (docs/
+// ARCHITECTURE.md 19) is served the same way on TLS listeners (the queries
+// of a connection one after another, in order; handshake and writes
+// bounded by 10 s, the first message by 10 s, a started one by the idle
+// time of 30 s, 1024 queries per connection) and DoH through ServeDoH. No
+// custom ReadFrom/WriteTo loops; a reader decorator drops UDP packets from
+// sources outside the ACL and from blocked sources before they are parsed.
+// The rate limiter is swept every 10 s.
 //
 // Tables (picache.db, component "dns"): dns_records, dns_forwarders,
 // dns_forwarder_domains.
@@ -107,6 +111,12 @@ const (
 	udpReadSize   = dns.DefaultMsgSize
 	tcpIdle       = 8 * time.Second
 	maxTCPQueries = 128
+
+	// DoT: the first message and the TLS handshake (and every write)
+	// within dotTimeout; a started message within dotIdle.
+	dotTimeout    = 10 * time.Second
+	dotIdle       = 30 * time.Second
+	maxDoTQueries = 1024
 )
 
 // Consumer-side interfaces (implemented by the concrete packages; fakes in tests).
@@ -136,6 +146,11 @@ type Clients interface {
 	IdentifyDerived(ip netip.Addr, mac string) *clients.Identity
 	Seen(ip netip.Addr)          // activity, persisted to logs.db
 	SeenTransient(ip netip.Addr) // activity kept in memory only (client addresses anonymised)
+	// IdentifyDNSClientID returns the configured client that has the
+	// identifier clientid:<id> (without address or MAC); false if none.
+	IdentifyDNSClientID(id string) (*clients.Identity, bool)
+	// SeenDNSClientID records the ClientID an address sent (memory only).
+	SeenDNSClientID(ip netip.Addr, id string)
 }
 
 // Upstream is the part of *upstream.Resolver the server uses.
@@ -196,8 +211,29 @@ type Deps struct {
 	Neighbours func(ctx context.Context) ([]clients.Neighbour, error)
 	// Leases answers the DNS names of DHCP leases in step 7 (nil: none).
 	Leases LeaseNames
-	Log    *slog.Logger
+	// Encrypted returns the state of the encrypted DNS this machine
+	// serves (nil or a nil result: nothing serves), an immutable snapshot
+	// that app rebuilds on settings, listener and certificate changes; it
+	// drives the plain-DNS gate (step 3a) and DDR (step 6).
+	Encrypted func() *EncryptedState
+	Log       *slog.Logger
 }
+
+// EncryptedState describes the encrypted DNS PiCache serves now
+// (docs/ARCHITECTURE.md 19). DoT and DoH report "serving": the protocol is
+// on, a listener of it is bound and the certificate is usable.
+type EncryptedState struct {
+	DoT, DoH bool
+	// DoTPorts are the distinct ports of the bound DoT listeners; DoHPorts
+	// those of the DoH listeners, then of the HTTPS web listeners.
+	DoTPorts, DoHPorts []uint16
+	// LeafIPs are the IP addresses of the served certificate (DDR is
+	// announced only to clients that queried one of them).
+	LeafIPs []netip.Addr
+}
+
+// Serving reports whether DoT or DoH is serving.
+func (e *EncryptedState) Serving() bool { return e != nil && (e.DoT || e.DoH) }
 
 // LeaseNames is the part of the DHCP server (package dhcp) the server
 // uses: the names of active leases, <host>.<domain> → address and the
@@ -273,11 +309,13 @@ type ForwarderInput struct {
 	Comment   string   `json:"comment"`
 }
 
-// LookupRequest is a test query from the UI.
+// LookupRequest is a test query from the UI. DNSClientID evaluates it as
+// a DoT or DoH query from ClientIP that carries this ClientID.
 type LookupRequest struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`     // default "A"
-	ClientIP string `json:"clientIp"` // evaluate as this client (default: the caller)
+	Name        string `json:"name"`
+	Type        string `json:"type"`     // default "A"
+	ClientIP    string `json:"clientIp"` // evaluate as this client (default: the caller)
+	DNSClientID string `json:"dnsClientId,omitempty"`
 }
 
 // LookupResult explains how PiCache would answer. Status "dropped" (a
@@ -370,6 +408,9 @@ type Server struct {
 	protectWarn protectWarnings
 
 	queries, refused, rateLimited, inFlight, overloaded, blockedClients, dropped atomic.Int64
+	dotAnswered, dohAnswered                                                     atomic.Int64
+	// doh counts the DoH requests in flight per client key (ServeDoH).
+	doh dohLimiter
 
 	qpsMu      sync.Mutex
 	qpsSamples []qpsSample // the last 7 (time, queries) samples, 10 s apart
@@ -481,10 +522,12 @@ func (s *Server) reconfigureLimiter() {
 	s.limiter.Reconfigure(set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, exempt, v4, v6)
 }
 
-// Serve answers queries on the pre-bound sockets until ctx ends (blocks).
-// It also runs the background refreshes (rate-limiter sweep, router
-// resolver, cache IPs, pause expiry) and returns after all of them exited.
-func (s *Server) Serve(ctx context.Context, udp []net.PacketConn, tcp []net.Listener) error {
+// Serve answers queries on the pre-bound sockets until ctx ends (blocks):
+// UDP, TCP and DoT (dot: TLS listeners, already limited by the ACL at
+// accept). It also runs the background refreshes (rate-limiter sweep,
+// router resolver, cache IPs, pause expiry) and returns after all of them
+// exited.
+func (s *Server) Serve(ctx context.Context, udp []net.PacketConn, tcp, dot []net.Listener) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	h := &dnsHandler{s: s, ctx: ctx}
@@ -495,6 +538,10 @@ func (s *Server) Serve(ctx context.Context, udp []net.PacketConn, tcp []net.List
 	for _, ln := range tcp {
 		servers = append(servers, &dns.Server{Listener: ln, Handler: h, MaxTCPQueries: maxTCPQueries,
 			IdleTimeout: func() time.Duration { return tcpIdle }})
+	}
+	dh := &dnsHandler{s: s, ctx: ctx, proto: ProtoDoT}
+	for _, ln := range dot {
+		servers = append(servers, newDoTServer(ln, dh))
 	}
 
 	var bg sync.WaitGroup

@@ -3,6 +3,7 @@
 // API queries and applied to live events (the stream filters only by client
 // and status on the server). `client` may be repeated: all addresses of one
 // device, matched as "any of them"; so may `rcode` (any of the codes).
+// `dnsClientId` matches the ClientID a DoT or DoH query carried.
 
 import {
   BLOCKED_STATUSES,
@@ -14,6 +15,7 @@ import {
 } from '$lib/api'
 import { isCustom, readRange, withinRetention, type Range } from '$lib/range'
 import { router } from '$lib/router.svelte'
+import { isClientId, normalizeClientId } from '../shared/clientid'
 import { isIP, isIPv4, isIPv6 } from '../shared/input'
 
 /** Time ranges shown as segments (bounded by the query log's retention, 7 days by default). */
@@ -73,10 +75,12 @@ export interface QueryFilters {
   rcode: string[]
   /** '' any, 'true' validated (the AD flag), 'false' not validated. */
   dnssec: '' | 'true' | 'false'
+  /** The ClientID of DoT and DoH queries (lower case; '' for any). */
+  dnsClientId: string
 }
 
 /** URL patch that removes every filter besides the time range. */
-export const CLEAR_FILTERS = { client: null, domain: null, status: null, qtype: null, upstream: null, rcode: null, dnssec: null }
+export const CLEAR_FILTERS = { client: null, domain: null, status: null, qtype: null, upstream: null, rcode: null, dnssec: null, dnsClientId: null }
 
 function isStatus(s: string): s is QueryStatus {
   return (ALL_STATUSES as readonly string[]).includes(s)
@@ -99,6 +103,7 @@ export function readFilters(): QueryFilters {
     upstream: router.param('upstream').trim(),
     rcode: [...new Set(router.list('rcode').map((c) => c.trim().toUpperCase()))].filter(isRcode).slice(0, MAX_RCODES),
     dnssec: dnssec === 'true' || dnssec === 'false' ? dnssec : '',
+    dnsClientId: normalizeClientId(router.param('dnsClientId')),
   }
 }
 
@@ -111,6 +116,12 @@ export function clientValues(values: readonly string[]): string[] {
 export function validClient(v: string): boolean {
   const s = v.trim()
   return s === '' || isIP(s) || [...s].length >= MIN_SEARCH
+}
+
+/** Whether a ClientID filter can be sent: empty or a valid ClientID (checked again by the server). */
+export function validClientId(v: string): boolean {
+  const s = normalizeClientId(v)
+  return s === '' || isClientId(s)
 }
 
 /** Whether a domain filter can be sent: "exact" in quotes or a substring of at least 3 characters. */
@@ -134,6 +145,7 @@ export function exportQuery(f: QueryFilters): QueryExportQuery {
     upstream: f.upstream || undefined,
     rcode: f.rcode.length > 0 ? f.rcode : undefined,
     dnssec: f.dnssec ? f.dnssec === 'true' : undefined,
+    dnsClientId: f.dnsClientId || undefined,
   }
 }
 
@@ -159,7 +171,7 @@ function matchesClients(e: QueryEvent, clients: readonly string[]): boolean {
 
 /**
  * Applies the filters the live stream cannot apply on the server (several
- * clients, domain, type, upstream, reply code, DNSSEC).
+ * clients, domain, type, upstream, reply code, DNSSEC, ClientID).
  */
 export function matchesLocally(e: QueryEvent, f: QueryFilters): boolean {
   if (f.client.length > 1 && !matchesClients(e, f.client)) return false
@@ -167,6 +179,7 @@ export function matchesLocally(e: QueryEvent, f: QueryFilters): boolean {
   if (f.upstream && e.upstream !== f.upstream) return false
   if (f.rcode.length > 0 && !f.rcode.includes(e.rcode.toUpperCase())) return false
   if (f.dnssec && !!e.dnssec !== (f.dnssec === 'true')) return false
+  if (f.dnsClientId && e.dnsClientId !== f.dnsClientId) return false
   if (f.domain) {
     const d = f.domain.toLowerCase()
     const name = e.qname.toLowerCase()
@@ -181,7 +194,7 @@ export function matchesLocally(e: QueryEvent, f: QueryFilters): boolean {
 
 /** Whether any filter besides the time range is set. */
 export function hasFilters(f: QueryFilters): boolean {
-  return !!(f.client.length || f.domain || f.status.length || f.qtype || f.upstream || f.rcode.length || f.dnssec)
+  return !!(f.client.length || f.domain || f.status.length || f.qtype || f.upstream || f.rcode.length || f.dnssec || f.dnsClientId)
 }
 
 /** The eight 16-bit words of an IPv6 address (without zone or embedded IPv4). */

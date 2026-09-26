@@ -100,8 +100,9 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 // updateSettings validates, persists and audits a change (with the changed
 // member paths) and responds with the new document. For every principal it
 // refuses a change of the web access that would lock the requester out
-// (checkWebLockout) and a TLS minimum the requester's own connection does
-// not meet (checkTLSMinVersion).
+// (checkWebLockout), a TLS minimum the requester's own connection does
+// not meet (checkTLSMinVersion) and the encrypted-DNS rules that need the
+// running system (checkEncryptedDNS).
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(*settings.All) error) error {
 	old := s.d.Settings.Get()
 	next, err := s.d.Settings.Update(r.Context(), func(a *settings.All) error {
@@ -124,6 +125,9 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(
 			return err
 		}
 		if err := s.checkGroupUpstreamSettings(r, old, a); err != nil {
+			return err
+		}
+		if err := s.checkEncryptedDNS(old, a); err != nil {
 			return err
 		}
 		return s.checkDHCP(old, a)
@@ -205,7 +209,7 @@ func (s *Server) checkGroupUpstreamSettings(r *http.Request, old, next *settings
 		}
 		for _, u := range g.Upstreams {
 			spec, err := settings.ParseUpstream(u)
-			if err != nil || spec.IsIPLit {
+			if err != nil || !spec.NeedsBootstrap() {
 				continue
 			}
 			if noBoot {

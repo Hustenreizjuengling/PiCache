@@ -12,6 +12,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 const (
@@ -46,6 +47,14 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 	if !client.IsValid() {
 		return LookupResult{}, apperr.Invalid("clientIp", "must be an IP address")
 	}
+	var clientID string
+	if v := strings.TrimSpace(req.DNSClientID); v != "" {
+		id, ok := settings.NormalizeClientID(v)
+		if !ok {
+			return LookupResult{}, apperr.Invalid("dnsClientId", settings.ErrClientID)
+		}
+		clientID = id
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
 	defer cancel()
@@ -55,12 +64,20 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 	steps := []string{}
 	qc := newQuery(ctx, msg, client, "lookup", set)
 	qc.steps = &steps
+	qc.clientID = clientID
 	qc.id = s.identify(client)
+	s.applyClientID(qc)
 	s.scope(qc)
 	s.traceClient(qc)
+	if clientID == "" && s.plainClosed(set) && !s.plainExempt(client) && !plainBootstrapName(set, name) {
+		qc.note("note: plain DNS is closed (dns.plainDns); a plain DNS query from this address gets REFUSED, a DoT or DoH query is answered as below")
+	}
 
 	var res result
 	srcEntry, srcBlocked := s.blockedSource(client)
+	if !srcBlocked && clientID != "" {
+		srcEntry, srcBlocked = s.blockedClientID(clientID)
+	}
 	idEntry, idBlocked := s.blockedIdentity(qc)
 	switch rcode, reason := validate(msg); {
 	case s.healthProbe(msg, client):

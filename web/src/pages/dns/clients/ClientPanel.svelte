@@ -1,7 +1,7 @@
 <!--
   @component
-  Adds or edits a client: name, identifiers (IP, CIDR or MAC, one per line),
-  groups, download cache bypass, "don't log" (raw data) and "don't count"
+  Adds or edits a client: name, identifiers (IP, CIDR, MAC or
+  clientid:<ClientID>, one per line), groups, download cache bypass, "don't log" (raw data) and "don't count"
   (statistics). In edit mode it also shows the client's statistics with the
   addresses they came from (IPv6 addresses the server recognised through the
   device's MAC address included), its activity over the range and links to
@@ -31,6 +31,7 @@
   import { clientValues } from '../querylog/filters'
   import AddressList from '../shared/AddressList.svelte'
   import ActivityChart from './ActivityChart.svelte'
+  import { identifierText } from '../shared/clientid'
   import { lineError } from '../shared/errors'
   import { isIP } from '../shared/input'
   import FormPanel from '../shared/FormPanel.svelte'
@@ -151,7 +152,7 @@
 <FormPanel
   bind:open
   title={client ? client.name : t('dns.clients.addTitle')}
-  subtitle={client?.identifiers.join(', ')}
+  subtitle={client?.identifiers.map(identifierText).join(', ')}
   submitLabel={client ? t('common.action.save') : t('dns.clients.add')}
   {saving}
   error={generalError}
@@ -207,7 +208,7 @@
     <Input bind:value={draft.name} maxlength={64} autocomplete="off" />
   </Field>
   <Field label={t('dns.clients.identifiers')} required help={t('dns.clients.identifiersHelp')} error={idError}>
-    <LinesInput bind:value={draft.identifiers} rows={idRows} placeholder={'192.168.1.20\naa:bb:cc:dd:ee:ff'} />
+    <LinesInput bind:value={draft.identifiers} rows={idRows} placeholder={'192.168.1.20\naa:bb:cc:dd:ee:ff\nclientid:tims-ipad'} />
   </Field>
   <GroupPicker
     {groups}

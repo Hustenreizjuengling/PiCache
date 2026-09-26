@@ -167,7 +167,7 @@ func groupList(g GroupUpstreams) (list, plain []string, key string, err error) {
 // usable upstream cannot be built.
 func (r *Resolver) buildGroupSet(key string, list, plain []string, boot *bootstrap, prev map[string]*upstreamStats) (normal, guard *upstreamSet, errText string) {
 	for _, u := range list {
-		if spec, err := settings.ParseUpstream(u); err == nil && !spec.IsIPLit && len(boot.servers) == 0 {
+		if spec, err := settings.ParseUpstream(u); err == nil && spec.NeedsBootstrap() && len(boot.servers) == 0 {
 			return nil, nil, fmt.Sprintf("%s needs dns.bootstrap servers", spec.Host)
 		}
 	}

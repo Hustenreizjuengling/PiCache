@@ -6,7 +6,8 @@
   "Restart now" applies it. The password is dropped when the dialog closes.
   A restore is destructive: without that right (or where the host turns
   destructive actions off) only the explanation is shown. When the restored
-  settings would keep this browser out of the web UI, the server says so.
+  settings would keep this browser out of the web UI, or turn plain DNS off
+  without an encrypted DNS listener on this host, the server says so.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -109,6 +110,9 @@
       </Notice>
       {#if result.webAccessWarning}
         <Notice tone="warn" title={t('system.backup.restore.webAccessTitle')}>{result.webAccessWarning}</Notice>
+      {/if}
+      {#if result.dnsWarning}
+        <Notice tone="warn" title={t('system.backup.restore.dnsTitle')}>{result.dnsWarning}</Notice>
       {/if}
     {/if}
 

@@ -73,6 +73,7 @@ var settingRules = map[string]settingRule{
 	"dns.upstreamBlockedTtl": ruleKeep, "dns.upstreamMode": ruleKeep, "dns.upstreamTimeoutMs": ruleKeep,
 	"dns.upstreams": ruleUpstream, "dns.localRecordsEnabled": ruleKeep, "dns.localizeRecords": ruleKeep,
 	"dns.serverNameAddresses.ipv4": ruleAddr, "dns.serverNameAddresses.ipv6": ruleAddr,
+	"dns.plainDns": ruleKeep, "dns.encrypted.dot": ruleKeep, "dns.encrypted.doh": ruleKeep, "dns.encrypted.serverName": ruleName,
 
 	"downloadCache.allowPrivateUpstreams": ruleKeep, "downloadCache.cacheIpv4": ruleAddr, "downloadCache.cacheIpv6": ruleAddr,
 	"downloadCache.disabledServices": ruleKeep, "downloadCache.dnsTtl": ruleKeep, "downloadCache.domainsSource": ruleUpstream,
@@ -148,8 +149,15 @@ func newScrubber(keepPrivate bool) *scrubber {
 // jsonMarshal encodes v for the bundle (deterministic member order).
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v, json.Deterministic(true)) }
 
-// upstreamHost returns the lower-case host of an upstream-like value.
+// upstreamHost returns the lower-case host of an upstream-like value (of a
+// DNS stamp: its host or DNSCrypt provider name).
 func upstreamHost(v string) string {
+	if isStampValue(v) {
+		if spec, err := settings.ParseUpstream(v); err == nil {
+			return spec.Host
+		}
+		return ""
+	}
 	if strings.Contains(v, "://") {
 		if u, err := url.Parse(v); err == nil {
 			return strings.ToLower(u.Hostname())
@@ -263,10 +271,33 @@ func (sc *scrubber) scrubHostName(h string) string {
 	return "*." + base
 }
 
+// isStampValue reports a DNS stamp (sdns://, any case).
+func isStampValue(v string) bool { return len(v) >= 7 && strings.EqualFold(v[:7], "sdns://") }
+
+// scrubStamp reduces a DNS stamp to sdns:<protocol>:<host> with the host
+// scrubbed like other host names: never the stamp, its address, hashes or
+// path.
+func (sc *scrubber) scrubStamp(v string) string {
+	spec, err := settings.ParseUpstream(v)
+	if err != nil || !spec.Stamp {
+		sc.counts[countUnknown]++
+		return notIncluded
+	}
+	sc.counts[countUpstreams]++
+	display := spec.Display()
+	kind := strings.TrimPrefix(display[:strings.LastIndex(display, ":"+spec.Host)], "sdns:")
+	return "sdns:" + kind + ":" + sc.scrubHostName(spec.Host)
+}
+
 // scrubUpstream reduces an upstream-like value: scheme://host[:port], a
 // path other than "", "/" or "/dns-query" as "/…", no user information,
-// query or fragment; plain host[:port] values keep their form.
+// query or fragment (quic:// and h3:// like tls:// and https://); a DNS
+// stamp as sdns:<protocol>:<host>; plain host[:port] values keep their
+// form.
 func (sc *scrubber) scrubUpstream(v string) string {
+	if isStampValue(v) {
+		return sc.scrubStamp(v)
+	}
 	if !strings.Contains(v, "://") {
 		if h, p, err := net.SplitHostPort(v); err == nil {
 			return net.JoinHostPort(strings.Trim(sc.scrubHostName(h), "[]"), p)
@@ -378,6 +409,7 @@ func (sc *scrubber) registerSettingNames(a *settings.All) {
 	}
 	add("web.allowedHosts", a.Web.AllowedHosts...)
 	add("dns.serverNames", a.DNS.ServerNames...)
+	add("dns.encrypted.serverName", a.DNS.Encrypted.ServerName)
 	add("dns.localDomain", a.DNS.LocalDomain)
 	add("dhcp.domain", a.DHCP.Domain)
 	add("dhcp.options.extraSearchDomains", a.DHCP.Options.ExtraSearchDomains...)
@@ -545,6 +577,9 @@ func (sc *scrubber) reduceTextURL(m string) string {
 		end--
 	}
 	u, tail := m[:end], m[end:]
+	if isStampValue(u) {
+		return sc.scrubStamp(u) + tail
+	}
 	scheme, rest, _ := strings.Cut(u, "://")
 	host, path := rest, ""
 	if i := strings.IndexAny(rest, "/?#"); i >= 0 {

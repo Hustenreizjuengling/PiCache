@@ -293,6 +293,9 @@ func (s *Server) systemRestore(w http.ResponseWriter, r *http.Request) error {
 	if warn := restoreWarning(r, staged); warn != "" {
 		out["webAccessWarning"] = warn
 	}
+	if warn := s.restoreDNSWarning(staged); warn != "" {
+		out["dnsWarning"] = warn
+	}
 	return writeJSON(w, http.StatusAccepted, out)
 }
 

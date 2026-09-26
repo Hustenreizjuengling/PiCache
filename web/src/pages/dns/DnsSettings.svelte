@@ -3,10 +3,12 @@
   DNS settings: upstreams (with tests, health and fallbacks), response cache,
   blocking replies and special domains, protection (rebinding, bogus
   NXDOMAIN, dropped domains), rate limiting, access (blocked clients,
-  trusted forwarders), local names, IPv6 answers (no AAAA, DNS64) and DNSSEC. Edits the "dns" and "filter"
+  trusted forwarders), encrypted DNS for devices (DoT, DoH, plain DNS,
+  device set-up and Apple profiles), local names, IPv6 answers (no AAAA,
+  DNS64) and DNSSEC. Edits the "dns" and "filter"
   settings sections; Save sends only the changed members of each.
   Validation errors appear next to the field.
-  Query: ?section=upstreams|cache|blocking|protection|ratelimit|access|names|ipv6|dnssec (scrolls there)
+  Query: ?section=upstreams|cache|blocking|protection|ratelimit|access|encrypted|devices|names|ipv6|dnssec (scrolls there)
 -->
 <script lang="ts">
   import { tick, untrack } from 'svelte'
@@ -22,6 +24,7 @@
   import BlockingSection from './settings/BlockingSection.svelte'
   import CacheSection from './settings/CacheSection.svelte'
   import DnssecSection from './settings/DnssecSection.svelte'
+  import EncryptedSection from './settings/EncryptedSection.svelte'
   import Ipv6Section from './settings/Ipv6Section.svelte'
   import NamesSection from './settings/NamesSection.svelte'
   import ProtectionSection from './settings/ProtectionSection.svelte'
@@ -35,8 +38,15 @@
   // Names of the groups and presets of the group upstream lists.
   const groups = resource((signal) => api.groups.list({ signal }))
   const presets = resource((signal) => api.groups.upstreamPresets({ signal }))
+  // Encrypted DNS: its state, whether PiCache's DHCP server announces plain DNS,
+  // and the cache addresses (in a container bridge network PiCache answers its
+  // own names with them, so devices reach it there).
+  const encrypted = resource((signal) => api.dns.encrypted({ signal }), { interval: 10_000 })
+  const other = resource((signal) =>
+    api.settings.get({ signal }).then((s) => ({ dhcp: s.dhcp, cacheIpv4: s.downloadCache.cacheIpv4 })),
+  )
 
-  const SECTIONS = ['upstreams', 'cache', 'blocking', 'protection', 'ratelimit', 'access', 'names', 'ipv6', 'dnssec'] as const
+  const SECTIONS = ['upstreams', 'cache', 'blocking', 'protection', 'ratelimit', 'access', 'encrypted', 'devices', 'names', 'ipv6', 'dnssec'] as const
   type Section = (typeof SECTIONS)[number]
 
   const ready = $derived(!!dns.draft && !!filter.draft)
@@ -55,6 +65,8 @@
       protection: t('dns.settings.protection.title'),
       ratelimit: t('dns.settings.rate.title'),
       access: t('dns.settings.access.title'),
+      encrypted: t('dns.settings.encrypted.title'),
+      devices: t('dns.settings.encrypted.setup.title'),
       names: t('dns.settings.names.title'),
       ipv6: t('dns.settings.ipv6.title'),
       dnssec: t('dns.settings.dnssec.title'),
@@ -80,6 +92,7 @@
   async function save() {
     const okDns = await dns.save()
     const okFilter = await filter.save()
+    void encrypted.refresh()
     if (okDns && okFilter) {
       toast.success(t('common.state.saved'))
       return
@@ -115,7 +128,9 @@
     {#if !session.canOperate}<Notice>{t('common.state.readOnly')}</Notice>{/if}
 
     <!-- Upstream tests and the cache flush stay usable for admins while the host
-         locks the configuration: those two sections disable their settings themselves. -->
+         locks the configuration: those two sections disable their settings themselves.
+         Encrypted DNS sits outside: viewers copy its addresses, admins create profiles
+         while the configuration is locked; it disables its settings itself. -->
     <fieldset class="sections" disabled={!session.canOperate}>
       <UpstreamsSection
         form={dns}
@@ -133,10 +148,19 @@
         <ProtectionSection form={dns} stats={dnsStats.data} />
         <RateLimitSection form={dns} stats={dnsStats.data} />
         <AccessSection form={dns} stats={dnsStats.data} />
-        <NamesSection form={dns} status={appStatus.overview.data?.router} />
-        <Ipv6Section form={dns} />
-        <DnssecSection form={dns} />
       </fieldset>
+    </fieldset>
+    <EncryptedSection
+      form={dns}
+      status={encrypted}
+      dhcp={other.data?.dhcp}
+      cacheIpv4={other.data?.cacheIpv4 ?? []}
+      groups={groups.data}
+    />
+    <fieldset class="sections" disabled={!session.isAdmin}>
+      <NamesSection form={dns} status={appStatus.overview.data?.router} />
+      <Ipv6Section form={dns} />
+      <DnssecSection form={dns} />
     </fieldset>
 
     {#if dirty || saveErrors.length > 0}
@@ -189,7 +213,7 @@
     padding: 0;
     border: 0;
   }
-  .sections :global(section[id^='dns-set-']) {
+  .page :global(section[id^='dns-set-']) {
     scroll-margin-top: var(--sp-4);
   }
   .savebar {

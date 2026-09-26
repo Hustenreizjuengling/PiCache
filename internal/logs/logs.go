@@ -127,7 +127,7 @@ type QueryEvent struct {
 	DurationUs int64     `json:"durationUs"`
 	Answer     string    `json:"answer,omitempty"` // compact summary, max 256 chars
 	DNSSEC     bool      `json:"dnssec,omitempty"` // AD flag set
-	Protocol   string    `json:"protocol"`         // udp | tcp
+	Protocol   string    `json:"protocol"`         // udp | tcp | dot | doh
 	// UpstreamEDE is the Extended DNS Error of the upstream reply (any
 	// upstream, also on cache hits); nil when it carried none.
 	UpstreamEDE *UpstreamEDE `json:"upstreamEde,omitempty"`
@@ -140,6 +140,10 @@ type QueryEvent struct {
 	// upstream and rebind blocks, bogus NXDOMAIN, DNS64, removed
 	// ipv6hint); without control and bidi characters, at most 512 bytes.
 	UpstreamAnswer string `json:"upstreamAnswer,omitempty"`
+	// DNSClientID is the ClientID the query carried (DoT, DoH; known,
+	// unknown or ignored); "" if none. Removed while client addresses are
+	// anonymised.
+	DNSClientID string `json:"dnsClientId,omitempty"`
 	// Purpose is what a blocked or safe-search query was stopped for (a
 	// list category, "rule", "service", "schedule", "upstream", "rebind",
 	// "special" or "safesearch"; "" = not counted), set by the DNS server.
@@ -230,8 +234,11 @@ type QueryFilter struct {
 	Upstream string
 	RCode    []string // any of (at most 16; 1–16 characters of A-Z and 0-9)
 	DNSSEC   *bool    // the AD flag; nil = either
-	Cursor   string   // opaque, from QueryPage.Next
-	Limit    int      // default 100, max 1000
+	// DNSClientID matches the ClientID exactly (lower-cased; a value that
+	// is no ClientID is refused).
+	DNSClientID string
+	Cursor      string // opaque, from QueryPage.Next
+	Limit       int    // default 100, max 1000
 }
 
 // QueryPage is a cursor page of the query log.

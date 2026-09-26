@@ -56,14 +56,18 @@ const (
 	caWarnBefore   = 90 * 24 * time.Hour
 )
 
-// servedCert is what the HTTPS listener serves.
+// servedCert is what the TLS listeners serve. fallback: a configured
+// source (the files or an upload) cannot be used and this certificate is
+// served instead (api.TLSStatus.fallback).
 type servedCert struct {
 	*certChain
-	source string
+	source   string
+	fallback bool
 }
 
-// webTLS manages the certificate of the HTTPS listener
-// (docs/ARCHITECTURE.md 2): it loads the configured source, falls back to
+// webTLS manages the certificate of the TLS listeners: the web UI over
+// HTTPS, DoT and DoH (docs/ARCHITECTURE.md 2, 19): it loads the configured
+// source, falls back to
 // the local CA or a self-signed certificate when that source is unusable
 // (the listener is never left without a certificate), reloads changed
 // certificate files by content, renews the local CA's leaf and serves the
@@ -73,7 +77,7 @@ type webTLS struct {
 	dataDir    string
 	certFile   string // PICACHE_WEB_TLS_CERT ("" = none)
 	keyFile    string // PICACHE_WEB_TLS_KEY
-	listener   bool   // an HTTPS listener is bound
+	listener   bool   // a TLS listener is bound (web-tls, dot or doh)
 	webHosts   []string
 	instanceID string
 	set        *settings.Store
@@ -103,6 +107,13 @@ type webTLS struct {
 	caErrLogged  bool
 	lastSANCheck time.Time
 	checkedAt    time.Time
+	// leafEnc is dns.encrypted when the local CA's leaf was issued or
+	// checked: a change re-issues it at the next tick (no hourly limit).
+	leafEnc settings.EncryptedDNS
+	// onSwap is called after the served certificate changed (the
+	// snapshot of encrypted DNS; it must not call back into webTLS
+	// methods that lock).
+	onSwap func()
 }
 
 func newWebTLS(dataDir, certFile, keyFile string, listener bool, webHosts []string, instanceID string,
@@ -129,21 +140,28 @@ func (m *webTLS) identity() hostIdentity {
 	return hostIdentity{
 		hostname: hn, names: ownNames(hn, s, search), addrs: ownAddrs(m.hostAddrs(), m.bridge()),
 		extra: extraHosts(s, m.webHosts), localDomain: s.DNS.LocalDomain, search: search,
+		serverName: s.DNS.Encrypted.ServerName, dot: s.DNS.Encrypted.DoT,
 	}
 }
 
-// tlsConfig returns the configuration of the HTTPS listener: the current
-// certificate per handshake, the minimum version of the current settings
-// (two fixed configurations; the shared one is never changed).
-func (m *webTLS) tlsConfig() *tls.Config {
+// tlsConfig returns the configuration of the HTTPS web listener.
+func (m *webTLS) tlsConfig() *tls.Config { return m.tlsConfigFor("h2", "http/1.1") }
+
+// tlsConfigFor returns the configuration of a TLS listener with the ALPN
+// protocols of its role (web-tls and doh: h2, http/1.1; dot: dot, so a
+// client that offers ALPN without dot fails the handshake): the current
+// certificate per handshake whatever the SNI, the minimum version of the
+// current settings (two fixed configurations; the shared ones are never
+// changed).
+func (m *webTLS) tlsConfigFor(nextProtos ...string) *tls.Config {
 	mk := func(min uint16) *tls.Config {
-		return &tls.Config{MinVersion: min, GetCertificate: m.getCertificate, NextProtos: []string{"h2", "http/1.1"}}
+		return &tls.Config{MinVersion: min, GetCertificate: m.getCertificate, NextProtos: nextProtos}
 	}
 	v12, v13 := mk(tls.VersionTLS12), mk(tls.VersionTLS13)
 	return &tls.Config{
 		MinVersion:     tls.VersionTLS12,
 		GetCertificate: m.getCertificate,
-		NextProtos:     []string{"h2", "http/1.1"},
+		NextProtos:     nextProtos,
 		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
 			if m.set.Get().Web.TLSMinVersion == settings.TLSVersion13 {
 				return v13, nil
@@ -205,13 +223,48 @@ func (m *webTLS) chooseLocked(now time.Time) {
 	var pick *servedCert
 	switch {
 	case m.certFile != "" && m.files != nil:
-		pick = &servedCert{m.files, sourceFiles}
+		pick = &servedCert{m.files, sourceFiles, false}
 	case m.certFile == "" && m.upload != nil:
-		pick = &servedCert{m.upload, sourceUploaded}
+		pick = &servedCert{m.upload, sourceUploaded, false}
 	default:
-		pick = m.ensureBaseLocked(now)
+		if b := m.ensureBaseLocked(now); b != nil {
+			pick = &servedCert{b.certChain, b.source, m.certFile != "" || m.uploadErr != ""}
+		}
 	}
 	m.cur.Store(pick)
+	if m.onSwap != nil {
+		m.onSwap()
+	}
+}
+
+// usable reports whether the served certificate can be used for encrypted
+// DNS: no fallback and not expired.
+func (m *webTLS) usable(now time.Time) bool {
+	c := m.cur.Load()
+	return c != nil && !c.fallback && now.Before(c.chain[0].NotAfter)
+}
+
+// leafIPs returns the IP addresses of the served leaf (canonical).
+func (m *webTLS) leafIPs() []netip.Addr {
+	c := m.cur.Load()
+	if c == nil {
+		return nil
+	}
+	out := make([]netip.Addr, 0, len(c.chain[0].IPAddresses))
+	for _, ip := range c.chain[0].IPAddresses {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			out = append(out, netutil.Canon(a))
+		}
+	}
+	return out
+}
+
+// served returns the served leaf (nil if none).
+func (m *webTLS) served() *x509.Certificate {
+	if c := m.cur.Load(); c != nil {
+		return c.chain[0]
+	}
+	return nil
 }
 
 // ensureBaseLocked returns the local CA's leaf or the self-signed
@@ -247,8 +300,10 @@ func (m *webTLS) ensureBaseLocked(now time.Time) *servedCert {
 		m.renewBaseLocked(id, now, "replaced the self-signed web certificate, which expires soon, with a certificate of the local CA")
 	case b.source == sourceLocalCA && b.chain[0].NotAfter.Sub(now) < renewBefore && renewable():
 		m.renewBaseLocked(id, now, "renewed the web certificate of the local CA")
-	case b.source == sourceLocalCA && now.Sub(m.lastSANCheck) >= sanRecheckWait:
-		m.lastSANCheck = now
+	case b.source == sourceLocalCA && (now.Sub(m.lastSANCheck) >= sanRecheckWait || m.leafEnc != m.set.Get().DNS.Encrypted):
+		// A changed dns.encrypted (the server name, DoT's wildcard) is
+		// applied at once; other changes at most hourly.
+		m.lastSANCheck, m.leafEnc = now, m.set.Get().DNS.Encrypted
 		names, addrs, _ := id.leafSANs(m.ca.cert)
 		if !sameSANs(b.chain[0], names, addrs) {
 			m.renewBaseLocked(id, now, "re-issued the web certificate of the local CA for changed names or addresses")
@@ -403,7 +458,7 @@ func (m *webTLS) issueLeafLocked(id hostIdentity, now time.Time) error {
 	if err := writeFileAtomic(dir, leafCertFile, certPEM, 0o644); err != nil {
 		return err
 	}
-	m.base, m.baseTemp, m.lastSANCheck = b, false, now
+	m.base, m.baseTemp, m.lastSANCheck, m.leafEnc = b, false, now, m.set.Get().DNS.Encrypted
 	return nil
 }
 
@@ -422,7 +477,7 @@ func pairChain(certPEM, keyPEM []byte, source string) (*servedCert, error) {
 		chain = append(chain, x)
 	}
 	c.Leaf = chain[0]
-	return &servedCert{&certChain{cert: &c, chain: chain}, source}, nil
+	return &servedCert{certChain: &certChain{cert: &c, chain: chain}, source: source}, nil
 }
 
 // reloadFilesLocked loads the certificate files when their content
@@ -640,7 +695,7 @@ func (m *webTLS) Status() api.TLSStatus {
 // new one and browsers warn again.
 func (m *webTLS) tempErrLocked() string {
 	c := m.cur.Load()
-	if !m.baseTemp || c == nil || c != m.base {
+	if !m.baseTemp || c == nil || m.base == nil || c.certChain != m.base.certChain {
 		return ""
 	}
 	why := m.baseErr
@@ -697,7 +752,7 @@ func (m *webTLS) CheckUpload(certPEM, keyPEM string) error {
 // Upload stores the certificate as uploaded.pem and serves it at once.
 func (m *webTLS) Upload(certPEM, keyPEM string) (api.CertInfo, error) {
 	if !m.listener {
-		return api.CertInfo{}, apperr.Conflict("no HTTPS listener: PICACHE_WEB_TLS_LISTEN is off")
+		return api.CertInfo{}, apperr.Conflict(api.ErrNoTLSListener)
 	}
 	c, err := parseUpload([]byte(certPEM), []byte(keyPEM), m.now())
 	if err != nil {
@@ -785,7 +840,7 @@ func (m *webTLS) NewLocalCA() (api.LocalCAInfo, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.listener {
-		return api.LocalCAInfo{}, false, apperr.Conflict("no HTTPS listener: PICACHE_WEB_TLS_LISTEN is off")
+		return api.LocalCAInfo{}, false, apperr.Conflict(api.ErrNoTLSListener)
 	}
 	replaced := m.ca != nil || m.caFileExists()
 	now, id := m.now(), m.identity()

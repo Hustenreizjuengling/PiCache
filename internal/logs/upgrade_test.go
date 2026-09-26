@@ -33,7 +33,7 @@ func TestUpgradeFrom011(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v int
-	if err := ldb.R.QueryRow(`SELECT MAX(version) FROM schema_migrations WHERE component = 'logs'`).Scan(&v); err != nil || v != 4 {
+	if err := ldb.R.QueryRow(`SELECT MAX(version) FROM schema_migrations WHERE component = 'logs'`).Scan(&v); err != nil || v != len(migrations) {
 		t.Fatalf("logs v%d, %v", v, err)
 	}
 	page, err := s.QueryLog(ctx, QueryFilter{From: now.Add(-2 * time.Hour), To: now})

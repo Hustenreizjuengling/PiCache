@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // Field length limits for stored events (bytes, cut at a rune boundary).
@@ -221,6 +222,11 @@ func cleanQuery(e QueryEvent, anon, hide bool, now time.Time) QueryEvent {
 	}
 	e.ECS = cleanECS(e.ECS, anon)
 	e.UpstreamAnswer = cleanUpstreamAnswer(e.UpstreamAnswer)
+	if id, ok := settings.NormalizeClientID(e.DNSClientID); ok && !anon {
+		e.DNSClientID = id
+	} else {
+		e.DNSClientID = "" // a ClientID names a device as well as its address
+	}
 	e.Purpose = strings.ToLower(clean(e.Purpose, maxShortLen))
 	if hide {
 		hideDomain(&e)

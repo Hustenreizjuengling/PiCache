@@ -56,6 +56,8 @@
 
   // This page on the HTTPS port: the key is only sent over HTTPS.
   const httpsLink = $derived(httpsUrl(location.href, session.status?.httpsPort ?? 0))
+  /** The HTTPS web listener is bound (else only DoT or DoH use the certificate). */
+  const webTls = $derived(!!session.status?.httpsPort)
 
   let certInput = $state<HTMLInputElement>()
   let keyInput = $state<HTMLInputElement>()
@@ -155,8 +157,13 @@
       <Notice tone="info">{t('system.https.upload.envOverride')}</Notice>
     {:else if !status.upload.allowed && status.upload.reason === 'plain-http'}
       <Notice tone="info" title={t('system.https.upload.plainTitle')}>
-        <p>{t('system.https.upload.plainText')}</p>
-        {#if httpsLink}<p><a class="mono link" href={httpsLink}>{httpsLink}</a></p>{/if}
+        {#if webTls}
+          <p>{t('system.https.upload.plainText')}</p>
+          {#if httpsLink}<p><a class="mono link" href={httpsLink}>{httpsLink}</a></p>{/if}
+        {:else}
+          <!-- Only DoT or DoH listens with TLS: there is no HTTPS page to switch to. -->
+          <p>{t('system.https.upload.plainNoWebTls')}</p>
+        {/if}
       </Notice>
     {:else if status.upload.allowed && session.isAdmin}
       <form id="tls-{formId}" class="stack" onsubmit={upload} novalidate>
@@ -194,6 +201,7 @@
     {/if}
 
     <p class="small muted">{t('system.https.upload.letsEncrypt')}</p>
+    <p class="small muted">{t('system.https.upload.encryptedDns')}</p>
   </div>
 </Panel>
 

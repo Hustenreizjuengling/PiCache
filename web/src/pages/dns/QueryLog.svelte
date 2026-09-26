@@ -2,14 +2,14 @@
   @component
   Query log: every DNS query with its status, filterable by time range
   (a preset or a custom window), client, domain, status, record type,
-  upstream, reply code and DNSSEC (all in the URL), paged by cursor. "Live"
+  upstream, reply code, DNSSEC and ClientID (all in the URL), paged by cursor. "Live"
   follows new queries over SSE (pause/resume; not with a custom window,
   which may end in the past: turning Live on returns to the default range
   and ?live=true is ignored while one is set); a row opens the details
   panel. Export downloads the filtered log (NDJSON or CSV); admins may clear
   the query log or reset the statistics from the menu (when the host allows
   destructive actions).
-  Query: ?range|from&to&client&domain&status&qtype&upstream&rcode&dnssec&live=true;
+  Query: ?range|from&to&client&domain&status&qtype&upstream&rcode&dnssec&dnsClientId&live=true;
   client and rcode may be repeated (every address of one device, any of the codes).
 -->
 <script lang="ts">
@@ -123,7 +123,8 @@
   const pageRows = $derived<Row[]>((log.data?.items ?? []).map((e) => ({ ...e, key: `q${e.id}` })))
   const rows = $derived(live ? [...liveRows, ...pageRows].slice(0, MAX_LIVE) : pageRows)
 
-  const upstreams = $derived((appStatus.overview.data?.upstreams ?? []).map((u) => u.upstream))
+  // The log names upstreams as the statistics do (a DNS stamp as "sdns:<protocol>:<host>").
+  const upstreams = $derived((appStatus.overview.data?.upstreams ?? []).map((u) => u.name || u.upstream))
   /** Reply codes of the rows shown (suggestions of the reply-code filter). */
   const rcodes = $derived([...new Set(rows.map((r) => r.rcode.toUpperCase()).filter(Boolean))])
 
@@ -151,8 +152,11 @@
   const filterErrors = $derived({
     client: fieldError(log.error, 'client'),
     domain: fieldError(log.error, 'domain'),
+    dnsClientId: fieldError(log.error, 'dnsClientId'),
   })
-  const loadError = $derived(log.error && !filterErrors.client && !filterErrors.domain ? errorText(log.error) : undefined)
+  const loadError = $derived(
+    log.error && !filterErrors.client && !filterErrors.domain && !filterErrors.dnsClientId ? errorText(log.error) : undefined,
+  )
 
   let selected = $state.raw<Row | undefined>(undefined)
   let panelOpen = $state(false)

@@ -467,7 +467,7 @@ func TestServeFailsOnBrokenListener(t *testing.T) {
 	}
 	ln.Close()
 	done := make(chan error, 1)
-	go func() { done <- e.srv.Serve(context.Background(), nil, []net.Listener{ln}) }()
+	go func() { done <- e.srv.Serve(context.Background(), nil, []net.Listener{ln}, nil) }()
 	select {
 	case err := <-done:
 		if err == nil {

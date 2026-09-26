@@ -116,6 +116,8 @@ export interface SeenDevice {
   queries: number
   /** The dns.blockedClients entries blocking its addresses or its MAC address (unique). */
   blockedBy: string[]
+  /** The ClientID its most recent address sent over DoT or DoH since the start. */
+  dnsClientId?: string
 }
 
 /**
@@ -155,6 +157,7 @@ export function seenDevices(known: readonly KnownClient[]): SeenDevice[] {
       lastSeen: list[0].lastSeen,
       queries: list.reduce((n, k) => n + k.queries, 0),
       blockedBy: [...new Set(list.flatMap((k) => (k.blockedBy ? [k.blockedBy] : [])))],
+      dnsClientId: list.find((k) => k.dnsClientId)?.dnsClientId,
     })
   }
   return out.sort((a, b) => time(b.lastSeen) - time(a.lastSeen))

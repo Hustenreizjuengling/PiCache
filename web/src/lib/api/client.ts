@@ -226,6 +226,8 @@ export const http = {
   del: <T = void>(path: string, opts?: RequestOptions) => request<T>('DELETE', path, opts),
   /** POST with a JSON body whose answer is a file. */
   postFile: (path: string, body?: unknown, opts?: RequestOptions) => requestFile('POST', path, { ...opts, body }),
+  /** GET whose answer is a file (saved by the page, e.g. a configuration profile). */
+  getFile: (path: string, opts?: RequestOptions) => requestFile('GET', path, opts),
 }
 
 /** Encodes one path segment (ids, hosts, service ids). */

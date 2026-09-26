@@ -59,7 +59,7 @@ export interface VersionInfo {
   arch: string
 }
 
-/** api.ListenerInfo: bound addresses and bind errors by role (dns-udp, dns-tcp, cache, sni, web, web-tls). */
+/** api.ListenerInfo: bound addresses and bind errors by role (dns-udp, dns-tcp, cache, sni, web, web-tls, dot, doh). */
 export interface ListenerInfo {
   bound: Record<string, string[]>
   failed?: Record<string, string>
@@ -163,6 +163,8 @@ export interface RestoreResult {
   message: string
   /** Set when the restored settings would not let this browser use the web UI after the restart. */
   webAccessWarning?: string
+  /** Set when the restored settings turn plain DNS off but no encrypted DNS listener of this host serves them. */
+  dnsWarning?: string
 }
 
 /**
@@ -330,7 +332,8 @@ export interface TotpBegin {
  * Where the served HTTPS certificate comes from, in order of precedence:
  * `files` (PICACHE_WEB_TLS_CERT/KEY), `uploaded` (PUT /system/tls),
  * `local-ca` (issued by PiCache's local CA), `self-signed` (from 0.10 or
- * older, or an emergency certificate); `none` without an HTTPS listener.
+ * older, or an emergency certificate); `none` without a TLS listener (the
+ * HTTPS web UI, DoT or DoH).
  */
 export type TlsSource = 'files' | 'uploaded' | 'local-ca' | 'self-signed' | 'none'
 
@@ -368,6 +371,7 @@ export interface LocalCaInfo {
 
 /** GET /system/tls (also the answer of PUT, DELETE and POST /system/tls/local-ca). */
 export interface TlsStatus {
+  /** A TLS listener (web-tls, dot or doh) is bound: the certificate machinery runs. */
   listener: boolean
   source: TlsSource
   /** PICACHE_WEB_TLS_CERT is set. */
@@ -418,7 +422,7 @@ export interface DnsSettings {
   allowAllNetworks: boolean
   /** Also trust every network this machine is connected to (public prefixes too; rebuilt every minute). */
   trustConnectedNetworks: boolean
-  /** DNS queries of these IP addresses, networks or MAC addresses are dropped (at most 256; DNS only). */
+  /** DNS queries of these IP addresses, networks, MAC addresses or clientid:<ClientID> entries are dropped (at most 256; DNS only). */
   blockedClients: string[]
   /** Forwarders whose EDNS client address (ECS /32, /128) and MAC option (65001) identify the client (at most 16). */
   ednsClientTrusted: string[]
@@ -459,6 +463,21 @@ export interface DnsSettings {
    * "dns.serverNameAddresses.ipv4[i]", "….ipv6[i]").
    */
   serverNameAddresses: { ipv4: string[]; ipv6: string[] }
+  /**
+   * Plain DNS (port 53) for other devices. false closes it only while DoT or
+   * DoH is serving (error field "dns.plainDns"); this machine keeps it.
+   */
+  plainDns: boolean
+  /** DNS over TLS and DNS over HTTPS for devices (errors "dns.encrypted.<member>"). */
+  encrypted: EncryptedDnsSettings
+}
+
+/** settings.EncryptedDNS */
+export interface EncryptedDnsSettings {
+  dot: boolean
+  doh: boolean
+  /** The name devices use for DoT and DoH; required while one is on (at most 189 characters, two labels or more). */
+  serverName: string
 }
 
 /** dns.localizeRecords */
@@ -782,6 +801,80 @@ export interface RouterStatus {
   domain: string
 }
 
+/** Why nothing is announced over DDR (first match). */
+export type DdrReason = 'off' | 'no-server-name' | 'not-serving' | 'no-ip-address'
+
+/**
+ * GET /dns/encrypted (api.EncryptedDNSStatus). A protocol is serving while
+ * it is on, one of its listeners is bound and the certificate is usable.
+ * Lists are never null.
+ */
+export interface EncryptedDnsStatus {
+  /** dns.encrypted.serverName ("" when unset). */
+  serverName: string
+  /** enabled = dns.plainDns; served = plain DNS answers other devices now (it stays open while nothing serving). */
+  plainDns: { enabled: boolean; served: boolean }
+  dot: {
+    enabled: boolean
+    serving: boolean
+    /** The bound DoT addresses. */
+    listeners: string[]
+    /** The provider host name for Android's Private DNS (absent without a server name). */
+    host?: string
+    /** The port of the first bound DoT listener. */
+    port?: number
+    /** Why it is not serving (only while enabled). */
+    error?: string
+  }
+  doh: {
+    enabled: boolean
+    serving: boolean
+    listeners: { address: string; role: 'web-tls' | 'doh' }[]
+    /** https://<serverName>[:<port>]/dns-query per distinct port ([] without a server name). */
+    urls: string[]
+    error?: string
+  }
+  certificate: {
+    source: TlsSource
+    /** Not a fallback and not expired. */
+    usable: boolean
+    /** The served certificate is valid for the server name / for names below it (DoT ClientIDs). */
+    covered: boolean
+    wildcardCovered: boolean
+    /** The local CA does not permit the server name: a new CA is needed. */
+    localCaRenewalNeeded: boolean
+    error?: string
+  }
+  /** Discovery of the encrypted endpoints (DDR, SVCB for _dns.resolver.arpa). */
+  ddr: { active: boolean; reason?: DdrReason }
+  /** Queries answered since the start. */
+  queries: { dot: number; doh: number }
+}
+
+/** Protocol of an Apple configuration profile. */
+export type ProfileProtocol = 'doh' | 'dot'
+
+/**
+ * Options of an Apple configuration profile (GET /dns/profile.mobileconfig,
+ * POST /dns/profile-links). Errors: field protocol, dnsClientId or ssids (400);
+ * 409 when the protocol is not serving, no server name is set and similar.
+ */
+export interface ProfileOptions {
+  protocol: ProfileProtocol
+  dnsClientId?: string
+  /** Wi-Fi names (SSIDs) the profile applies on (at most 16); none = everywhere. */
+  ssids?: string[]
+  /** Include PiCache's addresses (ServerAddresses). */
+  addresses?: boolean
+}
+
+/** POST /dns/profile-links (201): a link to the profile, valid 15 minutes and reusable until then. */
+export interface ProfileLink {
+  /** https://<serverName>[:<port>]/api/v1/dns/profile-links/<token> */
+  url: string
+  expiresAt: Timestamp
+}
+
 export type RecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'SRV' | 'MX' | 'PTR' | 'HTTPS' | 'SVCB'
 
 /** Record types whose `data` holds the structured form. */
@@ -977,6 +1070,8 @@ export interface LookupRequest {
   name: string
   type?: string
   clientIp?: string
+  /** Evaluates the query as a DoT/DoH query from clientIp carrying this ClientID (400 field "dnsClientId"). */
+  dnsClientId?: string
 }
 
 /** dnsserver.LookupResult */
@@ -998,7 +1093,10 @@ export interface LookupResult {
 
 /** upstream.UpstreamStat */
 export interface UpstreamStat {
+  /** The configured entry (match it with the settings; a DNS stamp is shown as `name`). */
   upstream: string
+  /** The name for display: the entry itself, or "sdns:<protocol>:<host>" for a DNS stamp. */
+  name: string
   queries: number
   errors: number
   avgRttMs: number
@@ -1103,6 +1201,7 @@ export interface UpstreamPreset {
 export interface Client {
   id: number
   name: string
+  /** IP addresses, CIDRs, MAC addresses and clientid:<ClientID> entries. */
   identifiers: string[]
   groupIds: number[]
   comment: string
@@ -1140,8 +1239,26 @@ export interface KnownClient {
   firstSeen: Timestamp
   lastSeen: Timestamp
   queries: number
-  /** The first dns.blockedClients entry matching the address or MAC. */
+  /** The first dns.blockedClients entry matching the address, MAC or ClientID. */
   blockedBy?: string
+  /**
+   * The last ClientID (DoT/DoH device ID) the address sent since the start;
+   * clientId/name come from its client when the address identifies none itself.
+   */
+  dnsClientId?: string
+}
+
+/** clients.SeenDNSClientID: a ClientID sent since the start (kept in memory, at most 1024). */
+export interface SeenDnsClientId {
+  dnsClientId: string
+  /** The last address that sent it. */
+  address: string
+  /** The configured client that has the identifier clientid:<ClientID>. */
+  clientId?: number
+  name?: string
+  firstSeen: Timestamp
+  lastSeen: Timestamp
+  queries: number
 }
 
 /** ID of the built-in "Default" group (cannot be deleted). */
@@ -2579,12 +2696,17 @@ export interface QueryEvent {
   /** The upstream's answer where it differs from the final one (CNAME, upstream and rebinding blocks, bogus NXDOMAIN, DNS64, a removed ipv6hint). */
   upstreamAnswer?: string
   dnssec?: boolean
-  protocol: 'udp' | 'tcp'
+  protocol: QueryProtocol
   /** Extended DNS error of the upstream's reply (text bounded and cleaned by the server). */
   upstreamEde?: { code: number; text: string }
   /** The client's own EDNS Client Subnet option, e.g. "203.0.113.0/24". */
   ecs?: string
+  /** The ClientID the DoT or DoH query carried (removed while client addresses are anonymised). */
+  dnsClientId?: string
 }
+
+/** How a query reached PiCache: plain DNS over UDP or TCP, DNS over TLS or DNS over HTTPS. */
+export type QueryProtocol = 'udp' | 'tcp' | 'dot' | 'doh'
 
 export type CacheStatus = 'HIT' | 'MISS' | 'PARTIAL' | 'BYPASS' | 'PASS' | 'ERROR'
 
@@ -2810,6 +2932,8 @@ export interface QueryLogQuery extends TimeQuery {
   rcode?: string[]
   /** true: validated answers (the AD flag); false: the others. */
   dnssec?: boolean
+  /** The ClientID the query carried (exact; 400 field "dnsClientId" for an invalid one). */
+  dnsClientId?: string
   cursor?: string
   limit?: number
 }

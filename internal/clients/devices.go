@@ -20,7 +20,8 @@ const (
 // grouped by device (docs/ARCHITECTURE.md 11).
 type Device struct {
 	// Key groups the addresses of one device: "client:<id>" for a
-	// configured client (any rule, learned MACs included), else "mac:<mac>"
+	// configured client (any rule, learned MACs included, or the client of
+	// the last ClientID the address sent since the start), else "mac:<mac>"
 	// when the MAC is known, else "ip:<address>".
 	Key      string
 	ClientID int64  // 0 if no configured client matches
@@ -68,7 +69,13 @@ func (r *Registry) Devices(ctx context.Context, addrs []string) (map[string]Devi
 		if d.MAC == "" {
 			d.MAC = st.mac
 		}
-		if c := r.match(snap, ip, d.MAC); c != nil {
+		c := r.match(snap, ip, d.MAC)
+		if c == nil {
+			// An address that identifies no client by itself counts for
+			// the client of the last ClientID it sent (since the start).
+			c = snap.clientOfClientID(r.lastClientID(ip))
+		}
+		if c != nil {
 			d.ClientID, d.Name = c.id, c.name
 		}
 		if d.Name == "" {
