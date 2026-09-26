@@ -5,6 +5,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-26
+
 ### Changed
 
 - **The DHCP server needs no installation option any more.** It is
@@ -349,7 +351,8 @@ First release.
   Docker installations update with
   `docker compose pull && docker compose up -d`.
 
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.4.0...v0.5.0
