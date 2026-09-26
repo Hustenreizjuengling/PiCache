@@ -50,6 +50,7 @@ type ifaceState struct {
 	self    netip.Prefix // PiCache's IPv4 with the on-link prefix length (the served subnet)
 	dynamic bool         // self has a finite valid lifetime
 	ula     netip.Addr   // stable ULA (invalid if none)
+	ll      netip.Addr   // link-local address (invalid if none): the peer of PiCache's relayed search
 	problem string       // why the interface cannot be served ("" = usable)
 }
 
@@ -94,6 +95,8 @@ func (e env) lookupIface(name string) ifaceState {
 			v4 = append(v4, a)
 		case ip.Is6() && netutil.IsULA(ip) && !a.Temporary && !a.Deprecated && !a.Tentative:
 			ulas = append(ulas, a)
+		case ip.Is6() && ip.IsLinkLocalUnicast() && !a.Tentative && !st.ll.IsValid():
+			st.ll = ip.WithZone("")
 		}
 	}
 	if len(ulas) > 0 {
@@ -119,6 +122,23 @@ func (e env) lookupIface(name string) ifaceState {
 		st.problem = fmt.Sprintf("the interface %s has %d private IPv4 addresses; PiCache serves an interface with exactly one", name, len(v4))
 	}
 	return st
+}
+
+// own returns the addresses and MACs of this machine's interfaces (RAs and
+// search answers from them are PiCache's own).
+func (e env) own() (addrs map[netip.Addr]bool, macs map[[6]byte]bool) {
+	addrs, macs = map[netip.Addr]bool{}, map[[6]byte]bool{}
+	for _, a := range e.addrs() {
+		addrs[netutil.Canon(a.Prefix.Addr()).WithZone("")] = true
+	}
+	if ifs, err := e.interfaces(); err == nil {
+		for _, ifc := range ifs {
+			if len(ifc.HardwareAddr) == 6 {
+				macs[[6]byte(ifc.HardwareAddr)] = true
+			}
+		}
+	}
+	return addrs, macs
 }
 
 // gate is the evaluation of the safety gates for the settings.

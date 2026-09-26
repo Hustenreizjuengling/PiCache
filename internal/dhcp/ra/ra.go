@@ -1,6 +1,8 @@
 // Package ra builds the IPv6 router advertisements with which PiCache
 // announces itself as DNS server (RFC 4861, RFC 8106), validates router
-// solicitations and schedules the advertisements (docs/ARCHITECTURE.md 18).
+// solicitations, schedules the advertisements and parses other routers'
+// advertisements and builds the solicitation that asks for them
+// (docs/ARCHITECTURE.md 18).
 //
 // PiCache never becomes a router: every advertisement has router
 // lifetime 0, M = 0, no prefix information, no MTU and no route
@@ -16,12 +18,13 @@ package ra
 
 import (
 	"encoding/binary"
+	"errors"
 	"net/netip"
 	"time"
 )
 
 // ICMPv6 message types and layout. The M flag (0x80, managed addresses) is
-// never set: PiCache hands out no IPv6 addresses.
+// never set in PiCache's advertisements: it hands out no IPv6 addresses.
 const (
 	TypeRouterSolicitation  = 133
 	TypeRouterAdvertisement = 134
@@ -31,9 +34,13 @@ const (
 	optSourceLinkLayer      = 1
 	optRDNSS                = 25
 	optDNSSL                = 31
+	flagManaged             = 0x80
 	flagOtherConfig         = 0x40
 	maxSolicitationLen      = 1280
+	maxAdvertisementLen     = 1500
 	maxDomainWire           = 255
+	// MaxDNS is the number of RDNSS addresses kept of one advertisement.
+	MaxDNS = 8
 )
 
 // Lifetime is the RDNSS and DNSSL lifetime of an announcement (3 times the
@@ -135,6 +142,109 @@ func ValidSolicitation(b []byte, hops int, src netip.Addr) bool {
 		o = o[l:]
 	}
 	return true
+}
+
+// SolicitationSource returns the source link-layer address of a valid
+// router solicitation (ok false without one).
+func SolicitationSource(b []byte) ([6]byte, bool) {
+	return linkLayer(b, rsHeaderLen)
+}
+
+// linkLayer returns the source link-layer address option of an ICMPv6
+// message whose options start at off (options were bounds-checked).
+func linkLayer(b []byte, off int) ([6]byte, bool) {
+	if len(b) < off {
+		return [6]byte{}, false
+	}
+	for o := b[off:]; len(o) >= 2; {
+		l := int(o[1]) * 8
+		if l == 0 || l > len(o) {
+			return [6]byte{}, false
+		}
+		if o[0] == optSourceLinkLayer && l == 8 {
+			return [6]byte(o[2:8]), true
+		}
+		o = o[l:]
+	}
+	return [6]byte{}, false
+}
+
+// Solicitation returns a router solicitation (type 133, code 0; the kernel
+// fills in the checksum) with the source link-layer address mac.
+func Solicitation(mac [6]byte) []byte {
+	b := make([]byte, rsHeaderLen, rsHeaderLen+8)
+	b[0] = TypeRouterSolicitation
+	b = append(b, optSourceLinkLayer, 1)
+	return append(b, mac[:]...)
+}
+
+// RDNSS is a DNS server another router announces, with its lifetime.
+type RDNSS struct {
+	Addr     netip.Addr
+	Lifetime time.Duration // 0: withdrawn
+}
+
+// Received is another router's advertisement.
+type Received struct {
+	Managed, Other bool          // the M and O flags
+	RouterLifetime time.Duration // 0: not a default router
+	SourceMAC      [6]byte       // source link-layer address (HasMAC)
+	HasMAC         bool
+	DNS            []RDNSS // at most MaxDNS, from RDNSS options
+}
+
+// Errors of ParseAdvertisement.
+var (
+	ErrNotAdvertisement = errors.New("ra: not a valid router advertisement")
+	ErrMalformedOption  = errors.New("ra: malformed option")
+)
+
+// ParseAdvertisement validates and parses a router advertisement received
+// with hop limit hops from src (RFC 4861 6.1.2): hop limit 255, a
+// link-local source, type 134 code 0, at least 16 bytes, at most 1500, and
+// every option with a non-zero length inside the message. RDNSS options
+// (RFC 8106) of the wrong length are skipped; at most MaxDNS addresses are
+// kept (multicast, loopback and unspecified addresses are left out).
+func ParseAdvertisement(b []byte, hops int, src netip.Addr) (Received, error) {
+	var r Received
+	if hops != hopLimit || len(b) < headerLen || len(b) > maxAdvertisementLen || b[0] != TypeRouterAdvertisement || b[1] != 0 ||
+		!src.Is6() || !src.IsLinkLocalUnicast() {
+		return r, ErrNotAdvertisement
+	}
+	r.Managed, r.Other = b[5]&flagManaged != 0, b[5]&flagOtherConfig != 0
+	r.RouterLifetime = time.Duration(binary.BigEndian.Uint16(b[6:8])) * time.Second
+	for o := b[headerLen:]; len(o) > 0; {
+		if len(o) < 2 {
+			return Received{}, ErrMalformedOption
+		}
+		l := int(o[1]) * 8
+		if l == 0 || l > len(o) {
+			return Received{}, ErrMalformedOption
+		}
+		v := o[:l]
+		switch o[0] {
+		case optSourceLinkLayer:
+			if l == 8 && !r.HasMAC {
+				r.SourceMAC, r.HasMAC = [6]byte(v[2:8]), true
+			}
+		case optRDNSS:
+			// type, length, reserved (2), lifetime (4), then 16 bytes per
+			// address: length 1 + 2n with n ≥ 1.
+			if l < 24 || (l-8)%16 != 0 {
+				break
+			}
+			life := time.Duration(binary.BigEndian.Uint32(v[4:8])) * time.Second
+			for a := v[8:]; len(a) >= 16 && len(r.DNS) < MaxDNS; a = a[16:] {
+				ip := netip.AddrFrom16([16]byte(a[:16]))
+				if ip.Is4In6() || ip.IsMulticast() || ip.IsUnspecified() || ip.IsLoopback() {
+					continue
+				}
+				r.DNS = append(r.DNS, RDNSS{Addr: ip, Lifetime: life})
+			}
+		}
+		o = o[l:]
+	}
+	return r, nil
 }
 
 // Timing of the advertisements (RFC 4861 6.2.1, 6.2.4, 6.2.6).

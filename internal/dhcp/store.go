@@ -41,6 +41,11 @@ var migrations = []string{
 		expires_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);`,
+	// v2 (0.8.0): a reservation may also match option 61 and may have its
+	// own lease time (0 = dhcp.leaseSeconds).
+	`ALTER TABLE dhcp_static ADD COLUMN client_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE dhcp_static ADD COLUMN lease_seconds INTEGER NOT NULL DEFAULT 0;
+	CREATE UNIQUE INDEX dhcp_static_client_id ON dhcp_static(client_id) WHERE client_id <> '';`,
 }
 
 // lease is a dynamic lease (or the lease of a static entry) as handed out.
@@ -48,21 +53,30 @@ type lease struct {
 	mac      string
 	ip       netip.Addr
 	hostname string // sanitised name the client sent ("" = none)
-	clientID string // option 61 as hex, for display
+	clientID string // option 61 as colon-separated hex
 	expires  time.Time
 	updated  time.Time
 }
 
 func (l *lease) active(now time.Time) bool { return l.expires.After(now) }
 
-// static is a configured address for a MAC.
+// static is a reservation: a configured address for a MAC (the key), or for
+// a client identifier (option 61).
 type static struct {
-	mac      string
-	ip       netip.Addr
-	hostname string
-	comment  string
-	created  time.Time
-	updated  time.Time
+	mac          string
+	ip           netip.Addr
+	hostname     string
+	comment      string
+	clientID     string // colon-separated lower-case hex ("" = none)
+	leaseSeconds int    // 0 = dhcp.leaseSeconds
+	created      time.Time
+	updated      time.Time
+}
+
+// sameContent reports whether two reservations hand out the same.
+func (st *static) sameContent(o *static) bool {
+	return st.mac == o.mac && st.ip == o.ip && st.hostname == o.hostname && st.comment == o.comment &&
+		st.clientID == o.clientID && st.leaseSeconds == o.leaseSeconds
 }
 
 // offer is an address offered to a client and held for it briefly.
@@ -78,6 +92,7 @@ type table struct {
 	byIP       map[netip.Addr]*lease
 	statics    map[string]*static // by MAC
 	staticIP   map[netip.Addr]*static
+	staticCID  map[string]*static // by client identifier
 	quarantine map[netip.Addr]time.Time
 	offers     map[string]offer // by MAC
 	offerIP    map[netip.Addr]string
@@ -86,9 +101,22 @@ type table struct {
 func newTable() *table {
 	return &table{
 		leases: map[string]*lease{}, byIP: map[netip.Addr]*lease{},
-		statics: map[string]*static{}, staticIP: map[netip.Addr]*static{},
+		statics: map[string]*static{}, staticIP: map[netip.Addr]*static{}, staticCID: map[string]*static{},
 		quarantine: map[netip.Addr]time.Time{}, offers: map[string]offer{}, offerIP: map[netip.Addr]string{},
 	}
+}
+
+// reservationOf returns the reservation a lease belongs to: the one of its
+// MAC (a MAC match always wins), else the one whose client identifier the
+// lease carries when the lease is on its address (a client-ID match).
+func (t *table) reservationOf(l *lease) *static {
+	if st := t.statics[l.mac]; st != nil {
+		return st
+	}
+	if st := t.staticCID[l.clientID]; l.clientID != "" && st != nil && st.ip == l.ip {
+		return st
+	}
+	return nil
 }
 
 // putLease stores l, replacing the client's previous lease and any
@@ -119,11 +147,12 @@ func (t *table) dropLease(mac string) *lease {
 }
 
 func (t *table) putStatic(st *static) {
-	if old := t.statics[st.mac]; old != nil && t.staticIP[old.ip] == old {
-		delete(t.staticIP, old.ip)
-	}
+	t.dropStatic(st.mac)
 	t.statics[st.mac] = st
 	t.staticIP[st.ip] = st
+	if st.clientID != "" {
+		t.staticCID[st.clientID] = st
+	}
 }
 
 func (t *table) dropStatic(mac string) {
@@ -131,6 +160,9 @@ func (t *table) dropStatic(mac string) {
 		delete(t.statics, mac)
 		if t.staticIP[st.ip] == st {
 			delete(t.staticIP, st.ip)
+		}
+		if t.staticCID[st.clientID] == st {
+			delete(t.staticCID, st.clientID)
 		}
 	}
 }
@@ -213,10 +245,10 @@ func (t *table) sortedLeases() []*lease {
 // --- database ---
 
 // load reads the static entries and leases. Rows an edited database made
-// invalid (MAC, address or host name) are skipped; at most 1024 static
-// entries and 4096 leases are read.
+// invalid (MAC, address, host name, client identifier, lease time) are
+// skipped; at most 1024 static entries and 4096 leases are read.
 func load(ctx context.Context, d *db.DB, t *table) (skipped int, err error) {
-	rows, err := d.R.QueryContext(ctx, `SELECT mac, ip, hostname, comment, created_at, updated_at
+	rows, err := d.R.QueryContext(ctx, `SELECT mac, ip, hostname, comment, client_id, lease_seconds, created_at, updated_at
 		FROM dhcp_static ORDER BY mac LIMIT ?`, maxStatics)
 	if err != nil {
 		return 0, fmt.Errorf("dhcp: load static leases: %w", err)
@@ -225,17 +257,19 @@ func load(ctx context.Context, d *db.DB, t *table) (skipped int, err error) {
 		var st static
 		var ip string
 		var created, updated int64
-		if err := rows.Scan(&st.mac, &ip, &st.hostname, &st.comment, &created, &updated); err != nil {
+		if err := rows.Scan(&st.mac, &ip, &st.hostname, &st.comment, &st.clientID, &st.leaseSeconds, &created, &updated); err != nil {
 			rows.Close()
 			return skipped, fmt.Errorf("dhcp: scan static lease: %w", err)
 		}
 		mac, ok := NormalizeMAC(st.mac)
 		addr, aerr := netip.ParseAddr(ip)
-		if !ok || aerr != nil || !addr.Is4() || (st.hostname != "" && !validLabel(st.hostname)) || t.staticIP[addr] != nil {
+		cid, cidOK := normalizeClientID(st.clientID)
+		if !ok || aerr != nil || !addr.Is4() || (st.hostname != "" && !validLabel(st.hostname)) || t.staticIP[addr] != nil ||
+			(st.clientID != "" && (!cidOK || t.staticCID[cid] != nil)) || !validLeaseSeconds(st.leaseSeconds) {
 			skipped++
 			continue
 		}
-		st.mac, st.ip, st.created, st.updated = mac, addr, db.Time(created), db.Time(updated)
+		st.mac, st.ip, st.clientID, st.created, st.updated = mac, addr, cid, db.Time(created), db.Time(updated)
 		t.putStatic(&st)
 	}
 	rows.Close()
@@ -257,12 +291,14 @@ func load(ctx context.Context, d *db.DB, t *table) (skipped int, err error) {
 		}
 		mac, ok := NormalizeMAC(l.mac)
 		addr, aerr := netip.ParseAddr(ip)
-		if !ok || aerr != nil || !addr.Is4() || (l.hostname != "" && !validLabel(l.hostname)) || len(l.clientID) > 191 ||
+		if !ok || aerr != nil || !addr.Is4() || (l.hostname != "" && !validLabel(l.hostname)) || len(l.clientID) > 3*maxClientID-1 ||
 			t.byIP[addr] != nil || t.leases[mac] != nil {
 			skipped++
 			continue
 		}
-		l.mac, l.ip, l.expires, l.updated = mac, addr, db.Time(expires), db.Time(updated)
+		// A name a client may no longer take (stored by an older version)
+		// counts as none.
+		l.mac, l.ip, l.hostname, l.expires, l.updated = mac, addr, clientName(l.hostname), db.Time(expires), db.Time(updated)
 		t.putLease(&l)
 	}
 	return skipped, rows.Err()

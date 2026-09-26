@@ -28,10 +28,23 @@ CacheDirectory=picache
 CacheDirectoryMode=0750
 ReadWritePaths=-/srv/picache
 
-# Bind :53, :80 and :443 as an unprivileged user; no other capability.
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# Bind :53, :80 and :443 (and UDP 67 and 547 while the DHCP server is
+# switched on in the web UI, also later at run time) as an unprivileged user.
+# CAP_NET_RAW only opens the raw ICMPv6 socket at start while IPv6 router
+# advertisements are on; PiCache drops it on every thread right after start
+# and refuses to run if that fails (capset is allowed below for exactly
+# that). No other capability.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=yes
+
+# Under CPU or I/O contention PiCache gets twice the share of a service with
+# the default weight 100 (sshd included): a mild bias, no starvation. Inside
+# the process DNS still competes with the download cache. No effect where
+# the cgroup controller is not delegated (some containers) or the I/O
+# scheduler ignores weights (none, mq-deadline).
+CPUWeight=200
+IOWeight=200
 
 ProtectSystem=strict
 ProtectHome=yes
@@ -57,6 +70,8 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
+# Re-allowed so PiCache can drop CAP_NET_RAW (see above).
+SystemCallFilter=capset
 SystemCallErrorNumber=EPERM
 UMask=0027
 LimitNOFILE=1048576

@@ -17,7 +17,7 @@ func (a *App) dropPrivileges() error {
 
 // dropNetRaw has nothing to drop on systems other than Linux (DHCP is
 // Linux-only).
-func dropNetRaw() error { return nil }
+func dropNetRaw() (unverified, err error) { return nil, nil }
 
 func isAddrInUse(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "address already in use") ||

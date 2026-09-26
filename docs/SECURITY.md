@@ -56,7 +56,7 @@ fixes; please test against it or a current build of `main`.
 | Outbound notifications | Only admins configure channels. PiCache sends only to the URLs they entered (http or https, no redirects, no proxy, verified TLS, 10 s), and never to link-local (cloud metadata), multicast or unspecified addresses. Private and loopback addresses are allowed on purpose. A stored secret is never sent to a changed server. Messages carry no secrets, passwords, tokens, session data or user names. Details in [Notifications](#notifications). |
 | Scheduled backups | Same content as downloaded backups (no accounts; sealed secrets only on request), written only to the data directory or to a storage target's store, without following symbolic links. Details in [Scheduled backups](#scheduled-backups). |
 | Network discovery scan | Admins only, audited, at most one per minute: one empty UDP datagram per address of this machine's private IPv4 subnets (at most 512, at most 200 per second) from an unprivileged socket; no raw sockets or capabilities. Details in [Parental controls and the network check](#parental-controls-and-the-network-check). |
-| DHCP server (optional) | Off by default; only with `PICACHE_DHCP`; serves one chosen interface, never relayed requests, never while its own address is dynamic or another DHCP server was detected. Every DHCPv4, DHCPv6 and ICMPv6 packet is parsed with strict bounds checks, rate limited and dropped when malformed; replies cannot be aimed at hosts outside the LAN. Router advertisements never make PiCache a router. `CAP_NET_RAW` is used once at start and then dropped on every thread, verified. Details in [DHCP server](#dhcp-server). |
+| DHCP server (optional) | Off by default; switched on in the web UI by an admin (`PICACHE_DHCP=off` prevents it); no DHCP port is open while it is off. Serves one chosen interface, never relayed requests, never while its own address is dynamic or another DHCP server was detected. Every DHCPv4, DHCPv6 and ICMPv6 packet is parsed with strict bounds checks, rate limited and dropped when malformed; replies cannot be aimed at hosts outside the LAN. Router advertisements never make PiCache a router. `CAP_NET_RAW` is used only at start (while router advertisements are on) and then dropped on every thread; PiCache refuses to run if that fails. Details in [DHCP server](#dhcp-server). |
 | Privilege escalation | The service runs unprivileged and never holds `CAP_SYS_ADMIN`. NAS mounts are done by systemd on request of a separate root helper that re-validates every request and never trusts the database: it opens it read-only as a regular file (no links, FIFOs or devices) with an untrusted schema, touches only names derived from the target id, never follows links in the service-owned request directory, and runs sandboxed with a memory limit. |
 | Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total. |
 | Malicious or tampered update | A release is installed only if its `SHA256SUMS` carries an Ed25519 signature by a key compiled into the running binary, the binary matches its checksum and reports the expected version. The web UI can only queue a version number; the root helper installs exactly that release from the fixed GitHub repository and never an older one. Starting an update needs a browser session and the password. Details in [Updates](#updates). |
@@ -109,8 +109,14 @@ How to update is described in
 - **Not the download location.** The release is looked up by its version in
   the fixed repository `Hustenreizjuengling/PiCache`. No setting, request or
   API response can point PiCache at another URL.
-- Only the program is replaced. Unit files and the installer are changed
-  only by running `install.sh` yourself.
+- The program and the systemd unit files are replaced, nothing else. The
+  unit files come only from the signed release archive
+  (`picache-deploy.tar.gz`, checked against the signed `SHA256SUMS` and
+  unpacked in memory with size limits), only PiCache's own unit names, only
+  over unit files that already exist as regular files in
+  `/usr/local/lib/systemd/system` (the old one is kept as `<unit>.prev`),
+  never drop-ins. If replacing them fails, they are put back and only the
+  program is updated. The installer itself changes only when you run it.
 - The container images on GHCR are not signed. They are built by the same
   workflow from the same tag as the signed binaries. Pin a tag (or a digest)
   in the compose file if you want to decide when the image changes.
@@ -134,10 +140,15 @@ bare metal, VMs and LXC containers the installer adds a root helper
   `^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`, refuses an older or the same version,
   downloads that release from the fixed repository and runs the checks above.
   It writes only the installed binary's directory
-  (`/usr/local/bin/.picache.update`, `picache.prev`, `picache`), restarts
+  (`/usr/local/bin/.picache.update`, `picache.prev`, `picache`) and the unit
+  directory (`/usr/local/lib/systemd/system`: the release's unit files and
+  their `.prev` copies, then `systemctl daemon-reload`), restarts
   `picache.service`, writes its progress to `<data>/update-requests/`, and in
-  a rollback puts back `picache.prev` and the pre-upgrade copy of
-  `picache.db` from `<data>/backups/`.
+  a rollback puts back the unit files it replaced, `picache.prev` and the
+  pre-upgrade copy of `picache.db` from `<data>/backups/`. The service still
+  passes it nothing but a version string. A helper unit from before 0.8.0
+  cannot write the unit directory; run the one-line installer once to get
+  the current units.
 - So a compromised service can at most ask for another signed, newer release
   of PiCache (for example a pre-release). It cannot make the helper run
   anything else.
@@ -313,19 +324,38 @@ The binding rules are in
 [ARCHITECTURE.md §18](ARCHITECTURE.md#18-dhcp-server-internaldhcp). The DHCP
 server is optional and off by default; these are its trade-offs.
 
+- **Nothing open while off.** UDP ports 67 and 547 are open only while the
+  DHCP server is switched on (a search for other DHCP servers opens port 67
+  for its 5 seconds); port 546 (the host's own DHCPv6 client) is never
+  bound. `PICACHE_DHCP=off` (`install.sh --without-dhcp`) prevents switching
+  it on. Two empty marker files in the data directory (`dhcp.sockets`,
+  `dhcp.ra`) tell the next start which sockets to open; they grant nothing
+  the settings do not (the service can change the settings anyway), and
+  PiCache only checks that they exist (`lstat`), never reads them. The
+  installer creates them once in place of a removed `PICACHE_DHCP=on` (an
+  empty file owned by `picache`, never through a symbolic link: an existing
+  link or file is left alone).
 - **Capabilities.** Ports 67 and 547 need `CAP_NET_BIND_SERVICE`, which
-  the service has anyway. IPv6 router advertisements need a raw ICMPv6
-  socket and therefore `CAP_NET_RAW`, which `install.sh --with-dhcp` grants
-  through a unit drop-in (and Docker only with `cap_add: [NET_RAW]`). PiCache
-  opens that single socket at start, before it touches any file, and then
-  drops `CAP_NET_RAW` from the effective, permitted, inheritable and ambient
-  sets of every thread (the drop-in re-allows the `capset` system call for
-  that). It then checks the capability sets of all threads and that a new
-  raw socket is refused; if anything fails, it closes the raw socket and
-  sends no advertisements, but keeps running. The raw socket accepts only
-  router solicitations (an ICMPv6 filter), and the kernel fills in the
-  checksums. Without `--with-dhcp` the unit keeps its previous capabilities
-  and system call filter unchanged.
+  the service has anyway (so it can open them while running). IPv6 router
+  advertisements need a raw ICMPv6 socket and therefore `CAP_NET_RAW`,
+  which every systemd unit grants (Docker: `cap_add: [NET_RAW]`). PiCache
+  uses it only at start, and only while router advertisements are on, to
+  open that single socket before it touches any file. On every start it
+  then drops `CAP_NET_RAW` from the effective, permitted, inheritable and
+  ambient sets of every thread (the unit re-allows the `capset` system call
+  for that), checks the capability sets of all threads and that a new raw
+  socket is refused. **Fail closed:** if the capability cannot be dropped,
+  PiCache refuses to run; if the thread capabilities cannot even be read
+  (so the drop cannot be verified), it closes the raw socket, sends no
+  advertisements and fails the health check `dhcp`, but keeps DNS running.
+  The raw socket accepts only router solicitations and advertisements (an
+  ICMPv6 filter), and the kernel fills in the checksums.
+- **Residual risk of router advertisements.** While they are on, the raw
+  socket stays open. A compromised PiCache process could use it to send any
+  ICMPv6 message from the machine's link-local address: spoofed router
+  advertisements, neighbour advertisements or redirects, i.e. a LAN-wide
+  IPv6 man in the middle. Switch router advertisements on only when your
+  router cannot announce PiCache itself; they are off by default.
 - **Untrusted packets.** Any device on the LAN can send DHCP and ICMPv6
   packets. The parsers are written for this: size limits (DHCPv4 240 to
   1500 bytes, DHCPv6 4 to 1500 bytes), every option length checked against
@@ -337,12 +367,21 @@ server is optional and off by default; these are its trade-offs.
   (many MAC addresses) or answer DHCP itself; that is inherent to DHCP.
   PiCache limits the effect: at most 50 DHCPv4 packets per second (5 per
   MAC), 50 DHCPv6 packets per second, one answer to router solicitations
-  per 3 s, bounded tables (4096 leases, 1024 static leases), a DECLINE is
-  accepted only for the address the device holds or was offered. Replies go
+  per 3 s, at most 50 other routers' advertisements parsed per second,
+  bounded tables (4096 leases, 1024 reservations, 32 other servers and 32
+  other IPv6 announcers, 200 logged exchanges), a DECLINE is accepted only
+  for the address the device holds or was offered. Reservations by MAC
+  address or client identifier (option 61) and "only reserved devices" are
+  conveniences, not access control: both identifiers can be forged. Replies go
   to the limited broadcast address, to an address inside the served subnet,
   or (DHCPv6) to a link-local address, so they cannot be reflected at hosts
-  elsewhere. Host names from devices are reduced to plain DNS labels; local
-  DNS records and PiCache's own names always win over them.
+  elsewhere. Host names from devices are reduced to plain DNS labels, and
+  `wpad`, `localhost` and names of the form of a generated name
+  (`192-168-1-5`) count as none, so a device cannot take the WPAD name or
+  another address's name; local DNS records and PiCache's own names always
+  win over them. A WPAD URL option is sent only to clients that ask for it,
+  but then every such client uses that proxy configuration: changing it is
+  audited with the new value.
 - **Two DHCP servers.** PiCache looks for other DHCP servers before it
   serves (and every 10 minutes while it serves) and refuses to start while
   one answers or a device asked one within 24 hours. The search is a relayed
@@ -353,7 +392,10 @@ server is optional and off by default; these are its trade-offs.
   the domain with router lifetime 0: they cannot make PiCache a router or
   change addresses and routes. A rogue device can still send its own
   router advertisements; use RA guard on managed switches where that
-  matters.
+  matters. PiCache's search for other IPv6 announcers sends only a router
+  solicitation and a relayed DHCPv6 information request (never a Solicit
+  or an address request, so it creates no binding on a router), and parses
+  the answers with the same bounds checks and rate limits.
 
 ## Parental controls and the network check
 
@@ -445,10 +487,11 @@ and [§17](ARCHITECTURE.md#17-network-check-internalappnetcheckgo).
       back to plain DNS to its bootstrap servers. A build without a build
       date (such as the image `docker compose up --build` builds) has no such
       fallback: its encrypted upstreams fail until the clock is right.
-- [ ] DHCP support (`--with-dhcp`, Docker `PICACHE_DHCP`/`NET_RAW`) is
-      installed only if PiCache hands out addresses; otherwise run the
-      installer with `--without-dhcp`. With it, the machine has a static
-      address and the router's DHCP server is off.
+- [ ] The DHCP server is switched on only if PiCache hands out addresses;
+      then the machine has a static address and the router's DHCP server is
+      off. On a host that runs another DHCP server, set `PICACHE_DHCP=off`
+      (`install.sh --without-dhcp`). IPv6 router advertisements are on only
+      if the router cannot announce PiCache itself.
 - [ ] Host-apply (`--with-host-apply`) is installed only if you use it.
       To disable the root helper, delete `/etc/picache/host-apply.enabled`
       and run `systemctl disable --now picache-storage.path`.

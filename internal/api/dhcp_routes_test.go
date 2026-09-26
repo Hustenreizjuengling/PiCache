@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -22,13 +23,60 @@ type fakeDHCP struct {
 	checkErr error
 	checked  int
 	statics  map[string]dhcp.StaticLease
+	imported []dhcp.ImportInput
+	resets   int
+	resetErr error // returned after the settings were reset
+	limit    int
+}
+
+func (f *fakeDHCP) ExportStatics(format string) ([]byte, error) {
+	switch format {
+	case dhcp.FormatCSV:
+		return []byte("mac,ip,hostname,comment,clientId,leaseSeconds\n"), nil
+	case dhcp.FormatHosts:
+		return []byte("# PiCache reserved addresses\n"), nil
+	}
+	return nil, apperr.Invalid("format", "must be csv or hosts")
+}
+
+func (f *fakeDHCP) ImportStatics(_ context.Context, in dhcp.ImportInput) (dhcp.ImportResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if in.Format != dhcp.FormatCSV && in.Format != dhcp.FormatHosts && in.Format != dhcp.FormatLines {
+		return dhcp.ImportResult{}, apperr.Invalid("format", "must be csv, hosts or lines")
+	}
+	f.imported = append(f.imported, in)
+	if strings.Contains(in.Text, "bad") {
+		return dhcp.ImportResult{Added: 1, Errors: []dhcp.ImportError{{Line: 2, Field: "ip", Message: "must be an IPv4 address"}}}, nil
+	}
+	return dhcp.ImportResult{Applied: !in.DryRun, Added: 2, Updated: 1, Unchanged: 3, Removed: 4, Errors: []dhcp.ImportError{}}, nil
+}
+
+func (f *fakeDHCP) DeleteLeases(context.Context) (int, error) { return 7, nil }
+
+func (f *fakeDHCP) Reset(context.Context) (dhcp.ResetResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resets++
+	if f.resetErr != nil {
+		return dhcp.ResetResult{Settings: true}, f.resetErr
+	}
+	return dhcp.ResetResult{Settings: true, Leases: 3, Statics: 2}, nil
+}
+
+func (f *fakeDHCP) Log(limit int) []dhcp.LogEntry {
+	f.mu.Lock()
+	f.limit = limit
+	f.mu.Unlock()
+	return []dhcp.LogEntry{{Time: dhcpAt, Kind: dhcp.LogDHCPv4, MAC: "02:00:00:00:00:01", Address: "192.168.1.100", In: "DISCOVER",
+		Result: dhcp.ResultIgnored, Reason: dhcp.LogReasonNotReserved}}
 }
 
 var dhcpAt = time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 
 func (f *fakeDHCP) Status() dhcp.Status {
 	return dhcp.Status{
-		Available: true, State: dhcp.StateBlocked, Blockers: []string{dhcp.BlockerOtherServer},
+		Available: true, State: dhcp.StateBlocked, Blockers: []string{dhcp.BlockerOtherServer}, Deployment: dhcp.DeploymentSystemd,
 		Interface: &dhcp.StatusInterface{Name: "eth0", MAC: "02:aa:00:00:00:10", IPv4: "192.168.1.10", PrefixLen: 24},
 		Pool:      &dhcp.StatusPool{Start: "192.168.1.100", End: "192.168.1.199", Size: 100, Used: 1, Static: 0},
 		Router:    "192.168.1.1", DNSServer: "192.168.1.10", Domain: "lan",
@@ -38,6 +86,9 @@ func (f *fakeDHCP) Status() dhcp.Status {
 			RouterAdvertisements: dhcp.RAStatus{Enabled: true, Available: true, State: dhcp.StateSending, Blockers: []string{},
 				Address: "fd00::10", LastSent: dhcpAt, Sent: 3},
 			DHCPv6: dhcp.DHCPv6Status{State: dhcp.StateOff, Blockers: []string{}},
+			OtherAnnouncers: []dhcp.Announcer{{Kind: dhcp.AnnouncerRA, Address: "fe80::1", Interface: "eth0", DNS: []string{"fd00::10", "fd00::1"}, OwnDNS: []string{"fd00::10"},
+				Managed: new(false), Other: new(true), RouterLifetime: new(1800), FirstSeen: dhcpAt, LastSeen: dhcpAt, Conflict: true}},
+			LastSearch: &dhcp.LastSearch{Time: dhcpAt, RA: true, DHCPv6: false},
 		},
 	}
 }
@@ -134,7 +185,9 @@ func TestDHCPRoutes(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d %s", w.Code, w.Body)
 	}
-	for _, m := range []string{`"available":true`, `"state":"blocked"`, `"blockers":["other-server"]`,
+	for _, m := range []string{`"available":true`, `"deployment":"systemd"`, `"state":"blocked"`, `"blockers":["other-server"]`,
+		`"otherAnnouncers":[{"kind":"ra","address":"fe80::1","interface":"eth0","dns":["fd00::10","fd00::1"],"ownDns":["fd00::10"],"managed":false,"other":true,"routerLifetime":1800,"firstSeen":"2026-09-25T12:00:00Z","lastSeen":"2026-09-25T12:00:00Z","conflict":true}]`,
+		`"lastSearch":{"time":"2026-09-25T12:00:00Z","ra":true,"dhcpv6":false}`,
 		`"interface":{"name":"eth0","mac":"02:aa:00:00:00:10","ipv4":"192.168.1.10","prefixLen":24,"dynamic":false}`,
 		`"pool":{"start":"192.168.1.100","end":"192.168.1.199","size":100,"used":1,"static":0}`,
 		`"router":"192.168.1.1","dnsServer":"192.168.1.10","domain":"lan"`,
@@ -161,9 +214,10 @@ func TestDHCPRoutes(t *testing.T) {
 
 	// Writes need admin rights.
 	for _, r := range [][2]string{{"POST", "/api/v1/dhcp/probe"}, {"DELETE", "/api/v1/dhcp/leases/02:00:00:00:00:01"},
-		{"POST", "/api/v1/dhcp/static"}, {"PUT", "/api/v1/dhcp/static/02:00:00:00:00:01"}, {"DELETE", "/api/v1/dhcp/static/02:00:00:00:00:01"}} {
+		{"POST", "/api/v1/dhcp/static"}, {"PUT", "/api/v1/dhcp/static/02:00:00:00:00:01"}, {"DELETE", "/api/v1/dhcp/static/02:00:00:00:00:01"},
+		{"DELETE", "/api/v1/dhcp/leases"}, {"POST", "/api/v1/dhcp/reset"}, {"POST", "/api/v1/dhcp/static/import"}} {
 		body := ""
-		if r[0] != "DELETE" && r[1] != "/api/v1/dhcp/probe" {
+		if r[0] != "DELETE" && r[1] != "/api/v1/dhcp/probe" && r[1] != "/api/v1/dhcp/reset" {
 			body = `{"ip":"192.168.1.5"}`
 		}
 		coreWantError(t, ce.do(r[0], r[1], body, readTok), http.StatusForbidden, "forbidden", "")
@@ -198,8 +252,66 @@ func TestDHCPRoutes(t *testing.T) {
 	}
 	coreWantError(t, ce.do("DELETE", "/api/v1/dhcp/leases/02:00:00:00:00:07", "", session), http.StatusNotFound, "not_found", "")
 
+	// Export (every principal), import (admins; only an applied import is
+	// audited), resetting the leases and the whole server, the log.
+	w = ce.do("GET", "/api/v1/dhcp/static/export?format=csv", "", readTok)
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/csv; charset=utf-8" ||
+		w.Header().Get("Content-Disposition") != `attachment; filename="picache-reservations.csv"` || !strings.HasPrefix(w.Body.String(), "mac,ip,") {
+		t.Fatalf("export csv %d %v %s", w.Code, w.Header(), w.Body)
+	}
+	w = ce.do("GET", "/api/v1/dhcp/static/export?format=hosts", "", readTok)
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		w.Header().Get("Content-Disposition") != `attachment; filename="picache-reservations.hosts"` {
+		t.Fatalf("export hosts %d %v", w.Code, w.Header())
+	}
+	coreWantError(t, ce.do("GET", "/api/v1/dhcp/static/export?format=xml", "", readTok), http.StatusBadRequest, "invalid", "format")
+	coreWantError(t, ce.do("GET", "/api/v1/dhcp/static/export", "", readTok), http.StatusBadRequest, "invalid", "format")
+	w = ce.do("POST", "/api/v1/dhcp/static/import", `{"format":"csv","text":"x","replace":true,"dryRun":true}`, session)
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"applied":false,"added":2,"updated":1,"unchanged":3,"removed":4,"errors":[]}` {
+		t.Fatalf("dry run %d %s", w.Code, w.Body)
+	}
+	w = ce.do("POST", "/api/v1/dhcp/static/import", `{"format":"lines","text":"bad"}`, session)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"errors":[{"line":2,"field":"ip","message":"must be an IPv4 address"}]`) {
+		t.Fatalf("errors %d %s", w.Code, w.Body)
+	}
+	if slices.Contains(ce.auditActions(t), "dhcp.static.import") {
+		t.Fatal("a dry run or failed import was audited")
+	}
+	w = ce.do("POST", "/api/v1/dhcp/static/import", `{"format":"hosts","text":"ok","replace":true}`, session)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"applied":true`) {
+		t.Fatalf("import %d %s", w.Code, w.Body)
+	}
+	coreWantError(t, ce.do("POST", "/api/v1/dhcp/static/import", `{"format":"xml","text":""}`, session), http.StatusBadRequest, "invalid", "format")
+	coreWantError(t, ce.do("POST", "/api/v1/dhcp/static/import", `{"format":"csv","text":"","extra":1}`, session), http.StatusBadRequest, "invalid", "body")
+	w = ce.do("DELETE", "/api/v1/dhcp/leases", "", session)
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"deleted":7}` {
+		t.Fatalf("delete leases %d %s", w.Code, w.Body)
+	}
+	if w := ce.do("POST", "/api/v1/dhcp/reset", "", session); w.Code != http.StatusNoContent || fd.resets != 1 {
+		t.Fatalf("reset %d %s", w.Code, w.Body)
+	}
+	// The settings were reset but the tables could not be emptied: 500,
+	// and the reset is audited all the same (checked below).
+	fd.resetErr = errors.New("database is locked")
+	if w := ce.do("POST", "/api/v1/dhcp/reset", "", session); w.Code != http.StatusInternalServerError || fd.resets != 2 {
+		t.Fatalf("failed reset %d %s", w.Code, w.Body)
+	}
+	fd.resetErr = nil
+	w = ce.do("GET", "/api/v1/dhcp/log?limit=5", "", readTok)
+	if w.Code != http.StatusOK || fd.limit != 5 || !strings.Contains(w.Body.String(),
+		`[{"time":"2026-09-25T12:00:00Z","kind":"dhcpv4","mac":"02:00:00:00:00:01","address":"192.168.1.100","in":"DISCOVER","result":"ignored","reason":"not-reserved"}]`) {
+		t.Fatalf("log %d %s", w.Code, w.Body)
+	}
+	if ce.do("GET", "/api/v1/dhcp/log", "", readTok); fd.limit != 200 {
+		t.Fatalf("default limit %d", fd.limit)
+	}
+	for _, q := range []string{"0", "201", "x"} {
+		coreWantError(t, ce.do("GET", "/api/v1/dhcp/log?limit="+q, "", readTok), http.StatusBadRequest, "invalid", "limit")
+	}
+
 	actions := ce.auditActions(t)
-	for _, a := range []string{"dhcp.probe", "dhcp.static.create", "dhcp.static.update", "dhcp.static.delete", "dhcp.lease.delete"} {
+	for _, a := range []string{"dhcp.probe", "dhcp.static.create", "dhcp.static.update", "dhcp.static.delete", "dhcp.lease.delete",
+		"dhcp.static.import", "dhcp.leases.reset", "dhcp.reset"} {
 		if !slices.Contains(actions, a) {
 			t.Errorf("audit lacks %s: %v", a, actions)
 		}
@@ -207,6 +319,23 @@ func TestDHCPRoutes(t *testing.T) {
 	entries, _, err := ce.auth.AuditLog(context.Background(), auth.AuditQuery{Search: "dhcp.static.delete", Limit: 5})
 	if err != nil || len(entries) != 1 || entries[0].Target != "02:00:00:00:00:02" {
 		t.Fatalf("audit target %+v %v", entries, err)
+	}
+	entries, _, err = ce.auth.AuditLog(context.Background(), auth.AuditQuery{Search: "dhcp.reset", Limit: 5})
+	if err != nil || len(entries) != 2 || !strings.Contains(string(entries[0].Details), `"settings":true`) ||
+		!strings.Contains(string(entries[0].Details), "database is locked") || !strings.Contains(string(entries[1].Details), `"statics":2`) {
+		t.Errorf("audit dhcp.reset: %+v %v", entries, err)
+	}
+	for action, want := range map[string]string{
+		"dhcp.static.import": `"added":2`, "dhcp.leases.reset": `"leases":7`,
+	} {
+		entries, _, err := ce.auth.AuditLog(context.Background(), auth.AuditQuery{Search: action, Limit: 5})
+		if err != nil || len(entries) != 1 || !strings.Contains(string(entries[0].Details), want) {
+			t.Errorf("audit %s: %+v %v", action, entries, err)
+		}
+	}
+	entries, _, _ = ce.auth.AuditLog(context.Background(), auth.AuditQuery{Search: "dhcp.static.import", Limit: 5})
+	if len(entries) == 1 && (!strings.Contains(string(entries[0].Details), `"replace":true`) || !strings.Contains(string(entries[0].Details), `"removed":4`)) {
+		t.Errorf("import details %s", entries[0].Details)
 	}
 }
 
@@ -244,5 +373,23 @@ func TestDHCPSettingsPatch(t *testing.T) {
 	coreWantError(t, ce.do("PATCH", "/api/v1/settings/dhcp", `{"leaseSeconds":5}`, session), http.StatusBadRequest, "invalid", "dhcp.leaseSeconds")
 	if !slices.Contains(ce.auditActions(t), "settings.update") {
 		t.Fatal("settings change not audited")
+	}
+	// The new members: defaults, dotted error fields, the WPAD URL audited
+	// with its value.
+	w = ce.do("GET", "/api/v1/settings", "", session)
+	if !strings.Contains(w.Body.String(), `"generateNames":true`) || !strings.Contains(w.Body.String(),
+		`"onlyReserved":false,"rapidCommit":false,"options":{"ntpServers":[],"mtu":0,"wpadUrl":"","extraSearchDomains":[]}`) {
+		t.Fatalf("settings %s", w.Body)
+	}
+	coreWantError(t, ce.do("PATCH", "/api/v1/settings/dhcp", `{"options":{"ntpServers":["10.0.0.1","x"]}}`, session),
+		http.StatusBadRequest, "invalid", "dhcp.options.ntpServers[1]")
+	coreWantError(t, ce.do("PATCH", "/api/v1/settings/dhcp", `{"options":{"mtu":100}}`, session), http.StatusBadRequest, "invalid", "dhcp.options.mtu")
+	if w := ce.do("PATCH", "/api/v1/settings/dhcp", `{"options":{"wpadUrl":"http://proxy.lan/wpad.dat"}}`, session); w.Code != http.StatusOK {
+		t.Fatalf("wpad %d %s", w.Code, w.Body)
+	}
+	entries, _, err := ce.auth.AuditLog(context.Background(), auth.AuditQuery{Search: "settings.update", Limit: 1})
+	if err != nil || len(entries) != 1 || !strings.Contains(string(entries[0].Details), `"wpadUrl":["http://proxy.lan/wpad.dat"]`) ||
+		!strings.Contains(string(entries[0].Details), `"dhcp.options"`) {
+		t.Fatalf("wpad audit %+v %v", entries, err)
 	}
 }

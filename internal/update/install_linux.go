@@ -34,8 +34,25 @@ func SystemHost(health func(ctx context.Context) error) Host {
 		Systemctl:     runSystemctl,
 		Health:        health,
 		Lock:          lockUpdates,
+		UnitDir:       systemdUnitDir(),
+		UnitFragment:  unitFragment,
 		Strict:        true,
 	}
+}
+
+// systemdUnitDir is DefaultUnitDir on a host that runs systemd, else ""
+// (the unit step is skipped).
+func systemdUnitDir() string {
+	if fileExists("/run/systemd/system") {
+		return DefaultUnitDir
+	}
+	return ""
+}
+
+// unitFragment returns the file systemd loaded picache.service from.
+func unitFragment(ctx context.Context) (string, error) {
+	out, err := systemctl(ctx, "show", "-p", "FragmentPath", "--value", Service)
+	return strings.TrimSpace(out), err
 }
 
 // systemBinary returns /usr/bin/<name>, or /bin/<name> on systems without merged /usr.

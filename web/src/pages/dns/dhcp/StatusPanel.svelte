@@ -1,11 +1,14 @@
 <!--
   @component
   The state of the DHCP server in one sentence (off, waiting, serving,
-  error, not available) and what it hands out: the interface with PiCache's
-  address, the range and how much of it is in use, router, DNS server,
-  domain and lease time. While it waits, every blocker in plain words with
-  what to do; while it is not available, how to allow it. Admins switch the
-  server on and off here (not while the form below has unsaved changes).
+  error, not available, restart needed) and what it hands out: the interface
+  with PiCache's address, the range and how much of it is in use, router,
+  DNS server, domain and lease time. While it waits, every blocker in plain
+  words with what to do; while it is not available, why (by reasonCode) and
+  what to do, with the restart where the ports open only at start; a
+  warning when the marker files for the next start could not be written.
+  Admins switch the server on and off here (not while the form below has
+  unsaved changes).
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
@@ -14,8 +17,8 @@
   import type { IconName } from '$lib/icons'
   import { session } from '$lib/session.svelte'
   import { Button, Chip, Icon, Meter, Notice, Panel, Trans, type Tone } from '$lib/ui'
-  import AllowHowTo from './AllowHowTo.svelte'
   import OtherServerList from './OtherServerList.svelte'
+  import UnavailableNotice from './UnavailableNotice.svelte'
   import { subnetOf, subnetText } from './net'
 
   interface Props {
@@ -33,9 +36,23 @@
     onshowothers: () => void
     /** Scrolls to the set-up. */
     onshowsetup: () => void
+    /** PiCache answers again after a restart started here. */
+    onrestarted?: () => void
   }
 
-  let { status, settings, dirty, switching, probing, onswitchon, onswitchoff, onprobe, onshowothers, onshowsetup }: Props = $props()
+  let {
+    status,
+    settings,
+    dirty,
+    switching,
+    probing,
+    onswitchon,
+    onswitchoff,
+    onprobe,
+    onshowothers,
+    onshowsetup,
+    onrestarted,
+  }: Props = $props()
 
   const VIEW: Record<DhcpState, { tone: Tone; icon: IconName }> = {
     unavailable: { tone: 'neutral', icon: 'info' },
@@ -56,7 +73,29 @@
       status.blockers?.[0] === 'other-server' &&
       (status.otherServers ?? []).length === 0,
   )
-  const view = $derived(searching ? { tone: 'info' as Tone, icon: 'search' as IconName } : VIEW[st])
+  // Unavailable while switched on: the ports open only at the next start
+  // (restart-required), or opening them failed (socket).
+  const code = $derived(st === 'unavailable' ? (status.reasonCode ?? '') : '')
+  const restart = $derived(code === 'restart-required')
+  const portError = $derived(code === 'socket')
+  const view = $derived<{ tone: Tone; icon: IconName }>(
+    searching
+      ? { tone: 'info', icon: 'search' }
+      : restart
+        ? { tone: 'warn', icon: 'power' }
+        : portError
+          ? { tone: 'fail', icon: 'error' }
+          : VIEW[st],
+  )
+  const chip = $derived(
+    searching
+      ? t('dns.dhcp.state.searching')
+      : restart
+        ? t('dns.dhcp.state.restart')
+        : portError
+          ? t('dns.dhcp.state.error')
+          : t(`dns.dhcp.state.${st}`),
+  )
   const enabled = $derived(!!settings?.enabled)
   const iface = $derived(status.interface)
   const configured = $derived(!!settings?.interface && !!settings.rangeStart && !!settings.rangeEnd)
@@ -66,32 +105,40 @@
   const title = $derived(
     searching
       ? t('dns.dhcp.title.searching')
-      : {
-      unavailable: t('dns.dhcp.title.unavailable'),
-      off: t('dns.dhcp.title.off'),
-      blocked: t('dns.dhcp.title.blocked'),
-      serving: t('dns.dhcp.title.serving'),
-      error: t('dns.dhcp.title.error'),
-    }[st],
+      : restart
+        ? t('dns.dhcp.title.restart')
+        : portError
+          ? t('dns.dhcp.title.socket')
+          : {
+              unavailable: t('dns.dhcp.title.unavailable'),
+              off: t('dns.dhcp.title.off'),
+              blocked: t('dns.dhcp.title.blocked'),
+              serving: t('dns.dhcp.title.serving'),
+              error: t('dns.dhcp.title.error'),
+            }[st],
   )
 
   const text = $derived(
     searching
       ? t('dns.dhcp.text.searching')
-      : {
-      unavailable: t('dns.dhcp.text.unavailable'),
-      off: t('dns.dhcp.text.off'),
-      blocked: t('dns.dhcp.text.blocked'),
-      serving: t('dns.dhcp.text.serving', { interface: iface?.name ?? settings?.interface ?? '–' }),
-      error: t('dns.dhcp.text.error'),
-    }[st],
+      : restart
+        ? t('dns.dhcp.text.restart')
+        : portError
+          ? t('dns.dhcp.text.socket')
+          : {
+              unavailable: t('dns.dhcp.text.unavailable'),
+              off: t('dns.dhcp.text.off'),
+              blocked: t('dns.dhcp.text.blocked'),
+              serving: t('dns.dhcp.text.serving', { interface: iface?.name ?? settings?.interface ?? '–' }),
+              error: t('dns.dhcp.text.error'),
+            }[st],
   )
 
   /** Why the switch is disabled (admins only). */
   const hint = $derived.by(() => {
     if (!session.isAdmin || !settings) return undefined
     if (enabled) return dirty ? t('dns.dhcp.hint.saveFirst') : undefined
-    if (!status.available) return t('dns.dhcp.hint.allowFirst')
+    if (!status.available) return t('dns.dhcp.hint.unavailable')
     if (dirty) return t('dns.dhcp.hint.saveFirst')
     if (!configured) return t('dns.dhcp.hint.setupFirst')
     return undefined
@@ -161,12 +208,9 @@
         <div class="vtext">
           <div class="titleline">
             <h2>{title}</h2>
-            <Chip size="sm" tone={view.tone} label={searching ? t('dns.dhcp.state.searching') : t(`dns.dhcp.state.${st}`)} />
+            <Chip size="sm" tone={view.tone} label={chip} />
           </div>
           <p class="muted">{text}</p>
-          {#if st === 'unavailable' && status.reason}
-            <p class="small muted">{t('dns.dhcp.text.reason', { reason: status.reason })}</p>
-          {/if}
         </div>
       </div>
       {#if session.isAdmin && settings}
@@ -188,7 +232,10 @@
     {/if}
 
     {#if st === 'unavailable'}
-      <AllowHowTo />
+      <UnavailableNotice {status} {onrestarted} />
+    {:else if status.markerError}
+      <!-- The marker files for the next start could not be written. -->
+      <Notice tone="warn" title={t('dns.dhcp.text.marker')}><span class="reason">{status.markerError}</span></Notice>
     {/if}
 
     {#if blockers.length > 0}
@@ -374,6 +421,9 @@
   .hint {
     margin-top: calc(-1 * var(--sp-2));
     text-align: right;
+  }
+  .reason {
+    overflow-wrap: anywhere;
   }
   .blockers {
     display: flex;

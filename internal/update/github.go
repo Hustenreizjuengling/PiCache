@@ -309,7 +309,7 @@ func (d dirFiles) Open(_ context.Context, name string) (io.ReadCloser, int64, er
 	fi, err := r.Lstat(name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, 0, fmt.Errorf("%s is missing in %s", name, d)
+			return nil, 0, fmt.Errorf("%s is missing in %s: %w", name, d, fs.ErrNotExist)
 		}
 		return nil, 0, err
 	}

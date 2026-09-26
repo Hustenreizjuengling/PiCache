@@ -19,9 +19,11 @@
     size?: 'sm' | 'md'
     /** Text of the confirmation (defaults to the general restart explanation). */
     message?: string
+    /** PiCache answers again and the session survived. */
+    ondone?: () => void
   }
 
-  let { label, variant = 'secondary', size = 'md', message }: Props = $props()
+  let { label, variant = 'secondary', size = 'md', message, ondone }: Props = $props()
 
   const watcher = new RestartWatcher()
   let open = $state(false)
@@ -47,6 +49,7 @@
     if (outcome.signedIn) {
       toast.success(t('system.restart.done'))
       void appStatus.overview.refresh()
+      ondone?.()
     } else {
       await session.load() // the restore revoked this session: back to sign-in
     }

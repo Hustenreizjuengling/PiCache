@@ -13,9 +13,10 @@ const maxNameTTL = 300
 
 // nameRec is a DNS name of an active lease.
 type nameRec struct {
-	name    string // <host>.<domain> (lower-case) for byIP, the address owner for byName
-	ip      netip.Addr
-	expires time.Time
+	name      string // <host>.<domain> (lower-case) for byIP, the address owner for byName
+	ip        netip.Addr
+	expires   time.Time
+	generated bool // <a>-<b>-<c>-<d>.<domain> (DNS answers only)
 }
 
 // names is the immutable snapshot of lease names read by the DNS server
@@ -28,19 +29,21 @@ type names struct {
 
 var emptyNames = &names{byName: map[string]nameRec{}, byIP: map[netip.Addr]nameRec{}, display: map[netip.Addr]string{}}
 
-// effectiveName returns the host name of a lease: its static entry's name
+// effectiveName returns the host name of a lease: its reservation's name
 // if it has one, else the name the client sent.
 func (t *table) effectiveName(l *lease) string {
-	if st := t.statics[l.mac]; st != nil && st.hostname != "" {
+	if st := t.reservationOf(l); st != nil && st.hostname != "" {
 		return st.hostname
 	}
 	return l.hostname
 }
 
-// assignNames decides which client holds each host name. Static entries
-// hold their names always; a name stays with the active lease that held
-// it before; free names go to active leases in MAC order. A lease whose
-// name another client holds gets no DNS name (a name conflict).
+// assignNames decides which client holds each host name. Reservations hold
+// their names always (for the MAC of the lease on the reserved address that
+// matched it, else the reservation's MAC); a name stays with the active
+// lease that held it before; free names go to active leases in MAC order.
+// A lease whose name another client holds gets no DNS name of its own (a
+// name conflict).
 func (t *table) assignNames(prev map[string]string, now time.Time) map[string]string {
 	next := map[string]string{}
 	statics := make([]*static, 0, len(t.statics))
@@ -51,6 +54,9 @@ func (t *table) assignNames(prev map[string]string, now time.Time) map[string]st
 	for _, st := range statics {
 		if _, taken := next[st.hostname]; st.hostname != "" && !taken {
 			next[st.hostname] = st.mac
+			if l := t.byIP[st.ip]; l != nil && l.active(now) && t.reservationOf(l) == st {
+				next[st.hostname] = l.mac
+			}
 		}
 	}
 	for name, mac := range prev {
@@ -71,28 +77,43 @@ func (t *table) assignNames(prev map[string]string, now time.Time) map[string]st
 }
 
 // buildNames builds the snapshot for the holders: DNS names only with
-// register and a domain, names of at most 253 characters.
-func (t *table) buildNames(holders map[string]string, domain string, register bool, now time.Time) *names {
+// register and a domain, names of at most 253 characters. With generate an
+// active lease without a usable host name, or whose name another client
+// holds, answers the generated name <a>-<b>-<c>-<d>.<domain> of its
+// address; that name is only a DNS answer (not a display name).
+func (t *table) buildNames(holders map[string]string, domain string, register, generate bool, now time.Time) *names {
 	n := &names{byName: map[string]nameRec{}, byIP: map[netip.Addr]nameRec{}, display: map[netip.Addr]string{}}
-	for _, l := range t.leases {
+	for _, l := range t.sortedLeases() {
 		if !l.active(now) {
 			continue
 		}
 		host := t.effectiveName(l)
-		if host == "" {
+		if host != "" {
+			n.display[l.ip] = host
+		}
+		if !register || domain == "" {
 			continue
 		}
-		n.display[l.ip] = host
-		if !register || domain == "" || holders[host] != l.mac {
-			continue
+		generated := false
+		if host == "" || holders[host] != l.mac {
+			if !generate {
+				continue
+			}
+			host, generated = generatedName(l.ip), true
 		}
 		fq := host + "." + domain
 		if len(fq) > 253 {
 			continue
 		}
-		n.byName[fq] = nameRec{name: fq, ip: l.ip, expires: l.expires}
-		n.byIP[l.ip] = nameRec{name: fq, ip: l.ip, expires: l.expires}
-		n.display[l.ip] = fq
+		if _, taken := n.byName[fq]; taken && generated {
+			continue // a reservation named like this address holds it already
+		}
+		rec := nameRec{name: fq, ip: l.ip, expires: l.expires, generated: generated}
+		n.byName[fq] = rec
+		n.byIP[l.ip] = rec
+		if !generated {
+			n.display[l.ip] = fq
+		}
 	}
 	return n
 }

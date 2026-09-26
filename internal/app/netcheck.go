@@ -129,7 +129,11 @@ type netSources struct {
 	// dhcp reports whether PiCache serves DHCP and announces itself as
 	// IPv6 DNS server (nil: it does not).
 	dhcp func() api.NetworkDHCP
-	send func(ctx context.Context, addrs []netip.Addr) // sends the scan's datagrams
+	// routerRDNSS returns the DNS servers routers announce in their router
+	// advertisements, by source (ok false while PiCache records none: its
+	// own router advertisements are off; nil: never).
+	routerRDNSS func() (map[netip.Addr][]string, bool)
+	send        func(ctx context.Context, addrs []netip.Addr) // sends the scan's datagrams
 }
 
 // netInputs are the facts one check is computed from.
@@ -154,6 +158,10 @@ type netInputs struct {
 	// address).
 	trustConnected, ignoresRA bool
 	dhcp                      api.NetworkDHCP
+	// raDNS are the DNS servers routers announce by source address
+	// (raRecorded: PiCache records router advertisements).
+	raDNS      map[netip.Addr][]string
+	raRecorded bool
 }
 
 // netChecker computes and caches the network check and runs the discovery
@@ -224,6 +232,12 @@ func (a *App) netSources() netSources {
 				out.Interface = iface
 			}
 			return out
+		},
+		routerRDNSS: func() (map[netip.Addr][]string, bool) {
+			if a.dhcp == nil {
+				return nil, false
+			}
+			return a.dhcp.RouterRDNSS()
 		},
 	}
 }
@@ -335,6 +349,9 @@ func (n *netChecker) gather(ctx context.Context, now time.Time) netInputs {
 	}
 	if s.dhcp != nil {
 		in.dhcp = s.dhcp()
+	}
+	if s.routerRDNSS != nil {
+		in.raDNS, in.raRecorded = s.routerRDNSS()
 	}
 	if s.ignoresRA != nil && !in.host.Bridge && !slices.ContainsFunc(in.host.Prefixes, func(p netip.Prefix) bool {
 		c := addrClass(netutil.Canon(p.Addr()))
@@ -450,7 +467,7 @@ func computeNetworkCheck(in netInputs) api.NetworkCheck {
 		}
 	}
 	ignoresRA := in.ignoresRA && len(nc.Self.ULA)+len(nc.Self.Global) == 0
-	nc.Checks = append(nc.Checks, ipv6Checks(nc.Self, lanV6, v6Queries, v6Clients, ignoresRA)...)
+	nc.Checks = append(nc.Checks, ipv6Checks(nc.Self, lanV6, v6Queries, v6Clients, ignoresRA, in.routerDNS(router))...)
 
 	status := "ok"
 	if len(in.refused) > 0 {
@@ -670,12 +687,35 @@ func forwardingCheck(q api.NetworkQueries, router map[netip.Addr]bool, perAddr m
 	return api.NetworkItem{ID: id, Status: status, Data: data}
 }
 
+// routerDNS returns the DNS servers the default router announces in its
+// router advertisements (RAs from one of its addresses; nil while PiCache
+// records no advertisements, empty when the router announces none).
+func (in *netInputs) routerDNS(router map[netip.Addr]bool) *[]string {
+	if !in.raRecorded {
+		return nil
+	}
+	out := []string{}
+	for src, dns := range in.raDNS {
+		if !router[src] {
+			continue
+		}
+		for _, d := range dns {
+			if !slices.Contains(out, d) {
+				out = append(out, d)
+			}
+		}
+	}
+	slices.Sort(out)
+	return &out
+}
+
 // ipv6Checks are ipv6-dns (the LAN has IPv6 but no LAN device asked over
 // IPv6: they probably use the router as IPv6 DNS server) and ipv6-address
 // (PiCache has no stable address to announce: warn without any IPv6
 // address, info with global addresses only, which change with the prefix).
-// ignoresRA is reported with ipv6-dns (hostIgnoresRA).
-func ipv6Checks(self api.NetworkSelf, lanV6 bool, queries int64, clients int, ignoresRA bool) []api.NetworkItem {
+// ignoresRA and the DNS servers the router announces (routerRDNSS) are
+// reported with ipv6-dns.
+func ipv6Checks(self api.NetworkSelf, lanV6 bool, queries int64, clients int, ignoresRA bool, routerRDNSS *[]string) []api.NetworkItem {
 	dns := "ok"
 	if lanV6 && queries == 0 {
 		dns = "warn"
@@ -690,7 +730,7 @@ func ipv6Checks(self api.NetworkSelf, lanV6 bool, queries int64, clients int, ig
 	}
 	return []api.NetworkItem{
 		{ID: "ipv6-dns", Status: dns, Data: api.NetworkIPv6DNS{LANHasIPv6: lanV6, IPv6Queries: queries, IPv6Clients: clients,
-			ULA: self.ULA, Global: self.Global, HostIgnoresRA: ignoresRA}},
+			ULA: self.ULA, Global: self.Global, HostIgnoresRA: ignoresRA, RouterRDNSS: routerRDNSS}},
 		{ID: "ipv6-address", Status: address, Data: api.NetworkIPv6Address{ULA: self.ULA, Global: self.Global}},
 	}
 }

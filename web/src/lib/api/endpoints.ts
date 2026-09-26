@@ -215,13 +215,23 @@ const dhcp = {
   leases: (o?: ReqOpts) => http.get<T.DhcpLease[]>('/dhcp/leases', o),
   /** Ends a dynamic lease; the device gets a new one when it renews. */
   endLease: (mac: string, o?: ReqOpts) => http.del(`/dhcp/leases/${seg(mac)}`, o),
+  /** Ends every lease (also on reserved addresses) and forgets pending offers. */
+  endAllLeases: (o?: ReqOpts) => http.del<{ deleted: number }>('/dhcp/leases', o),
+  /** Settings section dhcp back to its defaults (switches the server off), every reservation and lease deleted. */
+  reset: (o?: ReqOpts) => http.post<void>('/dhcp/reset', undefined, o),
+  /** The last handled exchanges, newest first (limit 1–200, default 200). */
+  log: (limit?: number, o?: ReqOpts) => http.get<T.DhcpLogEntry[]>('/dhcp/log', { ...o, query: { limit } }),
   static: {
     list: (o?: ReqOpts) => http.get<T.DhcpStaticLease[]>('/dhcp/static', o),
-    /** 400 with field mac, ip, hostname or comment. */
+    /** 400 with field mac, ip, hostname, comment, clientId or leaseSeconds. */
     create: (s: T.DhcpStaticLeaseInput, o?: ReqOpts) => http.post<T.DhcpStaticLease>('/dhcp/static', s, o),
     update: (mac: string, s: Omit<T.DhcpStaticLeaseInput, 'mac'>, o?: ReqOpts) =>
       http.put<T.DhcpStaticLease>(`/dhcp/static/${seg(mac)}`, s, o),
     remove: (mac: string, o?: ReqOpts) => http.del(`/dhcp/static/${seg(mac)}`, o),
+    /** URL for a plain <a href> download of every reservation (the browser sends the session cookie). */
+    exportUrl: (format: 'csv' | 'hosts') => apiUrl('/dhcp/static/export', { format }),
+    /** Checks (dryRun) or applies a list; per-line errors in the 200 answer, nothing written if there is any. */
+    import: (req: T.DhcpImportRequest, o?: ReqOpts) => http.post<T.DhcpImportResult>('/dhcp/static/import', req, o),
   },
 }
 

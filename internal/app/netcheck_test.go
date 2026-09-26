@@ -587,3 +587,23 @@ func TestNetworkCheckDHCP(t *testing.T) {
 		t.Fatalf("without DHCP %+v", nc.DHCP)
 	}
 }
+
+// ipv6-dns carries the DNS servers the default router announces in its
+// router advertisements, only while PiCache records them (its own are on):
+// RAs of the router's addresses only, [] when it announces none.
+func TestNetworkRouterRDNSS(t *testing.T) {
+	in := fritzInputs()
+	if d := checkByID(t, computeNetworkCheck(in), "ipv6-dns").Data.(api.NetworkIPv6DNS); d.RouterRDNSS != nil {
+		t.Fatalf("without recording %v", *d.RouterRDNSS)
+	}
+	in.raRecorded = true
+	in.raDNS = map[netip.Addr][]string{addr("fe80::1"): {"fd00::1", "2001:db8:1::1"}, addr("fe80::99"): {"fd00::99"}}
+	d := checkByID(t, computeNetworkCheck(in), "ipv6-dns").Data.(api.NetworkIPv6DNS)
+	if d.RouterRDNSS == nil || !slices.Equal(*d.RouterRDNSS, []string{"2001:db8:1::1", "fd00::1"}) {
+		t.Fatalf("router rdnss %v", d.RouterRDNSS)
+	}
+	in.raDNS = map[netip.Addr][]string{addr("fe80::99"): {"fd00::99"}}
+	if d := checkByID(t, computeNetworkCheck(in), "ipv6-dns").Data.(api.NetworkIPv6DNS); d.RouterRDNSS == nil || len(*d.RouterRDNSS) != 0 {
+		t.Fatalf("another router's %v", d.RouterRDNSS)
+	}
+}

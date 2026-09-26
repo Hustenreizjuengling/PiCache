@@ -120,3 +120,115 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+// The search: a Relay-Forward (hop count 0, link and peer address) with an
+// Information-Request (CLIENTID, ELAPSED_TIME 0, ORO 23 and 24) and the
+// interface id; nothing that could create a binding.
+func TestRelayForward(t *testing.T) {
+	link, peer := netip.MustParseAddr("fd00::10"), netip.MustParseAddr("fe80::10")
+	b := RelayForward([3]byte{1, 2, 3}, serverID, link, peer, []byte("eth0"))
+	if b[0] != MsgRelayForward || b[1] != 0 || netip.AddrFrom16([16]byte(b[2:18])) != link || netip.AddrFrom16([16]byte(b[18:34])) != peer {
+		t.Fatalf("header % x", b[:34])
+	}
+	var inner, iface []byte
+	if err := eachOpt(b[relayLen:], func(code uint16, v []byte) error {
+		switch code {
+		case optRelayMsg:
+			inner = v
+		case optInterfaceID:
+			iface = v
+		default:
+			t.Errorf("option %d", code)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if string(iface) != "eth0" || inner[0] != MsgInformationRequest || !bytes.Equal(inner[1:4], []byte{1, 2, 3}) {
+		t.Fatalf("inner % x iface %q", inner, iface)
+	}
+	want := map[uint16][]byte{optClientID: serverID, optElapsedTime: {0, 0}, optORO: {0, 23, 0, 24}}
+	if err := eachOpt(inner[headerLen:], func(code uint16, v []byte) error {
+		if w, ok := want[code]; !ok || !bytes.Equal(v, w) {
+			t.Errorf("inner option %d = % x", code, v)
+		}
+		delete(want, code)
+		return nil
+	}); err != nil || len(want) != 0 {
+		t.Fatalf("inner options: %v, missing %v", err, want)
+	}
+	// The information request inside is one PiCache itself would answer.
+	if _, err := Parse(inner, nil); err != nil {
+		t.Fatalf("inner request: %v", err)
+	}
+}
+
+// relayReply wraps opts in a Reply inside a Relay-Reply.
+func relayReply(peer netip.Addr, inner []byte, extra ...[]byte) []byte {
+	b := []byte{MsgRelayReply, 0}
+	l, p := netip.MustParseAddr("fd00::10").As16(), peer.As16()
+	b = append(b, l[:]...)
+	b = append(b, p[:]...)
+	b = append(b, opt(optRelayMsg, inner...)...)
+	for _, e := range extra {
+		b = append(b, e...)
+	}
+	return b
+}
+
+// A Relay-Reply with exactly one level of RELAY_MSG holding a Reply with
+// one SERVERID parses; everything else is refused.
+func TestParseRelayReply(t *testing.T) {
+	peer := netip.MustParseAddr("fe80::10")
+	dns := netip.MustParseAddr("fd00::53").As16()
+	reply := msg(MsgReply, opt(optServerID, clientDUID...), opt(optDNSServers, dns[:]...))
+	r, err := ParseRelayReply(relayReply(peer, reply, opt(optInterfaceID, 'e')))
+	if err != nil || r.Peer != peer || r.TxID != [3]byte{0xab, 0xcd, 0xef} || !bytes.Equal(r.ServerID, clientDUID) ||
+		!slices.Equal(r.DNS, []netip.Addr{netip.MustParseAddr("fd00::53")}) {
+		t.Fatalf("%+v %v", r, err)
+	}
+	many := make([]byte, 0, 16*12)
+	for range 12 {
+		many = append(many, dns[:]...)
+	}
+	if r, err := ParseRelayReply(relayReply(peer, msg(MsgReply, opt(optServerID, clientDUID...), opt(optDNSServers, many...)))); err != nil ||
+		len(r.DNS) != MaxDNS {
+		t.Fatalf("bounded DNS: %d %v", len(r.DNS), err)
+	}
+	nested := relayReply(peer, reply)
+	for name, b := range map[string][]byte{
+		"short":         relayReply(peer, reply)[:30],
+		"nested relay":  relayReply(peer, nested),
+		"no relay msg":  relayReply(peer, reply)[:34],
+		"two relay msg": relayReply(peer, reply, opt(optRelayMsg, reply...)),
+		"advertise":     relayReply(peer, msg(2, opt(optServerID, clientDUID...))),
+		"no server id":  relayReply(peer, msg(MsgReply, opt(optDNSServers, dns[:]...))),
+		"two server id": relayReply(peer, msg(MsgReply, opt(optServerID, clientDUID...), opt(optServerID, clientDUID...))),
+		"odd dns":       relayReply(peer, msg(MsgReply, opt(optServerID, clientDUID...), opt(optDNSServers, 1, 2, 3))),
+		"truncated":     relayReply(peer, reply)[:len(relayReply(peer, reply))-1],
+		"long":          append(relayReply(peer, reply), make([]byte, MaxMessage)...),
+	} {
+		if _, err := ParseRelayReply(b); err == nil {
+			t.Errorf("%s parsed", name)
+		}
+	}
+	if _, err := ParseRelayReply(RelayForward([3]byte{}, serverID, peer, peer, nil)); !errors.Is(err, ErrIgnored) {
+		t.Fatalf("relay forward: %v", err)
+	}
+}
+
+func FuzzParseRelayReply(f *testing.F) {
+	peer := netip.MustParseAddr("fe80::10")
+	dns := netip.MustParseAddr("fd00::53").As16()
+	f.Add(relayReply(peer, msg(MsgReply, opt(optServerID, clientDUID...), opt(optDNSServers, dns[:]...))))
+	f.Add(relayReply(peer, relayReply(peer, msg(MsgReply))))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		r, err := ParseRelayReply(b)
+		if err != nil {
+			return
+		}
+		if len(r.DNS) > MaxDNS || len(r.ServerID) < 3 || len(r.ServerID) > maxDUID {
+			t.Fatalf("out of bounds: %+v", r)
+		}
+	})
+}

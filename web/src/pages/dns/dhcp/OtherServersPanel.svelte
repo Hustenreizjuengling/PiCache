@@ -1,9 +1,10 @@
 <!--
   @component
   Other DHCP servers in the network: the search on demand (3 s) with its
-  result, the last search PiCache ran by itself, the servers seen recently
-  and the explicit, warned "serve anyway" setting (ignoreOtherServers,
-  saved with the page's save bar).
+  result (not in a container while DHCP is off: the ports open only at
+  start there), the last search PiCache ran by itself, the servers seen
+  recently and the explicit, warned "serve anyway" setting
+  (ignoreOtherServers, saved with the page's save bar).
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
@@ -30,13 +31,16 @@
   const others = $derived(status?.otherServers ?? [])
   const last = $derived(status?.lastProbe)
   const available = $derived(!!status?.available)
+  // A container opens the DHCP ports only at start: while DHCP is off the
+  // search cannot open UDP 67 (PiCache searches by itself before serving).
+  const containerOff = $derived(status?.deployment === 'docker' && status.state === 'off')
   const found = $derived(result?.servers ?? [])
 </script>
 
 <Panel id="dhcp-other" title={t('dns.dhcp.probe.title')} description={t('dns.dhcp.probe.description')}>
   {#snippet actions()}
     {#if session.isAdmin}
-      <Button icon="search" loading={probing} disabled={!available} onclick={onprobe}>{t('dns.dhcp.probe.button')}</Button>
+      <Button icon="search" loading={probing} disabled={!available || containerOff} onclick={onprobe}>{t('dns.dhcp.probe.button')}</Button>
     {/if}
   {/snippet}
 
@@ -75,6 +79,9 @@
       </p>
     {:else}
       <p class="small muted">{t('dns.dhcp.probe.never')}</p>
+    {/if}
+    {#if containerOff}
+      <p class="small muted">{t('dns.dhcp.probe.containerOff')}</p>
     {/if}
 
     {#if others.length > 0}

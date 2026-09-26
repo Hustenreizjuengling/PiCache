@@ -59,11 +59,12 @@ func (p *pool) size() int {
 	return n
 }
 
-// freeFor reports whether ip may be offered to mac now: no static entry
-// of another client, no active lease of another client, no pending offer
-// to another client and not quarantined.
-func (t *table) freeFor(ip netip.Addr, mac string, now time.Time) bool {
-	if st := t.staticIP[ip]; st != nil && st.mac != mac {
+// freeFor reports whether ip may be offered to mac (whose reservation is
+// res, nil for none) now: no reservation of another client, no active
+// lease of another client, no pending offer to another client and not
+// quarantined.
+func (t *table) freeFor(ip netip.Addr, mac string, res *static, now time.Time) bool {
+	if st := t.staticIP[ip]; st != nil && st != res {
 		return false
 	}
 	if l := t.byIP[ip]; l != nil && l.mac != mac && l.active(now) {
@@ -82,34 +83,35 @@ func (t *table) retainedByOther(ip netip.Addr, mac string) bool {
 	return l != nil && l.mac != mac
 }
 
-// candidate returns the next address to offer mac for a DISCOVER, in this
-// order: its static entry; its current or previous lease; the requested
-// address (option 50) if free and in the range; the lowest free address;
-// finally the address whose lease of another client expired first. check
-// is true when nothing proves the address free (no lease of this client):
-// the neighbour table must be consulted before offering it. Addresses in
-// tried are skipped. ok is false when the pool is exhausted.
-func (t *table) candidate(p *pool, mac string, requested netip.Addr, tried map[netip.Addr]bool, now time.Time) (ip netip.Addr, check, ok bool) {
-	if st := t.statics[mac]; st != nil && !tried[st.ip] && p.usable(st.ip) && !t.quarantined(st.ip, now) {
+// candidate returns the next address to offer mac (whose reservation is
+// res, nil for none) for a DISCOVER, in this order: its reservation's
+// address; its current or previous lease; the requested address (option
+// 50) if free and in the range; the lowest free address; finally the
+// address whose lease of another client expired first. check is true when
+// nothing proves the address free (no lease of this client): the neighbour
+// table must be consulted before offering it. Addresses in tried are
+// skipped. ok is false when the pool is exhausted.
+func (t *table) candidate(p *pool, mac string, res *static, requested netip.Addr, tried map[netip.Addr]bool, now time.Time) (ip netip.Addr, check, ok bool) {
+	if st := res; st != nil && !tried[st.ip] && p.usable(st.ip) && !t.quarantined(st.ip, now) {
 		if l := t.byIP[st.ip]; l == nil || l.mac == mac || !l.active(now) {
 			return st.ip, false, true
 		}
 	}
-	if l := t.leases[mac]; l != nil && !tried[l.ip] && p.dynamic(l.ip) && t.freeFor(l.ip, mac, now) {
+	if l := t.leases[mac]; l != nil && !tried[l.ip] && p.dynamic(l.ip) && t.freeFor(l.ip, mac, res, now) {
 		return l.ip, false, true
 	}
-	if requested.Is4() && !tried[requested] && p.dynamic(requested) && t.freeFor(requested, mac, now) && !t.retainedByOther(requested, mac) {
+	if requested.Is4() && !tried[requested] && p.dynamic(requested) && t.freeFor(requested, mac, res, now) && !t.retainedByOther(requested, mac) {
 		return requested, true, true
 	}
 	for a := p.start; a.IsValid() && !p.end.Less(a); a = a.Next() {
-		if !tried[a] && p.dynamic(a) && t.freeFor(a, mac, now) && !t.retainedByOther(a, mac) {
+		if !tried[a] && p.dynamic(a) && t.freeFor(a, mac, res, now) && !t.retainedByOther(a, mac) {
 			return a, true, true
 		}
 	}
 	var oldest *lease
 	for a := p.start; a.IsValid() && !p.end.Less(a); a = a.Next() {
 		l := t.byIP[a]
-		if l == nil || tried[a] || !p.dynamic(a) || !t.freeFor(a, mac, now) {
+		if l == nil || tried[a] || !p.dynamic(a) || !t.freeFor(a, mac, res, now) {
 			continue
 		}
 		if oldest == nil || l.expires.Before(oldest.expires) {
@@ -129,22 +131,24 @@ const (
 	verdictNak   requestVerdict = iota
 	verdictAck                  // the address is the client's
 	verdictCheck                // no record of the address: acknowledge if the neighbour table shows no other device
+	verdictMove                 // a NAK that moves the client to its free reserved address
 )
 
-// decideRequest decides a REQUEST of mac for the address want (option 50
-// in the selecting and init-reboot states, ciaddr when renewing or
-// rebinding). PiCache is authoritative for its subnet: it naks addresses
-// outside the subnet, reserved addresses, addresses of other clients
-// (static entries, active leases, pending offers), quarantined ones, a
-// dynamic address when the client has a free static one, and addresses
-// outside the range that are not the client's static address. An address
-// of the range without any record is acknowledged after the neighbour
-// check (a client that got it from the previous DHCP server keeps it).
-func (t *table) decideRequest(p *pool, mac string, want netip.Addr, now time.Time) requestVerdict {
+// decideRequest decides a REQUEST of mac (whose reservation is res, nil for
+// none) for the address want (option 50 in the selecting and init-reboot
+// states, ciaddr when renewing or rebinding). PiCache is authoritative for
+// its subnet: it naks addresses outside the subnet, reserved addresses,
+// addresses of other clients (reservations, active leases, pending
+// offers), quarantined ones, a dynamic address when the client has a free
+// reserved one (verdictMove), and addresses outside the range that are not
+// the client's reserved address. An address of the range without any
+// record is acknowledged after the neighbour check (a client that got it
+// from the previous DHCP server keeps it).
+func (t *table) decideRequest(p *pool, mac string, res *static, want netip.Addr, now time.Time) requestVerdict {
 	if !want.Is4() || !p.usable(want) {
 		return verdictNak
 	}
-	if st := t.staticIP[want]; st != nil && st.mac != mac {
+	if st := t.staticIP[want]; st != nil && st != res {
 		return verdictNak
 	}
 	if l := t.byIP[want]; l != nil && l.mac != mac && l.active(now) {
@@ -156,12 +160,12 @@ func (t *table) decideRequest(p *pool, mac string, want netip.Addr, now time.Tim
 	if t.quarantined(want, now) {
 		return verdictNak
 	}
-	if st := t.statics[mac]; st != nil {
+	if st := res; st != nil {
 		if st.ip == want {
 			return verdictAck
 		}
 		if l := t.byIP[st.ip]; p.usable(st.ip) && (l == nil || l.mac == mac || !l.active(now)) {
-			return verdictNak // move the client to its static address
+			return verdictMove
 		}
 	}
 	if !p.dynamic(want) {

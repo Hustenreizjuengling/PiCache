@@ -157,7 +157,7 @@ func openTestSvc(t *testing.T, d *db.DB, configure func(*settings.All)) *testSvc
 		}
 	}
 	ts := &testSvc{conn: newFakeConn4(), set: set, d: d, clk: &clock{now: t0}, neigh: map[netip.Addr]string{}}
-	socks := &Sockets{requested: true, v4: ts.conn, v6Err: "not in tests", icmpErr: "not in tests"}
+	socks := &Sockets{bindCapable: true, rawCapable: true, v4: ts.conn, v6Err: "not in tests"}
 	s, err := New(ctx, Deps{DB: d, Settings: set, Sockets: socks, Log: log,
 		Neighbour: func(ip netip.Addr) (string, bool) {
 			ts.nmu.Lock()
@@ -178,7 +178,17 @@ func openTestSvc(t *testing.T, d *db.DB, configure func(*settings.All)) *testSvc
 // packet sends a client packet into the service from 0.0.0.0 on eth0.
 func (ts *testSvc) packet(r *req) []sent {
 	ts.handle4(r.bytes(), testIfIndex, netip.AddrPortFrom(ip("0.0.0.0"), clientPort))
-	return ts.conn.take()
+	return ts.cur4().take()
+}
+
+// cur4 is the UDP 67 socket in use (the service may have opened a new one).
+func (ts *testSvc) cur4() *fakeConn4 {
+	if v4, _, _, _, _, _ := ts.Service.d.Sockets.get(); v4 != nil {
+		if c, ok := v4.(*fakeConn4); ok {
+			return c
+		}
+	}
+	return ts.conn
 }
 
 // reply parses the single reply of a packet exchange.
@@ -401,8 +411,12 @@ func TestHostnameConflicts(t *testing.T) {
 	if l := byIP["192.168.1.100"]; l.DNSName != "android.lan" || l.NameConflict {
 		t.Fatalf("first %+v", l)
 	}
-	if l := byIP["192.168.1.101"]; l.DNSName != "" || !l.NameConflict || l.Hostname != "android" {
+	// The second gets its generated name (DNS only: the display name stays).
+	if l := byIP["192.168.1.101"]; l.DNSName != "192-168-1-101.lan" || !l.NameGenerated || !l.NameConflict || l.Hostname != "android" {
 		t.Fatalf("second %+v", l)
+	}
+	if ts.LeaseName(ip("192.168.1.101")) != "android" {
+		t.Fatalf("display of the second %q", ts.LeaseName(ip("192.168.1.101")))
 	}
 	// A static entry for the second client with its own name.
 	if _, err := ts.CreateStatic(context.Background(), StaticInput{MAC: "02:00:00:00:00:02", IP: "192.168.1.101", Hostname: "tablet"}); err != nil {
@@ -479,7 +493,7 @@ func TestIgnored(t *testing.T) {
 
 func (ts *testSvc) handle4Out(b []byte, ifIndex int, from string) []sent {
 	ts.handle4(b, ifIndex, netip.AddrPortFrom(ip(from), clientPort))
-	return ts.conn.take()
+	return ts.cur4().take()
 }
 
 // INFORM gets the options without a lease, unicast to ciaddr.
@@ -540,20 +554,20 @@ func TestGates(t *testing.T) {
 	}
 	ts.env.bridge = func() bool { return true }
 	ts.evaluate(ctx, true)
-	if st := ts.Status(); st.State != StateUnavailable || st.Reason != reasonBridge || st.Available {
+	if st := ts.Status(); st.State != StateUnavailable || st.Reason != reasonBridge || st.ReasonCode != ReasonBridge || st.Available {
 		t.Fatalf("bridge: %+v", st)
 	}
 	ts.env.bridge = func() bool { return false }
 	ts.goos = "windows"
 	ts.evaluate(ctx, true)
-	if st := ts.Status(); st.Reason != reasonNotLinux {
+	if st := ts.Status(); st.Reason != reasonNotLinux || st.ReasonCode != ReasonNotLinux {
 		t.Fatalf("windows: %+v", st)
 	}
 	ts.goos = "linux"
-	ts.d2().requested = false
+	ts.d2().optOut = true
 	ts.evaluate(ctx, true)
-	if st := ts.Status(); st.Reason != reasonDisabled {
-		t.Fatalf("PICACHE_DHCP off: %+v", st)
+	if st := ts.Status(); st.Reason != reasonOptOut || st.ReasonCode != ReasonOptOut || st.Available {
+		t.Fatalf("PICACHE_DHCP=off: %+v", st)
 	}
 	if _, _, _, show := ts.Health(); show {
 		t.Fatal("health shown while off and unavailable")
@@ -561,9 +575,9 @@ func TestGates(t *testing.T) {
 	ts.set.Update(ctx, func(a *settings.All) error { enabledDHCP(a); return nil })
 	ts.evaluate(ctx, true)
 	if h, _, _, _ := ts.Health(); h != "warn" {
-		t.Fatalf("enabled but PICACHE_DHCP off: %s", h)
+		t.Fatalf("enabled but PICACHE_DHCP=off: %s", h)
 	}
-	ts.d2().requested, ts.d2().v4, ts.d2().v4Err = true, nil, "UDP port 67 is in use by another program"
+	ts.d2().optOut, ts.d2().v4, ts.d2().v4Err, ts.d2().v4Code = false, nil, "UDP port 67 is in use by another program", ReasonSocket
 	ts.evaluate(ctx, true)
 	if h, msg, _, _ := ts.Health(); h != "fail" || msg == "" {
 		t.Fatalf("socket failed: %s %s", h, msg)

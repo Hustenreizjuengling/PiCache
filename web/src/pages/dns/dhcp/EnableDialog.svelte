@@ -3,7 +3,8 @@
   Confirms switching the DHCP server on: what PiCache will hand out, that
   the router's DHCP server has to be switched off (FRITZ!Box menu path) and
   that PiCache needs a fixed address of its own (with the state of its
-  current one). Errors of the save are shown in the dialog.
+  current one) and, in a container, that PiCache restarts once (the ports
+  open only at start). Errors of the save are shown in the dialog.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -16,12 +17,14 @@
     settings: DhcpSettings | undefined
     /** The configured interface (from /dhcp/interfaces), if found. */
     iface: DhcpInterface | undefined
+    /** How PiCache runs (DhcpStatus.deployment). */
+    deployment?: string
     switching: boolean
     error?: string
     onconfirm: () => void
   }
 
-  let { open = $bindable(false), settings, iface, switching, error, onconfirm }: Props = $props()
+  let { open = $bindable(false), settings, iface, deployment, switching, error, onconfirm }: Props = $props()
 
   const address = $derived(iface ? privateAddresses(iface)[0]?.split('/')[0] : undefined)
 </script>
@@ -56,6 +59,13 @@
         <p class="small muted">{t('dns.dhcp.on.fixedUnknown')}</p>
       {/if}
     </section>
+
+    {#if deployment === 'docker'}
+      <section class="point">
+        <h3><span class="num" aria-hidden="true">3</span>{t('dns.dhcp.on.restartTitle')}</h3>
+        <p class="small muted">{t('dns.dhcp.on.restartText')}</p>
+      </section>
+    {/if}
 
     <p class="small muted">{t('dns.dhcp.on.devices')}</p>
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -185,10 +186,11 @@ type Backups struct {
 const BackupsLocal = "local"
 
 // DHCP configures the optional DHCP server (docs/ARCHITECTURE.md 18). It
-// serves only when the process opened the DHCP sockets (PICACHE_DHCP) and
-// no safety gate blocks it. Validate checks the form of the values; the
-// interface, the range and the router are checked against the live
-// interface (dhcp.Service.CheckSettings) when Enabled is true.
+// serves while Enabled is true, PICACHE_DHCP is not off and no safety gate
+// blocks it. Validate checks the form of the values; the interface, the
+// range and the router are checked against the live interface
+// (dhcp.Service.CheckSettings) when Enabled is true. It holds slices: compare
+// with Equal.
 type DHCP struct {
 	Enabled bool `json:"enabled"`
 	// Interface is the one interface served: not virtual, with exactly one
@@ -209,10 +211,42 @@ type DHCP struct {
 	// RegisterHostnames answers <host>.<domain> (and the PTR of the lease
 	// address) for leases with a host name.
 	RegisterHostnames bool `json:"registerHostnames"`
+	// GenerateNames (with RegisterHostnames and a domain) answers
+	// <a>-<b>-<c>-<d>.<domain> for active leases without a usable host
+	// name or whose name another client holds (DNS answers only).
+	GenerateNames bool `json:"generateNames"`
 	// IgnoreOtherServers serves although another DHCP server was detected
 	// (DANGEROUS: two servers hand out conflicting addresses).
-	IgnoreOtherServers bool     `json:"ignoreOtherServers"`
-	IPv6               DHCPIPv6 `json:"ipv6"`
+	IgnoreOtherServers bool `json:"ignoreOtherServers"`
+	// OnlyReserved ignores DHCPv4 clients without a reservation (a
+	// convenience, not an access control: MAC addresses can be forged).
+	OnlyReserved bool `json:"onlyReserved"`
+	// RapidCommit answers a DISCOVER that carries option 80 with an ACK
+	// (RFC 4039) while no other DHCP server counts.
+	RapidCommit bool        `json:"rapidCommit"`
+	Options     DHCPOptions `json:"options"`
+	IPv6        DHCPIPv6    `json:"ipv6"`
+}
+
+// DHCPOptions are the typed extra DHCPv4 options. NTP servers (42), the
+// MTU (26) and the WPAD URL (252) are sent only when the client asks for
+// them; the extra search domains follow the domain in option 119.
+type DHCPOptions struct {
+	NTPServers         []string `json:"ntpServers"`         // unicast IPv4 addresses, at most 4
+	MTU                int      `json:"mtu"`                // 0 = none, else 576–9000
+	WPADURL            string   `json:"wpadUrl"`            // "" = none, else an http(s) URL of at most 255 bytes
+	ExtraSearchDomains []string `json:"extraSearchDomains"` // at most 4, after the domain in option 119 (IPv4 only)
+}
+
+// Equal reports whether two DHCP sections are the same.
+func (d DHCP) Equal(o DHCP) bool {
+	return d.Enabled == o.Enabled && d.Interface == o.Interface && d.RangeStart == o.RangeStart && d.RangeEnd == o.RangeEnd &&
+		d.LeaseSeconds == o.LeaseSeconds && d.Router == o.Router && d.DNSServer == o.DNSServer && d.Domain == o.Domain &&
+		d.RegisterHostnames == o.RegisterHostnames && d.GenerateNames == o.GenerateNames &&
+		d.IgnoreOtherServers == o.IgnoreOtherServers && d.OnlyReserved == o.OnlyReserved && d.RapidCommit == o.RapidCommit &&
+		d.Options.MTU == o.Options.MTU && d.Options.WPADURL == o.Options.WPADURL &&
+		slices.Equal(d.Options.NTPServers, o.Options.NTPServers) &&
+		slices.Equal(d.Options.ExtraSearchDomains, o.Options.ExtraSearchDomains) && d.IPv6 == o.IPv6
 }
 
 // DHCPIPv6 configures PiCache's IPv6 DNS announcements on the DHCP
@@ -228,6 +262,12 @@ const (
 	DHCPMinLeaseSeconds = 300
 	DHCPMaxLeaseSeconds = 604800
 	DHCPMaxPoolSize     = 4096
+	DHCPMaxNTPServers   = 4
+	DHCPMaxSearch       = 4   // extra search domains
+	DHCPMinMTU          = 576 // RFC 2132 5.1
+	DHCPMaxMTU          = 9000
+	DHCPMaxWPADURL      = 255 // one option
+	DHCPMaxSearchWire   = 255 // the encoded search list in one option 119
 )
 
 // BlockingActive reports whether blocking is effective at t.
@@ -365,6 +405,18 @@ func (s *Store) Update(ctx context.Context, fn func(*All) error) (*All, error) {
 	next.normalize()
 	if err := next.Validate(); err != nil {
 		return nil, err
+	}
+	// The search list depends on dns.localDomain when dhcp.domain is empty;
+	// it is checked only when its own inputs (dhcp.domain, the extra
+	// domains) change, so neither a later change of the local domain nor
+	// any other DHCP change (switching it off, say) is refused because of
+	// extras the local domain broke (the DHCP server drops extra domains
+	// that no longer fit).
+	if old.DHCP.Domain != next.DHCP.Domain ||
+		!slices.Equal(old.DHCP.Options.ExtraSearchDomains, next.DHCP.Options.ExtraSearchDomains) {
+		if err := next.DHCP.checkSearchList(next.DNS.LocalDomain); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.persist(ctx, next); err != nil {
 		return nil, err

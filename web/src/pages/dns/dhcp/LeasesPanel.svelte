@@ -1,11 +1,12 @@
 <!--
   @component
   Addresses the DHCP server handed out (active and ended within 24 h,
-  newest first): host name with its DNS name (or why it has none), address
-  with a "reserved" badge, MAC address, when the lease ends, the configured
-  client. Admin actions per row: reserve the address (opens the reservation
-  panel prefilled), add the device as a client (MAC and address filled in)
-  and end the lease.
+  newest first): host name with its DNS name (a "generated" badge when it is
+  built from the address; why it has none), address with a "reserved"
+  badge, MAC address, when the lease ends, the configured client. Admin
+  actions per row: reserve the address (opens the reservation panel
+  prefilled, client ID included), add the device as a client (MAC and
+  address filled in) and end the lease.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -98,10 +99,16 @@
     {:else}
       <span class="subtle">{t('dns.dhcp.leases.noName')}</span>
     {/if}
-    {#if l.nameConflict}
+    {#if l.nameConflict && !l.dnsName}
       <span class="conflict small" title={t('dns.dhcp.leases.conflictHelp')}>{t('dns.dhcp.leases.conflict')}</span>
-    {:else if l.dnsName}
-      <span class="dns mono small">{l.dnsName}</span>
+    {:else if l.nameConflict}
+      <span class="conflict small" title={t('dns.dhcp.leases.conflictHelp')}>{t('dns.dhcp.leases.conflictShort')}</span>
+    {/if}
+    {#if l.dnsName}
+      <span class="dns">
+        <span class="mono small">{l.dnsName}</span>
+        {#if l.nameGenerated}<Badge title={t('dns.dhcp.leases.generatedHelp')}>{t('dns.dhcp.leases.generated')}</Badge>{/if}
+      </span>
     {/if}
   </span>
 {/snippet}
@@ -182,6 +189,9 @@
     white-space: nowrap;
   }
   .dns {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
     color: var(--text-2);
     white-space: nowrap;
   }

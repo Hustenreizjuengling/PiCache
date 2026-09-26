@@ -42,12 +42,16 @@ unprivileged Proxmox LXC container.
   detects a router that forwards every query or announces itself as IPv6
   DNS server, and gives the steps to fix it (including the FRITZ!Box
   settings). An optional scan finds devices that are switched on.
-- Optional DHCP server for routers that cannot hand out another DNS server:
-  addresses, static leases and DNS names for the devices' host names, plus
-  IPv6 DNS announcements (router advertisements with DNS server and domain
-  only, never as router; stateless DHCPv6). Off by default, and it refuses
-  to serve while another DHCP server answers or PiCache's own address is
-  dynamic.
+- Optional DHCP server for routers that cannot hand out another DNS server,
+  switched on in the web UI when needed (nothing to install; no DHCP port is
+  open while it is off): addresses, reservations (also by client identifier,
+  with their own lease time; import and export), DNS names for the devices'
+  host names (and generated names for the others), NTP, MTU, WPAD and extra
+  search domain options, a log of recent exchanges, plus IPv6 DNS
+  announcements (router advertisements with DNS server and domain only,
+  never as router; stateless DHCPv6) that warn when another router announces
+  its own DNS server. Off by default, and it refuses to serve while another
+  DHCP server answers or PiCache's own address is dynamic.
 - Blocking modes (null IP, NXDOMAIN, NODATA, REFUSED, custom IP), a timed
   pause, CNAME inspection, and blocking of the Firefox DoH canary and iCloud
   Private Relay.
@@ -99,9 +103,10 @@ unprivileged Proxmox LXC container.
   hardened systemd units, in a Proxmox LXC container, or as a distroless
   Docker image.
 - Updates: the UI shows new releases with their notes and installs one on
-  request, only with a valid release signature and with an automatic
-  rollback if the new version does not start. `sudo picache update` does the
-  same on the command line; Docker images come from GHCR.
+  request (the program and its systemd unit files), only with a valid
+  release signature and with an automatic rollback if the new version does
+  not start. `sudo picache update` does the same on the command line;
+  Docker images come from GHCR.
 
 ## Screenshots
 
@@ -167,7 +172,7 @@ on how it was built:
   automatic database copy before an upgrade, see
   [Updates](docs/DEPLOYMENT.md#updates).
 
-Not included: a DHCP server, DNS-over-HTTPS/TLS for clients, local DNSSEC
+Not included: DNS-over-HTTPS/TLS for clients, local DNSSEC
 validation, and more than one user account (one admin plus API tokens). TLS
 interception of downloads is never done. Docker Desktop on macOS and Windows
 is not a deployment target.
@@ -354,21 +359,26 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - Debian 12/13 with systemd (bare metal, VM, Raspberry Pi):
   `deploy/install.sh` installs `picache.service`, which runs as the system
-  user `picache` with only `CAP_NET_BIND_SERVICE`, `NoNewPrivileges=yes`,
+  user `picache` with only `CAP_NET_BIND_SERVICE` (and `CAP_NET_RAW`, used
+  only at start for the optional IPv6 router advertisements and dropped
+  right after; PiCache refuses to run if that fails), `NoNewPrivileges=yes`,
   `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`,
   `RestrictAddressFamilies`, `MemoryDenyWriteExecute` and
   `SystemCallFilter=@system-service ~@privileged`, among others. An optional
   root helper (`picache-storage.path` and `.service`) mounts NAS shares on
   request of the web UI, and the update helper (`picache-update.path` and
   `.service`, installed unless `--without-updater`) installs signed releases
-  on request of the web UI.
+  and their unit files on request of the web UI.
 - Docker: a multi-stage build (Node 22 and Go 1.27 Alpine stages) into
   `gcr.io/distroless/static-debian13` (no shell). The container starts as
-  root only to bind ports 53, 80 and 443, then drops to `65532:65532` before
-  it opens its data and checks that it cannot regain root. The compose
-  file uses host networking, `cap_drop: [ALL]` plus `NET_BIND_SERVICE`,
-  `SETUID` and `SETGID`, `no-new-privileges` and a read-only root
-  filesystem; the image's health check runs `picache healthcheck`, whose
+  root only to bind ports 53, 80 and 443 (and, while the DHCP server is
+  switched on, the DHCP ports and the raw socket for IPv6 router
+  advertisements), then drops to `65532:65532` before it opens its data and
+  checks that it cannot regain root. The compose file uses host networking,
+  `cap_drop: [ALL]` plus `NET_BIND_SERVICE`, `SETUID`, `SETGID` and
+  `NET_RAW` (used only at start for that raw socket; the switch to 65532
+  clears it with every other capability), `no-new-privileges` and a
+  read-only root filesystem; the image's health check runs `picache healthcheck`, whose
   DNS probe is answered locally and never counted or logged.
 - Proxmox VE: an unprivileged Debian container with `nesting=1` and the same
   installer. NAS shares are mounted on the Proxmox host and bind-mounted into
@@ -493,6 +503,10 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
 - **Sicher voreingestellt:** kein offener Resolver, unprivilegierter Dienst,
   Einrichtung per Einmal-Token, ein Admin-Konto mit optionaler
   Zwei-Faktor-Anmeldung, API-Tokens.
+- **DHCP-Server** (optional), falls der Router keinen anderen DNS-Server
+  verteilen kann: wird bei Bedarf in der Oberfläche eingeschaltet (keine
+  Installationsoption; solange er aus ist, belegt PiCache keinen DHCP-Port),
+  mit Reservierungen, DNS-Namen der Geräte und IPv6-DNS-Ankündigungen.
 - **Betrieb** auf Debian 12/13 (auch Raspberry Pi 4/5), in einem Proxmox-LXC
   oder mit Docker.
 - **Updates:** Die Oberfläche zeigt neue Versionen an und installiert sie auf

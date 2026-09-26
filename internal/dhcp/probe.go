@@ -56,12 +56,13 @@ func (r *probeRun) add(address, serverID, offer netip.Addr) {
 
 // Probe looks for other DHCP servers on the configured interface (else the
 // interface of the default route) and returns what answered within 5 s
-// (POST /dhcp/probe): apperr.Unavailable when DHCP is unavailable,
-// apperr.TooMany within 10 s of the previous probe, apperr.Invalid (field
-// dhcp.interface) when the interface cannot be probed.
+// (POST /dhcp/probe): apperr.Unavailable when DHCP is unavailable here or
+// UDP 67 cannot be opened, apperr.TooMany within 10 s of the previous
+// probe, apperr.Invalid (field dhcp.interface) when the interface cannot
+// be probed. While DHCP is off UDP 67 is opened for this probe only.
 func (s *Service) Probe(ctx context.Context) (ProbeResult, error) {
 	v := s.view.Load()
-	if ok, reason := s.availability(); !ok {
+	if ok, _, reason := s.support(); !ok {
 		return ProbeResult{}, apperr.Unavailable("the DHCP server is not available: %s", reason)
 	}
 	name := s.d.Settings.Get().DHCP.Interface
@@ -86,7 +87,12 @@ func (s *Service) Probe(ctx context.Context) (ProbeResult, error) {
 	}
 	s.apiProbe = now
 	s.mu.Unlock()
+	release, err := s.probeSocket()
+	if err != nil {
+		return ProbeResult{}, err
+	}
 	res, err := s.runProbe(ctx, iface)
+	release()
 	if err != nil {
 		return ProbeResult{}, err
 	}
@@ -103,6 +109,49 @@ func (s *Service) Probe(ctx context.Context) (ProbeResult, error) {
 	}
 	s.Kick()
 	return res, nil
+}
+
+// probeSocket makes sure UDP 67 is open for a probe: while DHCP is off it
+// is opened for this probe only (release closes it again unless DHCP was
+// switched on meanwhile). In an installation that opens the DHCP ports
+// only at start (Docker) the search needs DHCP switched on.
+func (s *Service) probeSocket() (release func(), err error) {
+	s.sockMu.Lock()
+	defer s.sockMu.Unlock()
+	so := s.d.Sockets
+	so.mu.Lock()
+	open, held, bindCapable := so.v4 != nil, so.probeHold, so.bindCapable
+	so.mu.Unlock()
+	if open {
+		return func() {}, nil
+	}
+	if held {
+		return nil, apperr.TooMany("a search for DHCP servers is running")
+	}
+	c, err := s.listen4()
+	switch {
+	case err != nil && bindDenied(err) && bindCapable:
+		return nil, apperr.Unavailable("the search for DHCP servers needs the DHCP server switched on here: PiCache opens the DHCP ports " +
+			"only at start in this installation (switch it on, restart PiCache, then search)")
+	case err != nil:
+		return nil, apperr.Unavailable("the DHCP server is not available: %s", socketErr("UDP port 67", err))
+	}
+	so.mu.Lock()
+	so.v4, so.v4Err, so.v4Code, so.probeHold = c, "", "", true
+	so.mu.Unlock()
+	s.startReader4(c)
+	return func() {
+		s.sockMu.Lock()
+		defer s.sockMu.Unlock()
+		supported, _, _ := s.support()
+		keep := supported && s.d.Settings.Get().DHCP.Enabled
+		so.mu.Lock()
+		defer so.mu.Unlock()
+		so.probeHold = false
+		if !keep && so.v4 == c {
+			so.closeV4Locked()
+		}
+	}, nil
 }
 
 // runProbe sends a DHCPDISCOVER as a relay agent (giaddr = PiCache's

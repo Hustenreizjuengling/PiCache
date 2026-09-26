@@ -2,8 +2,10 @@ package ra
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 )
@@ -178,4 +180,102 @@ func TestEncodeDomain(t *testing.T) {
 			t.Errorf("%q", bad)
 		}
 	}
+}
+
+// advMsg is a router advertisement with the given options after the header.
+func advMsg(flags byte, lifetime uint16, opts ...[]byte) []byte {
+	b := make([]byte, headerLen)
+	b[0], b[5] = TypeRouterAdvertisement, flags
+	binary.BigEndian.PutUint16(b[6:8], lifetime)
+	for _, o := range opts {
+		b = append(b, o...)
+	}
+	return b
+}
+
+func rdnss(life uint32, addrs ...string) []byte {
+	b := []byte{optRDNSS, byte(1 + 2*len(addrs)), 0, 0}
+	b = binary.BigEndian.AppendUint32(b, life)
+	for _, a := range addrs {
+		x := netip.MustParseAddr(a).As16()
+		b = append(b, x[:]...)
+	}
+	return b
+}
+
+// Other routers' advertisements: hop limit 255, a link-local source, code
+// 0, at least 16 bytes, options with a length inside the message; RDNSS of
+// a wrong length is skipped, at most 8 addresses are kept.
+func TestParseAdvertisement(t *testing.T) {
+	ll := netip.MustParseAddr("fe80::1")
+	mac := []byte{optSourceLinkLayer, 1, 0x3c, 0xa6, 0x2f, 0, 0, 1}
+	b := advMsg(0xc0, 1800, mac, rdnss(600, "fd00::1", "fe80::1"))
+	r, err := ParseAdvertisement(b, 255, ll)
+	if err != nil || !r.Managed || !r.Other || r.RouterLifetime != 1800*time.Second || !r.HasMAC || r.SourceMAC != [6]byte(mac[2:]) ||
+		len(r.DNS) != 2 || r.DNS[0].Lifetime != 600*time.Second || r.DNS[1].Addr != ll {
+		t.Fatalf("%+v %v", r, err)
+	}
+	var many []string
+	for i := range 10 {
+		many = append(many, netip.AddrFrom16([16]byte{0xfd, 15: byte(i + 1)}).String())
+	}
+	if r, _ := ParseAdvertisement(advMsg(0, 0, rdnss(600, many...)), 255, ll); len(r.DNS) != MaxDNS {
+		t.Fatalf("bounded %d", len(r.DNS))
+	}
+	if r, err := ParseAdvertisement(advMsg(0, 0, []byte{optRDNSS, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}), 255, ll); err != nil || len(r.DNS) != 0 {
+		t.Fatalf("short RDNSS: %+v %v", r, err)
+	}
+	for name, tc := range map[string]struct {
+		b    []byte
+		hops int
+		src  netip.Addr
+	}{
+		"hop limit":   {b, 64, ll},
+		"global src":  {b, 255, netip.MustParseAddr("2001:db8::1")},
+		"ipv4 src":    {b, 255, netip.MustParseAddr("192.168.1.1")},
+		"short":       {b[:15], 255, ll},
+		"code":        {func() []byte { c := slices.Clone(b); c[1] = 1; return c }(), 255, ll},
+		"type":        {func() []byte { c := slices.Clone(b); c[0] = 133; return c }(), 255, ll},
+		"zero length": {advMsg(0, 0, []byte{optRDNSS, 0, 0, 0, 0, 0, 0, 0}), 255, ll},
+		"overlong":    {advMsg(0, 0, []byte{optRDNSS, 3, 0, 0}), 255, ll},
+		"one byte":    {advMsg(0, 0, []byte{1}), 255, ll},
+		"too long":    {append(slices.Clone(b), make([]byte, 1500)...), 255, ll},
+	} {
+		if _, err := ParseAdvertisement(tc.b, tc.hops, tc.src); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+	// PiCache's own advertisement parses (it carries RDNSS and DNSSL).
+	own := Advertisement{MAC: [6]byte{2, 0, 0, 0, 0, 1}, DNS: netip.MustParseAddr("fd00::10"), Domain: "lan", OtherConfig: true}
+	if r, err := ParseAdvertisement(own.Marshal(Lifetime), 255, ll); err != nil || !r.Other || r.RouterLifetime != 0 || len(r.DNS) != 1 {
+		t.Fatalf("own %+v %v", r, err)
+	}
+}
+
+// The solicitation of the search: type 133 code 0 with the source
+// link-layer address; a valid one by ValidSolicitation's rules.
+func TestSolicitation(t *testing.T) {
+	mac := [6]byte{2, 0, 0, 0, 0, 1}
+	b := Solicitation(mac)
+	if !ValidSolicitation(b, 255, netip.MustParseAddr("fe80::1")) {
+		t.Fatalf("% x", b)
+	}
+	if got, ok := SolicitationSource(b); !ok || got != mac {
+		t.Fatalf("source %v %v", got, ok)
+	}
+	if _, ok := SolicitationSource([]byte{133, 0, 0, 0, 0, 0, 0, 0}); ok {
+		t.Fatal("source without the option")
+	}
+}
+
+func FuzzParseAdvertisement(f *testing.F) {
+	f.Add(advMsg(0xc0, 1800, []byte{optSourceLinkLayer, 1, 1, 2, 3, 4, 5, 6}, rdnss(600, "fd00::1")))
+	f.Add(advMsg(0, 0, []byte{optRDNSS, 0}))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		r, err := ParseAdvertisement(b, 255, netip.MustParseAddr("fe80::1"))
+		if err == nil && len(r.DNS) > MaxDNS {
+			t.Fatalf("%d DNS servers", len(r.DNS))
+		}
+		SolicitationSource(b)
+	})
 }

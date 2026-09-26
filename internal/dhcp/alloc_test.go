@@ -44,7 +44,7 @@ func TestCandidateOrder(t *testing.T) {
 	tb := newTable()
 	a, b := "02:00:00:00:00:0a", "02:00:00:00:00:0b"
 	got := func(mac string, requested netip.Addr, tried map[netip.Addr]bool) (netip.Addr, bool) {
-		ip, check, ok := tb.candidate(p, mac, requested, tried, t0)
+		ip, check, ok := tb.candidate(p, mac, tb.statics[mac], requested, tried, t0)
 		if !ok {
 			return netip.Addr{}, false
 		}
@@ -122,21 +122,37 @@ func TestDecideRequest(t *testing.T) {
 		{b, "192.168.1.100", verdictNak}, // outside the range
 		{"02:00:00:00:00:0c", "192.168.1.11", verdictAck},
 	} {
-		if got := tb.decideRequest(p, tc.mac, ip(tc.want), t0); got != tc.v {
+		if got := tb.decideRequest(p, tc.mac, tb.statics[tc.mac], ip(tc.want), t0); got != tc.v {
 			t.Errorf("%s asks %s: %v, want %v", tc.mac, tc.want, got, tc.v)
 		}
 	}
 	// No record: acknowledged after the neighbour check.
 	delete(tb.quarantine, ip("192.168.1.8"))
-	if got := tb.decideRequest(p, a, ip("192.168.1.8"), t0); got != verdictCheck {
+	if got := tb.decideRequest(p, a, nil, ip("192.168.1.8"), t0); got != verdictCheck {
 		t.Fatalf("free address: %v", got)
 	}
 	// A client with a free static address is moved there.
 	tb.putStatic(&static{mac: a, ip: ip("192.168.1.200")})
-	if got := tb.decideRequest(p, a, ip("192.168.1.8"), t0); got != verdictNak {
+	if got := tb.decideRequest(p, a, tb.statics[a], ip("192.168.1.8"), t0); got != verdictMove {
 		t.Fatalf("static elsewhere: %v", got)
 	}
-	if got := tb.decideRequest(p, a, ip("192.168.1.200"), t0); got != verdictAck {
+	if got := tb.decideRequest(p, a, tb.statics[a], ip("192.168.1.200"), t0); got != verdictAck {
 		t.Fatalf("static outside the range: %v", got)
+	}
+	// A client matched by its client identifier gets the reservation's
+	// address although the reservation's MAC is another one; others do not.
+	tb.putStatic(&static{mac: "02:00:00:00:00:0e", ip: ip("192.168.1.201"), clientID: "01:02:03"})
+	res := tb.staticCID["01:02:03"]
+	if got := tb.decideRequest(p, b, res, ip("192.168.1.201"), t0); got != verdictAck {
+		t.Fatalf("client-ID match: %v", got)
+	}
+	if got := tb.decideRequest(p, b, nil, ip("192.168.1.201"), t0); got != verdictNak {
+		t.Fatalf("unmatched client on a reserved address: %v", got)
+	}
+	if ip, _, ok := tb.candidate(p, b, res, netip.Addr{}, nil, t0); !ok || ip != netip.MustParseAddr("192.168.1.201") {
+		t.Fatalf("client-ID candidate %v %v", ip, ok)
+	}
+	if !tb.freeFor(ip("192.168.1.201"), b, res, t0) || tb.freeFor(ip("192.168.1.201"), b, nil, t0) {
+		t.Fatal("freeFor ignores the matched reservation")
 	}
 }

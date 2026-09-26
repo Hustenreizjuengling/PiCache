@@ -20,8 +20,9 @@
 #   - Router resolver "auto" sees the Docker gateway instead of your router:
 #     set the router resolver (dns.routerResolver) to your router's IP under
 #     DNS -> DNS settings to resolve local host names.
-#   - The DHCP server is not available: DHCP broadcasts do not cross the
-#     bridge. Use docker-compose.yml (host networking) with PICACHE_DHCP.
+#   - The DHCP server is not available in bridge mode: DHCP broadcasts do
+#     not cross the bridge (so this file has no NET_RAW). Use
+#     docker-compose.yml (host networking) for it.
 #
 # Port 53: publishing 0.0.0.0:53 fails while systemd-resolved's stub
 # (127.0.0.53) or another DNS server listens on the host. Publish on the

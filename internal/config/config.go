@@ -51,14 +51,29 @@ type Config struct {
 
 	MountRoot string // PICACHE_MOUNT_ROOT: the only place NAS stores may live, default /srv/picache
 
-	// DHCP (PICACHE_DHCP=on) opens the DHCP sockets at start (UDP 67 and
-	// 547, and the raw ICMPv6 socket for router advertisements when the
-	// process may) before the privilege drop. Off by default: without it
-	// the DHCP settings can be edited but serve nothing.
-	DHCP bool
+	// DHCP (PICACHE_DHCP) decides which DHCP sockets are opened at start,
+	// before the privilege drop: unset, the markers the DHCP service keeps
+	// in the data directory; off, none ever (the DHCP server cannot be
+	// switched on); on (earlier versions' opt-in), all of them.
+	DHCP DHCPMode
 
 	Dev bool // PICACHE_DEV: development mode (relaxed platform checks, verbose errors in log)
 }
+
+// DHCPMode is the value of PICACHE_DHCP.
+type DHCPMode int
+
+const (
+	// DHCPAuto (unset): the DHCP server is available and switched on in
+	// the web UI; the DHCP service's markers decide what opens at start.
+	DHCPAuto DHCPMode = iota
+	// DHCPOff (off, no, 0, false, …): opt-out, no DHCP socket is ever opened.
+	DHCPOff
+	// DHCPOn (on, yes, 1, true, …): the opt-in of versions before 0.8.0,
+	// kept for upgrades: every DHCP socket is opened at start and the
+	// service closes what the settings do not need.
+	DHCPOn
+)
 
 // Paths are files and directories derived from DataDir.
 type Paths struct {
@@ -198,14 +213,23 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 		}
 		c.LogLevel = lvl
 	}
-	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev, "PICACHE_WEB_SECURE_COOKIES": &c.WebSecureCookies,
-		"PICACHE_DHCP": &c.DHCP} {
+	for key, dst := range map[string]*bool{"PICACHE_DEV": &c.Dev, "PICACHE_WEB_SECURE_COOKIES": &c.WebSecureCookies} {
 		if v := getenv(key); v != "" {
 			b, err := parseSwitch(v)
 			if err != nil {
 				return fmt.Errorf("%s: %w", key, err)
 			}
 			*dst = b
+		}
+	}
+	if v := getenv("PICACHE_DHCP"); v != "" {
+		on, err := parseSwitch(v)
+		if err != nil {
+			return fmt.Errorf("PICACHE_DHCP: %w (unset it to allow the DHCP server, off to prevent it)", err)
+		}
+		c.DHCP = DHCPOff
+		if on {
+			c.DHCP = DHCPOn
 		}
 	}
 

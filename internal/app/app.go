@@ -127,11 +127,14 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	defer a.ln.closeAll()
 
 	// 2. Drop privileges (Docker: root → PICACHE_RUN_AS) before touching
-	//    files, and CAP_NET_RAW (systemd grants it for the DHCP raw socket).
+	//    files, and CAP_NET_RAW (systemd grants it for the DHCP raw socket):
+	//    PiCache refuses to run while it holds it.
 	if err := a.dropPrivileges(); err != nil {
 		return err
 	}
-	a.dropRawCapability()
+	if err := a.dropRawCapability(); err != nil {
+		return err
+	}
 	if os.Geteuid() == 0 {
 		log.Warn("running as root; use the provided systemd unit or set PICACHE_RUN_AS (Docker)")
 	}
@@ -163,6 +166,23 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	return a.serve(ctx)
 }
 
+// deployment reports how PiCache runs, for the DHCP page: docker (a
+// Docker or Podman container, as for the update mode), systemd (a systemd
+// service) or other.
+func (a *App) deployment() string {
+	if a.storage == nil {
+		return dhcp.DeploymentOther
+	}
+	caps := a.storage.Capabilities()
+	switch {
+	case caps.Container == "docker" || caps.Container == "podman":
+		return dhcp.DeploymentDocker
+	case runsAsSystemdService(caps.Systemd):
+		return dhcp.DeploymentSystemd
+	}
+	return dhcp.DeploymentOther
+}
+
 // newApp returns the process state before anything is opened.
 func newApp(cfg *config.Config, log *slog.Logger) *App {
 	return &App{cfg: cfg, paths: cfg.Paths(), log: log, started: time.Now(),
@@ -170,23 +190,27 @@ func newApp(cfg *config.Config, log *slog.Logger) *App {
 		restart: make(chan struct{}, 1)}
 }
 
-// dropRawCapability drops CAP_NET_RAW after the DHCP sockets are open
-// (dropNetRaw). If that fails, the raw socket is closed: without proof
-// that the capability is gone, PiCache sends no router advertisements.
-// DNS keeps running either way.
-func (a *App) dropRawCapability() {
-	err := dropNetRaw()
+// dropNetRawFn is dropNetRaw (tests replace it).
+var dropNetRawFn = dropNetRaw
+
+// dropRawCapability drops CAP_NET_RAW after the DHCP sockets are open, on
+// every start (dropNetRaw). Fail closed: when the capability could not be
+// dropped PiCache refuses to run (Run returns the error). When the thread
+// capabilities cannot be read at all but a raw socket is refused, the raw
+// socket is closed (no router advertisements; the health check dhcp
+// fails) and DNS keeps running.
+func (a *App) dropRawCapability() error {
+	unverified, err := dropNetRawFn()
 	switch {
-	case err == nil:
-		if a.ln.dhcp.HasRaw() {
-			a.log.Info("CAP_NET_RAW is not held after opening the ICMPv6 socket for router advertisements")
-		}
+	case err != nil:
+		return fmt.Errorf("CAP_NET_RAW could not be dropped: %w; refusing to run with it", err)
+	case unverified != nil:
+		a.ln.dhcp.SetDropUnverified("could not verify that CAP_NET_RAW was dropped: " + unverified.Error())
+		a.log.Error("router advertisements disabled: could not verify that CAP_NET_RAW was dropped", slog.Any("err", unverified))
 	case a.ln.dhcp.HasRaw():
-		a.ln.dhcp.DisableRouterAdvertisements("CAP_NET_RAW could not be dropped after start: " + err.Error())
-		a.log.Error("router advertisements disabled: CAP_NET_RAW could not be dropped", slog.Any("err", err))
-	default:
-		a.log.Warn("could not verify that CAP_NET_RAW is not held", slog.Any("err", err))
+		a.log.Info("CAP_NET_RAW is not held after opening the ICMPv6 socket for router advertisements")
 	}
+	return nil
 }
 
 func (a *App) prepareDirs() error {
@@ -276,11 +300,12 @@ func (a *App) build(ctx context.Context) error {
 		return fmt.Errorf("services: %w", err)
 	}
 	// The DHCP tables exist on every installation (backups, restores); the
-	// server itself needs PICACHE_DHCP (the sockets bound at start).
+	// server is switched on in the web UI (not with PICACHE_DHCP=off).
 	if a.dhcp, err = dhcp.New(ctx, dhcp.Deps{
-		DB: a.cdb, Settings: a.set, Sockets: a.ln.dhcp,
-		Bridge:    func() bool { return a.dns != nil && a.dns.BridgeNetwork() },
-		Neighbour: a.clients.NeighbourMAC, OnNames: a.clients.LeaseNamesChanged, Log: log,
+		DB: a.cdb, Settings: a.set, Sockets: a.ln.dhcp, DataDir: a.cfg.DataDir,
+		Bridge:     func() bool { return a.dns != nil && a.dns.BridgeNetwork() },
+		Deployment: a.deployment,
+		Neighbour:  a.clients.NeighbourMAC, OnNames: a.clients.LeaseNamesChanged, Log: log,
 	}); err != nil {
 		return fmt.Errorf("dhcp: %w", err)
 	}

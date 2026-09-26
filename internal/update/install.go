@@ -81,9 +81,16 @@ type Host struct {
 	RunVersion func(ctx context.Context, path string) (string, error)
 	// Lock serialises updates of the CLI and the helper (nil: none).
 	Lock func(dataDir string) (unlock func(), err error)
+	// UnitDir is where the unit files are installed (DefaultUnitDir on a
+	// systemd host); "" skips the unit step.
+	UnitDir string
+	// UnitFragment returns the file systemd loaded picache.service from
+	// (nil: not checked).
+	UnitFragment func(ctx context.Context) (string, error)
 	// Strict enables what only a real root run can do: the directory of the
-	// binary and all its parents must be owned by root and not writable by
-	// others, and a restored database gets the owner of the file it replaces.
+	// binary (and of the units) and all its parents must be owned by root
+	// and not writable by others, the unit files are written as root:root,
+	// and a restored database gets the owner of the file it replaces.
 	Strict         bool
 	HealthTimeout  time.Duration // 0: DefaultHealthTimeout
 	HealthInterval time.Duration // 0: 2 s
@@ -121,6 +128,11 @@ type applier struct {
 	staged string // <bindir>/.picache.update
 	prev   string // <bindir>/picache.prev
 	asset  string // picache-linux-<arch>
+
+	version  string            // the version being installed
+	units    map[string][]byte // unit files of the release (nil: not updated)
+	replaced []string          // units replaced in this run (restored on a rollback)
+	unitNote string            // why the unit files were not updated ("" when they were or need not be)
 }
 
 func newApplier(o Options) (*applier, error) {
@@ -192,12 +204,31 @@ func (a *applier) run(ctx context.Context, res Result) (Result, error) {
 	// Steps 1-3: signature, then the binary.
 	dctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
-	want, err := a.verifiedSum(dctx)
+	sums, err := a.verifiedSums(dctx)
 	if err != nil {
 		return res, err
 	}
+	want, ok := sums[a.asset]
+	if !ok {
+		return res, fmt.Errorf("%s has no entry for %s", SumsFile, a.asset)
+	}
 	if err := a.download(dctx, want); err != nil {
 		return res, err
+	}
+	// The unit files of the release, checked like the binary before anything
+	// is changed (only where they can be replaced).
+	switch note := a.unitStepReady(ctx); {
+	case note != "":
+		if a.h.UnitDir != "" {
+			a.unitNote = note
+			a.log.Warn("the unit files are not updated", slog.String("reason", note))
+		}
+	default:
+		units, err := a.deployUnits(dctx, sums)
+		if err != nil && !errors.Is(err, errNoUnits) {
+			return res, err
+		}
+		a.units = units
 	}
 	// Step 4: the binary must be the version that was asked for.
 	out, err := a.h.RunVersion(ctx, a.staged)
@@ -221,11 +252,14 @@ func (a *applier) run(ctx context.Context, res Result) (Result, error) {
 			return res, err
 		}
 	}
-	// Step 5: keep the old binary, then replace it atomically.
+	// Step 5: keep the old binary, then replace it atomically; then the
+	// unit files (never fatal).
+	a.version = res.Version
 	a.progress(StepInstall, "installing "+res.Version+" as "+a.bin+" (previous version kept as "+a.prev+")")
 	if err := a.install(); err != nil {
 		return res, err
 	}
+	a.installUnits(ctx)
 	// Step 6: restart and wait for the health probe.
 	restartAt := time.Now()
 	a.progress(StepRestart, "restarting "+Service)
@@ -236,6 +270,9 @@ func (a *applier) run(ctx context.Context, res Result) (Result, error) {
 	}
 	if err == nil {
 		res.State, res.Message = StateSucceeded, "PiCache "+res.Version+" is running"
+		if a.unitNote != "" {
+			res.Message = sanitizeMessage(res.Message + "; the unit files were not updated (" + a.unitNote + "): run the one-line installer once")
+		}
 		a.progress(StepDone, res.Message)
 		return res, nil
 	}
@@ -288,31 +325,23 @@ func (a *applier) checkInstalled(ctx context.Context) error {
 	return nil
 }
 
-// verifiedSum downloads SHA256SUMS and its signature, verifies the
-// signature and returns the SHA-256 of the binary for this architecture.
-func (a *applier) verifiedSum(ctx context.Context) ([32]byte, error) {
+// verifiedSums downloads SHA256SUMS and its signature, verifies the
+// signature and returns the SHA-256 of every release file.
+func (a *applier) verifiedSums(ctx context.Context) (map[string][32]byte, error) {
 	a.progress(StepDownload, "downloading "+SumsFile+" and "+SigFile+" from "+a.o.Files.Describe())
 	sums, err := readLimited(ctx, a.o.Files, SumsFile, maxSumsSize)
 	if err != nil {
-		return [32]byte{}, err
+		return nil, err
 	}
 	sig, err := readLimited(ctx, a.o.Files, SigFile, maxSigSize)
 	if err != nil {
-		return [32]byte{}, err
+		return nil, err
 	}
 	a.progress(StepVerify, "verifying the signature of "+SumsFile)
 	if err := verifySignature(sums, sig, trustedKeys); err != nil {
-		return [32]byte{}, err
+		return nil, err
 	}
-	table, err := parseSums(sums)
-	if err != nil {
-		return [32]byte{}, err
-	}
-	want, ok := table[a.asset]
-	if !ok {
-		return [32]byte{}, fmt.Errorf("%s has no entry for %s", SumsFile, a.asset)
-	}
-	return want, nil
+	return parseSums(sums)
 }
 
 // download writes the binary to the staging file (mode 0700) and checks
@@ -413,6 +442,10 @@ func (a *applier) rollback(ctx context.Context, res Result, since time.Time, cau
 	old := a.o.Current
 	a.progress(StepRollback, fmt.Sprintf("%s did not become healthy (%v); rolling back to %s", res.Version, cause, old))
 	var errs []error
+	// Exactly the unit files this run replaced go back first.
+	if err := a.rollbackUnits(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("put the unit files back: %w", err))
+	}
 	stopped := true
 	if err := a.h.Systemctl(ctx, "stop", Service); err != nil {
 		errs = append(errs, fmt.Errorf("stop %s: %w", Service, err))

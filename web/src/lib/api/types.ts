@@ -421,9 +421,24 @@ export interface DhcpIpv6Settings {
 }
 
 /**
- * settings.DHCP (PATCH /settings/dhcp; field errors "dhcp.<member>" and
- * "dhcp.ipv6.<member>"). Interface and range are checked against the live
- * interface only while `enabled` is true.
+ * settings.DHCPOptions: typed DHCPv4 options, each sent only when a device
+ * asks for it (field errors "dhcp.options.<member>", lists also "[i]").
+ */
+export interface DhcpOptions {
+  /** Option 42: at most 4 unicast IPv4 addresses. */
+  ntpServers: string[]
+  /** Option 26: 0 = not sent, else 576..9000. */
+  mtu: number
+  /** Option 252: "" or an absolute http(s) URL (printable ASCII, at most 255 bytes). */
+  wpadUrl: string
+  /** Option 119 after the effective domain: at most 4 domains (IPv4 only). */
+  extraSearchDomains: string[]
+}
+
+/**
+ * settings.DHCP (PATCH /settings/dhcp; field errors "dhcp.<member>",
+ * "dhcp.options.<member>" and "dhcp.ipv6.<member>"). Interface and range are
+ * checked against the live interface only while `enabled` is true.
  */
 export interface DhcpSettings {
   enabled: boolean
@@ -441,8 +456,15 @@ export interface DhcpSettings {
   domain: string
   /** Lease host names become DNS names. */
   registerHostnames: boolean
+  /** Leases without a usable (or with a taken) host name answer as "192-168-1-23.<domain>" (DNS only; default true). */
+  generateNames: boolean
   /** Serve although another DHCP server answers. */
   ignoreOtherServers: boolean
+  /** DHCPv4 messages of devices without a reservation are ignored (INFORM and RELEASE excepted). */
+  onlyReserved: boolean
+  /** Answer a DISCOVER with option 80 by an ACK while no other DHCP server counts (default false). */
+  rapidCommit: boolean
+  options: DhcpOptions
   ipv6: DhcpIpv6Settings
 }
 
@@ -809,6 +831,11 @@ export interface Ipv6DnsData {
   global: string[]
   /** This machine has no ULA/GUA and ignores router advertisements (Linux accept_ra = 0). */
   hostIgnoresRA: boolean
+  /**
+   * DNS servers (RDNSS) the IPv6 default router announces; present only while
+   * PiCache records router advertisements (its own are on), [] = none.
+   */
+  routerRdnss?: string[]
 }
 
 export interface Ipv6AddressData {
@@ -913,8 +940,33 @@ export interface NetworkScanStarted {
 
 // ---------------------------------------------------------------- dhcp server
 
-/** unavailable: PICACHE_DHCP off, bridge mode, non-Linux or sockets failed; blocked: enabled, but a blocker applies. */
+/** unavailable: see DhcpReasonCode; blocked: enabled, but a blocker applies. */
 export type DhcpState = 'unavailable' | 'off' | 'blocked' | 'serving' | 'error'
+
+/**
+ * Why the DHCP server is unavailable: PICACHE_DHCP=off (opt-out), not Linux,
+ * a container network (bridge), the ports could not be opened (socket: e.g.
+ * another DHCP server on this host), or they open only at the next start
+ * (restart-required: Docker after the switch to PICACHE_RUN_AS).
+ */
+export type DhcpReasonCode = 'opt-out' | 'not-linux' | 'bridge' | 'socket' | 'restart-required' | (string & {})
+
+/** How PiCache runs: a Docker/Podman container, a systemd service or anything else. */
+export type DhcpDeployment = 'systemd' | 'docker' | 'other' | (string & {})
+
+/**
+ * Why router advertisements are not available: DHCP itself is unavailable,
+ * the raw socket opens at the next start, the process lacked CAP_NET_RAW at
+ * this start (also reported while the option is off), dropping CAP_NET_RAW
+ * could not be verified, or opening the socket failed otherwise.
+ */
+export type DhcpRaReasonCode =
+  | 'dhcp-unavailable'
+  | 'restart-required'
+  | 'no-cap-net-raw'
+  | 'drop-unverified'
+  | 'socket'
+  | (string & {})
 
 /** Why an enabled DHCP server does not serve (docs/ARCHITECTURE.md §18). */
 export type DhcpBlocker = 'dynamic-address' | 'other-server' | 'no-interface' | 'range'
@@ -964,9 +1016,10 @@ export type DhcpIpv6Blocker = 'no-ula' | 'no-interface' | 'no-raw-socket' | 'no-
 
 export interface DhcpRaStatus {
   enabled: boolean
-  /** false without the raw ICMPv6 socket (CAP_NET_RAW). */
+  /** false exactly while reasonCode is set. */
   available: boolean
   reason?: string
+  reasonCode?: DhcpRaReasonCode
   state: DhcpRaState
   blockers: DhcpIpv6Blocker[]
   /** The announced ULA. */
@@ -988,11 +1041,47 @@ export interface Dhcpv6Status {
   error?: string
 }
 
+/**
+ * Another router or DHCPv6 server that announces DNS on the interface: seen
+ * in a router advertisement (kind ra) or answering PiCache's relayed
+ * information request (kind dhcpv6).
+ */
+export interface DhcpAnnouncer {
+  kind: 'ra' | 'dhcpv6' | (string & {})
+  /** Source address (link-local for router advertisements). */
+  address: string
+  interface: string
+  /** dhcpv6 only: the server's DUID (hex). */
+  serverId?: string
+  /** Announced DNS servers. */
+  dns: string[]
+  /** The entries of dns that are addresses of this machine (PiCache itself; they never warn). */
+  ownDns: string[]
+  /** ra only: the M flag (addresses from DHCPv6). */
+  managed?: boolean
+  /** ra only: the O flag (other information from DHCPv6). */
+  other?: boolean
+  /** ra only: seconds; 0 = not a default router. */
+  routerLifetime?: number
+  firstSeen: Timestamp
+  lastSeen: Timestamp
+  /** Announces a DNS server that is not PiCache while PiCache announces itself (seen at least twice). */
+  conflict: boolean
+}
+
 /** GET /dhcp */
 export interface DhcpStatus {
   available: boolean
-  /** Why the DHCP server is unavailable. */
+  /** Why the DHCP server is unavailable (English text for logs; the UI uses reasonCode). */
   reason?: string
+  /** Set whenever state is unavailable. */
+  reasonCode?: DhcpReasonCode
+  /**
+   * Why a marker file could not be written (English text), in every state.
+   * With reasonCode restart-required a restart will not open the ports.
+   */
+  markerError?: string
+  deployment: DhcpDeployment
   state: DhcpState
   blockers: DhcpBlocker[]
   error?: string
@@ -1007,6 +1096,10 @@ export interface DhcpStatus {
   ipv6: {
     routerAdvertisements: DhcpRaStatus
     dhcpv6: Dhcpv6Status
+    /** Newest first, at most 32. */
+    otherAnnouncers: DhcpAnnouncer[]
+    /** The last search for other announcers and which parts ran. */
+    lastSearch?: { time: Timestamp; ra: boolean; dhcpv6: boolean }
   }
 }
 
@@ -1057,7 +1150,9 @@ export interface DhcpLease {
   clientName?: string
   /** The DNS name the lease answers (with registerHostnames). */
   dnsName?: string
-  /** Another active lease holds the host name: this one gets no DNS name. */
+  /** dnsName was generated from the address (generateNames): DNS only. */
+  nameGenerated?: boolean
+  /** Another active lease holds the host name: this one gets no name of its own. */
   nameConflict?: boolean
 }
 
@@ -1066,18 +1161,78 @@ export interface DhcpStaticLease {
   ip: string
   hostname?: string
   comment?: string
+  /** Option 61 as colon-separated hex (lower case): also matches a device that sends it. */
+  clientId?: string
+  /** 300..604800; omitted = the global lease time. */
+  leaseSeconds?: number
   createdAt: Timestamp
   updatedAt: Timestamp
   /** A device uses it right now. */
   active: boolean
 }
 
-/** POST /dhcp/static (PUT /dhcp/static/{mac} ignores mac). 400 with field mac, ip, hostname or comment. */
+/**
+ * POST /dhcp/static (PUT /dhcp/static/{mac} ignores mac and replaces the
+ * reservation: members left out are cleared). 400 with field mac, ip,
+ * hostname, comment, clientId or leaseSeconds.
+ */
 export interface DhcpStaticLeaseInput {
   mac: string
   ip: string
   hostname?: string
   comment?: string
+  clientId?: string
+  /** 0 = the global lease time, else 300..604800. */
+  leaseSeconds?: number
+}
+
+export type DhcpImportFormat = 'csv' | 'hosts' | 'lines'
+
+/** POST /dhcp/static/import (400 with field format or text for the request as a whole). */
+export interface DhcpImportRequest {
+  format: DhcpImportFormat
+  text: string
+  /** Delete every reservation whose MAC address is not in the list. */
+  replace: boolean
+  /** Check only: nothing is written. */
+  dryRun: boolean
+}
+
+/** A refused line of an import; line 0 = the list as a whole. */
+export interface DhcpImportError {
+  line: number
+  /** mac, ip, hostname, comment, clientId, leaseSeconds, row or text. */
+  field: string
+  message: string
+}
+
+/** 200 of POST /dhcp/static/import: with any error nothing is written (the counts say what the valid rows would do). */
+export interface DhcpImportResult {
+  applied: boolean
+  added: number
+  updated: number
+  unchanged: number
+  removed: number
+  errors: DhcpImportError[]
+}
+
+/** An entry of GET /dhcp/log (the last 200 handled exchanges, newest first; in memory). */
+export interface DhcpLogEntry {
+  time: Timestamp
+  kind: 'dhcpv4' | 'dhcpv6' | 'ra' | (string & {})
+  mac?: string
+  /** DHCPv6 client DUID (hex). */
+  duid?: string
+  /** DHCPv4: the offered, acknowledged or requested address; DHCPv6 and RS: the link-local source. */
+  address?: string
+  hostname?: string
+  /** DISCOVER, REQUEST, DECLINE, RELEASE, INFORM, INFORMATION-REQUEST or RS. */
+  in: string
+  /** OFFER, ACK, NAK, REPLY or RA; absent without an answer. */
+  out?: string
+  result: 'answered' | 'nak' | 'processed' | 'ignored' | (string & {})
+  /** rapid-commit, not-reserved, other-server, pool-exhausted, address-unavailable, move-to-reservation, client-id-conflict. */
+  reason?: string
 }
 
 // ---------------------------------------------------------------- filter

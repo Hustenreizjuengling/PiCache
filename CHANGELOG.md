@@ -5,6 +5,102 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The DHCP server needs no installation option any more.** It is
+  available on every Linux installation and switched on in the web UI
+  (**DNS → DHCP**) when needed; `install.sh --with-dhcp` and
+  `PICACHE_DHCP=on` are no longer needed. **Nothing is held while DHCP is
+  off**: PiCache opens UDP ports 67 and 547 only while the DHCP server is
+  switched on (a search for other DHCP servers opens port 67 for its 5
+  seconds) and never binds 546; the passive detection of other DHCP
+  servers (a device asking another server) therefore runs only while it is
+  on. PiCache remembers what to open at the next start in two empty files
+  in the data directory (`dhcp.sockets`, `dhcp.ra`).
+- `PICACHE_DHCP` has three states: unset (the default: the DHCP server can
+  be switched on in the web UI), `off` (it cannot; for hosts that run
+  another DHCP server) and the old `on` (still accepted: everything opens at
+  start and PiCache closes what is not needed). **`install.sh
+  --without-dhcp` now writes `PICACHE_DHCP=off`** instead of removing the
+  DHCP support; `--with-dhcp` removes that opt-out again. Every installer
+  run removes an old `PICACHE_DHCP=on` (creating the two DHCP markers in
+  its place, so the first start of 0.8.0 still opens the DHCP ports and
+  the raw socket for router advertisements), the drop-in
+  `/etc/systemd/system/picache.service.d/60-dhcp.conf` and
+  `/etc/picache/dhcp.enabled`, and rewrites any off spelling as
+  `PICACHE_DHCP=off`; a value it does not know is reported (PiCache refuses
+  to start with it). It also replaces the DHCP comment of a 0.7.0
+  `picache.env`, which still described the old install option. A leftover `60-dhcp.conf` on an installation updated
+  only from the web UI is harmless (it holds the same settings as the new
+  unit) and goes with the next installer run.
+- **Docker needs one restart after switching DHCP on:** the container opens
+  its DHCP ports only at start (the switch to 65532 clears every
+  capability), and the page offers the restart. The compose file now has
+  `NET_RAW` in `cap_add` (used only at start for the router
+  advertisements); an existing compose file keeps working for DHCPv4 and
+  DHCPv6, and the page says what to add for router advertisements.
+- **Router advertisements need one restart after switching them on**: the
+  raw socket can only be opened at start. The systemd unit now grants
+  `CAP_NET_RAW` for it (with `capset` allowed) on every installation;
+  PiCache drops it on every thread right after every start and now
+  **refuses to run** if that fails (before, it only closed the socket and
+  warned). If the drop cannot be verified, the raw socket is closed and the
+  health check `dhcp` fails.
+- **Updates also install the unit files** of the release (only from the
+  signed `picache-deploy.tar.gz`, only PiCache's own units that are
+  installed, never drop-ins; the old ones kept as `<unit>.prev`), where the
+  update helper may write them; if that fails, only the program is updated
+  and the message says so. **Existing installations run the one-line
+  installer once** to get the new units (`CAP_NET_RAW` for router
+  advertisements, the resource weights and an update helper that may
+  replace unit files); from then on updates from the web UI and the CLI keep
+  them current (`sudo picache update` does so from its first update after
+  0.8.0 anyway). The update to this version itself is installed without its
+  units. `install.sh --uninstall` removes the `.prev` copies.
+- `picache.service` has `CPUWeight=200` and `IOWeight=200`: under CPU or
+  disk contention PiCache gets twice the share of a service with the default
+  weight (a mild bias; no effect where the cgroup controller is not
+  delegated or the I/O scheduler ignores weights).
+- Two devices with the same host name: the second now gets its generated
+  name (below) instead of no DNS name.
+
+### Added
+
+- DHCP reservations: import and export (CSV with a guard against
+  spreadsheet formulas, hosts format, and `mac ip [hostname]` lines; with a
+  preview, all or nothing, optionally replacing all reservations), a lease
+  time per device, and matching by client identifier (option 61) for
+  devices that change their MAC address (as forgeable as the MAC: a
+  convenience, not a security control). API: `GET /dhcp/static/export`,
+  `POST /dhcp/static/import`; reservations have `clientId` and
+  `leaseSeconds`.
+- Generated DNS names for leases without a usable host name, such as
+  `192-168-178-23.lan` (`dhcp.generateNames`, on by default; DNS answers
+  only). Devices can no longer take such names, `wpad` or `localhost`.
+- DHCP options NTP servers, interface MTU, WPAD URL (sent only when a
+  device asks; changes of the WPAD URL are audited with the value) and
+  extra search domains (`dhcp.options`).
+- **Only reserved devices** (`dhcp.onlyReserved`): devices without a
+  reservation get no answer from PiCache, so it can serve known devices next
+  to another DHCP server.
+- **End all leases** (`DELETE /dhcp/leases`) and **Reset DHCP**
+  (`POST /dhcp/reset`: settings back to their defaults, every reservation
+  and lease deleted; detections of other servers are kept).
+- A log of the last 200 DHCP exchanges (`GET /dhcp/log`) and **rapid
+  commit** (option 80; `dhcp.rapidCommit`, new and **off by default**, used
+  only while no other DHCP server counts).
+- PiCache looks for other routers and DHCPv6 servers that announce their own
+  DNS server while it announces itself over IPv6 (a router solicitation and
+  a relayed DHCPv6 information request, and every router advertisement seen
+  while its own are on) and warns about them (page, health check `dhcp`,
+  notification). The network check's `ipv6-dns` data carries the DNS
+  servers the default router announces (`routerRdnss`).
+- `GET /dhcp` has `reasonCode` (`opt-out`, `not-linux`, `bridge`, `socket`,
+  `restart-required`), `markerError` and `deployment`; the router
+  advertisements have a `reasonCode` too, and `ipv6.otherAnnouncers` (with
+  `ownDns`, the announced DNS servers that are PiCache's own) and
+  `ipv6.lastSearch`.
+
 ## [0.7.0] - 2026-09-25
 
 ### Added

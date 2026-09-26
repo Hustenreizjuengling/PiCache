@@ -29,6 +29,13 @@ type fakeICMP struct {
 	out    [][]byte
 	dst    []netip.Addr
 	groups []groupOp
+	closed bool
+}
+
+func (f *fakeICMP) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
 }
 
 func (f *fakeICMP) ReadFrom([]byte) (int, int, int, netip.Addr, error) {
@@ -61,7 +68,12 @@ func (f *fakeICMP) LeaveGroup(i int, g netip.Addr) error {
 }
 
 func (f *fakeICMP) SetReadDeadline(time.Time) error { return nil }
-func (f *fakeICMP) Close() error                    { return nil }
+func (f *fakeICMP) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
 
 func (f *fakeICMP) take() [][]byte {
 	f.mu.Lock()
@@ -71,16 +83,37 @@ func (f *fakeICMP) take() [][]byte {
 	return out
 }
 
-// fakeConn6 records DHCPv6 group changes.
+// fakeConn6 records DHCPv6 group changes and what is sent; onWrite may
+// answer.
 type fakeConn6 struct {
-	mu     sync.Mutex
-	groups []groupOp
+	mu      sync.Mutex
+	groups  []groupOp
+	out     [][]byte
+	dst     []netip.AddrPort
+	closed  bool
+	onWrite func(b []byte)
+}
+
+func (f *fakeConn6) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
 }
 
 func (f *fakeConn6) ReadFrom([]byte) (int, int, netip.AddrPort, netip.Addr, error) {
 	return 0, 0, netip.AddrPort{}, netip.Addr{}, net.ErrClosed
 }
-func (f *fakeConn6) WriteTo([]byte, int, netip.AddrPort) error { return nil }
+func (f *fakeConn6) WriteTo(b []byte, _ int, dst netip.AddrPort) error {
+	f.mu.Lock()
+	f.out = append(f.out, slices.Clone(b))
+	f.dst = append(f.dst, dst)
+	hook := f.onWrite
+	f.mu.Unlock()
+	if hook != nil {
+		hook(slices.Clone(b))
+	}
+	return nil
+}
 func (f *fakeConn6) JoinGroup(i int, g netip.Addr) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -94,7 +127,12 @@ func (f *fakeConn6) LeaveGroup(i int, g netip.Addr) error {
 	return nil
 }
 func (f *fakeConn6) SetReadDeadline(time.Time) error { return nil }
-func (f *fakeConn6) Close() error                    { return nil }
+func (f *fakeConn6) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
 
 func withIPv6(a *settings.All) {
 	enabledDHCP(a)
@@ -106,7 +144,7 @@ func newTestSvc6(t *testing.T, configure func(*settings.All)) (*testSvc, *fakeIC
 	t.Helper()
 	ts := newTestSvc(t, configure)
 	icmp, c6 := &fakeICMP{}, &fakeConn6{}
-	ts.Service.d.Sockets = &Sockets{requested: true, v4: ts.conn, v6: c6, icmp: icmp}
+	ts.Service.d.Sockets = &Sockets{bindCapable: true, rawCapable: true, v4: ts.conn, v6: c6, icmp: icmp}
 	ts.evaluate(context.Background(), true)
 	return ts, icmp, c6
 }
@@ -139,7 +177,7 @@ func TestRouterAdvertisements(t *testing.T) {
 	if !slices.Contains(icmp.groups, groupOp{true, testIfIndex, allRouters}) || !slices.Contains(c6.groups, groupOp{true, testIfIndex, allDHCPAgents}) {
 		t.Fatalf("groups %v %v", icmp.groups, c6.groups)
 	}
-	wait := ts.raTick(icmp)
+	wait := ts.raTick()
 	out := icmp.take()
 	if len(out) != 1 || wait != 16*time.Second {
 		t.Fatalf("%d advertisements, next in %v", len(out), wait)
@@ -157,12 +195,14 @@ func TestRouterAdvertisements(t *testing.T) {
 	rs := []byte{133, 0, 0, 0, 0, 0, 0, 0}
 	ts.solicitation(rs, 3, 255, netip.MustParseAddr("fe80::1"))          // another interface
 	ts.solicitation(rs, testIfIndex, 64, netip.MustParseAddr("fe80::1")) // wrong hop limit
-	if ts.raTick(icmp); len(icmp.take()) != 0 {
+	// PiCache's own (the search for other routers), reflected by the network.
+	ts.solicitation(rs, testIfIndex, 255, netip.MustParseAddr("fe80::10"))
+	if ts.raTick(); len(icmp.take()) != 0 || ts.Status().IPv6.RouterAdvertisements.Solicitations != 0 || len(ts.Log(MaxLog)) != 0 {
 		t.Fatal("answered an invalid solicitation")
 	}
 	ts.solicitation(rs, testIfIndex, 255, netip.MustParseAddr("fe80::1"))
 	ts.clk.Add(500 * time.Millisecond)
-	if ts.raTick(icmp); len(icmp.take()) != 1 || ts.Status().IPv6.RouterAdvertisements.Solicitations != 1 {
+	if ts.raTick(); len(icmp.take()) != 1 || ts.Status().IPv6.RouterAdvertisements.Solicitations != 1 {
 		t.Fatal("solicitation not answered")
 	}
 	// Switched off: one withdrawal, the group is left.
@@ -178,7 +218,7 @@ func TestRouterAdvertisements(t *testing.T) {
 	if !slices.Contains(icmp.groups, groupOp{false, testIfIndex, allRouters}) {
 		t.Fatalf("group not left: %v", icmp.groups)
 	}
-	if ts.raTick(icmp); len(icmp.take()) != 0 || ts.Status().IPv6.RouterAdvertisements.State != StateOff {
+	if ts.raTick(); len(icmp.take()) != 0 || ts.Status().IPv6.RouterAdvertisements.State != StateOff {
 		t.Fatal("advertisements after switching them off")
 	}
 }
@@ -205,11 +245,12 @@ func TestIPv6Gates(t *testing.T) {
 		st.DHCPv6.State != StateBlocked || !slices.Equal(st.DHCPv6.Blockers, []string{BlockerNoULA}) {
 		t.Fatalf("no ULA: %+v", st)
 	}
-	ts.Service.d.Sockets = &Sockets{requested: true, v4: ts.conn, icmpErr: "PiCache has no CAP_NET_RAW", v6Err: "UDP port 547 is in use"}
+	ts.Service.d.Sockets = &Sockets{bindCapable: true, v4: ts.conn, v6Err: "UDP port 547 is in use"}
 	ts.env = testEnvFor(false)
 	ts.evaluate(ctx, true)
 	st = ts.Status().IPv6
-	if st.RouterAdvertisements.Available || st.RouterAdvertisements.Reason != "PiCache has no CAP_NET_RAW" ||
+	if st.RouterAdvertisements.Available || st.RouterAdvertisements.Reason != noCapNetRaw ||
+		st.RouterAdvertisements.ReasonCode != RAReasonNoCapNetRaw ||
 		!slices.Equal(st.RouterAdvertisements.Blockers, []string{BlockerNoRawSocket}) ||
 		!slices.Equal(st.DHCPv6.Blockers, []string{BlockerNoSocket}) || st.DHCPv6.Error != "UDP port 547 is in use" {
 		t.Fatalf("no sockets: %+v", st)
@@ -225,11 +266,16 @@ func TestHandle6(t *testing.T) {
 	ts, _, _ := newTestSvc6(t, withIPv6)
 	req := []byte{dhcpv6.MsgInformationRequest, 1, 2, 3, 0, 1, 0, 10, 0, 3, 0, 1, 2, 0, 0, 0, 0, 1}
 	ll := netip.AddrPortFrom(netip.MustParseAddr("fe80::99"), 546)
-	reply := ts.handle6(req, testIfIndex, ll, allDHCPAgents)
+	// The socket reports link-local sources with their zone; the exchange
+	// log shows the address alone (as for router solicitations).
+	reply := ts.handle6(req, testIfIndex, netip.AddrPortFrom(ll.Addr().WithZone("eth0"), 546), allDHCPAgents)
 	if len(reply) < 4 || reply[0] != dhcpv6.MsgReply || !bytes.Equal(reply[1:4], []byte{1, 2, 3}) ||
 		!bytes.Contains(reply, netip.MustParseAddr("fd00::10").AsSlice()) || !bytes.Contains(reply, []byte{3, 'l', 'a', 'n', 0}) ||
 		!bytes.Contains(reply, dhcpv6.DUIDLL([6]byte(testIfMAC))) {
 		t.Fatalf("reply % x", reply)
+	}
+	if l := ts.Log(1); len(l) != 1 || l[0].Kind != LogDHCPv6 || l[0].Address != "fe80::99" {
+		t.Fatalf("log %+v", l)
 	}
 	for name, tc := range map[string]struct {
 		b   []byte

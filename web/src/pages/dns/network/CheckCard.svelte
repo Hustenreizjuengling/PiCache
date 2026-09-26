@@ -6,7 +6,8 @@
   addresses; for addresses in a network this machine is connected to, admins
   can allow those networks right here (a DNS setting), for other global IPv6
   ones the card offers their /64 network for the allowed networks. The IPv6
-  DNS check notes when this machine ignores router advertisements.
+  DNS check notes when this machine ignores router advertisements and, while
+  PiCache sends its own, which DNS servers the default router announces.
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
@@ -93,6 +94,16 @@
     return []
   })
 
+  /** The IPv6 DNS servers the default router announces (PiCache's own addresses marked). */
+  const routerRdnss = $derived.by(() => {
+    if (check.id !== 'ipv6-dns' || !check.data.routerRdnss) return undefined
+    const list = check.data.routerRdnss
+    if (list.length === 0) return t('dns.network.check.ipv6Dns.routerNoRdnss')
+    const own = new Set([...(net.self.ula ?? []), ...(net.self.global ?? [])])
+    const shown = list.map((a) => (own.has(a) ? t('dns.dhcp.fact.picache', { address: a }) : a))
+    return t('dns.network.check.ipv6Dns.routerRdnss', { addresses: shown.join(', ') })
+  })
+
   const refused = $derived(check.id === 'refused' ? (check.data.sources ?? []) : [])
   // Addresses in a connected network are covered by trusting those networks; the /64 offer is for the others.
   const onLink = $derived(refused.filter((s) => s.onLink))
@@ -154,6 +165,9 @@
     {/if}
     {#if check.id === 'ipv6-dns' && check.data.hostIgnoresRA}
       <p class="note info"><Icon name="info" size={16} /><span>{t('dns.network.check.ipv6Dns.ignoresRA')}</span></p>
+    {/if}
+    {#if routerRdnss}
+      <p class="note info"><Icon name="info" size={16} /><span class="rdnss">{routerRdnss}</span></p>
     {/if}
   </div>
 
@@ -329,6 +343,10 @@
   }
   .note.info :global(.icon) {
     color: var(--focus);
+  }
+  .rdnss {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .prefixes ul {
     display: flex;

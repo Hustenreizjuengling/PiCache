@@ -463,9 +463,22 @@ func TestDHCPSection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := DHCP{LeaseSeconds: 86400, RegisterHostnames: true}
-	if got := s.Get().DHCP; got != want {
+	want := DHCP{LeaseSeconds: 86400, RegisterHostnames: true, GenerateNames: true,
+		Options: DHCPOptions{NTPServers: []string{}, ExtraSearchDomains: []string{}}}
+	if got := s.Get().DHCP; !got.Equal(want) || got.Options.NTPServers == nil || got.Options.ExtraSearchDomains == nil {
 		t.Fatalf("defaults of an older document: %+v", got)
+	}
+	// A 0.7 document (dhcp without the new members) loads with
+	// generateNames on and rapidCommit and onlyReserved off.
+	if _, err := d.W.ExecContext(ctx, `UPDATE settings SET doc = json_set(doc, '$.dhcp', json('{"enabled":false,"leaseSeconds":3600,"registerHostnames":true,"ipv6":{"routerAdvertisements":true,"dhcpv6":false}}'))`); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = Open(ctx, d, log); err != nil {
+		t.Fatal(err)
+	}
+	if h := s.Get().DHCP; !h.GenerateNames || h.RapidCommit || h.OnlyReserved || h.LeaseSeconds != 3600 || !h.IPv6.RouterAdvertisements ||
+		h.Options.NTPServers == nil {
+		t.Fatalf("0.7 document: %+v", h)
 	}
 	on := DHCP{Enabled: true, Interface: "eth0", RangeStart: "192.168.1.100", RangeEnd: "192.168.1.199", LeaseSeconds: 3600}
 	for _, tc := range []struct {
@@ -495,6 +508,40 @@ func TestDHCPSection(t *testing.T) {
 		{"dns loopback", func(h *DHCP) { h.DNSServer = "127.0.0.1" }, "dhcp.dnsServer"},
 		{"dns IPv6", func(h *DHCP) { h.DNSServer = "fd00::1" }, "dhcp.dnsServer"},
 		{"domain", func(h *DHCP) { h.Domain = "bad_domain" }, "dhcp.domain"},
+		{"options", func(h *DHCP) {
+			h.Options = DHCPOptions{NTPServers: []string{" 192.168.1.2 ", "", "10.0.0.1"}, MTU: 1500, WPADURL: "https://proxy.lan:8443/wpad.dat",
+				ExtraSearchDomains: []string{"Corp.Example.", "lab"}}
+		}, ""},
+		{"ntp count", func(h *DHCP) {
+			h.Options.NTPServers = []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"}
+		}, "dhcp.options.ntpServers"},
+		{"ntp name", func(h *DHCP) { h.Options.NTPServers = []string{"10.0.0.1", "pool.ntp.org"} }, "dhcp.options.ntpServers[1]"},
+		{"ntp ipv6", func(h *DHCP) { h.Options.NTPServers = []string{"fd00::1"} }, "dhcp.options.ntpServers[0]"},
+		{"ntp zero", func(h *DHCP) { h.Options.NTPServers = []string{"0.0.0.0"} }, "dhcp.options.ntpServers[0]"},
+		{"ntp broadcast", func(h *DHCP) { h.Options.NTPServers = []string{"255.255.255.255"} }, "dhcp.options.ntpServers[0]"},
+		{"ntp loopback", func(h *DHCP) { h.Options.NTPServers = []string{"127.0.0.1"} }, "dhcp.options.ntpServers[0]"},
+		{"ntp multicast", func(h *DHCP) { h.Options.NTPServers = []string{"224.0.1.1"} }, "dhcp.options.ntpServers[0]"},
+		{"ntp twice", func(h *DHCP) { h.Options.NTPServers = []string{"10.0.0.1", "10.0.0.1"} }, "dhcp.options.ntpServers[1]"},
+		{"mtu low", func(h *DHCP) { h.Options.MTU = 575 }, "dhcp.options.mtu"},
+		{"mtu high", func(h *DHCP) { h.Options.MTU = 9001 }, "dhcp.options.mtu"},
+		{"mtu min", func(h *DHCP) { h.Options.MTU = 576 }, ""},
+		{"wpad ftp", func(h *DHCP) { h.Options.WPADURL = "ftp://proxy.lan/wpad.dat" }, "dhcp.options.wpadUrl"},
+		{"wpad relative", func(h *DHCP) { h.Options.WPADURL = "/wpad.dat" }, "dhcp.options.wpadUrl"},
+		{"wpad user", func(h *DHCP) { h.Options.WPADURL = "http://user:pw@proxy.lan/wpad.dat" }, "dhcp.options.wpadUrl"},
+		{"wpad unicode", func(h *DHCP) { h.Options.WPADURL = "http://prüfung.lan/wpad.dat" }, "dhcp.options.wpadUrl"},
+		{"wpad space", func(h *DHCP) { h.Options.WPADURL = "http://proxy.lan/w pad.dat" }, "dhcp.options.wpadUrl"},
+		{"wpad no host", func(h *DHCP) { h.Options.WPADURL = "http://:80/wpad.dat" }, "dhcp.options.wpadUrl"},
+		{"wpad long", func(h *DHCP) { h.Options.WPADURL = "http://proxy.lan/" + strings.Repeat("a", 240) }, "dhcp.options.wpadUrl"},
+		{"wpad punycode", func(h *DHCP) { h.Options.WPADURL = "http://xn--prfung-cxa.lan/wpad.dat" }, ""},
+		{"search count", func(h *DHCP) { h.Options.ExtraSearchDomains = []string{"a", "b", "c", "d", "e"} }, "dhcp.options.extraSearchDomains"},
+		{"search bad", func(h *DHCP) { h.Options.ExtraSearchDomains = []string{"ok", "bad_one"} }, "dhcp.options.extraSearchDomains[1]"},
+		{"search twice", func(h *DHCP) { h.Options.ExtraSearchDomains = []string{"a.example", "A.example."} }, "dhcp.options.extraSearchDomains[1]"},
+		{"search is the domain", func(h *DHCP) { h.Domain = "home.arpa"; h.Options.ExtraSearchDomains = []string{"home.arpa"} },
+			"dhcp.options.extraSearchDomains[0]"},
+		{"search is the local domain", func(h *DHCP) { h.Options.ExtraSearchDomains = []string{"x", "lan"} }, "dhcp.options.extraSearchDomains[1]"},
+		{"search too long", func(h *DHCP) {
+			h.Options.ExtraSearchDomains = []string{strings.Repeat("a", 63) + "." + strings.Repeat("b", 60), strings.Repeat("c", 63) + "." + strings.Repeat("d", 60)}
+		}, "dhcp.options.extraSearchDomains"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			next, err := s.Update(ctx, func(a *All) error { a.DHCP = on; tc.fn(&a.DHCP); return nil })
@@ -513,5 +560,77 @@ func TestDHCPSection(t *testing.T) {
 				t.Fatalf("err = %v, want invalid %s", err, tc.field)
 			}
 		})
+	}
+	// Normalised: trimmed, canonical, empty entries dropped, lists never nil.
+	next, err := s.Update(ctx, func(a *All) error {
+		a.DHCP = on
+		a.DHCP.Options = DHCPOptions{NTPServers: []string{" 192.168.1.2 ", ""}, WPADURL: " http://p.lan/w.dat ", ExtraSearchDomains: []string{"Corp.Example."}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := next.DHCP.Options; !slices.Equal(o.NTPServers, []string{"192.168.1.2"}) || o.WPADURL != "http://p.lan/w.dat" ||
+		!slices.Equal(o.ExtraSearchDomains, []string{"corp.example"}) {
+		t.Fatalf("normalised %+v", o)
+	}
+	next, err = s.Update(ctx, func(a *All) error {
+		a.DHCP.Options.NTPServers, a.DHCP.Options.ExtraSearchDomains = nil, nil
+		return nil
+	})
+	if err != nil || next.DHCP.Options.NTPServers == nil || next.DHCP.Options.ExtraSearchDomains == nil {
+		t.Fatalf("nil lists %+v %v", next.DHCP.Options, err)
+	}
+	// The search list is checked when the DHCP section changes; a later
+	// change of the local domain is not refused because of it.
+	if _, err := s.Update(ctx, func(a *All) error { a.DHCP.Options.ExtraSearchDomains = []string{"home.example"}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update(ctx, func(a *All) error { a.DNS.LocalDomain = "home.example"; return nil }); err != nil {
+		t.Fatalf("local domain change refused: %v", err)
+	}
+	// Nor is any other DHCP change (switching it off, the lease time)
+	// refused because of extras the local domain broke; changing the
+	// extras (or dhcp.domain) checks them again.
+	if _, err := s.Update(ctx, func(a *All) error { a.DHCP.Enabled, a.DHCP.LeaseSeconds = false, 3600; return nil }); err != nil {
+		t.Fatalf("switching DHCP off refused: %v", err)
+	}
+	_, err = s.Update(ctx, func(a *All) error {
+		a.DHCP.Options.ExtraSearchDomains = []string{"x.example", "home.example"}
+		return nil
+	})
+	if e, ok := apperr.As(err); !ok || e.Field != "dhcp.options.extraSearchDomains[1]" {
+		t.Fatalf("changed extras: %v", err)
+	}
+	_, err = s.Update(ctx, func(a *All) error { a.DHCP.Domain = "x"; a.DNS.LocalDomain = "lan"; return nil })
+	if err != nil {
+		t.Fatalf("domain change: %v", err)
+	}
+	_, err = s.Update(ctx, func(a *All) error { a.DHCP.Domain = "home.example"; return nil })
+	if e, ok := apperr.As(err); !ok || e.Field != "dhcp.options.extraSearchDomains[0]" {
+		t.Fatalf("domain equal to an extra: %v", err)
+	}
+}
+
+// Equal compares every member, the option lists included.
+func TestDHCPEqual(t *testing.T) {
+	a := Defaults().DHCP
+	for name, change := range map[string]func(*DHCP){
+		"enabled": func(h *DHCP) { h.Enabled = true }, "generate": func(h *DHCP) { h.GenerateNames = false },
+		"only reserved": func(h *DHCP) { h.OnlyReserved = true }, "rapid": func(h *DHCP) { h.RapidCommit = true },
+		"ntp": func(h *DHCP) { h.Options.NTPServers = []string{"10.0.0.1"} }, "mtu": func(h *DHCP) { h.Options.MTU = 1500 },
+		"wpad": func(h *DHCP) { h.Options.WPADURL = "http://p/w" }, "search": func(h *DHCP) { h.Options.ExtraSearchDomains = []string{"x"} },
+		"ipv6": func(h *DHCP) { h.IPv6.DHCPv6 = true }, "domain": func(h *DHCP) { h.Domain = "x" },
+	} {
+		b := Defaults().DHCP
+		change(&b)
+		if a.Equal(b) || b.Equal(a) {
+			t.Errorf("%s: equal", name)
+		}
+	}
+	b := Defaults().DHCP
+	b.Options.NTPServers = nil // nil and empty are the same list
+	if !a.Equal(b) || !a.Equal(Defaults().DHCP) {
+		t.Fatal("defaults differ")
 	}
 }

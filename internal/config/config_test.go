@@ -30,22 +30,31 @@ func TestWebSecureCookies(t *testing.T) {
 	}
 }
 
-// PICACHE_DHCP opens the DHCP sockets at start; off by default, on with
-// on/1/true.
+// PICACHE_DHCP has three modes: unset (the markers decide), every off
+// spelling (opt-out) and every on spelling (the opt-in of earlier
+// versions); anything else refuses to start.
 func TestDHCPSwitch(t *testing.T) {
 	for _, tc := range []struct {
 		val     string
-		want    bool
+		want    DHCPMode
 		wantErr bool
 	}{
-		{"", false, false},
-		{"on", true, false},
-		{"ON", true, false},
-		{"1", true, false},
-		{"true", true, false},
-		{"off", false, false},
-		{"0", false, false},
-		{"enabled", false, true},
+		{"", DHCPAuto, false},
+		{"on", DHCPOn, false},
+		{"ON", DHCPOn, false},
+		{"yes", DHCPOn, false},
+		{"1", DHCPOn, false},
+		{"t", DHCPOn, false},
+		{"true", DHCPOn, false},
+		{"TRUE", DHCPOn, false},
+		{" on ", DHCPOn, false},
+		{"off", DHCPOff, false},
+		{"no", DHCPOff, false},
+		{"0", DHCPOff, false},
+		{"f", DHCPOff, false},
+		{"False", DHCPOff, false},
+		{"enabled", DHCPAuto, true},
+		{"maybe", DHCPAuto, true},
 	} {
 		c, err := Load(nil, envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(), "PICACHE_DHCP": tc.val}))
 		if (err != nil) != tc.wantErr {

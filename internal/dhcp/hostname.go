@@ -1,7 +1,9 @@
 package dhcp
 
 import (
+	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 )
 
@@ -44,6 +46,59 @@ func SanitizeHostname(s string) string {
 // them (1–63 of a-z, 0-9 and '-', no hyphen at either end).
 func validLabel(s string) bool {
 	return s != "" && SanitizeHostname(s) == s
+}
+
+// clientName returns a sanitised host name a client sent, or "" for the
+// names a client may not take: the form of a generated name
+// (<a>-<b>-<c>-<d>, so a device cannot take another address's generated
+// name) and wpad and localhost (so WPAD cannot be hijacked). A
+// reservation may name wpad or localhost explicitly.
+func clientName(h string) string {
+	if h == "wpad" || h == "localhost" || generatedForm(h) {
+		return ""
+	}
+	return h
+}
+
+// generatedForm reports whether h looks like a generated name:
+// ^[0-9]{1,3}(-[0-9]{1,3}){3}$.
+func generatedForm(h string) bool {
+	parts := strings.Split(h, "-")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || len(p) > 3 || strings.Trim(p, "0123456789") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// generatedName returns the generated host name of an IPv4 address
+// (192-168-178-23).
+func generatedName(ip netip.Addr) string {
+	a := ip.As4()
+	return fmt.Sprintf("%d-%d-%d-%d", a[0], a[1], a[2], a[3])
+}
+
+// maxClientID bounds a client identifier (option 61: one option).
+const maxClientID = 255
+
+// normalizeClientID parses a client identifier given as colon-separated
+// hex (any case, 2 to 255 bytes) and returns it in lower case.
+func normalizeClientID(s string) (string, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > maxClientID {
+		return "", false
+	}
+	for _, p := range parts {
+		if len(p) != 2 || strings.Trim(p, "0123456789abcdef") != "" {
+			return "", false
+		}
+	}
+	return s, true
 }
 
 // NormalizeMAC returns an Ethernet address in lower-case colon form

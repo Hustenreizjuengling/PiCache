@@ -25,7 +25,7 @@ const (
 	opReply   = 2
 )
 
-// DHCPv4 option codes (RFC 2132, 3397, 4702).
+// DHCPv4 option codes (RFC 2132, 3397, 4039, 4702).
 const (
 	optPad          = 0
 	optSubnetMask   = 1
@@ -33,7 +33,9 @@ const (
 	optDNS          = 6
 	optHostName     = 12
 	optDomainName   = 15
+	optInterfaceMTU = 26
 	optBroadcast    = 28
+	optNTPServers   = 42
 	optRequestedIP  = 50
 	optLeaseTime    = 51
 	optOverload     = 52 // never honoured: sname and file are not parsed for options
@@ -44,8 +46,10 @@ const (
 	optRenewal      = 58
 	optRebinding    = 59
 	optClientID     = 61
+	optRapidCommit  = 80 // RFC 4039
 	optClientFQDN   = 81
 	optDomainSearch = 119
+	optWPAD         = 252 // web proxy auto-discovery URL
 	optEnd          = 255
 )
 
@@ -196,14 +200,21 @@ func (m *message) params() []byte { return m.opts[optParamRequest] }
 
 // hostName returns the client's host name: option 12, else the first label
 // of the name in option 81 (RFC 4702), sanitised to a DNS label ("" if
-// none remains).
+// none remains or the name is one a client may not take, clientName).
 func (m *message) hostName() string {
 	if v := m.opts[optHostName]; len(v) > 0 {
 		if h := SanitizeHostname(string(v)); h != "" {
-			return h
+			return clientName(h)
 		}
 	}
-	return SanitizeHostname(fqdnFirstLabel(m.opts[optClientFQDN]))
+	return clientName(SanitizeHostname(fqdnFirstLabel(m.opts[optClientFQDN])))
+}
+
+// rapidCommit reports whether the client asked for rapid commit (option
+// 80, which carries no data).
+func (m *message) rapidCommit() bool {
+	v, ok := m.opts[optRapidCommit]
+	return ok && len(v) == 0
 }
 
 // fqdnFirstLabel returns the first label of a Client FQDN option (flags,
@@ -229,19 +240,21 @@ func fqdnFirstLabel(v []byte) string {
 	return string(name[1 : 1+l])
 }
 
-// clientID returns option 61 as colon-separated hex (at most 64 bytes
-// shown; "" if absent).
+// clientID returns option 61 as colon-separated lower-case hex ("" if
+// absent or longer than one option, 255 bytes).
 func (m *message) clientID() string {
 	v := m.opts[optClientID]
-	if len(v) == 0 {
+	if len(v) > maxClientID {
 		return ""
 	}
-	if len(v) > 64 {
-		v = v[:64]
-	}
+	return hexColon(v)
+}
+
+// hexColon formats b as colon-separated lower-case hex.
+func hexColon(b []byte) string {
 	const hexd = "0123456789abcdef"
-	out := make([]byte, 0, 3*len(v))
-	for i, c := range v {
+	out := make([]byte, 0, 3*len(b))
+	for i, c := range b {
 		if i > 0 {
 			out = append(out, ':')
 		}
@@ -254,7 +267,8 @@ func (m *message) clientID() string {
 type option struct {
 	code      byte
 	data      []byte
-	onRequest bool // sent only when the parameter request list names it
+	alts      [][]byte // shorter data tried in order when data does not fit
+	onRequest bool     // sent only when the parameter request list names it
 }
 
 // replyFields are the header fields of a reply.
@@ -268,8 +282,8 @@ type replyFields struct {
 // server identifier (54) come first, then the options the client asked for
 // in its parameter request list in that order, then the remaining ones in
 // the order given. Options that do not fit into the client's maximum
-// message size (option 57, else 576 bytes) are left out; the reply is
-// padded to 300 bytes.
+// message size (option 57, else 576 bytes) are left out (or sent with
+// their shorter alternative data); the reply is padded to 300 bytes.
 func buildReply(req *message, f replyFields, serverID netip.Addr, opts []option) []byte {
 	limit := req.maxSize()
 	b := make([]byte, minPacket, limit)
@@ -283,12 +297,15 @@ func buildReply(req *message, f replyFields, serverID netip.Addr, opts []option)
 	b[236], b[237], b[238], b[239] = magic0, magic1, magic2, magic3
 
 	add := func(o option) {
-		// Room for this option and the end option.
-		if len(o.data) > 255 || len(b)+2+len(o.data)+1 > limit {
+		for _, data := range append([][]byte{o.data}, o.alts...) {
+			// Room for this option and the end option.
+			if len(data) > 255 || len(b)+2+len(data)+1 > limit {
+				continue
+			}
+			b = append(b, o.code, byte(len(data)))
+			b = append(b, data...)
 			return
 		}
-		b = append(b, o.code, byte(len(o.data)))
-		b = append(b, o.data...)
 	}
 	add(option{code: optMessageType, data: []byte{f.typ}})
 	if serverID.IsValid() {

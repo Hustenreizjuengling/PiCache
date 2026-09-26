@@ -1,13 +1,15 @@
 <!--
   @component
-  DNS › DHCP: the optional DHCP server. A status header (off; waiting, with
-  every blocker and what to do; serving, with what it hands out; error; not
-  available, with how to allow it) and the switch; the set-up (settings
-  section "dhcp"), other DHCP servers (search, "serve anyway"), IPv6 DNS
-  announcements, the handed-out and the reserved addresses. While the server
-  is on, the addresses come first; while it is off, the set-up does. Edits
-  of the settings are saved from the bar at the bottom. Read-only principals
-  see everything without actions.
+  DNS › DHCP: the DHCP server, switched on here when needed. A status header
+  (off; waiting, with every blocker and what to do; serving, with what it
+  hands out; error; not available, with why and what to do, a restart where
+  the ports open only at start) and the switch; the set-up (settings section
+  "dhcp"), other DHCP servers (search, "serve anyway"), IPv6 DNS
+  announcements with other announcers, the handed-out and the reserved
+  addresses (import, export), the recent exchanges and, for admins, the
+  reset. While the server is on, the addresses come first; while it is off,
+  the set-up does. Edits of the settings are saved from the bar at the
+  bottom. Read-only principals see everything without actions.
   Query: ?reservation=<mac> opens the editor of a reserved address.
 -->
 <script lang="ts">
@@ -30,12 +32,14 @@
   import { appStatus } from '$lib/status.svelte'
   import { Button, confirm, Notice, Skeleton, toast } from '$lib/ui'
   import EnableDialog from './dhcp/EnableDialog.svelte'
+  import ExchangeLogPanel from './dhcp/ExchangeLogPanel.svelte'
   import Ipv6Panel from './dhcp/Ipv6Panel.svelte'
   import LeasesPanel from './dhcp/LeasesPanel.svelte'
   import { interfaceSubnet, intToIp4, subnetOf, subnetText } from './dhcp/net'
   import OtherServersPanel from './dhcp/OtherServersPanel.svelte'
   import ReservationPanel from './dhcp/ReservationPanel.svelte'
   import ReservedPanel from './dhcp/ReservedPanel.svelte'
+  import ResetPanel from './dhcp/ResetPanel.svelte'
   import SetupPanel from './dhcp/SetupPanel.svelte'
   import StatusPanel from './dhcp/StatusPanel.svelte'
 
@@ -51,6 +55,7 @@
   const clients = resource((signal) => api.clients.list({ signal }))
   const groups = resource((signal) => api.groups.list({ signal }))
   const allSettings = resource((signal) => api.settings.get({ signal }))
+  const log = resource((signal) => api.dhcp.log(undefined, { signal }))
 
   const st = $derived(status.data)
   const on = $derived(!!form.saved?.enabled)
@@ -60,6 +65,7 @@
     fastUntil = Date.now() + 30_000
     void status.refresh()
     void leases.refresh()
+    void log.refresh()
   }
 
   // ---- values shown as defaults
@@ -158,7 +164,7 @@
       probeResult = r
       if (announce) {
         const n = r.servers?.length ?? 0
-      if (n === 0) toast.success(t('dns.dhcp.probe.none'))
+        if (n === 0) toast.success(t('dns.dhcp.probe.none'))
         else toast.info(tn('dns.dhcp.probe.found', n))
       }
     } catch (err) {
@@ -186,7 +192,7 @@
   }
 
   function reserve(l: DhcpLease) {
-    addPreset = { mac: l.mac, ip: l.ip, hostname: l.hostname ?? '' }
+    addPreset = { mac: l.mac, ip: l.ip, hostname: l.hostname ?? '', clientId: l.clientId ?? '' }
     addOpen = true
   }
 
@@ -194,6 +200,15 @@
     void reserved.refresh()
     void leases.refresh()
     void status.refresh()
+  }
+
+  // ---- reset
+
+  /** Section dhcp is back to its defaults and every reservation and lease is gone. */
+  function wasReset() {
+    void form.load()
+    void reserved.refresh()
+    follow()
   }
 
   // ---- save bar
@@ -224,6 +239,7 @@
     onretryinterfaces={() => interfaces.refresh()}
     {gateway}
     {localDomain}
+    reservedCount={reserved.data?.length}
   />
 {/snippet}
 
@@ -240,7 +256,7 @@
 {/snippet}
 
 {#snippet ipv6Panel()}
-  <Ipv6Panel {form} status={st} />
+  <Ipv6Panel {form} status={st} onrestarted={follow} />
 {/snippet}
 
 {#snippet leasesPanel()}
@@ -267,7 +283,12 @@
     selected={editing?.mac}
     onadd={addReservation}
     onedit={(s) => router.setQuery({ reservation: s.mac }, { push: true })}
+    onimported={reservationsChanged}
   />
+{/snippet}
+
+{#snippet logPanel()}
+  <ExchangeLogPanel {log} />
 {/snippet}
 
 <div class="page" bind:this={root}>
@@ -297,6 +318,7 @@
       onprobe={() => probe(true)}
       onshowothers={() => show('dhcp-other')}
       onshowsetup={() => show('dhcp-setup')}
+      onrestarted={follow}
     />
 
     {#if form.loadError && !form.draft}
@@ -311,6 +333,7 @@
     {:else if on}
       {@render leasesPanel()}
       {@render reservedPanel()}
+      {@render logPanel()}
       {@render setupPanel()}
       {@render othersPanel()}
       {@render ipv6Panel()}
@@ -320,6 +343,17 @@
       {@render ipv6Panel()}
       {@render reservedPanel()}
       {#if (leases.data?.length ?? 0) > 0}{@render leasesPanel()}{/if}
+      {#if (log.data?.length ?? 0) > 0}{@render logPanel()}{/if}
+    {/if}
+    {#if form.draft && session.isAdmin}
+      <ResetPanel
+        dirty={form.dirty}
+        onleasesended={() => {
+          void leases.refresh()
+          void status.refresh()
+        }}
+        onreset={wasReset}
+      />
     {/if}
 
     <!-- The switch saves through the form too: no save bar for that moment. -->
@@ -345,17 +379,26 @@
     bind:open={enableOpen}
     settings={form.saved}
     iface={configuredIface}
+    deployment={st?.deployment}
     {switching}
     error={switchError}
     onconfirm={switchOn}
   />
-  <ReservationPanel bind:open={addOpen} preset={addPreset} subnet={subnetStr} {example} onsaved={reservationsChanged} />
+  <ReservationPanel
+    bind:open={addOpen}
+    preset={addPreset}
+    subnet={subnetStr}
+    {example}
+    globalLease={form.saved?.leaseSeconds}
+    onsaved={reservationsChanged}
+  />
 {/if}
 <ReservationPanel
   bind:open={() => !!editing, (v) => !v && router.setQuery({ reservation: null })}
   lease={editing}
   subnet={subnetStr}
   {example}
+  globalLease={form.saved?.leaseSeconds}
   onsaved={reservationsChanged}
   ondeleted={reservationsChanged}
 />
@@ -367,7 +410,8 @@
   }
   .page :global(#dhcp-setup),
   .page :global(#dhcp-other),
-  .page :global(#dhcp-ipv6) {
+  .page :global(#dhcp-ipv6),
+  .page :global(#dhcp-reset) {
     scroll-margin-top: var(--sp-4);
   }
   .savebar {

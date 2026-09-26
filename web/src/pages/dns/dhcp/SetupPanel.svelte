@@ -5,7 +5,10 @@
   address comes from DHCP), the address range (prefilled with a free-looking
   part of the network when an interface is chosen), the lease time (presets
   or seconds), router, DNS server and domain (empty = detected values, shown
-  as placeholders) and DNS names for devices. Saved with the page's save bar.
+  as placeholders), DNS names for devices (with generated names for devices
+  without one) and the advanced options: NTP servers, MTU, WPAD URL, extra
+  search domains, rapid commit and serving only reserved devices, each with
+  its warning. Saved with the page's save bar.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -16,8 +19,20 @@
   import { session } from '$lib/session.svelte'
   import type { SettingsForm } from '$lib/settings.svelte'
   import { Button, Field, Input, Notice, Panel, Select, Toggle, type SelectOption } from '$lib/ui'
+  import { lineError } from '../shared/errors'
+  import LinesInput from '../shared/LinesInput.svelte'
   import NumberInput from '../shared/NumberInput.svelte'
-  import { interfaceSubnet, intToIp4, privateAddresses, rangeSize, subnetOf, subnetText, suggestRange, inSubnet } from './net'
+  import {
+    inSubnet,
+    interfaceSubnet,
+    intToIp4,
+    ip4ToInt,
+    privateAddresses,
+    rangeSize,
+    subnetOf,
+    subnetText,
+    suggestRange,
+  } from './net'
 
   interface Props {
     form: SettingsForm<'dhcp'>
@@ -29,9 +44,11 @@
     gateway?: string
     /** dns.localDomain */
     localDomain?: string
+    /** Reserved addresses (for the onlyReserved warning), if loaded. */
+    reservedCount?: number
   }
 
-  let { form, status, interfaces, interfacesError, onretryinterfaces, gateway, localDomain }: Props = $props()
+  let { form, status, interfaces, interfacesError, onretryinterfaces, gateway, localDomain, reservedCount }: Props = $props()
 
   const d = $derived(form.draft as DhcpSettings)
   const readOnly = $derived(!session.isAdmin)
@@ -127,6 +144,25 @@
   // ---- defaults shown as placeholders
 
   const domainExample = $derived(d.domain.trim() || localDomain || 'lan')
+  /** A generated name as the server builds it: "192-168-178-100.lan". */
+  const generatedExample = $derived.by(() => {
+    const ip = ip4ToInt(d.rangeStart) !== undefined ? d.rangeStart.trim() : (placeholderRange?.start ?? '192.168.1.100')
+    return `${ip.replace(/\./g, '-')}.${domainExample}`
+  })
+
+  // ---- advanced options
+
+  /** International host names in the WPAD URL become punycode (the server accepts printable ASCII only). */
+  function wpadBlur() {
+    const v = d.options.wpadUrl.trim()
+    if (!/[^\x21-\x7e]/.test(v)) return
+    try {
+      const u = new URL(v)
+      if (u.protocol === 'http:' || u.protocol === 'https:') d.options.wpadUrl = u.href
+    } catch {
+      // not a URL: the server explains
+    }
+  }
 </script>
 
 <Panel id="dhcp-setup" title={t('dns.dhcp.setup.title')} description={t('dns.dhcp.setup.description')}>
@@ -206,6 +242,7 @@
         </Field>
       </div>
 
+      <h3>{t('dns.dhcp.setup.names')}</h3>
       <div class="stack-sm">
         <Toggle
           bind:checked={d.registerHostnames}
@@ -213,6 +250,72 @@
           description={t('dns.dhcp.setup.registerHelp', { domain: domainExample })}
         />
         {#if form.error('registerHostnames')}<p class="sub err">{form.error('registerHostnames')}</p>{/if}
+      </div>
+      <div class="stack-sm">
+        <Toggle
+          bind:checked={d.generateNames}
+          disabled={!d.registerHostnames}
+          label={t('dns.dhcp.setup.generate')}
+          description={t('dns.dhcp.setup.generateHelp', { example: generatedExample })}
+        />
+        {#if !d.registerHostnames}<p class="sub small subtle">{t('dns.dhcp.setup.generateNeedsRegister')}</p>{/if}
+        {#if form.error('generateNames')}<p class="sub err">{form.error('generateNames')}</p>{/if}
+      </div>
+
+      <div class="stack-sm">
+        <h3>{t('dns.dhcp.setup.advanced')}</h3>
+        <p class="small muted">{t('dns.dhcp.setup.advancedHelp')}</p>
+      </div>
+      <div class="grid">
+        <Field
+          label={t('dns.dhcp.setup.ntp')}
+          optional
+          help={t('dns.dhcp.setup.ntpHelp')}
+          error={lineError(form.saveError, 'dhcp.options.ntpServers')}
+        >
+          <LinesInput bind:value={d.options.ntpServers} rows={2} placeholder={gateway ?? '192.168.1.1'} />
+        </Field>
+        <Field
+          label={t('dns.dhcp.setup.searchDomains')}
+          optional
+          help={t('dns.dhcp.setup.searchDomainsHelp', { domain: domainExample })}
+          error={lineError(form.saveError, 'dhcp.options.extraSearchDomains')}
+        >
+          <LinesInput bind:value={d.options.extraSearchDomains} rows={2} placeholder="home.arpa" />
+        </Field>
+        <Field label={t('dns.dhcp.setup.mtu')} help={t('dns.dhcp.setup.mtuHelp')} error={form.error('options.mtu')}>
+          <NumberInput bind:value={d.options.mtu} min={0} max={9000} unit={t('dns.dhcp.setup.bytes')} />
+        </Field>
+        <div class="stack-sm">
+          <Field label={t('dns.dhcp.setup.wpad')} optional help={t('dns.dhcp.setup.wpadHelp')} error={form.error('options.wpadUrl')}>
+            <Input
+              bind:value={d.options.wpadUrl}
+              mono
+              inputmode="url"
+              placeholder="http://wpad.{domainExample}/wpad.dat"
+              maxlength={255}
+              autocomplete="off"
+              onblur={wpadBlur}
+            />
+          </Field>
+          {#if d.options.wpadUrl.trim()}<Notice tone="warn">{t('dns.dhcp.setup.wpadWarn')}</Notice>{/if}
+        </div>
+      </div>
+
+      <div class="stack-sm">
+        <Toggle bind:checked={d.rapidCommit} label={t('dns.dhcp.setup.rapidCommit')} description={t('dns.dhcp.setup.rapidCommitHelp')} />
+        {#if d.rapidCommit}<div class="sub"><Notice tone="warn">{t('dns.dhcp.setup.rapidCommitWarn', { ignore: t('dns.dhcp.ignore.label') })}</Notice></div>{/if}
+        {#if form.error('rapidCommit')}<p class="sub err">{form.error('rapidCommit')}</p>{/if}
+      </div>
+      <div class="stack-sm">
+        <Toggle bind:checked={d.onlyReserved} label={t('dns.dhcp.setup.onlyReserved')} description={t('dns.dhcp.setup.onlyReservedHelp', { ignore: t('dns.dhcp.ignore.label'), panel: t('dns.dhcp.probe.title') })} />
+        {#if d.onlyReserved}
+          <div class="sub stack-sm">
+            <Notice tone="warn">{t('dns.dhcp.setup.onlyReservedWarn')}</Notice>
+            {#if reservedCount === 0}<Notice tone="fail">{t('dns.dhcp.setup.onlyReservedNone')}</Notice>{/if}
+          </div>
+        {/if}
+        {#if form.error('onlyReserved')}<p class="sub err">{form.error('onlyReserved')}</p>{/if}
       </div>
     </div>
   </fieldset>
@@ -224,6 +327,10 @@
     margin: 0;
     padding: 0;
     border: 0;
+  }
+  h3 {
+    padding-top: var(--sp-2);
+    border-top: 1px solid var(--line);
   }
   .grid {
     display: grid;

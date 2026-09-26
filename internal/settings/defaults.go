@@ -77,6 +77,8 @@ func Defaults() All {
 		DHCP: DHCP{
 			LeaseSeconds:      86400,
 			RegisterHostnames: true,
+			GenerateNames:     true,
+			Options:           DHCPOptions{NTPServers: []string{}, ExtraSearchDomains: []string{}},
 		},
 	}
 }

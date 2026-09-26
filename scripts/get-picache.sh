@@ -41,8 +41,10 @@ usage: get-picache.sh [--version vX.Y.Z] [--with-host-apply] [--without-updater]
   --with-host-apply   also install the root helper for NAS mounts from the web UI
   --without-updater   do not install the update helper (updates only with
                       `sudo picache update`)
-  --with-dhcp         let PiCache serve DHCP (enabled later in the web UI)
-  --without-dhcp      remove the DHCP support again
+  --with-dhcp         allow the DHCP server again after --without-dhcp (it is
+                      switched on in the web UI, which works by default)
+  --without-dhcp      prevent the DHCP server (PICACHE_DHCP=off): hosts that
+                      run another DHCP server
   --uninstall         stop and remove PiCache; configuration and data are kept
   --purge             with --uninstall: also delete the configuration, the
                       data, the local cache and the picache user

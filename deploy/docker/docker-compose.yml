@@ -40,13 +40,15 @@ services:
     network_mode: host
     read_only: true
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE, SETUID, SETGID]
-    # Optional DHCP server (DNS -> DHCP in the web UI; needs this host
-    # networking): set PICACHE_DHCP below. For PiCache's IPv6 DNS
-    # announcements (router advertisements) also add NET_RAW; it is needed
-    # only to open that socket at start and is gone after the switch to
-    # 65532:65532 like every other capability:
-    # cap_add: [NET_BIND_SERVICE, SETUID, SETGID, NET_RAW]
+    # NET_RAW is used only at start, to open the raw socket for IPv6 router
+    # advertisements while they are on (DNS -> DHCP); the switch to
+    # PICACHE_RUN_AS (65532:65532) clears it with every other capability.
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID, NET_RAW]
+    # The optional DHCP server is switched on in the web UI (DNS -> DHCP;
+    # it needs this host networking). The container opens the DHCP ports
+    # only at start, so switching DHCP (or the router advertisements) on
+    # needs one restart of the container, which the web UI offers
+    # (restart: unless-stopped brings it back).
     security_opt: ["no-new-privileges:true"]
     tmpfs:
       - /tmp:size=64m
@@ -88,10 +90,9 @@ services:
     #   # Remove the variable and the secret again after the first start.
     #   PICACHE_ADMIN_PASSWORD_FILE: /run/secrets/picache_admin_password
     #   PICACHE_LOG_FORMAT: json
-    #   # DHCP server: opens UDP 67 and 547 at start; the server itself is
-    #   # switched on under DNS -> DHCP and serves only after the router's
-    #   # DHCP server is off. Give the host a static address first.
-    #   PICACHE_DHCP: "on"
+    #   # Prevent the DHCP server (it can then not be switched on in the web
+    #   # UI), for hosts that run another DHCP server.
+    #   PICACHE_DHCP: "off"
     # secrets:
     #   - picache_admin_password
     logging:

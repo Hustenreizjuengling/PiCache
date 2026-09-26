@@ -104,6 +104,11 @@ type NetworkIPv6DNS struct {
 	// advertisements (Linux accept_ra), so it cannot tell whether the
 	// network uses IPv6.
 	HostIgnoresRA bool `json:"hostIgnoresRA"`
+	// RouterRDNSS are the DNS servers the IPv6 default router announces in
+	// its router advertisements (router lifetime > 0); present only while
+	// PiCache records advertisements (its own router advertisements are
+	// on), empty when the router announces none.
+	RouterRDNSS *[]string `json:"routerRdnss,omitzero"`
 }
 
 // NetworkIPv6Address is the data of ipv6-address.

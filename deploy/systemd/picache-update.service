@@ -5,11 +5,16 @@
 # SHA256SUMS and its signature are verified against the keys compiled into
 # the binary before anything else is trusted, the binary is checked against
 # SHA256SUMS and must report the requested version, then it replaces
-# /usr/local/bin/picache atomically (the old one stays as picache.prev),
+# /usr/local/bin/picache atomically (the old one stays as picache.prev).
+# The unit files of the release (only from the verified
+# picache-deploy.tar.gz, only PiCache's own names, only over existing
+# regular files in /usr/local/lib/systemd/system, never drop-ins) replace
+# the installed ones (kept as <unit>.prev) followed by daemon-reload; if
+# that fails they are put back and only the binary is updated.
 # picache.service is restarted and, if it does not become healthy within
-# 90 s, the old binary and the pre-upgrade database copy are put back.
-# Progress goes to /var/lib/picache/update-requests/status.json, which the
-# web UI shows.
+# 90 s, the units of this run, the old binary and the pre-upgrade database
+# copy are put back. Progress goes to
+# /var/lib/picache/update-requests/status.json, which the web UI shows.
 #
 # Local changes belong in a drop-in (`systemctl edit picache-update`); with
 # a custom PICACHE_DATA_DIR install.sh writes
@@ -40,12 +45,13 @@ TimeoutStartSec=30min
 MemoryMax=256M
 
 # Runs as root. Writable: the binary's directory (the staged download, the
-# atomic rename, picache.prev) and the data directory (the update lock,
+# atomic rename, picache.prev), the data directory (the update lock,
 # status.json, and on rollback the pre-upgrade copy of picache.db, which
-# replaces picache.db by rename after its -wal/-shm files are removed).
+# replaces picache.db by rename after its -wal/-shm files are removed) and
+# the unit directory (the units of the release and their .prev copies).
 # Everything else is read-only.
 ProtectSystem=strict
-ReadWritePaths=/usr/local/bin -/var/lib/picache
+ReadWritePaths=/usr/local/bin -/var/lib/picache -/usr/local/lib/systemd/system
 # Root needs the DAC and ownership capabilities to work in the picache-owned
 # data directory and to hand status.json and a restored database back to
 # the service user. systemctl only talks to PID 1 and needs none.

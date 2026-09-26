@@ -166,6 +166,28 @@ func (a *All) normalize() {
 		}
 	}
 	h.Domain = strings.Trim(strings.ToLower(strings.TrimSpace(h.Domain)), ".")
+	// The option lists keep their order and duplicates (Validate names the
+	// duplicate entry); empty entries are dropped.
+	o := &h.Options
+	ntp := make([]string, 0, len(o.NTPServers))
+	for _, s := range o.NTPServers {
+		if s = strings.TrimSpace(s); s == "" {
+			continue
+		}
+		if ip, err := netip.ParseAddr(s); err == nil && ip.Unmap().Is4() {
+			s = ip.Unmap().String()
+		}
+		ntp = append(ntp, s)
+	}
+	o.NTPServers = ntp
+	search := make([]string, 0, len(o.ExtraSearchDomains))
+	for _, s := range o.ExtraSearchDomains {
+		if s = strings.Trim(strings.ToLower(strings.TrimSpace(s)), "."); s != "" {
+			search = append(search, s)
+		}
+	}
+	o.ExtraSearchDomains = search
+	o.WPADURL = strings.TrimSpace(o.WPADURL)
 }
 
 // Validate checks all sections and returns an apperr.Invalid error naming
@@ -468,6 +490,98 @@ func (h *DHCP) validate() error {
 	}
 	if h.Domain != "" && !validHostname(h.Domain) {
 		return apperr.Invalid("dhcp.domain", "must be empty or a domain name")
+	}
+	return h.Options.validate()
+}
+
+// validate checks the form of the typed DHCP options. The rules that
+// depend on the effective domain are in checkSearchList.
+func (o *DHCPOptions) validate() error {
+	if len(o.NTPServers) > DHCPMaxNTPServers {
+		return apperr.Invalid("dhcp.options.ntpServers", "at most %d NTP servers", DHCPMaxNTPServers)
+	}
+	for i, s := range o.NTPServers {
+		field := "dhcp.options.ntpServers[" + strconv.Itoa(i) + "]"
+		ip, err := netip.ParseAddr(s)
+		if err != nil || !ip.Is4() || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || ip == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			return apperr.Invalid(field, "must be a unicast IPv4 address")
+		}
+		if slices.Index(o.NTPServers, s) < i {
+			return apperr.Invalid(field, "%s is listed twice", s)
+		}
+	}
+	if o.MTU != 0 && (o.MTU < DHCPMinMTU || o.MTU > DHCPMaxMTU) {
+		return apperr.Invalid("dhcp.options.mtu", "must be 0 (none) or between %d and %d", DHCPMinMTU, DHCPMaxMTU)
+	}
+	if o.WPADURL != "" && !validWPADURL(o.WPADURL) {
+		return apperr.Invalid("dhcp.options.wpadUrl",
+			"must be empty or an http or https URL of at most %d characters (printable ASCII, international names in punycode, no user name or password)", DHCPMaxWPADURL)
+	}
+	if len(o.ExtraSearchDomains) > DHCPMaxSearch {
+		return apperr.Invalid("dhcp.options.extraSearchDomains", "at most %d extra search domains", DHCPMaxSearch)
+	}
+	for i, d := range o.ExtraSearchDomains {
+		field := "dhcp.options.extraSearchDomains[" + strconv.Itoa(i) + "]"
+		if !validHostname(d) {
+			return apperr.Invalid(field, "must be a domain name")
+		}
+		if slices.Index(o.ExtraSearchDomains, d) < i {
+			return apperr.Invalid(field, "%s is listed twice", d)
+		}
+	}
+	return nil
+}
+
+// validWPADURL reports whether u can be sent as option 252: at most 255
+// bytes of printable ASCII (0x21–0x7E), an absolute http or https URL with
+// a host and without user info.
+func validWPADURL(s string) bool {
+	if len(s) > DHCPMaxWPADURL {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
+		}
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.User != nil || u.Opaque != "" || u.Hostname() == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "http" || scheme == "https"
+}
+
+// EffectiveDomain returns the domain the DHCP server hands out: dhcp.domain,
+// else dns.localDomain.
+func EffectiveDomain(a *All) string {
+	if a.DHCP.Domain != "" {
+		return a.DHCP.Domain
+	}
+	return a.DNS.LocalDomain
+}
+
+// checkSearchList checks the extra search domains against the effective
+// domain (dhcp.domain, else localDomain): none may equal it, and the
+// search list of option 119 (the domain first, then the extras, DNS wire
+// format without compression) must fit into 255 bytes.
+func (h *DHCP) checkSearchList(localDomain string) error {
+	domain := h.Domain
+	if domain == "" {
+		domain = localDomain
+	}
+	n := 0
+	if domain != "" {
+		n = len(domain) + 2
+	}
+	for i, d := range h.Options.ExtraSearchDomains {
+		if d == domain {
+			return apperr.Invalid("dhcp.options.extraSearchDomains["+strconv.Itoa(i)+"]", "%s is the DHCP domain already", d)
+		}
+		n += len(d) + 2
+	}
+	if n > DHCPMaxSearchWire {
+		return apperr.Invalid("dhcp.options.extraSearchDomains", "the search list (the domain and the extra domains) must fit into %d bytes", DHCPMaxSearchWire)
 	}
 	return nil
 }

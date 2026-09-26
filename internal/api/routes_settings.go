@@ -108,7 +108,13 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(
 		return err
 	}
 	if changed := changedSettings(old, next); len(changed) > 0 {
-		s.audit(r, "settings.update", "", map[string][]string{"changed": changed})
+		details := map[string][]string{"changed": changed}
+		if w := next.DHCP.Options.WPADURL; w != old.DHCP.Options.WPADURL {
+			// Every DHCP client uses this proxy configuration: record where
+			// it points.
+			details["wpadUrl"] = []string{w}
+		}
+		s.audit(r, "settings.update", "", details)
 	}
 	return ok(w, next)
 }

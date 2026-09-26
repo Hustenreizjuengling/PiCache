@@ -6,51 +6,108 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"golang.org/x/sys/unix"
 )
 
-// OpenSockets opens the DHCP sockets (call it before the privilege drop):
-// UDP 0.0.0.0:67 with SO_BROADCAST and IP_PKTINFO, UDP [::]:547 with
-// IPV6_RECVPKTINFO, and the raw ICMPv6 socket for router advertisements
-// (only with CAP_NET_RAW; hop limit 255, a filter that passes router
-// solicitations only, no multicast loopback). A socket that cannot be
+// OpenAtStart opens the DHCP sockets the markers ask for (call it before
+// the privilege drop, like the listeners): with MarkerSockets UDP
+// 0.0.0.0:67 (SO_BROADCAST, IP_PKTINFO) and [::]:547 (IPV6_RECVPKTINFO, no
+// multicast loopback); with MarkerRA and CAP_NET_RAW the raw ICMPv6 socket
+// for router advertisements (hop limit 255, a filter that passes router
+// solicitations and advertisements only, no multicast loopback). The
+// markers are checked with Lstat only: never opened or read, only a regular
+// file counts. It also records whether the process may bind ports below
+// 1024 and open raw sockets now, before the drop. A socket that cannot be
 // opened is reported in the status; the others are used anyway.
-func OpenSockets() *Sockets {
-	s := &Sockets{requested: true}
-	if c, err := listen4(); err != nil {
-		s.v4Err = socketErr("UDP port 67", err)
-	} else {
-		s.v4 = c
+func OpenAtStart(o StartOptions) *Sockets {
+	if o.OptOut {
+		return OptOutSockets()
 	}
-	if c, err := listen6(); err != nil {
-		s.v6Err = socketErr("UDP port 547", err)
-	} else {
-		s.v6 = c
-	}
-	if c, err := listenICMP(); err != nil {
-		s.icmpErr = socketErr("the raw ICMPv6 socket", err)
-		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
-			s.icmpErr = "PiCache has no CAP_NET_RAW (install.sh --with-dhcp, or cap_add: [NET_RAW] in Docker)"
+	s := &Sockets{legacy: o.Legacy}
+	s.bindCapable, s.rawCapable = startCapabilities()
+	if o.Legacy || markerExists(o.DataDir, MarkerSockets) {
+		if c, err := listen4(); err != nil {
+			s.v4Err, s.v4Code = socketErr("UDP port 67", err), ReasonSocket
+		} else {
+			s.v4 = c
 		}
-	} else {
-		s.icmp = c
+		if c, err := listen6(); err != nil {
+			s.v6Err = socketErr("UDP port 547", err)
+		} else {
+			s.v6 = c
+		}
+	}
+	if (o.Legacy || markerExists(o.DataDir, MarkerRA)) && s.rawCapable {
+		if c, err := listenICMP(); err != nil {
+			s.icmpErr = socketErr("the raw ICMPv6 socket", err)
+			s.icmpStartErr = s.icmpErr
+		} else {
+			s.icmp = c
+		}
 	}
 	return s
 }
+
+// markerExists reports whether dir/name is a regular file (Lstat only).
+func markerExists(dir, name string) bool {
+	if dir == "" {
+		return false
+	}
+	fi, err := os.Lstat(filepath.Join(dir, name))
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// startCapabilities reports whether this thread may bind ports below 1024
+// (euid 0 or CAP_NET_BIND_SERVICE effective) and holds CAP_NET_RAW in its
+// effective set.
+func startCapabilities() (bindCapable, rawCapable bool) {
+	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
+	var data [2]unix.CapUserData
+	if err := unix.Capget(&hdr, &data[0]); err != nil {
+		return os.Geteuid() == 0, false
+	}
+	has := func(c int) bool { return data[c/32].Effective&(1<<(uint(c)%32)) != 0 }
+	return os.Geteuid() == 0 || has(unix.CAP_NET_BIND_SERVICE), has(unix.CAP_NET_RAW)
+}
+
+// bindDenied reports whether opening a socket failed for lack of
+// permission (EACCES or EPERM).
+func bindDenied(err error) bool { return errors.Is(err, os.ErrPermission) }
 
 // socketErr explains a failed socket.
 func socketErr(what string, err error) string {
 	switch {
 	case errors.Is(err, syscall.EADDRINUSE):
 		return what + " is in use by another program (another DHCP server on this host, e.g. dnsmasq)"
-	case errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM):
+	case bindDenied(err):
 		return what + ": permission denied (binding needs CAP_NET_BIND_SERVICE)"
 	}
 	return fmt.Sprintf("%s: %v", what, err)
+}
+
+// platformListen4 and platformListen6 open UDP 67 and 547 while the
+// process runs (the service; tests replace them).
+func platformListen4() (v4Conn, error) {
+	c, err := listen4()
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func platformListen6() (v6Conn, error) {
+	c, err := listen6()
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // setBroadcast enables SO_BROADCAST (Go sets it for UDP sockets already;
@@ -118,15 +175,22 @@ type udp6 struct {
 	p  *ipv6.PacketConn
 }
 
+// listen6 opens UDP [::]:547 without multicast loopback: PiCache's own
+// relayed search (K8, ARCHITECTURE 18.5) must not come back to it.
 func listen6() (*udp6, error) {
 	pc, err := net.ListenPacket("udp6", "[::]:547")
 	if err != nil {
 		return nil, err
 	}
 	p := ipv6.NewPacketConn(pc)
-	if err := p.SetControlMessage(ipv6.FlagInterface|ipv6.FlagDst, true); err != nil {
-		pc.Close()
-		return nil, err
+	for _, set := range []func() error{
+		func() error { return p.SetControlMessage(ipv6.FlagInterface|ipv6.FlagDst, true) },
+		func() error { return p.SetMulticastLoopback(false) },
+	} {
+		if err := set(); err != nil {
+			pc.Close()
+			return nil, err
+		}
 	}
 	return &udp6{pc: pc, p: p}, nil
 }
@@ -187,6 +251,7 @@ func listenICMP() (*rawICMP, error) {
 	var f ipv6.ICMPFilter
 	f.SetAll(true)
 	f.Accept(ipv6.ICMPTypeRouterSolicitation)
+	f.Accept(ipv6.ICMPTypeRouterAdvertisement) // other routers' (K8)
 	for _, set := range []func() error{
 		func() error { return c.p.SetICMPFilter(&f) },
 		func() error { return c.p.SetControlMessage(ipv6.FlagHopLimit|ipv6.FlagInterface|ipv6.FlagDst, true) },

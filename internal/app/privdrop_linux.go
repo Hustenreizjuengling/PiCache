@@ -63,50 +63,73 @@ func (a *App) dropPrivileges() error {
 	return nil
 }
 
-// dropNetRaw removes CAP_NET_RAW from the process for good once the DHCP
-// sockets are open: the systemd drop-in of install.sh --with-dhcp grants
-// it only for the raw ICMPv6 socket of the router advertisements.
-// Capabilities belong to threads, so the ambient set is lowered and the
-// effective, permitted and inheritable sets are cleared on every thread
-// (syscall.AllThreadsSyscall; needs capset, which the drop-in allows).
-// Afterwards no thread may list it (/proc/self/task/*/status) and opening
-// another raw socket must fail. Nothing needs dropping when the process
-// does not hold it (Docker after the switch to PICACHE_RUN_AS, which
-// clears every capability; the unit without the drop-in).
-func dropNetRaw() error {
-	held, err := threadsHoldCap(unix.CAP_NET_RAW)
-	if err != nil {
-		return err
-	}
-	if held {
-		if _, _, e := syscall.AllThreadsSyscall(syscall.SYS_PRCTL, unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_LOWER, unix.CAP_NET_RAW); e != 0 {
-			return fmt.Errorf("lower the ambient CAP_NET_RAW: %w", e)
-		}
-		hdr := &unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
-		data := &[2]unix.CapUserData{}
-		if err := unix.Capget(hdr, &data[0]); err != nil {
-			return fmt.Errorf("read the capabilities: %w", err)
-		}
-		bit := uint32(1) << (unix.CAP_NET_RAW % 32)
-		d := &data[unix.CAP_NET_RAW/32]
-		d.Effective &^= bit
-		d.Permitted &^= bit
-		d.Inheritable &^= bit
-		hdr.Pid = 0 // each thread changes itself
-		if _, _, e := syscall.AllThreadsSyscall(unix.SYS_CAPSET, uintptr(unsafe.Pointer(hdr)), uintptr(unsafe.Pointer(&data[0])), 0); e != 0 {
-			return fmt.Errorf("drop CAP_NET_RAW: %w", e)
-		}
-		if held, err := threadsHoldCap(unix.CAP_NET_RAW); err != nil || held {
-			return fmt.Errorf("CAP_NET_RAW is still held after dropping it (%v)", err)
+// dropNetRaw removes CAP_NET_RAW from the process for good, on every start
+// (docs/ARCHITECTURE.md 18.1): the systemd unit grants it only to open the
+// raw ICMPv6 socket of the router advertisements at start. Capabilities
+// belong to threads, so:
+//
+//  1. the capability sets of every thread are read (/proc/self/task/*/status);
+//  2. when any thread holds CAP_NET_RAW, or the sets cannot be read, the
+//     ambient capability is lowered and the effective, permitted and
+//     inheritable sets are cleared of it on every thread
+//     (syscall.AllThreadsSyscall; needs capset, which the unit allows); a
+//     failure here is fatal when step 1 showed the capability;
+//  3. opening a raw ICMPv6 socket must now fail (EPERM, EACCES,
+//     EAFNOSUPPORT), and when step 1 was readable no thread may list the
+//     capability any more; otherwise err is set (fatal: PiCache refuses to
+//     run with it);
+//  4. when step 1 could not be read at all but step 3 passed, unverified
+//     says why the drop could not be verified (the caller closes the raw
+//     socket; DNS keeps running).
+//
+// Nothing needs dropping when no thread holds it (Docker after the switch to
+// PICACHE_RUN_AS, which clears every capability).
+func dropNetRaw() (unverified, err error) {
+	held, readErr := threadsHoldCap(unix.CAP_NET_RAW)
+	var clearErr error
+	if held || readErr != nil {
+		clearErr = clearNetRaw()
+		if clearErr != nil && readErr == nil {
+			return nil, clearErr
 		}
 	}
-	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_RAW, syscall.IPPROTO_ICMPV6)
-	if err == nil {
+	fd, serr := syscall.Socket(syscall.AF_INET6, syscall.SOCK_RAW, syscall.IPPROTO_ICMPV6)
+	if serr == nil {
 		syscall.Close(fd)
-		return errors.New("a raw socket can still be opened after dropping CAP_NET_RAW")
+		return nil, errors.New("a raw socket can still be opened")
 	}
-	if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EAFNOSUPPORT) {
-		return fmt.Errorf("check that raw sockets are refused: %w", err)
+	if !errors.Is(serr, syscall.EPERM) && !errors.Is(serr, syscall.EACCES) && !errors.Is(serr, syscall.EAFNOSUPPORT) {
+		return nil, fmt.Errorf("check that raw sockets are refused: %w", serr)
+	}
+	if readErr == nil {
+		if still, err := threadsHoldCap(unix.CAP_NET_RAW); err != nil || still {
+			return nil, fmt.Errorf("a thread still holds it after dropping it (%v)", err)
+		}
+		return nil, nil
+	}
+	return errors.Join(fmt.Errorf("the thread capabilities cannot be read: %w", readErr), clearErr), nil
+}
+
+// clearNetRaw lowers the ambient CAP_NET_RAW and clears it from the
+// effective, permitted and inheritable sets of every thread (tests replace
+// it).
+var clearNetRaw = func() error {
+	if _, _, e := syscall.AllThreadsSyscall(syscall.SYS_PRCTL, unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_LOWER, unix.CAP_NET_RAW); e != 0 {
+		return fmt.Errorf("lower the ambient CAP_NET_RAW: %w", e)
+	}
+	hdr := &unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
+	data := &[2]unix.CapUserData{}
+	if err := unix.Capget(hdr, &data[0]); err != nil {
+		return fmt.Errorf("read the capabilities: %w", err)
+	}
+	bit := uint32(1) << (unix.CAP_NET_RAW % 32)
+	d := &data[unix.CAP_NET_RAW/32]
+	d.Effective &^= bit
+	d.Permitted &^= bit
+	d.Inheritable &^= bit
+	hdr.Pid = 0 // each thread changes itself
+	if _, _, e := syscall.AllThreadsSyscall(unix.SYS_CAPSET, uintptr(unsafe.Pointer(hdr)), uintptr(unsafe.Pointer(&data[0])), 0); e != 0 {
+		return fmt.Errorf("drop CAP_NET_RAW: %w", e)
 	}
 	return nil
 }
