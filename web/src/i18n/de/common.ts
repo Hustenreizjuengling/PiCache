@@ -189,6 +189,13 @@ const de: Messages<typeof en> = {
 
   // Komponenten
   'table.empty': 'Nichts anzuzeigen.',
+  'table.selectAll': 'Alle angezeigten Zeilen auswählen',
+  'table.selectRow': 'Zeile auswählen',
+  'bulk.label': 'Aktionen für die ausgewählten Zeilen',
+  'bulk.selected.one': '{count} ausgewählt',
+  'bulk.selected.other': '{count} ausgewählt',
+  'bulk.clear': 'Auswahl aufheben',
+  'bulk.actions': 'Aktionen',
   'chart.noData': 'Keine Daten für diesen Zeitraum.',
   'chart.time': 'Zeit',
   'pager.label': 'Seiten',
@@ -264,6 +271,7 @@ const de: Messages<typeof en> = {
   'queryStatus.blocked-service': 'Dienst blockiert',
   'queryStatus.blocked-upstream': 'Vom Upstream blockiert',
   'queryStatus.blocked-rebind': 'Rebinding blockiert',
+  'queryStatus.blocked-ip': 'Antwortadresse blockiert',
   'queryStatus.safesearch': 'SafeSearch',
   'queryStatus.refused': 'Abgelehnt',
   'queryStatus.error': 'Fehler',

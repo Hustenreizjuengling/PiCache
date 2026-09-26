@@ -32,7 +32,7 @@ func (s *Server) upstreamBlock(qc *qctx, r *result) {
 	reason := r.block.Reason()
 	qc.note("upstream block: " + reason)
 	upstreamName, ede := r.upstream, r.ede
-	*r = result{msg: blockReply(qc.req, &qc.set.Filter), status: StatusBlockedUpstream, reason: reason, blocked: true,
+	*r = result{msg: s.globalReply(qc), status: StatusBlockedUpstream, reason: reason, blocked: true,
 		edeText: r.block.ClientText(), upstream: upstreamName, ede: ede, def: true}
 }
 
@@ -101,7 +101,7 @@ func (s *Server) rebindCheck(qc *qctx, r *result) {
 	if first.IsValid() {
 		qc.note("rebind protection: " + netutil.Canon(first).String() + " blocked")
 		upstreamName, ede := r.upstream, r.ede
-		*r = result{msg: blockReply(qc.req, &qc.set.Filter), status: StatusBlockedRebind,
+		*r = result{msg: s.globalReply(qc), status: StatusBlockedRebind,
 			reason: "rebind: " + netutil.Canon(first).String(), blocked: true, upstream: upstreamName, ede: ede, def: true}
 		return
 	}
@@ -137,7 +137,7 @@ func (s *Server) rebindExempt(qc *qctx) (string, bool) {
 		}
 	}
 	if s.d.Filter != nil {
-		if d := s.d.Filter.CheckRules(name, qc.id.GroupIDs); d.Action == filter.ActionAllow {
+		if d := s.d.Filter.CheckRules(name, qc.qtype, qc.id.GroupIDs); d.Action == filter.ActionAllow {
 			return "allow rule " + d.Name, true
 		}
 	}

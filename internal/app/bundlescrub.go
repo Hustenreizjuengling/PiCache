@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
+	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -70,7 +71,8 @@ var settingRules = map[string]settingRule{
 	"dns.rebindProtection": ruleKeep, "dns.refuseAny": ruleKeep, "dns.routerResolver": ruleRouter, "dns.serveStale": ruleKeep,
 	"dns.serveStaleMaxAgeSec": ruleKeep, "dns.serverNames": ruleName, "dns.trustConnectedNetworks": ruleKeep,
 	"dns.upstreamBlockedTtl": ruleKeep, "dns.upstreamMode": ruleKeep, "dns.upstreamTimeoutMs": ruleKeep,
-	"dns.upstreams": ruleUpstream,
+	"dns.upstreams": ruleUpstream, "dns.localRecordsEnabled": ruleKeep, "dns.localizeRecords": ruleKeep,
+	"dns.serverNameAddresses.ipv4": ruleAddr, "dns.serverNameAddresses.ipv6": ruleAddr,
 
 	"downloadCache.allowPrivateUpstreams": ruleKeep, "downloadCache.cacheIpv4": ruleAddr, "downloadCache.cacheIpv6": ruleAddr,
 	"downloadCache.disabledServices": ruleKeep, "downloadCache.dnsTtl": ruleKeep, "downloadCache.domainsSource": ruleUpstream,
@@ -317,6 +319,9 @@ func (sc *scrubber) settingValue(path, v string) (string, bool) {
 		}
 		fallthrough
 	case ruleAddr:
+		if v == settings.SelfAddress {
+			return v, true // filter.blockingIpv4/Ipv6: this server's own address
+		}
 		if out, ok := sc.scrubAddrValue(v); ok {
 			return out, true
 		}
@@ -402,33 +407,59 @@ func (sc *scrubber) registerUpstreams(a *settings.All) {
 	sc.counts = map[string]int{} // registering counts nothing
 	defer func() { sc.counts = counts }()
 	_, _ = rewriteJSON(raw, func(path string, tok jsontext.Token) (jsontext.Token, bool) {
-		v := tok.String()
-		if tok.Kind() != '"' || settingRules[path] != ruleUpstream || v == "" {
-			return tok, true
-		}
-		// Only URLs as a whole: a plain address such as 1.1.1.1 could be
-		// part of another one; plain values are left to the name and
-		// address rules.
-		if strings.Contains(v, "://") {
-			if _, ok := sc.upstreams[v]; !ok {
-				if out := sc.scrubUpstream(v); out != v {
-					sc.upstreams[v] = out
-					sc.upOrder = append(sc.upOrder, v)
-				}
-			}
-		}
-		h := upstreamHost(v)
-		if _, err := netip.ParseAddr(h); h == "" || err == nil {
-			return tok, true
-		}
-		switch out := sc.scrubHostName(h); {
-		case out == "*":
-			sc.addName(h)
-		case out != h:
-			sc.addLabel(h, out)
+		if tok.Kind() == '"' && settingRules[path] == ruleUpstream {
+			sc.registerUpstream(tok.String())
 		}
 		return tok, true
 	})
+	slices.SortStableFunc(sc.upOrder, func(a, b string) int { return len(b) - len(a) })
+}
+
+// registerUpstream registers one upstream-like value for the text scrubber
+// (registerUpstreams; sc.upOrder is sorted by the caller).
+func (sc *scrubber) registerUpstream(v string) {
+	if v == "" {
+		return
+	}
+	// Only URLs as a whole: a plain address such as 1.1.1.1 could be part
+	// of another one; plain values are left to the name and address rules.
+	if strings.Contains(v, "://") {
+		if _, ok := sc.upstreams[v]; !ok {
+			if out := sc.scrubUpstream(v); out != v {
+				sc.upstreams[v] = out
+				sc.upOrder = append(sc.upOrder, v)
+			}
+		}
+	}
+	h := upstreamHost(v)
+	if _, err := netip.ParseAddr(h); h == "" || err == nil {
+		return
+	}
+	switch out := sc.scrubHostName(h); {
+	case out == "*":
+		sc.addName(h)
+	case out != h:
+		sc.addLabel(h, out)
+	}
+}
+
+// registerGroups makes the text scrubber treat the upstreams of the client
+// groups like the settings' upstreams (a group's DoT host or DoH URL can
+// carry a profile ID; the resolver logs them) and, without client names,
+// the names of these groups like configured names (the resolver's warning
+// and the health check name them; a device group is named after a device).
+func (sc *scrubber) registerGroups(groups []clients.GroupUpstreamConfig) {
+	counts := sc.counts
+	sc.counts = map[string]int{} // registering counts nothing
+	defer func() { sc.counts = counts }()
+	for _, g := range groups {
+		for _, u := range g.Upstreams {
+			sc.registerUpstream(u)
+		}
+		if !sc.keepPrivate {
+			sc.addName(g.Name)
+		}
+	}
 	slices.SortStableFunc(sc.upOrder, func(a, b string) int { return len(b) - len(a) })
 }
 

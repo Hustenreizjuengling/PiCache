@@ -41,7 +41,7 @@ func TestMigrateIgnoreStats(t *testing.T) {
 		}
 	}
 	var v int
-	if err := cdb.R.QueryRow(`SELECT MAX(version) FROM schema_migrations WHERE component = 'clients'`).Scan(&v); err != nil || v != 3 {
+	if err := cdb.R.QueryRow(`SELECT MAX(version) FROM schema_migrations WHERE component = 'clients'`).Scan(&v); err != nil || v != len(migrations) {
 		t.Fatalf("clients schema v%d (%v)", v, err)
 	}
 }

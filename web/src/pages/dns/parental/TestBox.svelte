@@ -101,6 +101,8 @@
         return t('dns.parental.test.blockedUpstream', { reason })
       case 'blocked-rebind':
         return t('dns.parental.test.blockedRebind', { reason })
+      case 'blocked-ip':
+        return t('dns.parental.test.blockedIp', { reason })
       case 'safesearch':
         return t('dns.parental.test.safeSearch', { reason })
       // E.g. safe search fails closed: the device gets SERVFAIL, never the unrestricted answer.

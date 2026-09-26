@@ -180,6 +180,18 @@ func (a *All) normalize() {
 	if p, err := netip.ParsePrefix(d.DNS64.Prefix); err == nil {
 		d.DNS64.Prefix = p.Masked().String()
 	}
+	d.LocalizeRecords = strings.ToLower(strings.TrimSpace(d.LocalizeRecords))
+	if d.LocalizeRecords == "" {
+		d.LocalizeRecords = LocalizeFirst
+	}
+	d.ServerNameAddresses.IPv4 = normalizeList(d.ServerNameAddresses.IPv4, normalizeAddrOrPrefix)
+	d.ServerNameAddresses.IPv6 = normalizeList(d.ServerNameAddresses.IPv6, normalizeAddrOrPrefix)
+	f := &a.Filter
+	for _, s := range []*string{&f.BlockingIPv4, &f.BlockingIPv6} {
+		if *s = strings.TrimSpace(*s); strings.EqualFold(*s, SelfAddress) {
+			*s = SelfAddress
+		}
+	}
 	l := &a.DownloadCache
 	l.CacheIPv4 = clean(l.CacheIPv4, true)
 	l.CacheIPv6 = clean(l.CacheIPv6, true)
@@ -364,30 +376,27 @@ func (a *All) Validate() error {
 	if d.DisableAAAA && d.DNS64.Enabled {
 		return apperr.Invalid("dns.disableAAAA", "cannot be on together with DNS64 (dns.dns64.enabled)")
 	}
+	switch d.LocalizeRecords {
+	case LocalizeOff, LocalizeFirst, LocalizeOnly:
+	default:
+		return apperr.Invalid("dns.localizeRecords", "must be off, first or only")
+	}
+	if err := d.ServerNameAddresses.validate(); err != nil {
+		return err
+	}
 
 	f := a.Filter
-	if f.BlockingIPv4 != "" {
-		if ip, err := netip.ParseAddr(f.BlockingIPv4); err != nil || !ip.Is4() {
-			return apperr.Invalid("filter.blockingIpv4", "must be an IPv4 address")
-		}
+	if f.BlockingIPv4 != "" && !ValidReplyAddress(f.BlockingIPv4, false) {
+		return apperr.Invalid("filter.blockingIpv4", "must be an IPv4 address or self")
 	}
-	if f.BlockingIPv6 != "" {
-		if ip, err := netip.ParseAddr(f.BlockingIPv6); err != nil || !ip.Is6() || ip.Is4In6() {
-			return apperr.Invalid("filter.blockingIpv6", "must be an IPv6 address")
-		}
+	if f.BlockingIPv6 != "" && !ValidReplyAddress(f.BlockingIPv6, true) {
+		return apperr.Invalid("filter.blockingIpv6", "must be an IPv6 address or self")
 	}
 	switch f.BlockingMode {
 	case "null", "nxdomain", "nodata", "refused":
 	case "custom_ip":
-		ip4, err := netip.ParseAddr(f.BlockingIPv4)
-		if err != nil || !ip4.Is4() {
-			return apperr.Invalid("filter.blockingIpv4", "must be an IPv4 address in custom_ip mode")
-		}
-		if f.BlockingIPv6 != "" {
-			ip6, err := netip.ParseAddr(f.BlockingIPv6)
-			if err != nil || !ip6.Is6() {
-				return apperr.Invalid("filter.blockingIpv6", "must be an IPv6 address")
-			}
+		if f.BlockingIPv4 == "" {
+			return apperr.Invalid("filter.blockingIpv4", "must be an IPv4 address or self in custom_ip mode")
 		}
 	default:
 		return apperr.Invalid("filter.blockingMode", "must be null, nxdomain, nodata, refused or custom_ip")

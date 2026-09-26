@@ -68,7 +68,14 @@ var expectedClasses = func() map[string]routeClass {
 		"POST /api/v1/storage/targets/{id}/apply", "POST /api/v1/storage/targets/{id}/activate",
 		"POST /api/v1/notifications/channels", "PUT /api/v1/notifications/channels/{id}", "DELETE /api/v1/notifications/channels/{id}",
 		"POST /api/v1/system/update/apply",
-		"POST /api/v1/system/users", "PUT /api/v1/system/users/{id}", "PUT /api/v1/system/tls", "POST /api/v1/system/tls/local-ca")
+		"POST /api/v1/system/users", "PUT /api/v1/system/users/{id}", "PUT /api/v1/system/tls", "POST /api/v1/system/tls/local-ca",
+		// 0.13.0: imports (their dry runs too), batches, the device rule, IP
+		// rules and the upstreams of a group; none is exempt or destructive.
+		"POST /api/v1/filter/rules/import", "POST /api/v1/filter/rules/batch", "POST /api/v1/filter/rules/device",
+		"POST /api/v1/filter/ip-rules", "PUT /api/v1/filter/ip-rules/{id}", "DELETE /api/v1/filter/ip-rules/{id}",
+		"POST /api/v1/filter/ip-rules/batch", "POST /api/v1/filter/lists/batch",
+		"POST /api/v1/dns/records/import", "POST /api/v1/dns/records/batch", "POST /api/v1/dns/forwarders/batch",
+		"POST /api/v1/clients/batch", "POST /api/v1/groups/batch", "PUT /api/v1/groups/{id}/upstreams")
 	add(destroy,
 		"POST /api/v1/system/restore", "POST /api/v1/dhcp/reset", "DELETE /api/v1/dhcp/leases",
 		"POST /api/v1/cache/services/{service}/purge", "POST /api/v1/cache/groups/delete", "POST /api/v1/storage/targets/{id}/init",

@@ -3,14 +3,16 @@
   One group on the parental controls page: name, devices, what applies right
   now in plain words, the weekly plan, its schedules, the services that are
   always blocked, safe search and the category switches (with download
-  warnings), and a badge while its filtering is paused. Admins get the quick
+  warnings), the family-safe resolver (not for Default; a group with its
+  own upstreams names them and links to Clients & groups), and a badge
+  while its filtering is paused. Admins get the quick
   actions (block internet now, lift restrictions, end an override, pause
   filtering, resume) and Edit; read-only principals see the same without
   actions.
 -->
 <script lang="ts">
   import { t, tn, type MessageKey } from '$i18n/index.svelte'
-  import { DEFAULT_GROUP_ID, type GroupControls, type OverrideMode, type ParentalService } from '$lib/api'
+  import { DEFAULT_GROUP_ID, type ClientGroup, type GroupControls, type OverrideMode, type ParentalService, type UpstreamPreset } from '$lib/api'
   import { href } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
   import { Badge, Button, Menu, type MenuItem } from '$lib/ui'
@@ -27,6 +29,7 @@
     whenText,
     windowText,
   } from './plan'
+  import ResolverPicker from './ResolverPicker.svelte'
   import WeekPlan from './WeekPlan.svelte'
 
   interface Props {
@@ -41,9 +44,14 @@
     onend: (g: GroupControls) => void
     onpaused: (g: GroupControls) => void
     onresume: (g: GroupControls) => void
+    /** The group's resolver (upstreams per group); undefined until loaded. */
+    resolver?: ClientGroup
+    presets?: readonly UpstreamPreset[]
+    /** Sets the family-safe resolver ("" = none); resolves true when saved. */
+    onresolver?: (g: GroupControls, preset: string) => Promise<boolean>
   }
 
-  let { group, catalog, now, busy = false, onedit, onoverride, onend, onpaused, onresume }: Props = $props()
+  let { group, catalog, now, busy = false, onedit, onoverride, onend, onpaused, onresume, resolver, presets, onresolver }: Props = $props()
 
   const auto = $props.id()
   const isDefault = $derived(group.groupId === DEFAULT_GROUP_ID)
@@ -204,6 +212,9 @@
           </ul>
         {/if}
       </section>
+      {#if !isDefault && resolver && onresolver}
+        <ResolverPicker group={resolver} {presets} {busy} onchange={(key) => onresolver(group, key)} />
+      {/if}
       {#if switchesOf(group).length > 0}
         <section class="stack-sm" aria-labelledby="pc-{auto}-cats">
           <h3 id="pc-{auto}-cats">{t('dns.parental.switch.cardTitle')}</h3>

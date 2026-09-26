@@ -1,22 +1,27 @@
 <!--
   @component
   Blocklists tab: every list with its category (protection lists marked),
-  state, entries, last update and problems; add from the catalogue or by
-  URL, update one or all, enable or disable inline, and open a list for
-  details, settings and Delete.
+  format (answer addresses marked), state, entries, last update and
+  problems; add from the catalogue or by URL, update one or all, enable or
+  disable inline, and open a list for details, settings and Delete. Admins
+  select lists to enable, disable or delete them together (enabling beyond
+  the entry budget asks first; lists of parental category switches are
+  named).
   Query: ?sel=<list id>
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
-  import { api, resource, type ClientGroup, type FilterList } from '$lib/api'
+  import { api, resource, type BatchAction, type ClientGroup, type FilterList } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatDateTime, formatNumber, formatRelative } from '$lib/format'
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { Button, Chip, EmptyState, Icon, IconButton, Panel, Table, toast, Toggle, type Column } from '$lib/ui'
+  import { Badge, BulkBar, Button, Chip, EmptyState, Icon, IconButton, Panel, Table, toast, Toggle, type Column } from '$lib/ui'
+  import { runBatch } from '../shared/batch'
   import { groupNames } from '../shared/groups'
   import AddListDialog from './AddListDialog.svelte'
   import ListPanel from './ListPanel.svelte'
+  import { SWITCHES } from '../parental/plan'
   import { categoryLabel, isProtection, listInput, listStatus, skippedLines } from './listStatus'
 
   interface Props {
@@ -35,6 +40,8 @@
   let refreshing = $state<number[]>([])
   let refreshingAll = $state(false)
   let toggling = $state<number[]>([])
+  let checked = $state<number[]>([])
+  let busy = $state(false)
 
   const selId = $derived(Number(router.param('sel')) || 0)
   const selected = $derived(lists.data?.find((l) => l.id === selId))
@@ -73,6 +80,33 @@
       void lists.refresh()
     } finally {
       toggling = toggling.filter((x) => x !== l.id)
+    }
+  }
+
+  /** Checked lists that parental category switches use. */
+  const switchLists = $derived(
+    (lists.data ?? []).filter((l) => checked.includes(l.id) && SWITCHES.some((s) => s.catalogKey === l.catalogKey)),
+  )
+
+  async function batch(action: BatchAction) {
+    busy = true
+    try {
+      const ok = await runBatch({
+        action,
+        ids: checked,
+        what: (n) => tn('dns.lists.count', n),
+        run: (req) => api.filter.lists.batch(req),
+        deleteText: t('dns.lists.batchDeleteText'),
+      })
+      if (!ok) return
+      if (action === 'delete') {
+        if (selected && checked.includes(selected.id)) router.setQuery({ sel: null })
+        checked = []
+      }
+      void lists.refresh()
+      onchanged()
+    } finally {
+      busy = false
     }
   }
 
@@ -136,7 +170,10 @@
 
 {#snippet nameCell(l: FilterList)}
   <span class="name">
-    <span class="truncate">{l.name}</span>
+    <span class="title">
+      <span class="truncate">{l.name}</span>
+      {#if l.format === 'ips'}<Badge tone="info" title={t('dns.lists.format.ipsHelp')}>{t('dns.lists.format.ipsBadge')}</Badge>{/if}
+    </span>
     <span class="url mono truncate" title={l.url}>{l.url}</span>
   </span>
 {/snippet}
@@ -202,6 +239,9 @@
     onrowclick={(l) => router.setQuery({ sel: l.id })}
     selected={selected?.id}
     caption={t('dns.lists.title')}
+    selectable={session.isAdmin}
+    bind:checked
+    checkLabel={(l) => t('dns.lists.selectNamed', { name: l.name })}
   >
     {#snippet empty()}
       <EmptyState compact icon="shield" title={t('dns.lists.empty')} text={t('dns.lists.emptyText')}>
@@ -211,6 +251,19 @@
       </EmptyState>
     {/snippet}
   </Table>
+  {#if session.isAdmin}
+    <BulkBar
+      count={checked.length}
+      {busy}
+      note={switchLists.length > 0 ? t('dns.lists.batchSwitchNote', { names: switchLists.map((l) => l.name).join(', ') }) : undefined}
+      onclear={() => (checked = [])}
+      actions={[
+        { label: t('common.action.enable'), icon: 'play', onselect: () => batch('enable') },
+        { label: t('common.action.disable'), icon: 'pause', onselect: () => batch('disable') },
+        { label: t('common.action.delete'), icon: 'trash', danger: true, onselect: () => batch('delete') },
+      ]}
+    />
+  {/if}
 </Panel>
 
 <AddListDialog bind:open={addOpen} {groups} lists={lists.data} onadded={replace} />
@@ -231,6 +284,12 @@
     max-width: 32ch;
     line-height: 1.3;
     padding: 4px 0;
+  }
+  .title {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
   }
   .url {
     color: var(--text-3);

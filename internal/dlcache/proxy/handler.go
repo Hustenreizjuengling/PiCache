@@ -56,6 +56,11 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.settings().DownloadCache.Enabled {
 		s.stats.refused.Add(1)
+		// Browsers sent here by a blocking reply of this server's address
+		// arrive while the download cache is off too (the default): close
+		// their connections like those of a host that is not a download
+		// service (below).
+		w.Header().Set("Connection", "close")
 		http.Error(w, "forbidden: the download cache is disabled", http.StatusForbidden)
 		return
 	}
@@ -94,6 +99,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(ua, services.SteamUserAgentSuffix) {
 			s.stats.steamRefused(host)
 		}
+		// A browser sent here by a blocking reply of this server's address
+		// keeps idle connections open; closing them keeps them from using
+		// up the per-client connection limit.
+		w.Header().Set("Connection", "close")
 		http.Error(w, "forbidden: host is not a download service", http.StatusForbidden)
 		return
 	}

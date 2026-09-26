@@ -1,16 +1,19 @@
 <!--
   @component
   Rules tab: your own allow and block rules (exact domain, domain with
-  subdomains, regular expression) with groups. They always beat list
-  entries. Filters are in the URL.
+  subdomains, regular expression) with groups, query types, answers,
+  exceptions and inversion. They always beat list entries. Filters are in
+  the URL. Admins import rules from list lines, select rows to enable,
+  disable or delete them together; everyone can export them as list lines.
   Query: ?action=allow|block&type=exact|subtree|regex&search=…&sel=<rule id>
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import {
     api,
     resource,
+    type BatchAction,
     type ClientGroup,
     type FilterRule,
     type RuleAction,
@@ -21,9 +24,12 @@
   import { formatDateTime, formatRelative } from '$lib/format'
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { Button, Chip, EmptyState, Field, Input, Panel, Select, Table, toast, Toggle, type Column } from '$lib/ui'
+  import { Badge, BulkBar, Button, Chip, EmptyState, Field, Input, Panel, Select, Table, toast, Toggle, type Column } from '$lib/ui'
+  import { runBatch } from '../shared/batch'
   import { groupNames } from '../shared/groups'
+  import RuleImportDialog from './RuleImportDialog.svelte'
   import RulePanel from './RulePanel.svelte'
+  import { replyShort, typesText } from './rules'
 
   interface Props {
     groups: readonly ClientGroup[] | undefined
@@ -48,7 +54,10 @@
   const rules = resource((signal) => api.filter.rules.list(query, { signal }))
 
   let addOpen = $state(false)
+  let importOpen = $state(false)
   let toggling = $state<number[]>([])
+  let checked = $state<number[]>([])
+  let busy = $state(false)
   let searchText = $state(untrack(() => query.search ?? ''))
   let timer: ReturnType<typeof setTimeout> | undefined
   $effect(() => () => clearTimeout(timer))
@@ -68,6 +77,27 @@
   function changed() {
     void rules.refresh()
     onchanged()
+  }
+
+  async function batch(action: BatchAction) {
+    busy = true
+    try {
+      const ok = await runBatch({
+        action,
+        ids: checked,
+        what: (n) => tn('dns.rules.count', n),
+        run: (req) => api.filter.rules.batch(req),
+        deleteText: t('dns.rules.batchDeleteText'),
+      })
+      if (!ok) return
+      if (action === 'delete') {
+        if (selected && checked.includes(selected.id)) router.setQuery({ sel: null })
+        checked = []
+      }
+      changed()
+    } finally {
+      busy = false
+    }
   }
 
   async function setEnabled(r: FilterRule, enabled: boolean) {
@@ -108,6 +138,7 @@
     { key: 'action', label: t('dns.rules.action'), width: '1%', sortable: true, value: (r) => r.action, cell: actionCell },
     { key: 'type', label: t('common.label.type'), width: '1%', sortable: true, value: (r) => typeLabel(r.type), cell: typeCell },
     { key: 'pattern', label: t('dns.rules.pattern'), mono: true, truncate: true, width: '35%', sortable: true, value: (r) => r.pattern },
+    { key: 'options', label: t('dns.rules.options'), cell: optionsCell },
     { key: 'groups', label: t('common.label.groups'), truncate: true, width: '20%', value: (r) => groupNames(r.groupIds, groups) },
     { key: 'comment', label: t('common.label.comment'), truncate: true, width: '45%', value: (r) => r.comment },
     { key: 'updated', label: t('common.label.updated'), width: '1%', sortable: true, value: (r) => r.updatedAt, cell: updatedCell },
@@ -134,12 +165,31 @@
   <span class="nowrap">{typeLabel(r.type)}</span>
 {/snippet}
 
+{#snippet optionsCell(r: FilterRule)}
+  {@const reply = replyShort(r)}
+  <span class="opts">
+    {#if r.qtypes.length > 0}<Badge title={t('dns.rules.qtypes')}>{typesText(r.qtypes, r.qtypesNegate)}</Badge>{/if}
+    {#if reply}<Badge tone="info" title={t('dns.rules.reply')}>{reply}</Badge>{/if}
+    {#if r.denyallow.length > 0}
+      <Badge title={t('dns.rules.badge.exceptHelp', { domains: r.denyallow.join(', ') })}>{tn('dns.rules.badge.except', r.denyallow.length)}</Badge>
+    {/if}
+    {#if r.invert}<Badge tone="warn" title={t('dns.rules.invertHelp')}>{t('dns.rules.badge.invert')}</Badge>{/if}
+    {#if r.qtypes.length === 0 && !reply && r.denyallow.length === 0 && !r.invert}<span class="subtle">–</span>{/if}
+  </span>
+{/snippet}
+
 {#snippet updatedCell(r: FilterRule)}
   <span class="nowrap" title={formatDateTime(r.updatedAt)}>{formatRelative(r.updatedAt)}</span>
 {/snippet}
 
 <Panel flush title={t('dns.rules.title')} description={t('dns.rules.description')}>
   {#snippet actions()}
+    <Button variant="ghost" icon="download" href={api.filter.rules.exportUrl({ action: query.action, type: query.type })} download>
+      {t('dns.rules.export')}
+    </Button>
+    {#if session.isAdmin}
+      <Button icon="upload" onclick={() => (importOpen = true)}>{t('dns.rules.import')}</Button>
+    {/if}
     <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.rules.add')}</Button>
   {/snippet}
 
@@ -180,6 +230,9 @@
     onrowclick={(r) => router.setQuery({ sel: r.id })}
     selected={selected?.id}
     caption={t('dns.rules.title')}
+    selectable={session.isAdmin}
+    bind:checked
+    checkLabel={(r) => t('dns.rules.selectNamed', { pattern: r.pattern })}
   >
     {#snippet empty()}
       {#if filtered}
@@ -193,8 +246,23 @@
       {/if}
     {/snippet}
   </Table>
+  {#if session.isAdmin}
+    <BulkBar
+      count={checked.length}
+      {busy}
+      onclear={() => (checked = [])}
+      actions={[
+        { label: t('common.action.enable'), icon: 'play', onselect: () => batch('enable') },
+        { label: t('common.action.disable'), icon: 'pause', onselect: () => batch('disable') },
+        { label: t('common.action.delete'), icon: 'trash', danger: true, onselect: () => batch('delete') },
+      ]}
+    />
+  {/if}
 </Panel>
 
+{#if session.isAdmin}
+  <RuleImportDialog bind:open={importOpen} {groups} onimported={changed} />
+{/if}
 <RulePanel bind:open={addOpen} {groups} onsaved={changed} />
 <RulePanel
   bind:open={() => !!selected, (v) => !v && router.setQuery({ sel: null })}
@@ -214,6 +282,12 @@
   }
   .sel {
     flex: 0 1 180px;
+  }
+  .opts {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-width: 28ch;
   }
   @media (max-width: 480px) {
     .search,

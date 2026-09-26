@@ -26,14 +26,14 @@ const (
 	statusSafeSearch = "safesearch"
 	statusRefused    = "refused"
 	statusError      = "error"
-	blockedPrefix    = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service, blocked-upstream, blocked-rebind
+	blockedPrefix    = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service, blocked-upstream, blocked-rebind, blocked-ip
 )
 
 // blockedStatuses are the blocked statuses (7.1 steps 7a, 8, 10, 11, 13a, 14,
-// 14c).
+// 14c, 14d).
 var blockedStatuses = []string{
 	"blocked-list", "blocked-rule", "blocked-regex", "blocked-cname", "blocked-special", "blocked-schedule", "blocked-service",
-	"blocked-upstream", "blocked-rebind",
+	"blocked-upstream", "blocked-rebind", "blocked-ip",
 }
 
 // knownStatuses are the statuses accepted by query-log filters.

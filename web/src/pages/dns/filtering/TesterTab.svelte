@@ -3,7 +3,9 @@
   "Why is this blocked?": runs a test query through the whole pipeline as a
   given client (POST /dns/lookup, not logged) and shows the answer, every
   step of the trace and every list or rule entry that matches the domain,
-  with the decisive one marked.
+  with the decisive one marked (with their query types, exceptions,
+  inversion and answer, and the entries that match the name but not this
+  query type or name).
   Query: ?domain=…&client=<ip>&qtype=A
 -->
 <script lang="ts">
@@ -23,7 +25,7 @@
 
   let { groups }: { groups: readonly ClientGroup[] | undefined } = $props()
 
-  const TYPES = ['A', 'AAAA', 'HTTPS', 'CNAME', 'MX', 'TXT', 'PTR', 'SRV', 'NS']
+  const TYPES = ['A', 'AAAA', 'HTTPS', 'SVCB', 'CNAME', 'MX', 'TXT', 'PTR', 'SRV', 'NS', 'ANY']
 
   // Separate values: a request only reruns when one of them really changes.
   const reqName = $derived(router.param('domain').trim())

@@ -4,11 +4,12 @@
   button (tests the typed address, saved or not), order (strict mode uses
   it), the fallback servers asked only when every upstream fails to answer,
   mode, timeout, bootstrap servers (IPv6 first optionally), private
-  reverse-lookup servers and the EDNS Client Subnet sent upstream.
+  reverse-lookup servers and the EDNS Client Subnet sent upstream; below
+  the fallbacks the upstream lists of groups with their health.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
-  import type { DnsSettings, EcsSettings, Timestamp, UpstreamMode, UpstreamStat } from '$lib/api'
+  import type { ClientGroup, DnsSettings, EcsSettings, GroupUpstreamSet, Timestamp, UpstreamMode, UpstreamPreset, UpstreamStat } from '$lib/api'
   import { formatDateTime, formatRelative } from '$lib/format'
   import { session } from '$lib/session.svelte'
   import type { SettingsForm } from '$lib/settings.svelte'
@@ -16,6 +17,7 @@
   import { lineError } from '../shared/errors'
   import LinesInput from '../shared/LinesInput.svelte'
   import NumberInput from '../shared/NumberInput.svelte'
+  import GroupUpstreams from './GroupUpstreams.svelte'
   import UpstreamList from './UpstreamList.svelte'
 
   interface Props {
@@ -27,9 +29,13 @@
     /** When a fallback server last answered (absent if never since the start). */
     fallbackLastUsed: Timestamp | undefined
     clockGuard: boolean
+    /** The upstream lists of groups (/dns/upstreams). */
+    groupSets: readonly GroupUpstreamSet[] | undefined
+    groups: readonly ClientGroup[] | undefined
+    presets: readonly UpstreamPreset[] | undefined
   }
 
-  let { form, stats, fallbackStats, fallbackLastUsed, clockGuard }: Props = $props()
+  let { form, stats, fallbackStats, fallbackLastUsed, clockGuard, groupSets, groups, presets }: Props = $props()
 
   const MAX = 16
   const MAX_FALLBACKS = 4
@@ -82,7 +88,7 @@
       <legend class="visually-hidden">{t('dns.settings.upstreams.title')}</legend>
       <UpstreamList
         bind:value={d.upstreams}
-        {form}
+        error={form.saveError}
         field="dns.upstreams"
         max={MAX}
         {stats}
@@ -117,7 +123,7 @@
       {/if}
       <UpstreamList
         bind:value={d.fallbackUpstreams}
-        {form}
+        error={form.saveError}
         field="dns.fallbackUpstreams"
         max={MAX_FALLBACKS}
         stats={fallbackStats}
@@ -126,6 +132,10 @@
       />
       {#if d.fallbackUpstreams.length === 0}<p class="small subtle">{t('dns.settings.fallback.none')}</p>{/if}
     </section>
+
+    {#if groupSets && groupSets.length > 0}
+      <GroupUpstreams sets={groupSets} {groups} {presets} />
+    {/if}
 
     <!-- The upstream lists disable their entries themselves (their Test buttons stay usable). -->
     <fieldset class="stack" disabled={!session.isAdmin}>

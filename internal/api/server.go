@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -183,6 +184,11 @@ type Server struct {
 	exporting, bundling atomic.Bool
 	exportMaxRows       int
 	exportMaxTime       time.Duration
+
+	// deviceMu serialises "Only for this device" (POST /filter/rules/device)
+	// across its two transactions: the undo of a refused request must not
+	// delete a client or group that a concurrent request reused.
+	deviceMu sync.Mutex
 }
 
 // New builds the handler with all routes and middleware.

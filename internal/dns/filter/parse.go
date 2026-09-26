@@ -14,6 +14,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/net/publicsuffix"
+
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 const (
@@ -58,6 +60,22 @@ type entry struct {
 	re        string // kindPattern: RE2 source (without the case-folding flag)
 	lit       string // kindPattern: a literal every match contains ("" if unknown)
 	regex     bool   // kindPattern written as /re/ (compiled case-insensitively)
+	// types ($dnstype) and deny ($denyallow: domains, sorted and unique)
+	// restrict an exact or subtree entry (a modified entry).
+	types typeSet
+	deny  []string
+}
+
+// modified reports whether the entry has $dnstype or $denyallow.
+func (e *entry) modified() bool { return !e.types.empty() || len(e.deny) > 0 }
+
+// modKey is the canonical form of the modifiers ("" for none): the part of
+// the $badfilter key that tells modified entries apart.
+func (e *entry) modKey() string {
+	if !e.modified() {
+		return ""
+	}
+	return e.types.key() + ";" + strings.Join(e.deny, "|")
 }
 
 // tier returns the precedence tier of e in a list of the given kind.
@@ -155,11 +173,14 @@ type listFormat struct {
 	// broadPattern) as invalid, so one broken or hostile list cannot block
 	// a whole TLD. Every category but abused-tlds has it.
 	tldGuard bool
+	// ips: a list of answer addresses (format ips, parseIPLine) instead
+	// of domain names.
+	ips bool
 }
 
 // formatOf returns the parse format of a list.
-func formatOf(kind, plain, category string) listFormat {
-	return listFormat{kind: kind, plain: plain, tldGuard: category != CategoryAbusedTLDs}
+func formatOf(kind, plain, category, format string) listFormat {
+	return listFormat{kind: kind, plain: plain, tldGuard: category != CategoryAbusedTLDs, ips: format == FormatIPs}
 }
 
 // lineParser parses single list lines. It reuses its entry buffer, so the
@@ -167,11 +188,12 @@ func formatOf(kind, plain, category string) listFormat {
 type lineParser struct {
 	plainSubtree bool
 	tldGuard     bool
+	allowList    bool // every entry is an exception ($denyallow is unsupported)
 	buf          []entry
 }
 
 func newLineParser(f listFormat) lineParser {
-	return lineParser{plainSubtree: f.plain == "subtree", tldGuard: f.tldGuard}
+	return lineParser{plainSubtree: f.plain == "subtree", tldGuard: f.tldGuard, allowList: f.kind == "allow"}
 }
 
 // broadDomain reports whether a subtree block of d would cover a whole TLD
@@ -360,24 +382,102 @@ func (p *lineParser) parseRegex(s string) ([]entry, lineStatus) {
 	return p.add(e)
 }
 
-// parseOptions applies "$important,badfilter"; any other option makes the
-// rule unsupported (it would restrict the rule to requests a DNS filter
-// never sees, so applying it to every query would over-block).
+// parseOptions applies "$important", "$badfilter", "$dnstype=…" and
+// "$denyallow=…" (lower-case); any other option makes the rule unsupported
+// (it would restrict the rule to requests a DNS filter never sees, so
+// applying it to every query would over-block). Where the modifiers may
+// be used is decided by the caller (add).
 func (e *entry) parseOptions(opts string) lineStatus {
 	if opts == "" {
 		return lineInvalid
 	}
+	seenTypes, seenDeny := false, false
 	for o := range strings.SplitSeq(opts, ",") {
-		switch strings.TrimSpace(o) {
-		case "important":
+		name, value, hasValue := strings.Cut(strings.TrimSpace(o), "=")
+		switch {
+		case name == "important" && !hasValue:
 			e.important = true
-		case "badfilter":
+		case name == "badfilter" && !hasValue:
 			e.badfilter = true
+		case name == "dnstype" && hasValue:
+			if seenTypes {
+				return lineInvalid
+			}
+			seenTypes = true
+			types, negate, st := parseDNSType(value)
+			if st != lineOK {
+				return st
+			}
+			e.types = newTypeSet(types, negate)
+		case name == "denyallow" && hasValue:
+			if seenDeny {
+				return lineInvalid
+			}
+			seenDeny = true
+			deny, st := parseDenyallow(value)
+			if st != lineOK {
+				return st
+			}
+			e.deny = deny
 		default:
 			return lineUnsupported
 		}
 	}
 	return lineOK
+}
+
+// parseDNSType parses the value of $dnstype: "A|AAAA" or "~A|~AAAA" (a "~"
+// on every value negates the set). Mixing "~" and plain values, an unknown
+// type or an empty value is invalid; more than maxEntryTypes types are
+// unsupported.
+func parseDNSType(v string) ([]uint16, bool, lineStatus) {
+	var types []uint16
+	negated := 0
+	parts := strings.Split(v, "|")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if rest, ok := strings.CutPrefix(part, "~"); ok {
+			negated++
+			part = rest
+		}
+		if part == "" {
+			return nil, false, lineInvalid
+		}
+		t, err := settings.ParseQType(part)
+		if err != nil {
+			return nil, false, lineInvalid
+		}
+		if !slices.Contains(types, t) {
+			types = append(types, t)
+		}
+	}
+	if negated != 0 && negated != len(parts) {
+		return nil, false, lineInvalid
+	}
+	if len(types) > maxEntryTypes {
+		return nil, false, lineUnsupported
+	}
+	return types, negated > 0, lineOK
+}
+
+// parseDenyallow parses the value of $denyallow: domains separated by "|"
+// (A-labels). An invalid domain is invalid, more than maxDenyallow domains
+// unsupported. It returns them sorted and unique.
+func parseDenyallow(v string) ([]string, lineStatus) {
+	var out []string
+	for part := range strings.SplitSeq(v, "|") {
+		d := normalizeName(part)
+		if !validDomain(d) {
+			return nil, lineInvalid
+		}
+		out = append(out, d)
+	}
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if len(out) > maxDenyallow {
+		return nil, lineUnsupported
+	}
+	return out, lineOK
 }
 
 // parseABP parses plain domains, "*.d" and Adblock-style rules (lower-case).
@@ -393,7 +493,7 @@ func (p *lineParser) parseABP(s string) ([]entry, lineStatus) {
 		}
 		s = s[:i]
 	}
-	abp := e.allow || e.important || e.badfilter
+	abp := e.allow || e.important || e.badfilter || e.modified()
 	switch {
 	case strings.HasPrefix(s, "||"):
 		if d, ok := strings.CutSuffix(strings.TrimSuffix(s[2:], "|"), "^"); ok && validDomain(d) {
@@ -434,11 +534,17 @@ func (p *lineParser) parseABP(s string) ([]entry, lineStatus) {
 
 // add appends e unless the TLD guard refuses it: a subtree or pattern
 // block (not an @@ or $badfilter entry) that covers a whole TLD or ICANN
-// public suffix.
+// public suffix, judged without its denyallow set ("||com^$denyallow=x.com"
+// stays refused). $dnstype and $denyallow are supported on exact and
+// subtree entries, $denyallow only on subtree blocks; a pattern with
+// either modifier is unsupported.
 func (p *lineParser) add(e entry) ([]entry, lineStatus) {
 	if p.tldGuard && !e.allow && !e.badfilter &&
 		(e.kind == kindSubtree && broadDomain(e.domain) || e.kind == kindPattern && broadPattern(&e)) {
 		return nil, lineBroad
+	}
+	if e.modified() && (e.kind == kindPattern || len(e.deny) > 0 && (e.allow || p.allowList || e.kind != kindSubtree)) {
+		return nil, lineUnsupported
 	}
 	p.buf = append(p.buf, e)
 	return p.buf, lineOK
@@ -570,13 +676,21 @@ type parsedPattern struct {
 // parsed is the parse result of one list file. It is kept in memory so the
 // matcher can be rebuilt without re-reading files.
 type parsed struct {
-	format      listFormat            // list configuration it was parsed with
-	sets        [numTiers][2][]uint64 // [tier][exact|subtree]: sorted, unique hashes
-	pats        []parsedPattern       // in file order, unique per tier
-	entries     int                   // unique entries (domains + patterns)
-	invalid     int                   // malformed lines and the blocks the TLD guard refused
-	broad       int                   // of invalid: blocks of a whole TLD that the TLD guard refused
-	unsupported int                   // unsupported rules (modifiers, URL rules, pattern caps)
+	format listFormat            // list configuration it was parsed with
+	sets   [numTiers][2][]uint64 // [tier][exact|subtree]: sorted, unique hashes
+	mods   [numTiers]modTable    // modified entries ($dnstype, $denyallow), sorted by hash; src unset
+	pats   []parsedPattern       // in file order, unique per tier
+	// ips and ipBits hold the address entries of a list of format ips:
+	// [allow|block][IPv4|IPv6] sorted, unique network keys (ipKey) and the
+	// prefix lengths present, longest first.
+	ips         [numIPTiers][2][]uint64
+	ipBits      [numIPTiers][2][]uint8
+	entries     int // unique entries (domains, modified entries, patterns, addresses)
+	modified    int // of entries: modified entries
+	ipEntries   int // of entries: address entries
+	invalid     int // malformed lines and the blocks the TLD guard or the IP guard refused
+	broad       int // of invalid: the blocks the TLD guard (or, format ips, the IP guard) refused
+	unsupported int // unsupported rules (modifiers, URL rules, pattern and modified-entry caps)
 }
 
 // memory returns the approximate heap size of p in bytes.
@@ -585,6 +699,12 @@ func (p *parsed) memory() int64 {
 	for t := range p.sets {
 		for k := range p.sets[t] {
 			n += int64(cap(p.sets[t][k])) * 8
+		}
+		n += p.mods[t].memory()
+	}
+	for t := range p.ips {
+		for f := range p.ips[t] {
+			n += int64(cap(p.ips[t][f])) * 8
 		}
 	}
 	return n + int64(len(p.pats))*patternMemEstimate
@@ -656,22 +776,43 @@ func hasPrefixFold(b []byte, prefix string) bool {
 	return len(b) >= len(prefix) && strings.EqualFold(string(b[:len(prefix)]), prefix)
 }
 
-// badKey identifies an entry cancelled by a $badfilter rule.
+// badKey identifies an entry cancelled by a $badfilter rule: the same
+// kind, tier and domain (or pattern) and the same normalised modifiers
+// ("||x^$dnstype=A,badfilter" cancels "||x^$dnstype=A", never "||x^").
 type badKey struct {
 	tier, kind uint8
 	hash       uint64 // domain entries
 	re         string // patterns
+	mods       string // entry.modKey
 }
 
 // parseList parses a list file in format f (the list kind, the
-// plainDomains flag and the TLD guard).
+// plainDomains flag, the TLD guard; a list of format ips with
+// parseIPList).
 func parseList(ctx context.Context, r io.Reader, f listFormat) (*parsed, error) {
+	if f.ips {
+		return parseIPList(ctx, r, f)
+	}
 	res := &parsed{format: f}
 	lp := newLineParser(f)
 	allowList := f.kind == "allow"
 	var bad map[badKey]struct{}
 	seenPats := map[string]struct{}{} // tier + source
 	var cost int64                    // of the compiled patterns (≤ maxPatternCost)
+	// Modified entries: unique by tier, kind, domain and modifiers; their
+	// keys (parallel to res.mods) for $badfilter; one type set per
+	// distinct set.
+	seenMods := map[badKey]struct{}{}
+	var modKeys [numTiers][]string
+	typeSets := map[string]*typeSet{}
+	modCount := 0
+	// Rows per tier, kind and name (maxModsPerName): the matcher scans
+	// every row of a name hash on each query below that name.
+	type modName struct {
+		tier, kind uint8
+		hash       uint64
+	}
+	perName := map[modName]uint8{}
 	err := scanLines(ctx, r, func(line []byte, long bool) {
 		if long {
 			res.invalid++
@@ -700,6 +841,32 @@ func parseList(ctx context.Context, r io.Reader, f listFormat) (*parsed, error) 
 					bad = map[badKey]struct{}{}
 				}
 				bad[e.badKey(tier)] = struct{}{}
+				continue
+			}
+			if e.kind != kindPattern && e.modified() {
+				key := e.badKey(tier)
+				if _, dup := seenMods[key]; dup {
+					continue
+				}
+				name := modName{uint8(tier), e.kind, key.hash}
+				if modCount >= maxModified || perName[name] >= maxModsPerName {
+					res.unsupported++
+					continue
+				}
+				modCount++
+				perName[name]++
+				seenMods[key] = struct{}{}
+				row := modRow{hash: key.hash, kind: e.kind, deny: denyHashes(e.deny)}
+				if tk := e.types.key(); tk != "" {
+					ts, ok := typeSets[tk]
+					if !ok {
+						ts = &typeSet{mask: e.types.mask, high: slices.Clone(e.types.high), negate: e.types.negate}
+						typeSets[tk] = ts
+					}
+					row.types = ts
+				}
+				res.mods[tier] = append(res.mods[tier], row)
+				modKeys[tier] = append(modKeys[tier], key.mods)
 				continue
 			}
 			if e.kind != kindPattern {
@@ -745,7 +912,17 @@ func parseList(ctx context.Context, r io.Reader, f listFormat) (*parsed, error) 
 			res.sets[t][k] = slices.Clip(hs)
 			res.entries += len(hs)
 		}
+		mods := res.mods[t][:0]
+		for i, row := range res.mods[t] {
+			if _, cancelled := bad[badKey{tier: uint8(t), kind: row.kind, hash: row.hash, mods: modKeys[t][i]}]; !cancelled {
+				mods = append(mods, row)
+			}
+		}
+		res.mods[t] = slices.Clip(mods)
+		sortMods(res.mods[t])
+		res.modified += len(res.mods[t])
 	}
+	res.entries += res.modified
 	if len(bad) > 0 {
 		res.pats = slices.DeleteFunc(res.pats, func(p parsedPattern) bool {
 			_, cancelled := bad[badKey{tier: p.tier, kind: kindPattern, re: patternSource(p)}]
@@ -757,9 +934,66 @@ func parseList(ctx context.Context, r io.Reader, f listFormat) (*parsed, error) 
 	return res, nil
 }
 
-// badKey returns the key of the rule a $badfilter entry cancels.
+// parseIPList parses a list of answer addresses (format ips, parseIPLine):
+// "@@" lines and every line of an allowlist are exceptions; a block the IP
+// guard refuses counts as invalid and as broad.
+func parseIPList(ctx context.Context, r io.Reader, f listFormat) (*parsed, error) {
+	res := &parsed{format: f}
+	var lens [numIPTiers][2][129]bool
+	err := scanLines(ctx, r, func(line []byte, long bool) {
+		if long {
+			res.invalid++
+			return
+		}
+		e, st := parseIPLine(string(line))
+		switch st {
+		case lineSkip:
+			return
+		case lineOK:
+		default:
+			res.invalid++
+			return
+		}
+		tier := ipTierBlock
+		if e.allow || f.kind == "allow" {
+			tier = ipTierAllow
+		}
+		if tier == ipTierBlock && ipGuarded(e.prefix) {
+			res.invalid++
+			res.broad++
+			return
+		}
+		fam := 1
+		if e.prefix.Addr().Is4() {
+			fam = 0
+		}
+		res.ips[tier][fam] = append(res.ips[tier][fam], ipKey(e.prefix.Addr(), e.prefix.Bits()))
+		lens[tier][fam][e.prefix.Bits()] = true
+	})
+	if err != nil {
+		return nil, err
+	}
+	for t := range res.ips {
+		for fam := range res.ips[t] {
+			keys := res.ips[t][fam]
+			slices.Sort(keys)
+			res.ips[t][fam] = slices.Clip(slices.Compact(keys))
+			res.ipEntries += len(res.ips[t][fam])
+			for b := 128; b >= 0; b-- {
+				if lens[t][fam][b] {
+					res.ipBits[t][fam] = append(res.ipBits[t][fam], uint8(b))
+				}
+			}
+		}
+	}
+	res.entries = res.ipEntries
+	return res, nil
+}
+
+// badKey returns the key of the rule a $badfilter entry cancels (and of
+// the entry itself).
 func (e *entry) badKey(tier int) badKey {
-	k := badKey{tier: uint8(tier), kind: e.kind}
+	k := badKey{tier: uint8(tier), kind: e.kind, mods: e.modKey()}
 	if e.kind == kindPattern {
 		k.re = e.source()
 	} else {

@@ -24,14 +24,31 @@ const (
 type explained struct {
 	m     Match
 	rank  int // precedence step of ARCHITECTURE 7.2 (1–11)
-	kind  int // exact < subtree < regex within a step (the order Check probes)
+	pos   int // position within a step (posExact …): the order Check probes
 	spec  int // subtree: length of the matched domain (more specific first)
 	order int // discovery order: rules and lists by ID, lines in file order
 }
 
-// Explain lists every source matching qname and marks which applies to groups
-// and which is decisive ("why is this blocked?").
-func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]Match, error) {
+// Positions within a precedence step, the order Check probes a tier: the
+// plain exact and subtree entries, then the modified-entries table of list
+// entries with $dnstype or $denyallow (exact and subtree rows together,
+// most specific name first), then the patterns; inverted rules after the
+// other user regex block rules of step 10.
+const (
+	posExact = iota
+	posSubtree
+	posModified
+	posPattern
+	posInverted
+)
+
+// Explain lists every source matching qname (queried with type qtype) and
+// marks which applies to groups and which is decisive ("why is this
+// blocked?"). An entry that matches the name but does not apply to the type
+// or is excepted by its denyallow set is listed with Skipped set and never
+// applies; an inverted rule is listed when its expression does not match
+// the name. Lists of answer addresses hold no names and are not scanned.
+func (e *Engine) Explain(ctx context.Context, qname string, qtype uint16, groups []int64) ([]Match, error) {
 	q := normalizeName(qname)
 	if !validDomain(q) {
 		return nil, apperr.Invalid("domain", "must be a valid domain name")
@@ -45,34 +62,49 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 		return nil, apperr.Unavailable("too many explain requests, try again")
 	}
 
+	var sf suffixHashes
+	sf.compute(q)
 	var found []explained
-	add := func(m Match, kind, spec int) {
+	add := func(m Match, pos, spec int) {
 		if len(found) >= maxMatches {
 			return
 		}
-		found = append(found, explained{m: m, rank: matchRank(m), kind: kind, spec: spec, order: len(found)})
+		found = append(found, explained{m: m, rank: matchRank(m), pos: pos, spec: spec, order: len(found)})
 	}
 	for _, r := range e.snap.Load().rules.rules {
-		spec := 0
-		switch r.typ {
-		case "exact":
+		spec, pos := 0, posOf(r.typ)
+		switch {
+		case r.typ == "exact":
 			if r.pattern != q {
 				continue
 			}
-		case "subtree":
+		case r.typ == "subtree":
 			if !subtreeMatch(q, r.pattern) {
 				continue
 			}
 			spec = len(r.pattern)
+		case r.invert:
+			if r.re == nil || r.re.MatchString(q) {
+				continue
+			}
+			pos = posInverted
 		default:
 			if r.re == nil || !r.re.MatchString(q) {
 				continue
 			}
 		}
-		add(Match{
+		m := Match{
 			Action: r.action.String(), Source: "rule", Kind: r.typ, RuleID: r.id, Name: r.pattern,
-			Pattern: r.pattern, GroupIDs: slices.Clone(nonNil(r.groups)),
-		}, kindIndex(r.typ), spec)
+			Pattern: r.pattern, GroupIDs: slices.Clone(nonNil(r.groups)), Qtypes: r.types.names(),
+			QtypesNegate: r.types.negate, Denyallow: slices.Clone(nonNilStrings(r.denyall)), Invert: r.invert, Reply: r.reply,
+		}
+		switch {
+		case !r.types.admits(qtype):
+			m.Skipped = SkippedQtype
+		case excepted(r.deny, &sf):
+			m.Skipped = SkippedDenyallow
+		}
+		add(m, pos, spec)
 	}
 
 	type job struct {
@@ -85,16 +117,14 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 	var jobs []job
 	e.mu.Lock()
 	for _, rt := range sortedLists(e.lists) {
-		if rt.Enabled && rt.parsed != nil {
+		if rt.Enabled && rt.parsed != nil && !rt.format().ips {
 			jobs = append(jobs, job{rt.ID, rt.Name, rt.Category, rt.format(), slices.Clone(nonNil(rt.GroupIDs))})
 		}
 	}
 	e.mu.Unlock()
 	for _, j := range jobs {
 		err := e.scanList(ctx, e.cachePath(j.id), j.format, q, func(en *entry, line string) {
-			if len(line) > maxPatternShown {
-				line = line[:maxPatternShown]
-			}
+			line = shownLine(line)
 			tier := en.tier(j.format.kind == "allow")
 			kind := "regex"
 			switch en.kind {
@@ -106,11 +136,22 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 			m := Match{
 				Action: "block", Source: "list", Kind: kind, ListID: j.id, Name: j.name, Pattern: line,
 				Important: tier < tierAllow, GroupIDs: slices.Clone(j.groups), Category: j.category,
+				Qtypes: en.types.names(), QtypesNegate: en.types.negate, Denyallow: slices.Clone(nonNilStrings(en.deny)),
 			}
 			if tier == tierImpAllow || tier == tierAllow {
 				m.Action = "allow"
 			}
-			add(m, int(en.kind), len(en.domain))
+			switch {
+			case !en.types.admits(qtype):
+				m.Skipped = SkippedQtype
+			case excepted(denyHashes(en.deny), &sf):
+				m.Skipped = SkippedDenyallow
+			}
+			pos := posOf(kind)
+			if en.kind != kindPattern && en.modified() {
+				pos = posModified
+			}
+			add(m, pos, len(en.domain))
 		})
 		if ctx.Err() != nil {
 			return nil, apperr.Unavailable("explain timed out after %s", explainTimeout)
@@ -121,13 +162,13 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 	}
 
 	slices.SortFunc(found, func(a, b explained) int {
-		return cmp.Or(cmp.Compare(a.rank, b.rank), cmp.Compare(a.kind, b.kind),
+		return cmp.Or(cmp.Compare(a.rank, b.rank), cmp.Compare(a.pos, b.pos),
 			cmp.Compare(b.spec, a.spec), cmp.Compare(a.order, b.order))
 	})
 	out := make([]Match, len(found))
 	decided := false
 	for i, f := range found {
-		f.m.Applies = sharesGroup(f.m.GroupIDs, groups)
+		f.m.Applies = f.m.Skipped == "" && sharesGroup(f.m.GroupIDs, groups)
 		if f.m.Applies && !decided {
 			f.m.Decisive, decided = true, true
 		}
@@ -135,6 +176,12 @@ func (e *Engine) Explain(ctx context.Context, qname string, groups []int64) ([]M
 	}
 	return out, nil
 }
+
+// Values of Match.Skipped.
+const (
+	SkippedQtype     = "qtype"
+	SkippedDenyallow = "denyallow"
+)
 
 // scanList rescans a cached list file and calls fn for every entry matching
 // q that is not cancelled by a $badfilter rule of the same list.
@@ -183,6 +230,32 @@ func (e *Engine) scanList(ctx context.Context, path string, format listFormat, q
 	return nil
 }
 
+// lineBody returns the part of a list line the parser reads: trimmed,
+// without its inline " #" comment.
+func lineBody(s string) string {
+	s = strings.TrimSpace(s)
+	if i := inlineComment(s); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	return s
+}
+
+// shownLine returns a list line as Explain and Search show it: its body
+// (lineBody), valid UTF-8 (a list is third-party text; an invalid byte would
+// make the JSON encoder fail after the status was sent), at most
+// maxPatternShown bytes cut at a rune boundary.
+func shownLine(s string) string {
+	s = strings.ToValidUTF8(lineBody(s), "")
+	if len(s) > maxPatternShown {
+		cut := maxPatternShown
+		for cut > 0 && s[cut]&0xc0 == 0x80 {
+			cut--
+		}
+		s = s[:cut]
+	}
+	return s
+}
+
 // entryMatches reports whether a parsed list entry matches q.
 func entryMatches(en *entry, q string) bool {
 	switch en.kind {
@@ -229,14 +302,16 @@ func matchRank(m Match) int {
 	return 11
 }
 
-func kindIndex(typ string) int {
+// posOf returns the position of a plain entry or rule of a type within its
+// precedence step.
+func posOf(typ string) int {
 	switch typ {
 	case "exact":
-		return kindExact
+		return posExact
 	case "subtree":
-		return kindSubtree
+		return posSubtree
 	}
-	return kindPattern
+	return posPattern
 }
 
 // sharesGroup reports whether two group ID sets intersect.

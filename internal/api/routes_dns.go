@@ -2,10 +2,12 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -26,12 +28,15 @@ func (s *Server) registerDNSRoutes() {
 
 	s.route("GET /api/v1/dns/records", permRead, s.dnsRecordsList)
 	s.route("POST /api/v1/dns/records", permAdmin, s.dnsRecordCreate)
+	s.route("POST /api/v1/dns/records/import", permAdmin, s.dnsRecordsImport)
+	s.route("POST /api/v1/dns/records/batch", permAdmin, s.dnsRecordsBatch)
 	s.route("PUT /api/v1/dns/records/{id}", permAdmin, s.dnsRecordUpdate)
 	s.route("DELETE /api/v1/dns/records/{id}", permAdmin, s.dnsRecordDelete)
 
 	s.route("GET /api/v1/dns/forwarders", permRead, s.dnsForwardersList)
 	s.route("POST /api/v1/dns/forwarders", permAdmin, s.dnsForwarderCreate)
 	s.route("POST /api/v1/dns/forwarders/import", permAdmin, s.dnsForwardersImport)
+	s.route("POST /api/v1/dns/forwarders/batch", permAdmin, s.dnsForwardersBatch)
 	s.route("PUT /api/v1/dns/forwarders/{id}", permAdmin, s.dnsForwarderUpdate)
 	s.route("DELETE /api/v1/dns/forwarders/{id}", permAdmin, s.dnsForwarderDelete)
 
@@ -40,13 +45,17 @@ func (s *Server) registerDNSRoutes() {
 
 	s.route("GET /api/v1/clients", permRead, s.clientsList)
 	s.route("POST /api/v1/clients", permAdmin, s.clientCreate)
+	s.route("POST /api/v1/clients/batch", permAdmin, s.clientsBatch)
 	s.route("GET /api/v1/clients/known", permRead, s.clientsKnown)
 	s.route("PUT /api/v1/clients/{id}", permAdmin, s.clientUpdate)
 	s.route("DELETE /api/v1/clients/{id}", permAdmin, s.clientDelete)
 
 	s.route("GET /api/v1/groups", permRead, s.groupsList)
 	s.route("POST /api/v1/groups", permAdmin, s.groupCreate)
+	s.route("POST /api/v1/groups/batch", permAdmin, s.groupsBatch)
+	s.route("GET /api/v1/groups/upstream-presets", permRead, s.groupUpstreamPresets)
 	s.route("PUT /api/v1/groups/{id}", permAdmin, s.groupUpdate)
+	s.route("PUT /api/v1/groups/{id}/upstreams", permAdmin, s.groupSetUpstreams)
 	s.route("DELETE /api/v1/groups/{id}", permAdmin, s.groupDelete)
 }
 
@@ -150,6 +159,50 @@ func (s *Server) dnsRecordUpdate(w http.ResponseWriter, r *http.Request) error {
 	}
 	s.audit(r, "dns.record.update", strconv.FormatInt(id, 10), rec)
 	return ok(w, rec)
+}
+
+// dnsRecordsImport imports records from a hosts file (all or nothing; dry
+// runs validate only); 200 with the result unless the request itself is
+// invalid. Only an applied import is audited.
+func (s *Server) dnsRecordsImport(w http.ResponseWriter, r *http.Request) error {
+	var in dnsserver.RecordImport
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	res, err := s.d.DNS.ImportRecords(r.Context(), in)
+	if err != nil {
+		return err
+	}
+	if res.Applied {
+		s.audit(r, "dns.record.import", "", map[string]int{"added": res.Added})
+	}
+	return ok(w, res)
+}
+
+func (s *Server) dnsRecordsBatch(w http.ResponseWriter, r *http.Request) error {
+	in, err := decodeBatch(w, r, false)
+	if err != nil {
+		return err
+	}
+	n, err := s.d.DNS.BatchRecords(r.Context(), in.Action, in.IDs)
+	if err != nil {
+		return err
+	}
+	s.auditBatch(r, "dns.record.batch", in)
+	return ok(w, batchResult{Changed: n})
+}
+
+func (s *Server) dnsForwardersBatch(w http.ResponseWriter, r *http.Request) error {
+	in, err := decodeBatch(w, r, false)
+	if err != nil {
+		return err
+	}
+	n, err := s.d.DNS.BatchForwarders(r.Context(), in.Action, in.IDs)
+	if err != nil {
+		return err
+	}
+	s.auditBatch(r, "dns.forwarder.batch", in)
+	return ok(w, batchResult{Changed: n})
 }
 
 func (s *Server) dnsRecordDelete(w http.ResponseWriter, r *http.Request) error {
@@ -393,6 +446,23 @@ func (s *Server) clientUpdate(w http.ResponseWriter, r *http.Request) error {
 	return ok(w, c)
 }
 
+// clientsBatch deletes clients (clients have no enabled flag).
+func (s *Server) clientsBatch(w http.ResponseWriter, r *http.Request) error {
+	in, err := decodeBatch(w, r, false)
+	if err != nil {
+		return err
+	}
+	if in.Action != "delete" {
+		return apperr.Invalid("action", "clients can only be deleted")
+	}
+	n, err := s.d.Clients.BatchDeleteClients(r.Context(), in.IDs)
+	if err != nil {
+		return err
+	}
+	s.auditBatch(r, "client.batch", in)
+	return ok(w, batchResult{Changed: n})
+}
+
 func (s *Server) clientDelete(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "id")
 	if err != nil {
@@ -455,11 +525,14 @@ func (s *Server) groupCreate(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
+	if err := s.checkGroupUpstreams(in.Upstreams, in.UpstreamPreset); err != nil {
+		return err
+	}
 	g, err := s.d.Clients.CreateGroup(r.Context(), in)
 	if err != nil {
 		return err
 	}
-	s.audit(r, "group.create", strconv.FormatInt(g.ID, 10), g)
+	s.audit(r, "group.create", strconv.FormatInt(g.ID, 10), groupAudit(g))
 	return created(w, g)
 }
 
@@ -472,12 +545,111 @@ func (s *Server) groupUpdate(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
+	if err := s.checkGroupUpstreams(in.Upstreams, in.UpstreamPreset); err != nil {
+		return err
+	}
 	g, err := s.d.Clients.UpdateGroup(r.Context(), id, in)
 	if err != nil {
 		return err
 	}
-	s.audit(r, "group.update", strconv.FormatInt(id, 10), g)
+	s.audit(r, "group.update", strconv.FormatInt(id, 10), groupAudit(g))
 	return ok(w, g)
+}
+
+// groupAudit is a group as the audit log records it: its upstreams only as
+// their number, like group.upstreams (a DoH URL or a DoT host name can
+// carry a token or a profile ID).
+func groupAudit(g clients.Group) map[string]any {
+	out := map[string]any{"id": g.ID, "name": g.Name, "comment": g.Comment, "enabled": g.Enabled,
+		"upstreamPreset": g.UpstreamPreset, "upstreams": len(g.Upstreams)}
+	if g.DeviceClientID != nil {
+		out["deviceClientId"] = *g.DeviceClientID
+	}
+	return out
+}
+
+// groupsBatch deletes, enables or disables groups (the Default group is
+// never deleted; it may be disabled as with PUT /groups/1).
+func (s *Server) groupsBatch(w http.ResponseWriter, r *http.Request) error {
+	in, err := decodeBatch(w, r, false)
+	if err != nil {
+		return err
+	}
+	n, err := s.d.Clients.BatchGroups(r.Context(), in.Action, in.IDs)
+	if err != nil {
+		return err
+	}
+	s.auditBatch(r, "group.batch", in)
+	return ok(w, batchResult{Changed: n})
+}
+
+// groupUpstreamsInput is the body of PUT /groups/{id}/upstreams: both
+// members are required ([] and "" = none).
+type groupUpstreamsInput struct {
+	Upstreams      *[]string `json:"upstreams"`
+	UpstreamPreset *string   `json:"upstreamPreset"`
+}
+
+// groupSetUpstreams changes only the upstreams of a group (so the parental
+// page and Clients & groups never overwrite each other's name or enabled
+// flag). The audit records the preset and the number of upstreams, never
+// the URLs.
+func (s *Server) groupSetUpstreams(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+	var in groupUpstreamsInput
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	switch {
+	case in.Upstreams == nil:
+		return apperr.Invalid("upstreams", "required ([] for none)")
+	case in.UpstreamPreset == nil:
+		return apperr.Invalid("upstreamPreset", `required ("" for none)`)
+	}
+	if err := s.checkGroupUpstreams(*in.Upstreams, in.UpstreamPreset); err != nil {
+		return err
+	}
+	g, err := s.d.Clients.SetGroupUpstreams(r.Context(), id, *in.Upstreams, *in.UpstreamPreset)
+	if err != nil {
+		return err
+	}
+	s.audit(r, "group.upstreams", strconv.FormatInt(id, 10), map[string]any{"upstreamPreset": g.UpstreamPreset, "upstreams": len(g.Upstreams)})
+	return ok(w, g)
+}
+
+// groupUpstreamPresets lists the family-safe resolver presets in table
+// order.
+func (s *Server) groupUpstreamPresets(w http.ResponseWriter, r *http.Request) error {
+	return ok(w, settings.UpstreamPresets())
+}
+
+// checkGroupUpstreams applies the rules of the DNS settings that depend on
+// them to the upstreams of a group (nil: not given): a plain upstream given
+// by name must be a public name for the current dns.localDomain, and every
+// upstream given by name (a preset too: DoH by name) needs dns.bootstrap
+// servers. The syntax and the counts are checked by the clients package.
+func (s *Server) checkGroupUpstreams(upstreams []string, preset *string) error {
+	d := s.d.Settings.Get().DNS
+	for i, u := range upstreams {
+		spec, err := settings.ParseUpstream(u)
+		if err != nil || spec.IsIPLit {
+			continue // the clients package reports a syntax error
+		}
+		field := fmt.Sprintf("upstreams[%d]", i)
+		if (spec.Proto == "udp" || spec.Proto == "tcp") && !settings.PublicUpstreamName(spec.Host, d.LocalDomain) {
+			return apperr.Invalid(field, "%s", settings.ErrPlainUpstreamName)
+		}
+		if len(d.Bootstrap) == 0 {
+			return apperr.Invalid(field, "a host name needs dns.bootstrap servers")
+		}
+	}
+	if preset != nil && strings.TrimSpace(*preset) != "" && len(d.Bootstrap) == 0 {
+		return apperr.Invalid("upstreamPreset", "a preset (DNS over HTTPS by name) needs dns.bootstrap servers")
+	}
+	return nil
 }
 
 func (s *Server) groupDelete(w http.ResponseWriter, r *http.Request) error {

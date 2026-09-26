@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/miekg/dns"
@@ -44,13 +45,19 @@ func statusFor(d filter.Decision) string {
 	return StatusBlockedList
 }
 
-// blocked builds the blocking reply for decision d (ARCHITECTURE 7.3).
+// blocked builds the blocking reply for decision d (ARCHITECTURE 7.3): a
+// user rule's own reply, else the blocking mode.
 func (s *Server) blocked(qc *qctx, d filter.Decision, status string) result {
+	f := &qc.set.Filter
+	mode, v4, v6 := f.BlockingMode, f.BlockingIPv4, f.BlockingIPv6
+	if d.Source == "rule" && d.Reply != "" {
+		mode, v4, v6 = d.Reply, d.ReplyIPv4, d.ReplyIPv6
+	}
 	if qc.tracing() {
-		qc.note(fmt.Sprintf("blocked by %s %q (%s): %s reply", d.Source, d.Name, d.Kind, qc.set.Filter.BlockingMode))
+		qc.note(fmt.Sprintf("blocked by %s %q (%s): %s reply", d.Source, d.Name, d.Kind, mode))
 	}
 	return result{
-		msg:     blockReply(qc.req, &qc.set.Filter),
+		msg:     s.blockReply(qc, mode, v4, v6),
 		status:  status,
 		reason:  d.Name,
 		listID:  d.ListID,
@@ -97,7 +104,7 @@ func (s *Server) parentalBlock(qc *qctx) (result, bool) {
 		}
 	}
 	if reason == "" && s.d.Filter != nil {
-		if d := s.d.Filter.CheckProtection(qc.qname, qc.id.GroupIDs); d.Blocked() {
+		if d := s.d.Filter.CheckProtection(qc.qname, qc.qtype, qc.id.GroupIDs); d.Blocked() {
 			reason, status, listID, purpose = d.Name, StatusBlockedList, d.ListID, decisionPurpose(d)
 			trace = fmt.Sprintf("parental: blocked by list %q (%s)", d.Name, d.Category)
 		}
@@ -107,7 +114,7 @@ func (s *Server) parentalBlock(qc *qctx) (result, bool) {
 		return result{}, false
 	}
 	if s.d.Filter != nil {
-		if a := s.d.Filter.CheckRules(qc.qname, qc.id.GroupIDs); a.Action == filter.ActionAllow {
+		if a := s.d.Filter.CheckRules(qc.qname, qc.qtype, qc.id.GroupIDs); a.Action == filter.ActionAllow {
 			if qc.tracing() {
 				qc.note(fmt.Sprintf("parental block lifted by allow rule %q (%s)", a.Name, reason))
 			}
@@ -117,21 +124,32 @@ func (s *Server) parentalBlock(qc *qctx) (result, bool) {
 	if qc.tracing() {
 		qc.note(fmt.Sprintf("%s: %s reply", trace, qc.set.Filter.BlockingMode))
 	}
-	return result{msg: blockReply(qc.req, &qc.set.Filter), status: status, reason: reason, listID: listID,
+	return result{msg: s.globalReply(qc), status: status, reason: reason, listID: listID,
 		blocked: true, purpose: purpose}, true
 }
 
-// blockReply answers req according to the blocking mode.
-func blockReply(req *dns.Msg, f *settings.Filter) *dns.Msg {
+// globalReply answers qc with the blocking reply of filter.blockingMode
+// (7.3): every block but a user rule with its own reply.
+func (s *Server) globalReply(qc *qctx) *dns.Msg {
+	f := &qc.set.Filter
+	return s.blockReply(qc, f.BlockingMode, f.BlockingIPv4, f.BlockingIPv6)
+}
+
+// blockReply answers qc with a blocking reply of mode (ARCHITECTURE 7.3):
+// null, nxdomain, nodata, refused or custom_ip with the addresses v4s and
+// v6s ("" = none: NODATA + SOA for the family; settings.SelfAddress: this
+// server's address for the client, selfAddr), TTL filter.blockedTtl.
+func (s *Server) blockReply(qc *qctx, mode, v4s, v6s string) *dns.Msg {
+	req := qc.req
 	q := req.Question[0]
-	ttl := f.BlockedTTL
+	ttl := qc.set.Filter.BlockedTTL
 	m := newReply(req)
 	// nodata adds the synthetic SOA to a reply without answer (RFC 2308).
 	nodata := func() *dns.Msg {
 		m.Ns = []dns.RR{syntheticSOA(q.Name, ttl)}
 		return m
 	}
-	switch f.BlockingMode {
+	switch mode {
 	case "nxdomain":
 		m.Rcode = dns.RcodeNameError
 		return nodata()
@@ -141,17 +159,19 @@ func blockReply(req *dns.Msg, f *settings.Filter) *dns.Msg {
 		m.Rcode = dns.RcodeRefused
 		return m
 	case "custom_ip":
-		v4, _ := netip.ParseAddr(f.BlockingIPv4)
-		v6, _ := netip.ParseAddr(f.BlockingIPv6)
-		switch {
-		case q.Qtype == dns.TypeA && v4.Is4():
-			m.Answer = []dns.RR{&dns.A{Hdr: rrHeader(q.Name, dns.TypeA, ttl), A: v4.AsSlice()}}
-		case q.Qtype == dns.TypeAAAA && v6.Is6():
-			m.Answer = []dns.RR{&dns.AAAA{Hdr: rrHeader(q.Name, dns.TypeAAAA, ttl), AAAA: v6.AsSlice()}}
-		default: // no address of the family, other types
-			return nodata()
+		switch q.Qtype {
+		case dns.TypeA:
+			if v4 := s.replyAddr(qc, v4s, false); v4.Is4() {
+				m.Answer = []dns.RR{&dns.A{Hdr: rrHeader(q.Name, dns.TypeA, ttl), A: v4.AsSlice()}}
+				return m
+			}
+		case dns.TypeAAAA:
+			if v6 := s.replyAddr(qc, v6s, true); v6.Is6() {
+				m.Answer = []dns.RR{&dns.AAAA{Hdr: rrHeader(q.Name, dns.TypeAAAA, ttl), AAAA: v6.AsSlice()}}
+				return m
+			}
 		}
-		return m
+		return nodata() // no address of the family, other types
 	default: // "null"
 		switch q.Qtype {
 		case dns.TypeA:
@@ -163,6 +183,58 @@ func blockReply(req *dns.Msg, f *settings.Filter) *dns.Msg {
 		}
 		return m
 	}
+}
+
+// replyAddr returns a custom_ip address of a blocking reply: the address,
+// or for settings.SelfAddress this server's address for the client
+// (selfAddr); invalid when there is none. A download service's name never
+// gets this server's address (3.6): the download cache (:80) and the SNI
+// relay (:443) serve every download service name without asking the
+// filter, so they would fetch the blocked content anyway; that family
+// answers NODATA + SOA instead.
+func (s *Server) replyAddr(qc *qctx, v string, v6 bool) netip.Addr {
+	var ip netip.Addr
+	if v == settings.SelfAddress {
+		ip = s.selfAddr(qc, v6)
+	} else if a, err := netip.ParseAddr(v); err == nil && a.Is6() == v6 && !a.Is4In6() {
+		ip = a
+	}
+	if !ip.IsValid() || s.d.Services == nil || !(v == settings.SelfAddress || s.isServerAddr(qc, ip)) {
+		return ip
+	}
+	if svc, ok := s.d.Services.MatchDNS(qc.qname); ok {
+		qc.note("download service " + svc + ": no reply with this server's address, which would serve it anyway")
+		return netip.Addr{}
+	}
+	return ip
+}
+
+// isServerAddr reports whether ip reaches this server: an address of this
+// machine, a server-name answer for the client or a download cache address.
+func (s *Server) isServerAddr(qc *qctx, ip netip.Addr) bool {
+	if s.host.Load().isOwn(ip) {
+		return true
+	}
+	v4s, v6s := s.serverNameAddrs(qc)
+	st := s.cacheIPs.Load()
+	return slices.Contains(v4s, ip) || slices.Contains(v6s, ip) || slices.Contains(st.v4, ip) || slices.Contains(st.v6, ip)
+}
+
+// selfAddr is "this server's address" of a blocking reply (3.6): the
+// first address of the family that a server-name answer (step 6) would
+// give the client; invalid when there is none (never IPv6 link-local).
+func (s *Server) selfAddr(qc *qctx, v6 bool) netip.Addr {
+	v4s, v6s := s.serverNameAddrs(qc)
+	list := v4s
+	if v6 {
+		list = v6s
+	}
+	for _, ip := range list {
+		if ip.Is6() == v6 && !(ip.Is6() && ip.IsLinkLocalUnicast()) {
+			return ip
+		}
+	}
+	return netip.Addr{}
 }
 
 // specialDomain answers the special domains of ARCHITECTURE 7.1 step 10
@@ -185,7 +257,7 @@ func (s *Server) specialDomain(qc *qctx) (result, bool) {
 		return result{}, false
 	}
 	if s.d.Filter != nil {
-		if d := s.d.Filter.Check(qc.qname, qc.id.GroupIDs); d.Action == filter.ActionAllow {
+		if d := s.d.Filter.Check(qc.qname, qc.qtype, qc.id.GroupIDs); d.Action == filter.ActionAllow {
 			if qc.tracing() {
 				qc.note(fmt.Sprintf("special domain %s: allowed by %s %q", reason, d.Source, d.Name))
 			}

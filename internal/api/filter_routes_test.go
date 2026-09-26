@@ -242,7 +242,7 @@ func TestFilterRoutesExplain(t *testing.T) {
 	if got.Domain != "ads.example.com" || !slices.Equal(got.GroupIDs, caller) {
 		t.Errorf("domain/groups: %+v (caller groups %v)", got, caller)
 	}
-	want := eng.Check("ads.example.com", caller)
+	want := eng.Check("ads.example.com", 1, caller)
 	if got.Decision.Action != want.Action.String() || got.Decision.Name != want.Name || got.Decision.Source != want.Source {
 		t.Errorf("decision %+v, Check says %+v", got.Decision, want)
 	}

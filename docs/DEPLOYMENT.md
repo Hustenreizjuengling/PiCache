@@ -338,6 +338,16 @@ container does not know it, so browsers keep warning for
 `https://<host IP>:8443` even after you trust the CA. Use host networking
 whenever you can.
 
+**This server's names** (`picache`, `picache.<local domain>`) are answered
+with PiCache's address on the client's network. In a bridge network PiCache
+uses the configured cache addresses (`downloadCache.cacheIpv4`/`cacheIpv6`)
+instead. With **macvlan**, or with host networking **behind NAT** (a VPS, a
+port forwarding), the addresses PiCache detects are not the ones clients
+reach: enter the right ones in **DNS settings → Local names**
+(`dns.serverNameAddresses`, at most 8 per family). They are then answered to
+every client except loopback (bridge networks included), and PTR queries for
+them answer the first server name.
+
 **DHCP server** (optional, [DHCP server](#dhcp-server)): switch it on under
 **DNS → DHCP**; it needs host networking (`docker-compose.yml`). PiCache opens
 its DHCP ports (and the raw socket for IPv6 router advertisements, the only
@@ -891,6 +901,90 @@ queries never start going to another operator; turn the fallback on in
   connection fastest. PiCache then connects to addresses of names its
   clients look up (bounded, public addresses only, SECURITY.md).
 
+### A family-safe resolver per group
+
+A client group can use its own upstream resolver instead of the DNS
+settings' upstreams, for example a DNS service that filters adult content
+for the children's devices: **Parental controls → Family-safe resolver**
+(the presets) or **Clients & groups → Groups → DNS resolver** (a preset or
+your own list, written like the upstreams of the DNS settings). The presets,
+all over DNS-over-HTTPS:
+
+| Preset | Resolver | Plain addresses (used while the clock is not set) |
+|---|---|---|
+| Cloudflare for Families (malware and adult content) | `https://family.cloudflare-dns.com/dns-query` | 1.1.1.3, 1.0.0.3, 2606:4700:4700::1113, 2606:4700:4700::1003 |
+| OpenDNS FamilyShield | `https://doh.familyshield.opendns.com/dns-query` | 208.67.222.123, 208.67.220.123, 2620:119:35::123, 2620:119:53::123 |
+| CleanBrowsing Family Filter | `https://doh.cleanbrowsing.org/doh/family-filter/` | 185.228.168.168, 185.228.169.168, 2a0d:2a00:1::, 2a0d:2a00:2:: |
+
+- It is **content protection**: pausing or disabling blocking (globally or
+  for the group) does not switch it off; disabling the group or moving the
+  device out of it does.
+- A device in several groups gets one resolver: a preset wins, then a
+  group's own list, and among equals the group with the lowest id. The
+  client's panel warns when its groups name different resolvers.
+- It has **no fallback**: when the group's resolver does not answer, the
+  group's devices get SERVFAIL (the health check *upstreams* names the
+  group), never an unfiltered answer. While the system clock is not set,
+  PiCache asks only the resolver's plain addresses (the presets bring
+  them; an own list needs entries given by IP address), otherwise SERVFAIL.
+- PiCache's lists and rules, parental controls and the rebinding
+  protection still apply on top; the resolver's own blocks show as
+  **Blocked by upstream**.
+- A preset, and names in an own list, need bootstrap servers (**DNS
+  settings → Upstream DNS servers**); PiCache refuses to remove them while a group
+  uses such a resolver. Plain upstreams given by name must be public
+  names, as in the DNS settings.
+- Conditional forwarders with their own targets, the router and the local
+  PTR servers keep answering their names; the download cache's answers are
+  unchanged. No client subnet is sent to a group's resolver.
+- Devices that use another resolver (encrypted DNS in a browser, VPN apps,
+  mobile data) get around it, like every DNS-based control
+  ([Parental controls](#parental-controls)).
+
+### Blocking by answer address
+
+Some threat feeds list the addresses of malicious servers rather than their
+names. Add such a list with the format **Answer IP addresses**
+(**Filtering → Blocklists**, category *Security* or *Other*): lines with an
+address, a CIDR or `||<address>^`, and `@@` in front for exceptions.
+PiCache then checks the addresses of the upstreams' answers (also the
+address hints of HTTPS records, the additional section and DNS64 answers)
+and blocks the whole answer when one is listed; the query log shows
+**Blocked answer address** (`blocked-ip`), answered with the global
+blocking mode. **IP rules** (**Filtering → Rules → Answer addresses**) do
+the same for addresses and networks you enter (at least /8 for IPv4, /32
+for IPv6). An allow rule for a name lifts the check for that name.
+
+**What the guard drops.** A list can never block a network broader than
+/16 (IPv4) or /32 (IPv6), private, loopback, link-local, CGNAT,
+multicast or reserved ranges, or IPv6 prefixes that carry IPv4 addresses
+or networks around them (NAT64, 6to4, IPv4-mapped: write the IPv4 address
+instead; lists judge such addresses by the IPv4 address). Such entries
+are ignored and counted in the list's details, and the health check
+*blocklists* warns. So `0.0.0.0/0`, `::/0` or a list of the private ranges
+never blocks everything or your LAN. This machine's addresses are never
+blocked, and answers of conditional forwarders with their own targets and
+of the router are not checked.
+
+### Answering with this server's address
+
+The blocking mode *Custom address* (**DNS settings → Blocking**) and a
+rule's custom reply accept **This server's address** (`self`) per address
+family: blocked names then resolve to PiCache itself, with the address its
+own names would get for that client. A browser that opens such a name
+reaches the download cache on port 80, which answers 403 "host is not a
+download service" ("the download cache is disabled" while it is off) and
+closes the connection (so idle connections to blocked hosts do not use up
+the per-client connection limit; the refusals are counted), and port 443,
+where the SNI pass-through refuses the name.
+Without an address of the family (in a bridge network: set the cache
+addresses or `dns.serverNameAddresses`) the answer is empty (NODATA).
+Blocked names of download services (Steam, Windows Update, …) never get
+PiCache's address, whether it is written as `self` or as the address
+itself: the download cache and the SNI pass-through would fetch them
+anyway, so a parental block or a rule for them answers empty (NODATA)
+instead.
+
 ### DNS rebinding protection
 
 Many routers (the FRITZ!Box among them) block DNS answers that point public
@@ -1189,6 +1283,12 @@ example a group "Kids" with the children's phones, tablets and consoles):
 - **Pause filtering** of the group (for a while, at most 7 days): the group's
   lists and rules stop for its devices, its security lists (malware,
   phishing) included; the devices' other groups still apply.
+- **Family-safe resolver**: the group's devices are answered by a DNS
+  service that filters adult content itself (Cloudflare for Families,
+  OpenDNS FamilyShield or CleanBrowsing Family Filter; see
+  [A family-safe resolver per group](#a-family-safe-resolver-per-group)).
+  It stays on while blocking is paused and fails closed (SERVFAIL) when
+  the service cannot be reached.
 - **Test**: a domain and a device show whether and why PiCache blocks it.
 
 A device in several groups gets the restrictions of all its groups; lifting
@@ -1825,7 +1925,7 @@ sudo systemctl start picache
 ```
 
 Pick the copy named after the version you go back to. An older binary cannot
-be expected to open a database that a newer version has migrated. A version before 0.11.0 refuses the `picache.db` of 0.11.0 (auth schema v2 with roles, settings schema v5) and does not start: go back with the copy 0.11.0 made at its first start (`picache-<old version>-<timestamp>.db`, made before any migration; `picache reset-password` of 0.11.0 run before that start makes it instead); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image; accounts, web access settings and certificates created with 0.11.0 are then gone (the files in `<data>/tls/` stay; 0.10 serves the current `cert.pem`). A version before 0.9.0 refuses the `picache.db` of 0.9.0 or later (newer schema) and does not start: go back with the copy 0.9.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image. An older version cannot open the newer `logs.db` either and sets it aside, so the query log and the statistics start fresh after such a downgrade. Changes to
+be expected to open a database that a newer version has migrated. A version before 0.13.0 refuses the `picache.db` of 0.13.0 (clients schema v4, filter schema v3, dns schema v3) and does not start: go back with the copy 0.13.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image; rules, IP rules, records and group resolvers created with 0.13.0 are then gone. Its `logs.db` stays readable (rows with the new status `blocked-ip` show the raw status and count as blocked). A version before 0.11.0 refuses the `picache.db` of 0.11.0 (auth schema v2 with roles, settings schema v5) and does not start: go back with the copy 0.11.0 made at its first start (`picache-<old version>-<timestamp>.db`, made before any migration; `picache reset-password` of 0.11.0 run before that start makes it instead); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image; accounts, web access settings and certificates created with 0.11.0 are then gone (the files in `<data>/tls/` stay; 0.10 serves the current `cert.pem`). A version before 0.9.0 refuses the `picache.db` of 0.9.0 or later (newer schema) and does not start: go back with the copy 0.9.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image. An older version cannot open the newer `logs.db` either and sets it aside, so the query log and the statistics start fresh after such a downgrade. Changes to
 the configuration made since the upgrade are lost. With Docker, set the
 previous image tag in the compose file and restore the copy from the
 `picache-data` volume the same way.

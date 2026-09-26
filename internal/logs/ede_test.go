@@ -98,33 +98,37 @@ func TestMigrateEDEColumns(t *testing.T) {
 	}
 }
 
-// blocked-upstream and blocked-rebind are blocked statuses: accepted by the
-// status filter, in the class "blocked" and counted as blocked.
+// blocked-upstream, blocked-rebind and blocked-ip are blocked statuses:
+// accepted by the status filter, in the class "blocked" and counted as
+// blocked.
 func TestNewBlockedStatuses(t *testing.T) {
 	s, _ := newTestStore(t)
 	now := time.Now()
-	for _, st := range []string{"blocked-upstream", "blocked-rebind", "forwarded"} {
+	for _, st := range []string{"blocked-upstream", "blocked-rebind", "blocked-ip", "forwarded"} {
 		s.w.addQuery(query(now, "192.168.1.7", st+".example", st))
 	}
 	s.w.flush(now)
-	for _, filter := range [][]string{{"blocked-upstream"}, {"blocked-rebind"}, {"blocked"}} {
+	for _, filter := range [][]string{{"blocked-upstream"}, {"blocked-rebind"}, {"blocked-ip"}, {"blocked"}} {
 		page, err := s.QueryLog(context.Background(), QueryFilter{From: now.Add(-time.Minute), To: now.Add(time.Minute), Status: filter})
 		if err != nil {
 			t.Fatal(err)
 		}
 		want := 1
 		if filter[0] == "blocked" {
-			want = 2
+			want = 3
 		}
 		if len(page.Items) != want {
 			t.Errorf("filter %v: %d rows, want %d", filter, len(page.Items), want)
 		}
 	}
 	sum, err := s.Summary(context.Background(), now.Add(-time.Minute), now.Add(time.Minute))
-	if err != nil || sum.DNSBlocked != 2 || sum.DNSQueries != 3 {
+	if err != nil || sum.DNSBlocked != 3 || sum.DNSQueries != 4 {
 		t.Fatalf("summary %+v %v", sum, err)
 	}
 	if m, err := QueryMatcher(nil, []string{"blocked-rebind"}); err != nil || m == nil || !m(QueryEvent{Status: "blocked-rebind"}) {
 		t.Errorf("live filter: %v", err)
+	}
+	if m, err := QueryMatcher(nil, []string{"blocked"}); err != nil || m == nil || !m(QueryEvent{Status: "blocked-ip"}) {
+		t.Errorf("live class filter: %v", err)
 	}
 }

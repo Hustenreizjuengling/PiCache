@@ -82,7 +82,7 @@ func TestPrecedenceMatrix(t *testing.T) {
 			}
 		}
 		snap := buildSnapshot(t, lists, rules)
-		got := snap.check(q, []int64{1}, false)
+		got := snap.check(q, qtypeA, []int64{1}, false)
 		w := steps[k].want
 		if got.Action != w.Action || got.Source != w.Source || got.Kind != w.Kind || got.Important != w.Important {
 			t.Errorf("step %d decisive: got %+v, want %+v", k, got, w)
@@ -123,7 +123,7 @@ func TestPrecedenceDetails(t *testing.T) {
 		{"no match", []testList{{body: "||example.com^", groups: g}}, nil, "example.org", ActionNone, ""},
 	}
 	for _, c := range cases {
-		got := buildSnapshot(t, c.lists, c.rules).check(c.q, g, false)
+		got := buildSnapshot(t, c.lists, c.rules).check(c.q, qtypeA, g, false)
 		if got.Action != c.want || got.Source != c.src {
 			t.Errorf("%s: got %+v, want %v from %q", c.name, got, c.want, c.src)
 		}
@@ -157,17 +157,17 @@ func TestGroupScoping(t *testing.T) {
 		{"shared.example", []int64{3}, ActionAllow},
 	}
 	for _, c := range cases {
-		if got := s.check(c.q, c.groups, false); got.Action != c.want {
+		if got := s.check(c.q, qtypeA, c.groups, false); got.Action != c.want {
 			t.Errorf("%s for groups %v: got %v, want %v", c.q, c.groups, got.Action, c.want)
 		}
 	}
 
 	// The same name in two lists with different groups: the applicable one decides.
 	s = buildSnapshot(t, []testList{{body: "||x.example^", groups: []int64{2}}, {body: "||x.example^", groups: []int64{1}}}, nil)
-	if got := s.check("x.example", []int64{1}, false); got.ListID != 102 {
+	if got := s.check("x.example", qtypeA, []int64{1}, false); got.ListID != 102 {
 		t.Errorf("got list %d, want 102", got.ListID)
 	}
-	if got := s.check("x.example", []int64{1, 2}, false); got.ListID != 101 {
+	if got := s.check("x.example", qtypeA, []int64{1, 2}, false); got.ListID != 101 {
 		t.Errorf("got list %d, want 101 (lowest source first)", got.ListID)
 	}
 }
@@ -176,16 +176,16 @@ func TestCheckRulesIgnoresLists(t *testing.T) {
 	s := buildSnapshot(t,
 		[]testList{{body: "||steamcontent.com^", groups: []int64{1}}},
 		[]ruleEntry{rule(1, ActionBlock, "subtree", "steampowered.com", 2), rule(2, ActionBlock, "regex", "^cdn\\.", 2)})
-	if got := s.check("lancache.steamcontent.com", []int64{1}, true); got.Action != ActionNone {
+	if got := s.check("lancache.steamcontent.com", qtypeA, []int64{1}, true); got.Action != ActionNone {
 		t.Errorf("CheckRules must ignore lists: %+v", got)
 	}
-	if got := s.check("store.steampowered.com", []int64{2}, true); !got.Blocked() || got.RuleID != 1 {
+	if got := s.check("store.steampowered.com", qtypeA, []int64{2}, true); !got.Blocked() || got.RuleID != 1 {
 		t.Errorf("CheckRules subtree: %+v", got)
 	}
-	if got := s.check("cdn.example", []int64{2}, true); !got.Blocked() || got.RuleID != 2 {
+	if got := s.check("cdn.example", qtypeA, []int64{2}, true); !got.Blocked() || got.RuleID != 2 {
 		t.Errorf("CheckRules regex: %+v", got)
 	}
-	if got := s.check("store.steampowered.com", []int64{1}, true); got.Action != ActionNone {
+	if got := s.check("store.steampowered.com", qtypeA, []int64{1}, true); got.Action != ActionNone {
 		t.Errorf("rule of another group applied: %+v", got)
 	}
 }
@@ -205,7 +205,7 @@ func TestListMatcherPatternCostBudget(t *testing.T) {
 	}
 	s := &snapshot{lists: m, rules: buildRuleMatcher(nil), listNames: []string{"a", "b"}, listGroups: [][]int64{{1}, {1}}}
 	for q, want := range map[string]bool{"a.example": true, "b.example": false, "c.example": true} {
-		if got := s.check(q, []int64{1}, false).Blocked(); got != want {
+		if got := s.check(q, qtypeA, []int64{1}, false).Blocked(); got != want {
 			t.Errorf("%s blocked = %v, want %v", q, got, want)
 		}
 	}
@@ -216,7 +216,7 @@ func TestCheckAllocationFree(t *testing.T) {
 		[]testList{{body: "||ads.example.com^\n0.0.0.0 t.example.org\n||ad*.pattern.net^\n/^re[0-9]+\\./", groups: []int64{1}}},
 		[]ruleEntry{rule(1, ActionAllow, "exact", "ok.example.com", 1), rule(2, ActionBlock, "regex", "^evil", 1)})
 	for _, q := range []string{"ads.example.com", "www.example.org", "adx.pattern.net", "re12.foo", "ok.example.com", "a.b.c.d.e.f.nothing.test"} {
-		if n := testing.AllocsPerRun(100, func() { s.check(q, []int64{1}, false) }); n != 0 {
+		if n := testing.AllocsPerRun(100, func() { s.check(q, qtypeA, []int64{1}, false) }); n != 0 {
 			t.Errorf("check(%q) allocates %.1f times", q, n)
 		}
 	}
@@ -273,11 +273,11 @@ func TestMatcherMemory(t *testing.T) {
 		t.Errorf("entries = %d/%d", s.lists.entries, p.entries)
 	}
 	for _, q := range []string{"d0000000.example-00.com", "x.d0999999.example-" + fmt.Sprintf("%02d", 999999%97) + ".com"} {
-		if !s.check(q, []int64{1}, false).Blocked() {
+		if !s.check(q, qtypeA, []int64{1}, false).Blocked() {
 			t.Errorf("%s not blocked", q)
 		}
 	}
-	if s.check("d1000000.example-00.com", []int64{1}, false).Blocked() {
+	if s.check("d1000000.example-00.com", qtypeA, []int64{1}, false).Blocked() {
 		t.Error("unexpected block")
 	}
 	runtime.KeepAlive(p)
@@ -301,6 +301,6 @@ func BenchmarkCheck(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		s.check(queries[i%len(queries)], groups, false)
+		s.check(queries[i%len(queries)], qtypeA, groups, false)
 	}
 }

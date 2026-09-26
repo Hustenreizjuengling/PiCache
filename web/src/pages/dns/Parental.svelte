@@ -6,7 +6,8 @@
   internet now, lift the restrictions or pause the group's filtering for a
   while; an edit panel; a test for one device; short hints. Parental
   controls, safe search and protection lists apply even while blocking is
-  paused.
+  paused. Each group but Default can use a family-safe resolver (a preset
+  of upstreams that filter adult content themselves).
   Query: ?edit=<group id> opens the edit panel of a group.
 -->
 <script lang="ts">
@@ -15,12 +16,13 @@
   import { errorText } from '$lib/errors'
   import { href, router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { Button, Notice, Skeleton, toast } from '$lib/ui'
+  import { Button, confirm, Notice, Skeleton, toast } from '$lib/ui'
   import ControlsPanel from './parental/ControlsPanel.svelte'
   import GroupCard from './parental/GroupCard.svelte'
   import Hints from './parental/Hints.svelte'
   import { hostDiffers, hostZone, setHostClock } from '$lib/hostclock.svelte'
   import { ordered, whenText } from './parental/plan'
+  import { presetName } from './shared/resolver'
   import TestBox from './parental/TestBox.svelte'
   import UntilDialog from './parental/UntilDialog.svelte'
 
@@ -35,6 +37,9 @@
   // Names and sizes of the lists behind the category switches.
   const filterCatalog = resource((signal) => api.filter.catalog({ signal }))
   const lists = resource((signal) => api.filter.lists.list({ signal }), { interval: pace })
+  // The resolvers of the groups (upstreams per group) and the family resolver presets.
+  const groupList = resource((signal) => api.groups.list({ signal }))
+  const presets = resource((signal) => api.groups.upstreamPresets({ signal }))
 
   // Schedules use the host's clock; the page shows times on it.
   $effect(() => setHostClock(groups.data?.[0]?.state))
@@ -116,6 +121,43 @@
     }
   }
 
+  /**
+   * Sets the family-safe resolver of a group ("" = none). Own upstreams of
+   * the group are replaced only after asking. Resolves true when saved.
+   */
+  async function setResolver(g: GroupControls, key: string): Promise<boolean> {
+    const cur = groupList.data?.find((x) => x.id === g.groupId)
+    if (!cur || cur.upstreamPreset === key && cur.upstreams.length === 0) return false
+    const send = async () => {
+      const saved = await api.groups.setUpstreams(g.groupId, { upstreams: [], upstreamPreset: key })
+      groupList.set((groupList.data ?? []).map((x) => (x.id === saved.id ? saved : x)))
+    }
+    const done = key
+      ? t('dns.parental.resolver.setToast', { group: g.groupName, resolver: presetName(key, presets.data) })
+      : t('dns.parental.resolver.offToast', { group: g.groupName })
+    if (cur.upstreams.length > 0) {
+      const ok = await confirm({
+        title: t('dns.parental.resolver.replaceTitle', { group: g.groupName }),
+        message: t('dns.parental.resolver.replaceText', { upstreams: cur.upstreams.join(', ') }),
+        confirmLabel: key ? t('dns.parental.resolver.replaceConfirm', { resolver: presetName(key, presets.data) }) : t('dns.parental.resolver.removeConfirm'),
+        action: send,
+      })
+      if (ok) toast.success(done)
+      return ok
+    }
+    busy = [...busy, g.groupId]
+    try {
+      await send()
+      toast.success(done)
+      return true
+    } catch (e) {
+      toast.error(e)
+      return false
+    } finally {
+      busy = busy.filter((x) => x !== g.groupId)
+    }
+  }
+
   async function resume(g: GroupControls) {
     busy = [...busy, g.groupId]
     try {
@@ -167,6 +209,9 @@
         onend={end}
         onpaused={replace}
         onresume={resume}
+        resolver={groupList.data?.find((x) => x.id === g.groupId)}
+        presets={presets.data}
+        onresolver={setResolver}
       />
     {/each}
   {/if}

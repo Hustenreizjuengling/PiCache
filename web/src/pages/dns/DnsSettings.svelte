@@ -32,6 +32,9 @@
   const filter = settingsForm('filter')
   const upstreams = resource((signal) => api.upstreams.get({ signal }), { interval: 10_000 })
   const dnsStats = resource((signal) => api.dns.stats({ signal }), { interval: 10_000 })
+  // Names of the groups and presets of the group upstream lists.
+  const groups = resource((signal) => api.groups.list({ signal }))
+  const presets = resource((signal) => api.groups.upstreamPresets({ signal }))
 
   const SECTIONS = ['upstreams', 'cache', 'blocking', 'protection', 'ratelimit', 'access', 'names', 'ipv6', 'dnssec'] as const
   type Section = (typeof SECTIONS)[number]
@@ -120,6 +123,9 @@
         fallbackStats={upstreams.data?.fallbacks}
         fallbackLastUsed={upstreams.data?.fallbackLastUsed}
         clockGuard={!!upstreams.data?.clockGuard}
+        groupSets={upstreams.data?.groups}
+        groups={groups.data}
+        presets={presets.data}
       />
       <CacheSection form={dns} cache={upstreams.data?.cache} onflushed={() => upstreams.refresh()} />
       <fieldset class="sections" disabled={!session.isAdmin}>

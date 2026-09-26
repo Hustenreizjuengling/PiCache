@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/api"
@@ -76,6 +77,9 @@ func blocklistsHealth(blockingEnabled bool, fs filter.Stats) (status, msg, hint 
 	case fs.TLDGuardLists > 0:
 		return "warn", fmt.Sprintf("%d own list(s) contain entries that would block a whole top-level domain; they are ignored", fs.TLDGuardLists),
 			"if a list is meant to block whole TLDs, give it the category abused-tlds (Filtering → Blocklists)"
+	case fs.IPGuardLists > 0:
+		return "warn", fmt.Sprintf("%d list(s) of answer addresses contain blocks of broad or private networks; they are ignored", fs.IPGuardLists),
+			"a list of answer addresses blocks public networks of at least /16 (IPv4) or /32 (IPv6); write an IPv6 block of an embedded IPv4 address as the IPv4 address (Filtering → Blocklists)"
 	}
 	return "ok", "", ""
 }
@@ -87,8 +91,11 @@ const fallbackRecent = 5 * time.Minute
 // upstreamHealth evaluates the health check "upstreams" (first match): the
 // clock guard warns; no default upstream healthy and no healthy fallback
 // (or none configured) fails; no default upstream healthy, or a fallback
-// that answered within the last 5 minutes, warns; ok otherwise.
-func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, lastFallback, now time.Time) (status, msg, hint string) {
+// that answered within the last 5 minutes, warns; a group set that could
+// not be built or has no healthy upstream warns (its clients get SERVFAIL:
+// group sets have no fallbacks); ok otherwise.
+func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, lastFallback, now time.Time,
+	groups []upstream.GroupUpstreamStat) (status, msg, hint string) {
 	healthy := func(list []upstream.UpstreamStat) int {
 		n := 0
 		for _, s := range list {
@@ -106,6 +113,12 @@ func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, l
 		return "fail", "no upstream DNS server is answering", "check the internet connection and the upstream settings"
 	case primaryDown || (!lastFallback.IsZero() && now.Sub(lastFallback) < fallbackRecent):
 		return "warn", "fallback DNS in use: the upstream DNS servers are not answering", "check the internet connection and the upstream settings"
+	}
+	for _, g := range groups {
+		if g.Error != "" || (len(g.Upstreams) > 0 && healthy(g.Upstreams) == 0) {
+			return "warn", fmt.Sprintf("the upstreams of group %s are not answering: their clients get SERVFAIL", strings.Join(g.Names, ", ")),
+				"check the group's resolver (Clients & groups) and the internet connection"
+		}
 	}
 	return "ok", "", ""
 }
@@ -143,7 +156,7 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	}
 
 	// Upstreams (+ clock guard, fallbacks)
-	st, msg, hint := upstreamHealth(a.up.ClockGuard(), a.up.Stats(), a.up.FallbackStats(), a.up.LastFallback(), time.Now())
+	st, msg, hint := upstreamHealth(a.up.ClockGuard(), a.up.Stats(), a.up.FallbackStats(), a.up.LastFallback(), time.Now(), a.up.GroupStats())
 	add("upstreams", st, msg, hint)
 
 	// Filtering

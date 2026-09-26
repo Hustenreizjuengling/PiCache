@@ -18,11 +18,16 @@
   Sorting: without `onsort` rows are sorted client-side by column.value; with
   `onsort` the table only reports the new SortState (server-side sorting).
   Sticky header: give the table a `maxHeight` so it scrolls inside.
+  Selection: `selectable` adds a checkbox column (and "select all" for the
+  rows shown) bound to `checked`, the keys of the checked rows; keys of rows
+  that are no longer shown (deleted, filtered out) are dropped. Pages offer
+  it to principals who may change the rows only (a BulkBar acts on them).
 -->
 <script lang="ts" generics="T">
   import type { Snippet } from 'svelte'
   import { t } from '../../i18n/index.svelte'
   import Button from './Button.svelte'
+  import Checkbox from './Checkbox.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import Skeleton from './Skeleton.svelte'
@@ -50,6 +55,12 @@
     emptyText?: string
     empty?: Snippet
     rowClass?: (row: T) => string | undefined
+    /** Shows a checkbox per row bound to `checked`. */
+    selectable?: boolean
+    /** Keys of the checked rows. */
+    checked?: (string | number)[]
+    /** Accessible name of a row's checkbox (e.g. "Select rule ads.example.com"). */
+    checkLabel?: (row: T) => string
   }
 
   let {
@@ -70,6 +81,9 @@
     emptyText,
     empty,
     rowClass,
+    selectable = false,
+    checked = $bindable([]),
+    checkLabel,
   }: Props = $props()
 
   const collator = $derived(new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }))
@@ -131,6 +145,27 @@
     onrowclick?.(row)
   }
 
+  // Checked rows that are no longer shown are no longer selected.
+  $effect(() => {
+    if (!selectable || !rows) return
+    const shown = new Set(rows.map(key))
+    if (checked.some((k) => !shown.has(k))) checked = checked.filter((k) => shown.has(k))
+  })
+
+  const checkedSet = $derived(new Set(checked))
+  const allChecked = $derived(view.length > 0 && view.every((r) => checkedSet.has(key(r))))
+  const someChecked = $derived(!allChecked && view.some((r) => checkedSet.has(key(r))))
+
+  function checkAll(on: boolean) {
+    const keys = view.map(key)
+    checked = on ? [...new Set([...checked, ...keys])] : checked.filter((k) => !keys.includes(k))
+  }
+
+  function checkRow(row: T, on: boolean) {
+    const k = key(row)
+    checked = on ? (checkedSet.has(k) ? checked : [...checked, k]) : checked.filter((x) => x !== k)
+  }
+
   const showSkeleton = $derived(loading && (!rows || rows.length === 0) && !error)
   const showEmpty = $derived(!error && !showSkeleton && view.length === 0 && !loading)
 </script>
@@ -141,6 +176,17 @@
       {#if caption}<caption class="visually-hidden">{caption}</caption>{/if}
       <thead>
         <tr>
+          {#if selectable}
+            <th scope="col" class="check">
+              <Checkbox
+                checked={allChecked}
+                indeterminate={someChecked}
+                disabled={view.length === 0}
+                ariaLabel={t('common.table.selectAll')}
+                onchange={checkAll}
+              />
+            </th>
+          {/if}
           {#each columns as col (col.key)}
             <th
               scope="col"
@@ -168,6 +214,7 @@
         {#if showSkeleton}
           {#each Array.from({ length: skeletonRows }, (_, i) => i) as i (i)}
             <tr class="skeleton-row" aria-hidden="true">
+              {#if selectable}<td class="check"></td>{/if}
               {#each columns as col (col.key)}
                 <td class={[col.align ?? 'left']}><Skeleton width={col.align === 'right' ? '48px' : `${50 + ((i * 17) % 40)}%`} /></td>
               {/each}
@@ -178,11 +225,25 @@
             <!-- Rows open details on click/Enter; links and buttons inside keep their own meaning. -->
             <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
             <tr
-              class={[onrowclick && 'clickable', selected !== undefined && key(row) === selected && 'selected', rowClass?.(row)]}
+              class={[
+                onrowclick && 'clickable',
+                selected !== undefined && key(row) === selected && 'selected',
+                selectable && checkedSet.has(key(row)) && 'checked',
+                rowClass?.(row),
+              ]}
               tabindex={onrowclick ? 0 : undefined}
               onclick={onrowclick ? (e) => onRowClick(e, row) : undefined}
               onkeydown={onrowclick ? (e) => onRowKey(e, row) : undefined}
             >
+              {#if selectable}
+                <td class="check">
+                  <Checkbox
+                    checked={checkedSet.has(key(row))}
+                    ariaLabel={checkLabel?.(row) ?? t('common.table.selectRow')}
+                    onchange={(on) => checkRow(row, on)}
+                  />
+                </td>
+              {/if}
               {#each columns as col (col.key)}
                 <td class={[col.align ?? 'left', col.mono && 'mono', col.mono && col.wrap && 'wrap', col.truncate && 'trunc']} title={col.truncate ? text(row, col) : undefined}>
                   {#if col.cell}{@render col.cell(row)}{:else}{text(row, col)}{/if}
@@ -268,6 +329,18 @@
   }
   .center {
     text-align: center;
+  }
+  /* The checkbox column: as narrow as the box, with a larger click target. */
+  th.check,
+  td.check {
+    width: 1%;
+    padding-right: 0;
+  }
+  .check :global(.cb) {
+    padding: 6px 4px 6px 0;
+  }
+  tr.checked td {
+    background: color-mix(in srgb, var(--focus) 6%, var(--surface));
   }
   /* Machine values stay on one line: a split IP or MAC is easily misread
      (the table scrolls sideways instead). wrap: true allows long ones to break. */

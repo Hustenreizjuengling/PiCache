@@ -199,6 +199,10 @@ const dns = {
     create: (r: T.DnsRecordInput, o?: ReqOpts) => http.post<T.DnsRecord>('/dns/records', r, o),
     update: (id: number, r: T.DnsRecordInput, o?: ReqOpts) => http.put<T.DnsRecord>(`/dns/records/${seg(id)}`, r, o),
     remove: (id: number, o?: ReqOpts) => http.del(`/dns/records/${seg(id)}`, o),
+    /** Checks (dryRun) or applies hosts lines; per-line errors in the 200 answer, nothing written if there is any. */
+    import: (req: T.RecordImportRequest, o?: ReqOpts) => http.post<T.RecordImportResult>('/dns/records/import', req, o),
+    /** Deletes, enables or disables the records (all or nothing; 404 names an unknown id). */
+    batch: (req: T.BatchRequest, o?: ReqOpts) => http.post<T.BatchResult>('/dns/records/batch', req, o),
   },
   forwarders: {
     list: (o?: ReqOpts) => http.get<T.Forwarder[]>('/dns/forwarders', o),
@@ -209,6 +213,7 @@ const dns = {
     /** Checks (dryRun) or applies `[/domain/…/]target …` lines; per-line errors in the 200 answer, nothing written if there is any. */
     import: (req: T.ForwarderImportRequest, o?: ReqOpts) =>
       http.post<T.ForwarderImportResult>('/dns/forwarders/import', req, o),
+    batch: (req: T.BatchRequest, o?: ReqOpts) => http.post<T.BatchResult>('/dns/forwarders/batch', req, o),
   },
   /** dns.blockedClients one entry at a time (400 field "client"/"entry" also for a lockout; 409 when the list is full). */
   blockedClients: {
@@ -235,6 +240,8 @@ const clients = {
   remove: (id: number, o?: ReqOpts) => http.del(`/clients/${seg(id)}`, o),
   /** Addresses seen within `within` (e.g. "30d"). */
   known: (within?: string, o?: ReqOpts) => http.get<T.KnownClient[]>('/clients/known', { ...o, query: { within } }),
+  /** Deletes the clients (action "delete" only; all or nothing). */
+  batch: (req: T.BatchRequest, o?: ReqOpts) => http.post<T.BatchResult>('/clients/batch', req, o),
 }
 
 const groups = {
@@ -243,6 +250,13 @@ const groups = {
   update: (id: number, g: T.ClientGroupInput, o?: ReqOpts) => http.put<T.ClientGroup>(`/groups/${seg(id)}`, g, o),
   /** 403 for the Default group. */
   remove: (id: number, o?: ReqOpts) => http.del(`/groups/${seg(id)}`, o),
+  /** Deletes, enables or disables the groups (403 when a delete includes the Default group). */
+  batch: (req: T.BatchRequest, o?: ReqOpts) => http.post<T.BatchResult>('/groups/batch', req, o),
+  /** Replaces only the group's resolver (400 for the Default group and for a preset with an own list). */
+  setUpstreams: (id: number, body: T.GroupUpstreamsInput, o?: ReqOpts) =>
+    http.put<T.ClientGroup>(`/groups/${seg(id)}/upstreams`, body, o),
+  /** The family resolver presets in table order. */
+  upstreamPresets: (o?: ReqOpts) => http.get<T.UpstreamPreset[]>('/groups/upstream-presets', o),
 }
 
 // ---------------------------------------------------------------- parental controls & network check
@@ -326,6 +340,8 @@ const filter = {
       http.post<T.FilterList>(`/filter/lists/${seg(id)}/refresh`, undefined, { ...o, timeoutMs: LONG }),
     /** Starts a background refresh of all lists. */
     refreshAll: (o?: ReqOpts) => http.post<{ started: boolean }>('/filter/lists/refresh', undefined, o),
+    /** Enabling beyond the entry budget: 409 with field "force" (resend with force: true). */
+    batch: (req: T.BatchRequest, o?: ReqOpts) => http.post<T.BatchResult>('/filter/lists/batch', req, o),
   },
   catalog: (o?: ReqOpts) => http.get<T.CatalogEntry[]>('/filter/catalog', o),
   rules: {
@@ -333,11 +349,33 @@ const filter = {
     create: (r: T.FilterRuleInput, o?: ReqOpts) => http.post<T.FilterRule>('/filter/rules', r, o),
     update: (id: number, r: T.FilterRuleInput, o?: ReqOpts) => http.put<T.FilterRule>(`/filter/rules/${seg(id)}`, r, o),
     remove: (id: number, o?: ReqOpts) => http.del(`/filter/rules/${seg(id)}`, o),
+    /** Checks (dryRun) or applies rule lines; per-line errors in the 200 answer, nothing written if there is any. */
+    import: (req: T.RuleImportRequest, o?: ReqOpts) => http.post<T.RuleImportResult>('/filter/rules/import', req, o),
+    /** URL for a plain <a href download> of the rules as list lines (the filters of list()). */
+    exportUrl: (q: Pick<T.RuleQuery, 'action' | 'type'> = {}) => apiUrl('/filter/rules/export', { ...q }),
+    batch: (req: T.BatchRequest, o?: ReqOpts) => http.post<T.BatchResult>('/filter/rules/batch', req, o),
+    /** A rule for one device: the server finds or creates its client and a group of its own. */
+    device: (req: T.DeviceRuleRequest, o?: ReqOpts) => http.post<T.DeviceRuleResult>('/filter/rules/device', req, o),
+  },
+  /** Rules on the addresses of answers. */
+  ipRules: {
+    list: (q: T.IPRuleQuery = {}, o?: ReqOpts) => http.get<T.IPRule[]>('/filter/ip-rules', { ...o, query: { ...q } }),
+    create: (r: T.IPRuleInput, o?: ReqOpts) => http.post<T.IPRule>('/filter/ip-rules', r, o),
+    update: (id: number, r: T.IPRuleInput, o?: ReqOpts) => http.put<T.IPRule>(`/filter/ip-rules/${seg(id)}`, r, o),
+    remove: (id: number, o?: ReqOpts) => http.del(`/filter/ip-rules/${seg(id)}`, o),
+    batch: (req: T.BatchRequest, o?: ReqOpts) => http.post<T.BatchResult>('/filter/ip-rules/batch', req, o),
   },
   stats: (o?: ReqOpts) => http.get<T.FilterStats>('/filter/stats', o),
-  /** "Why is this blocked?" for a domain, optionally as a specific client. */
-  explain: (domain: string, clientIp?: string, o?: ReqOpts) =>
-    http.post<T.ExplainResult>('/filter/explain', clientIp ? { domain, clientIp } : { domain }, o),
+  /** "Why is this blocked?" for a domain and query type (default A), optionally as a specific client. */
+  explain: (domain: string, clientIp?: string, qtype?: string, o?: ReqOpts) =>
+    http.post<T.ExplainResult>('/filter/explain', { domain, clientIp: clientIp || undefined, qtype: qtype || undefined }, o),
+  /**
+   * Rules and downloaded list lines containing q (3–253 characters; limit
+   * 1–200). Stops after 10 s with the hits so far; 503 while two searches
+   * or explanations run.
+   */
+  search: (q: { q: string; limit?: number; clientIp?: string }, o?: ReqOpts) =>
+    http.get<T.SearchResult>('/filter/search', { ...o, query: { ...q }, timeoutMs: 30_000 }),
 }
 
 // ---------------------------------------------------------------- download cache services & sni

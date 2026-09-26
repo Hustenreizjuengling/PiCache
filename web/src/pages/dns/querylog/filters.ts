@@ -14,7 +14,7 @@ import {
 } from '$lib/api'
 import { isCustom, readRange, withinRetention, type Range } from '$lib/range'
 import { router } from '$lib/router.svelte'
-import { isIP } from '../shared/input'
+import { isIP, isIPv4, isIPv6 } from '../shared/input'
 
 /** Time ranges shown as segments (bounded by the query log's retention, 7 days by default). */
 export const LOG_RANGES: RangePreset[] = ['15m', '1h', '6h', '24h', '7d']
@@ -182,4 +182,31 @@ export function matchesLocally(e: QueryEvent, f: QueryFilters): boolean {
 /** Whether any filter besides the time range is set. */
 export function hasFilters(f: QueryFilters): boolean {
   return !!(f.client.length || f.domain || f.status.length || f.qtype || f.upstream || f.rcode.length || f.dnssec)
+}
+
+/** The eight 16-bit words of an IPv6 address (without zone or embedded IPv4). */
+function ipv6Words(ip: string): number[] | undefined {
+  const parts = ip.toLowerCase().split('::')
+  if (parts.length > 2) return undefined
+  const words = (s: string) => (s ? s.split(':') : [])
+  const head = words(parts[0])
+  const tail = parts.length === 2 ? words(parts[1]) : []
+  const zeros = parts.length === 2 ? 8 - head.length - tail.length : 0
+  if (zeros < 0) return undefined
+  const all = [...head, ...Array<string>(zeros).fill('0'), ...tail]
+  if (all.length !== 8 || !all.every((w) => /^[0-9a-f]{1,4}$/.test(w))) return undefined
+  return all.map((w) => parseInt(w, 16))
+}
+
+/**
+ * The client address of an entry looks anonymised: logs.anonymizeClientIps
+ * keeps only an IPv4 /16 or an IPv6 /48, so such an entry names a network,
+ * not a device, also after anonymisation was switched off. (A device whose
+ * address really ends in .0.0 loses only the device actions of the panel.)
+ */
+export function looksAnonymised(ip: string): boolean {
+  if (isIPv4(ip)) return ip.endsWith('.0.0')
+  if (!isIPv6(ip)) return false
+  const words = ipv6Words(ip)
+  return !!words && words.slice(3).every((w) => w === 0)
 }

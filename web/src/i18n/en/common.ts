@@ -186,6 +186,13 @@ export default {
 
   // components
   'table.empty': 'Nothing to show.',
+  'table.selectAll': 'Select all rows shown',
+  'table.selectRow': 'Select row',
+  'bulk.label': 'Actions for the selected rows',
+  'bulk.selected.one': '{count} selected',
+  'bulk.selected.other': '{count} selected',
+  'bulk.clear': 'Clear the selection',
+  'bulk.actions': 'Actions',
   'chart.noData': 'No data for this time range.',
   'chart.time': 'Time',
   'pager.label': 'Pages',
@@ -261,6 +268,7 @@ export default {
   'queryStatus.blocked-service': 'Blocked service',
   'queryStatus.blocked-upstream': 'Blocked by upstream',
   'queryStatus.blocked-rebind': 'Rebinding blocked',
+  'queryStatus.blocked-ip': 'Blocked answer address',
   'queryStatus.safesearch': 'Safe search',
   'queryStatus.refused': 'Refused',
   'queryStatus.error': 'Error',

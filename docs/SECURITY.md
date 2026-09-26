@@ -49,7 +49,8 @@ fixes; please test against it or a current build of `main`.
 | Unwanted clients in the LAN | `dns.blockedClients` drops the DNS queries of addresses, networks or MAC addresses; loopback, this machine, the router and trusted forwarders can never be blocked, neither by their addresses nor by their MAC addresses. DNS only. |
 | Open HTTP proxy / SSRF via :80 | Only hosts of known cache services are served; unknown hosts get 403. Upstream addresses must be public unicast and not this machine; link-local (cloud metadata) is always refused, and redirects are re-checked. Non-canonical paths are never stored. Per-client fill limits and at most 16 ranges per request prevent WAN amplification. |
 | Open TLS relay via :443 | TLS is never terminated. The SNI must match an enabled service, the same SSRF rules apply, and connections are capped and time out. |
-| Hostile blocklists, cache-domains data or NAS content | Sizes, counts, names and patterns are validated; public-suffix patterns are rejected. Files are accessed through `os.Root`. Slice files carry validated, CRC-checked headers. |
+| Hostile blocklists, cache-domains data or NAS content | Sizes, counts, names and patterns are validated; public-suffix patterns are rejected. Lists of answer addresses can never block broad, private or special networks (the IP guard). List titles are cleaned before they become names. Files are accessed through `os.Root`. Slice files carry validated, CRC-checked headers. Details in [DNS protection](#dns-protection). |
+| Family resolvers of client groups failing open | A group's own resolver (a family preset or its own upstreams) fails closed: when it cannot be reached, its clients get SERVFAIL, never an answer of the default upstreams, the fallbacks or the unfiltered bootstrap servers. Details in [DNS protection](#dns-protection). |
 | Web UI takeover on first start | One-time setup token (logged and stored with mode 0600, compared in constant time, first user created atomically), or provisioning from `PICACHE_ADMIN_PASSWORD_FILE`. After setup, `/auth/setup` answers 403 at once, uses no share of the global attempt limit and counts as a failed attempt of the caller. |
 | Password guessing | argon2id; per client 5 failures → 15 min lockout; per user name a delay from the 5th failure (1 s, doubling, at most 30 s, reset by a successful sign-in), never a lockout; TOTP failures count; a global attempt limit; optional TOTP with single-use codes. Every sign-in gives the browser a device cookie (sealed with the master key, `HttpOnly`, 180 days, not a credential): a browser that signed in before is throttled by its own device key (5 failures → 15 min) instead of the user-name delay, so failed attempts from other LAN hosts cannot keep it out, and a copied device cookie allows no more guesses than one client. Password confirmations of signed-in users (tokens, TOTP, password change, restore) are throttled per client and per session (5 failures → 15 min each) and by the global limit, not by the user-name delay. |
 | Session theft, CSRF | 256-bit session tokens stored hashed; cookie `HttpOnly`, `SameSite=Strict`; over HTTPS `Secure` and named `__Host-picache_session`, so a plain-HTTP origin on the same host cannot plant or overwrite it; behind a TLS-terminating reverse proxy the same applies when the proxy is trusted and sends `X-Forwarded-Proto: https`, else `PICACHE_WEB_SECURE_COOKIES` sets `Secure`; idle and absolute timeouts; sessions re-checked on every request; cross-origin protection; JSON-only request bodies. A stolen session alone cannot create API tokens or enrol TOTP (both need the current password); changing the password ends all other sessions and all API tokens (unless kept explicitly); enabling TOTP ends all other sessions. |
@@ -458,9 +459,28 @@ and [§17](ARCHITECTURE.md#17-network-check-internalappnetcheckgo).
   browser does not switch to encrypted DNS during a pause and keep it.
 - **Content protection is not lifted by "lift restrictions".** The allow
   override of a group lifts only its blocked services and schedules. Safe
-  search and protection lists end only when an admin switches them off,
-  disables the group or moves the device out of it; a user allow rule for
-  the device unblocks a single name a protection list blocks by mistake.
+  search, protection lists and a group's family resolver end only when an
+  admin switches them off, disables the group or moves the device out of
+  it; a user allow rule for the device unblocks a single name a protection
+  list blocks by mistake.
+- **A blocked download service is not sent to the download cache.** The
+  download cache and the SNI pass-through serve the names of download
+  services (Steam, Windows Update, …) without asking the filter. A
+  blocking reply with "this server's address" (`self`, or PiCache's own
+  address written out) therefore never answers such a name with it; that
+  address family is answered empty (NODATA), so a parental block or a
+  rule for a download service keeps its effect.
+- **"Only for this device" never reuses an admin's group.** A rule made
+  for one device goes into a group that holds only that device: a group is
+  reused only when PiCache created it for that client and the client is
+  still its only member. A device whose DHCP or PTR name equals an existing
+  group ("Kids") gets a new group ("Kids (2)"), so a device can never name
+  itself into another group. The device keeps its other groups. Device
+  names are untrusted: control, bidi and other format characters are
+  removed and the name is shortened before it becomes a client or group
+  name, and the UI shows every name as text. The router, this machine,
+  loopback and trusted EDNS forwarders are refused (they speak for many
+  devices), and so is every device while client addresses are anonymised.
 - **Changes need admin rights and are audited** (`parental.update` — with
   the services, schedules, safe search and category switches —,
   `parental.override`, `parental.override_clear`, `parental.pause`,
@@ -495,8 +515,8 @@ in your LAN (a router's web interface, a NAS, a service on the device
 itself) and then talk to it through the browser. Many routers block such
 answers, but once the devices use PiCache the router no longer sees the
 queries. PiCache therefore blocks answers of its upstreams (the default
-upstreams, the fallbacks and conditional forwarders with the target
-`default`) whose A/AAAA records point at 0.0.0.0/8, 10/8, 100.64/10,
+upstreams, the fallbacks, conditional forwarders with the target
+`default` and the resolvers of client groups) whose A/AAAA records point at 0.0.0.0/8, 10/8, 100.64/10,
 127/8 (it protects services on the client itself), 169.254/16, 172.16/12,
 192.168/16, `::`, `::1`, fc00::/7, fe80::/10 or 64:ff9b:1::/48, or at an
 IPv6 address that carries such an IPv4 address (IPv4-mapped,
@@ -507,6 +527,42 @@ paused, like the ACL. Local data (local records, DHCP names, forwarders
 with their own targets, the router, the local domain) is trusted as
 configured; `dns.rebindAllow` (by default `plex.direct`), the names of
 `web.allowedHosts` and user allow rules exempt names on purpose.
+
+**Lists of answer addresses and IP rules.** A list of the format "answer
+addresses" and the IP rules block an answer when one of its addresses is
+listed (for example a threat feed of known malicious servers). A hostile
+or broken list could otherwise block everything: PiCache ignores every
+block of such a list that is broader than /16 (IPv4) or /32 (IPv6), that
+overlaps private, loopback, link-local, CGNAT, multicast or reserved
+ranges, or that lies inside or around an IPv6 prefix carrying IPv4
+addresses (the IP guard; the ignored entries are counted per list and the
+health check warns). Lists judge such an IPv6 address (NAT64, DNS64) only
+by the IPv4 address it carries. `0.0.0.0/0`, `::/0` or a list of the private ranges therefore
+never blocks every answer or the names of your LAN. The guard does not
+depend on settings, so it cannot be switched off by accident. IP rules
+you write yourself must be at least /8 or /32. This machine's own
+addresses are never blocked, and answers of forwarders with their own
+targets, of the router and of the local PTR servers (your own network)
+are never checked. At most 256 addresses of an answer are examined.
+
+**Family resolvers per group.** A client group can use its own upstream
+resolver, for example a family-safe DNS service. Such a resolver is
+content protection: pausing or disabling blocking does not switch it off.
+It fails closed: when the group's resolver cannot be built or does not
+answer, its clients get SERVFAIL; PiCache never falls back to the default
+upstreams, the fallbacks or the bootstrap servers (which do not filter).
+While the system clock is not set (the clock guard), only the plain
+addresses of the group's own resolver are asked (a preset brings them);
+without any, the group's clients get SERVFAIL. No client subnet is sent to
+a group's resolver. A device that asks another resolver gets around it,
+like every DNS-based control.
+
+**List titles.** The first download of a list created without a name takes
+the title the list names in its header. The title comes from a third
+party: invalid UTF-8, control characters, bidi controls and other format
+characters are removed, white space is collapsed and it is cut to 100
+characters, and it is decided only once (the admin's own name is never
+replaced). It appears like any name, always as text.
 
 **Client identity from EDNS.** A forwarder (a second router, dnsmasq) can
 add each client's address (ECS) and MAC (option 65001) to the queries it
@@ -595,14 +651,16 @@ other than the defaults as `*.<registrable domain>`; public addresses and
 networks masked to /16 or /48; MAC entries dropped; configured names such
 as the local domain replaced by `name-<n>`); every text of the other files
 has the configured names, `PICACHE_WEB_HOSTS` and the host name replaced by
-the same placeholders, the configured upstreams and their host names reduced
-as in the settings (so a DoH profile ID or path does not survive in the
-log), every other URL reduced to `scheme://host[:port]` with the path as
+the same placeholders, the configured upstreams (also those of client
+groups) and their host names reduced as in the settings (so a DoH profile
+ID or path does not survive in the log), every other URL reduced to `scheme://host[:port]` with the path as
 `/…` and no query, and public addresses masked (all of this also with the
 tick "Include device and client names"); without that tick private
 addresses are masked too and MAC addresses replaced by `mac-<n>`, the
-network check and the DHCP state are reduced to counts and states, and user
-and device names in log records are redacted (user names always).
+names of groups with their own upstreams (a device group is named after a
+device) replaced by `name-<n>`, the network check and the DHCP state are
+reduced to counts and states, and user, device and group names in log
+records are redacted (user names always).
 `MANIFEST.txt` lists the rules and what each file had replaced.
 **Review the files before sharing them:** redaction works on known fields
 and patterns, and a log message can still name something personal.

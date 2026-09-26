@@ -6,7 +6,8 @@
   entries are disabled one by one), optional order buttons and "Add". Errors of single entries
   ("dns.upstreams[1]") appear under the entry, errors of the list below it.
 
-  <UpstreamList bind:value={d.upstreams} {form} field="dns.upstreams" max={16} {stats} orderable />
+  <UpstreamList bind:value={d.upstreams} error={form.saveError} field="dns.upstreams" max={16} {stats} orderable />
+  Also the own upstreams of a group (field "upstreams").
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte'
@@ -14,15 +15,15 @@
   import { api, toApiError, type ApiError, type UpstreamStat, type UpstreamTestResult } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatNumber, formatRelative } from '$lib/format'
-  import type { SettingsForm } from '$lib/settings.svelte'
   import { session } from '$lib/session.svelte'
   import { Button, Chip, IconButton, Input } from '$lib/ui'
   import { lineError } from '../shared/errors'
 
   interface Props {
     value: string[]
-    form: SettingsForm<'dns'>
-    /** Settings field of the list, e.g. "dns.upstreams". */
+    /** The last save error (its field names the list or an entry). */
+    error?: unknown
+    /** Field of the list, e.g. "dns.upstreams". */
     field: string
     max: number
     /** Live statistics of the saved entries (/dns/upstreams). */
@@ -36,7 +37,7 @@
     extra?: Snippet
   }
 
-  let { value = $bindable(), form, field, max, stats, orderable = false, entryLabel, addLabel, extra }: Props = $props()
+  let { value = $bindable(), error, field, max, stats, orderable = false, entryLabel, addLabel, extra }: Props = $props()
 
   type Test = { running: boolean; result?: UpstreamTestResult; error?: ApiError }
   let tests = $state<Record<string, Test>>({})
@@ -73,7 +74,7 @@
   }
 
   /** The list itself (not one entry): none given, too many. */
-  const listError = $derived(form.saveError?.field === field ? form.errorMessage : undefined)
+  const listError = $derived(error && toApiError(error).field === field ? errorText(error) : undefined)
 </script>
 
 <div class="stack-sm">
@@ -83,7 +84,7 @@
         {@const u = value[i]}
         {@const st = statFor(u)}
         {@const tr = tests[u.trim()]}
-        {@const err = lineError(form.saveError, `${field}[${i}]`)}
+        {@const err = lineError(error, `${field}[${i}]`)}
         <li>
           <div class="line">
             <span class="pos num">{i + 1}</span>

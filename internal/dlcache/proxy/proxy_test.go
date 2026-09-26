@@ -66,6 +66,11 @@ func TestRequestGuards(t *testing.T) {
 			if resp.StatusCode != tc.want {
 				t.Fatalf("status %d, want %d", resp.StatusCode, tc.want)
 			}
+			// A refused host (a browser sent here by a blocking reply of
+			// this server's address) gets its connection closed.
+			if tc.want == http.StatusForbidden && !resp.Close {
+				t.Fatalf("403 without Connection: close: %v", resp.Header)
+			}
 		})
 	}
 	if n := len(h.origin.requests()); n != 0 {

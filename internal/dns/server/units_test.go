@@ -86,10 +86,10 @@ func TestDisabledRecordNotServed(t *testing.T) {
 	if _, err := e.srv.UpdateRecord(context.Background(), r.ID, RecordInput{Name: r.Name, Type: r.Type, Value: r.Value}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := e.srv.zone.Load().lookup("off.example"); ok {
+	if _, ok := e.srv.zone.Load().lookup("off.example", nil); ok {
 		t.Error("disabled records must not be served")
 	}
-	if _, ok := e.srv.zone.Load().lookup(reverseName(netip.MustParseAddr("192.168.1.30"))); ok {
+	if _, ok := e.srv.zone.Load().lookup(reverseName(netip.MustParseAddr("192.168.1.30")), nil); ok {
 		t.Error("disabled records must not produce auto-PTR")
 	}
 }

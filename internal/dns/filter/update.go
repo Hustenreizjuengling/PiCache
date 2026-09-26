@@ -1,12 +1,16 @@
 package filter
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
@@ -269,7 +273,7 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 	format := cfg.format()
 	needParse := cfg.parsed == nil || cfg.parsed.format != format
 	var p *parsed
-	var tmp string
+	var tmp, title string
 	if download {
 		now := e.now()
 		up.checked = now
@@ -307,6 +311,9 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 				break
 			}
 			p, tmp, needParse = parsedTmp, f.tmp, false
+			if cfg.NameAuto {
+				title = listTitle(f.tmp)
+			}
 			up.status, up.lastError, up.success, up.updated = statusOK, "", now, now
 			up.etag, up.lastModified, up.contentHash, up.size = f.etag, f.lastModified, f.hash, f.size
 			up.setCounts(p)
@@ -324,12 +331,15 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 			up.setCounts(p)
 		}
 	}
-	return e.applyRefresh(ctx, cfg.URL, id, up, p, tmp), nil
+	return e.applyRefresh(ctx, cfg.URL, id, up, p, tmp, title), nil
 }
 
 // applyRefresh stores the outcome of refresh unless the list was deleted or
-// re-pointed to another URL meanwhile.
-func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up listUpdate, p *parsed, tmp string) bool {
+// re-pointed to another URL meanwhile. The first successful download of a
+// list whose name is automatic decides its name: title (the list's
+// "Title:" header) when it has one, else the host name stays; the name is
+// no longer automatic afterwards.
+func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up listUpdate, p *parsed, tmp, title string) bool {
 	e.mu.Lock()
 	rt, ok := e.lists[id]
 	if !ok || rt.URL != url {
@@ -353,6 +363,16 @@ func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up list
 	rt.Entries, rt.Invalid, rt.Unsupported, rt.SizeBytes = up.entries, up.invalid, up.unsupported, up.size
 	rt.etag, rt.lastModified, rt.hash = up.etag, up.lastModified, up.contentHash
 	rt.jitter = newJitter()
+	named := up.status == statusOK && rt.NameAuto
+	if named {
+		rt.NameAuto = false
+		if title != "" && title != rt.Name {
+			e.log.Info("list named after its title", slog.Int64("id", id), slog.String("name", title))
+			rt.Name = title
+		}
+		e.publishLocked(nil, nil, nil)
+	}
+	name := rt.Name
 	changed := p != nil && rt.Enabled && rt.format() == p.format
 	if changed {
 		rt.parsed = p
@@ -372,7 +392,66 @@ func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up list
 		up.invalid, up.unsupported, up.size, up.etag, up.lastModified, up.contentHash, id, url); err != nil {
 		e.log.Error("save list status", slog.Int64("id", id), slog.Any("err", err))
 	}
+	if named {
+		// Compare and set: a rename committed since e.mu was released
+		// cleared name_auto, and the user's name stays.
+		if _, err := e.db.W.ExecContext(wctx, `UPDATE filter_lists SET name = ?, name_auto = 0 WHERE id = ? AND url = ? AND name_auto = 1`,
+			name, id, url); err != nil {
+			e.log.Error("save list name", slog.Int64("id", id), slog.Any("err", err))
+		}
+	}
 	return changed
+}
+
+// Bounds of the title header of a list (ARCHITECTURE 7.2, list title).
+const (
+	titleLines  = 50
+	maxTitleLen = 100
+)
+
+// listTitle returns the title of a downloaded list file: the first line
+// within the first 50 that starts with "! Title:" or "# Title:" (the
+// keyword case-insensitive), cleaned by cleanTitle; "" when there is none
+// or it is empty.
+func listTitle(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(io.LimitReader(f, int64(titleLines)*maxLineLen))
+	sc.Buffer(make([]byte, 0, 4096), maxLineLen)
+	for n := 0; n < titleLines && sc.Scan(); n++ {
+		line := strings.TrimSpace(strings.TrimPrefix(sc.Text(), string(rune(0xfeff)))) // a byte order mark
+		if line == "" || (line[0] != '!' && line[0] != '#') {
+			continue
+		}
+		rest := strings.TrimSpace(line[1:])
+		if len(rest) >= 6 && strings.EqualFold(rest[:6], "title:") {
+			return cleanTitle(rest[6:], maxTitleLen)
+		}
+	}
+	return ""
+}
+
+// cleanTitle makes untrusted text (a list title) a name: invalid UTF-8 and
+// every character of the Unicode categories Cc and Cf (controls, bidi
+// controls and other format characters) removed, white space collapsed,
+// trimmed and cut to max characters at a rune boundary.
+func cleanTitle(s string, max int) string {
+	s = strings.ToValidUTF8(s, "")
+	s = strings.Map(func(r rune) rune {
+		if unicode.In(r, unicode.Cc, unicode.Cf) {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(s) > max {
+		s = string([]rune(s)[:max])
+		s = strings.TrimSpace(s)
+	}
+	return s
 }
 
 // parseFile parses a list file in format f.

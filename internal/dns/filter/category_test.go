@@ -646,7 +646,7 @@ func TestCheckProtection(t *testing.T) {
 		{"www.adult.example", []int64{1}, ActionNone, ""},
 		{"www.adult.example", nil, ActionNone, ""},
 	} {
-		d := e.CheckProtection(tc.name, tc.groups)
+		d := e.CheckProtection(tc.name, qtypeA, tc.groups)
 		if d.Action != tc.action || d.Kind != tc.kind {
 			t.Errorf("%s %v: %+v, want %s %s", tc.name, tc.groups, d, tc.action, tc.kind)
 		}
@@ -656,16 +656,16 @@ func TestCheckProtection(t *testing.T) {
 	}
 	// Check still sees the protection list (CNAME inspection keeps
 	// checking targets); its decision carries the category; rules carry none.
-	if d := e.Check("www.adult.example", kids); !d.Blocked() || d.Category != CategoryAdult {
+	if d := e.Check("www.adult.example", qtypeA, kids); !d.Blocked() || d.Category != CategoryAdult {
 		t.Errorf("Check %+v", d)
 	}
-	if d := e.Check("ads.example", kids); d.Category != CategoryOther {
+	if d := e.Check("ads.example", qtypeA, kids); d.Category != CategoryOther {
 		t.Errorf("an own list without category %+v", d)
 	}
-	if d := e.Check("y.adult.example", kids); d.Source != "rule" || d.Category != "" {
+	if d := e.Check("y.adult.example", qtypeA, kids); d.Source != "rule" || d.Category != "" {
 		t.Errorf("rule decision %+v", d)
 	}
-	if n := testing.AllocsPerRun(200, func() { e.CheckProtection("a.b.www.adult.example", kids) }); n != 0 {
+	if n := testing.AllocsPerRun(200, func() { e.CheckProtection("a.b.www.adult.example", qtypeA, kids) }); n != 0 {
 		t.Errorf("CheckProtection allocates %v times", n)
 	}
 	// A category change swaps only the tables: security is no protection
@@ -674,13 +674,13 @@ func TestCheckProtection(t *testing.T) {
 	if _, err := e.UpdateList(ctx, adult.ID, ListInput{Name: "Adult", URL: adult.URL, Enabled: true, Category: CategorySecurity}); err != nil {
 		t.Fatal(err)
 	}
-	if d := e.CheckProtection("www.adult.example", kids); d.Action != ActionNone {
+	if d := e.CheckProtection("www.adult.example", qtypeA, kids); d.Action != ActionNone {
 		t.Errorf("security list is no protection list: %+v", d)
 	}
 	if e.snap.Load().hasProt {
 		t.Error("no protection list is enabled")
 	}
-	if n := testing.AllocsPerRun(200, func() { e.CheckProtection("www.adult.example", kids) }); n != 0 {
+	if n := testing.AllocsPerRun(200, func() { e.CheckProtection("www.adult.example", qtypeA, kids) }); n != 0 {
 		t.Errorf("CheckProtection allocates %v times without protection lists", n)
 	}
 }
@@ -706,13 +706,13 @@ func TestTLDGuard(t *testing.T) {
 		}
 		return p
 	}
-	guarded := parse(formatOf("block", "subtree", CategoryGeneral))
+	guarded := parse(formatOf("block", "subtree", CategoryGeneral, FormatDomains))
 	// Invalid: ||com^, ||co.uk^$important, *.de, co.jp (plain in subtree
 	// mode) and the eight whole-TLD patterns.
 	if guarded.invalid != 12 || guarded.broad != 12 || guarded.entries != 9 {
 		t.Errorf("guarded: %d entries, %d invalid, %d TLD blocks", guarded.entries, guarded.invalid, guarded.broad)
 	}
-	exempt := parse(formatOf("block", "subtree", CategoryAbusedTLDs))
+	exempt := parse(formatOf("block", "subtree", CategoryAbusedTLDs, FormatDomains))
 	if exempt.invalid != 0 || exempt.broad != 0 || exempt.entries != 21 {
 		t.Errorf("abused-tlds: %d entries, %d invalid", exempt.entries, exempt.invalid)
 	}
@@ -740,11 +740,11 @@ func TestTLDGuard(t *testing.T) {
 		{`/^ad[0-9]*\./`, false}, {`/^[a-z]{12}\.(xyz|top)$/`, false}, {`/ads?[0-9]*\.example\.com$/`, false},
 		{"@@||*.com^", false}, {`@@/\.com$/`, false}, {"||*.com^$badfilter", false}, {"||tracking*.com^", false},
 	} {
-		lp := newLineParser(formatOf("block", "exact", CategoryAdult))
+		lp := newLineParser(formatOf("block", "exact", CategoryAdult, FormatDomains))
 		if _, st := lp.parse(tc.line); (st == lineBroad) != tc.broad || st != lineBroad && st != lineOK {
 			t.Errorf("%q: status %d, want broad %v", tc.line, st, tc.broad)
 		}
-		lp = newLineParser(formatOf("block", "exact", CategoryAbusedTLDs))
+		lp = newLineParser(formatOf("block", "exact", CategoryAbusedTLDs, FormatDomains))
 		if _, st := lp.parse(tc.line); st != lineOK {
 			t.Errorf("%q in an abused-tlds list: status %d", tc.line, st)
 		}
@@ -761,7 +761,7 @@ func TestTLDGuardFollowsCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.compile()
-	if !e.Check("files.zip", []int64{1}).Blocked() {
+	if !e.Check("files.zip", qtypeA, []int64{1}).Blocked() {
 		t.Fatal("abused-tlds list must block the TLD")
 	}
 	if _, err := e.UpdateList(ctx, l.ID, ListInput{Name: "TLDs", URL: l.URL, Enabled: true, Category: CategorySecurity}); err != nil {
@@ -774,7 +774,7 @@ func TestTLDGuardFollowsCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.compile()
-	if e.Check("files.zip", []int64{1}).Blocked() || !e.Check("example.com", []int64{1}).Blocked() {
+	if e.Check("files.zip", qtypeA, []int64{1}).Blocked() || !e.Check("example.com", qtypeA, []int64{1}).Blocked() {
 		t.Error("the guarded list must drop the TLD block only")
 	}
 	if ls, _ := e.Lists(ctx); ls[0].Invalid != 1 || ls[0].TLDBlocksIgnored != 1 {
@@ -791,7 +791,10 @@ func TestTLDGuardFollowsCategory(t *testing.T) {
 func FuzzParseLine(f *testing.F) {
 	for _, s := range []string{"||com^", "*.co.uk", "0.0.0.0 a.example", "@@||x^$important", "/re+/", "||a*b^", "co.jp",
 		"||xn--p1ai^$badfilter", "|x.example|", "example.com # c", "##.ad", "[Adblock]", "||a.b^$third-party",
-		"*.com^", "||*.co.uk^", `/\.xyz$/`, "/./", "||app*^"} {
+		"*.com^", "||*.co.uk^", `/\.xyz$/`, "/./", "||app*^",
+		"||x.example^$dnstype=A|AAAA", "||x.example^$dnstype=~A|~TYPE65280", "@@||x.example^$dnstype=AAAA,important",
+		"||x.example^$denyallow=a.x.example|b.x.example", "||com^$denyallow=example.com", "*$denyallow=com|net",
+		"||x.example^$dnstype=A,badfilter", "|x.example^$denyallow=y.example", "/re/$dnstype=A"} {
 		f.Add(s, true, true)
 	}
 	f.Fuzz(func(t *testing.T, line string, subtree, guard bool) {
@@ -803,6 +806,17 @@ func FuzzParseLine(f *testing.F) {
 		for _, en := range entries {
 			if en.kind != kindPattern && !validDomain(en.domain) {
 				t.Fatalf("%q: invalid domain %q", line, en.domain)
+			}
+			if en.modified() {
+				if en.kind == kindPattern || len(en.types.types()) > maxEntryTypes || len(en.deny) > maxDenyallow ||
+					len(en.deny) > 0 && (en.allow || en.kind != kindSubtree) {
+					t.Fatalf("%q: modifiers out of bounds: %+v", line, en)
+				}
+				for _, d := range en.deny {
+					if !validDomain(d) {
+						t.Fatalf("%q: invalid denyallow domain %q", line, d)
+					}
+				}
 			}
 			if !guard || en.allow || en.badfilter {
 				continue

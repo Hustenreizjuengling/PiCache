@@ -18,6 +18,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/api"
 	"github.com/hustenreizjuengling/picache/internal/applog"
+	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/dhcp"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
@@ -129,6 +130,9 @@ func TestSettingsScrubbing(t *testing.T) {
 	a.DHCP.Options.WPADURL = "http://wpad.smith.home/wpad.dat?token=x"
 	a.DHCP.Domain = "smith.home"
 	a.Backups.Destination = "nas1"
+	a.DNS.ServerNameAddresses = settings.ServerNameAddresses{IPv4: []string{"203.0.113.5", "192.168.1.2"}, IPv6: []string{"2001:db8:1:2::5"}}
+	a.DNS.LocalizeRecords = settings.LocalizeOnly
+	a.Filter.BlockingMode, a.Filter.BlockingIPv4, a.Filter.BlockingIPv6 = "custom_ip", settings.SelfAddress, "2001:db8:1:2::9"
 	sc := newScrubber(false)
 	got := scrubbedSettings(t, sc, &a)
 	ph := func(name string) string { return sc.names[name] }
@@ -158,6 +162,12 @@ func TestSettingsScrubbing(t *testing.T) {
 		"dns.ecs.customSubnet":           "198.51.0.0/16",
 		"dns.ecs.mode":                   "custom",
 		"downloadCache.disabledServices": []any{"test"},
+		"dns.serverNameAddresses.ipv4":   []any{"203.0.0.0", "192.168.1.2"},
+		"dns.serverNameAddresses.ipv6":   []any{"2001:db8:1::"},
+		"dns.localizeRecords":            "only",
+		"dns.localRecordsEnabled":        true,
+		"filter.blockingIpv4":            "self",
+		"filter.blockingIpv6":            "2001:db8:1::",
 	}
 	for _, n := range []string{"nas-home", "smith.home", "media.smith.home", "ads.example.com", "picache.smith.home", "noisy.example"} {
 		if !strings.HasPrefix(ph(n), "name-") {
@@ -448,5 +458,48 @@ func TestDatabases(t *testing.T) {
 	if len(info.CacheIndexes) != 1 || info.CacheIndexes[0] != (api.CacheIndexDB{StoreID: "store1", Bytes: 100, WALBytes: 100}) ||
 		info.Logs.Bytes != 1<<20 || info.Logs.FillPercent <= 0 {
 		t.Fatalf("databases %+v", info)
+	}
+}
+
+// The upstreams of client groups are reduced like the settings' upstreams,
+// and the names of these groups (a device group is named after a device)
+// are placeholders without client names.
+func TestSupportBundleGroupUpstreams(t *testing.T) {
+	a := newTestApp(t)
+	ctx := context.Background()
+	reg, err := clients.New(ctx, a.cdb, nil, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.clients = reg
+	up := "tls://xyz789.dns.nextdns.io"
+	if _, err := reg.CreateGroup(ctx, clients.GroupInput{Name: "Max Handy", Enabled: true, Upstreams: []string{up}}); err != nil {
+		t.Fatal(err)
+	}
+	h := applog.New(slog.NewTextHandler(io.Discard, nil), slog.LevelDebug)
+	a.appLog = h.Log()
+	log := slog.New(h)
+	log.Warn("upstream is failing", slog.String("upstream", up))
+	log.Warn("group upstreams cannot be used; the group's clients get SERVFAIL", slog.Any("groups", []string{"Max Handy"}),
+		slog.String("err", "dial "+up+": timeout"))
+	a.health.Store(&api.Health{OK: false, Checks: []api.HealthCheck{{Name: "upstreams", Status: "warn",
+		Message: "the upstreams of group Max Handy are not answering: their clients get SERVFAIL"}}})
+	for _, names := range []bool{false, true} {
+		b, err := a.SupportBundle(ctx, names)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := readZip(t, b)
+		for name, data := range files {
+			if strings.Contains(data, "xyz789") || !names && strings.Contains(data, "Max Handy") {
+				t.Errorf("includeClientNames %v: %s:\n%s", names, name, data)
+			}
+		}
+		if !strings.Contains(files["log.ndjson"], "tls://*.nextdns.io") {
+			t.Errorf("log %s", files["log.ndjson"])
+		}
+		if names != strings.Contains(files["health.json"], "Max Handy") {
+			t.Errorf("includeClientNames %v: health %s", names, files["health.json"])
+		}
 	}
 }

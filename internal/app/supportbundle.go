@@ -44,7 +44,7 @@ const (
 // bundle; logKeysPrivate are redacted without includeClientNames.
 var (
 	logKeysAlways  = []string{"username", "user", "by"}
-	logKeysPrivate = []string{"name", "hostname", "clientName", "sni", "host", "qname", "domain", "mac"}
+	logKeysPrivate = []string{"name", "hostname", "clientName", "sni", "host", "qname", "domain", "groups", "mac"}
 )
 
 // bundleVersion is version.json.
@@ -74,6 +74,13 @@ func (a *App) SupportBundle(ctx context.Context, includeClientNames bool) ([]byt
 	}
 	if host, err := os.Hostname(); err == nil {
 		sc.addName(host)
+	}
+	if a.clients != nil {
+		groups, err := a.clients.GroupUpstreamConfigs(ctx)
+		if err != nil {
+			return nil, err
+		}
+		sc.registerGroups(groups)
 	}
 	var files []bundleFile
 	add := func(name string, data []byte) {
@@ -226,13 +233,15 @@ Redaction rules:
     link-local and ULA ones are kept. MAC addresses of dns.blockedClients
     are dropped. Configured names become name-<n> unless they are defaults.
   Other files: the configured names, PICACHE_WEB_HOSTS and the host name
-    become the same name-<n> placeholders; the configured upstreams and
-    their host names are reduced as in settings.json, and every URL to
-    scheme://host[:port] (a path as /…, no query); public addresses are
-    masked to /16 or /48, private ones too and MAC addresses become mac-<n>
-    unless client names are included. log.ndjson: the values of username,
-    user and by are redacted, without client names also name, hostname,
-    clientName, sni, host, qname, domain and mac; secrets were never logged.
+    become the same name-<n> placeholders; the configured upstreams (also
+    those of client groups) and their host names are reduced as in
+    settings.json, and every URL to scheme://host[:port] (a path as /…, no
+    query); public addresses are masked to /16 or /48, private ones too, MAC
+    addresses become mac-<n> and the names of groups with their own
+    upstreams name-<n> unless client names are included. log.ndjson: the
+    values of username, user and by are redacted, without client names also
+    name, hostname, clientName, sni, host, qname, domain, groups and mac;
+    secrets were never logged.
   Never included: accounts, sessions, tokens, the audit log, the query log,
     cache and SNI events, leases, reservations, clients, groups, filter lists
     and rules, storage targets, notification channels, backups and keys.

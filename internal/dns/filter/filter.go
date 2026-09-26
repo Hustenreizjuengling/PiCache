@@ -52,6 +52,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -82,20 +83,30 @@ func (a Action) String() string {
 	return "none"
 }
 
-// Decision is the result of Check.
+// Decision is the result of Check (and of CheckIP).
 type Decision struct {
 	Action    Action
-	Source    string // "list" | "rule"
-	Kind      string // "exact" | "subtree" | "regex"
+	Source    string // "list" | "rule" | "ip-rule" (CheckIP)
+	Kind      string // "exact" | "subtree" | "regex" | "ip" (CheckIP)
 	ListID    int64
 	RuleID    int64
 	Name      string // list name or rule pattern, for logs ("blocked by …")
 	Category  string // list decisions: the list's category ("" for rules)
 	Important bool
+	// Reply, ReplyIPv4 and ReplyIPv6 are the reply of a user block rule
+	// (Rule.Reply; "" = the global blocking mode); never set for lists.
+	Reply, ReplyIPv4, ReplyIPv6 string
 }
 
 // Blocked reports whether the decision blocks.
 func (d Decision) Blocked() bool { return d.Action == ActionBlock }
+
+// List formats: a list of domain names (the default) or of answer
+// addresses (ARCHITECTURE 7.2, response addresses).
+const (
+	FormatDomains = "domains"
+	FormatIPs     = "ips"
+)
 
 // List is a subscribed block or allow list. Category is a catalogue
 // category or "other" ("allow" exactly for kind allow); an enabled list of
@@ -104,12 +115,17 @@ func (d Decision) Blocked() bool { return d.Action == ActionBlock }
 // exactly this URL ("" for the user's own lists), set on create and when
 // the URL changes. TLDBlocksIgnored counts the entries of the loaded copy
 // that would block a whole TLD and that the TLD guard ignores (part of
-// Invalid; 0 while no copy is loaded, e.g. for a disabled list).
+// Invalid; 0 while no copy is loaded, e.g. for a disabled list);
+// IPBlocksIgnored counts the blocks of a list of format ips that the IP
+// guard ignores in the same way. NameAuto: the name is the URL's host name
+// until the first successful download takes the list's title.
 type List struct {
 	ID           int64     `json:"id"`
 	Name         string    `json:"name"`
+	NameAuto     bool      `json:"nameAuto"`
 	URL          string    `json:"url"`
 	Kind         string    `json:"kind"`         // block | allow
+	Format       string    `json:"format"`       // domains | ips
 	PlainDomains string    `json:"plainDomains"` // exact | subtree
 	Category     string    `json:"category"`
 	CatalogKey   string    `json:"catalogKey"`
@@ -129,15 +145,19 @@ type List struct {
 
 	// Not stored: counted from the loaded copy (listRT.copy).
 	TLDBlocksIgnored int `json:"tldBlocksIgnored"`
+	IPBlocksIgnored  int `json:"ipBlocksIgnored"`
 }
 
 // ListInput creates or updates a list. An empty Kind takes the kind of
 // the catalogue entry with the same URL, else "block"; an empty
-// PlainDomains defaults to "exact"; an empty Name is derived from the URL.
-// An empty Category takes the catalogue entry's on create (else "other",
-// "allow" for allowlists) and keeps the stored one on update. GroupIDs nil
-// means the Default group on create and "unchanged" on update; an empty
-// non-nil slice means no group (the list applies to nobody).
+// PlainDomains defaults to "exact"; an empty Name is derived from the URL
+// and replaced by the list's title after the first successful download
+// (NameAuto). An empty Category takes the catalogue entry's on create
+// (else "other", "allow" for allowlists) and keeps the stored one on
+// update. GroupIDs nil means the Default group on create and "unchanged" on
+// update; an empty non-nil slice means no group (the list applies to
+// nobody). Format nil (absent or null) keeps the stored format on update
+// and means "domains" on create.
 type ListInput struct {
 	Name         string  `json:"name"`
 	URL          string  `json:"url"`
@@ -147,33 +167,57 @@ type ListInput struct {
 	Enabled      bool    `json:"enabled"`
 	GroupIDs     []int64 `json:"groupIds"`
 	Comment      string  `json:"comment"`
+	Format       *string `json:"format"`
 }
 
-// Rule is a user allow/deny rule.
+// Rule is a user allow/deny rule. Qtypes (with QtypesNegate) are the query
+// types it applies to (empty: every type), Denyallow the domains it is not
+// applied to (block rules of type subtree or regex), Invert makes a regex
+// block rule match the names its expression does not match, and Reply
+// ("" = filter.blockingMode) with ReplyIPv4/ReplyIPv6 (reply custom_ip)
+// replaces the blocking mode for the answers a block rule decides.
 type Rule struct {
-	ID        int64     `json:"id"`
-	Action    string    `json:"action"` // allow | block
-	Type      string    `json:"type"`   // exact | subtree | regex
-	Pattern   string    `json:"pattern"`
-	Enabled   bool      `json:"enabled"`
-	GroupIDs  []int64   `json:"groupIds"`
-	Comment   string    `json:"comment"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID           int64     `json:"id"`
+	Action       string    `json:"action"` // allow | block
+	Type         string    `json:"type"`   // exact | subtree | regex
+	Pattern      string    `json:"pattern"`
+	Enabled      bool      `json:"enabled"`
+	GroupIDs     []int64   `json:"groupIds"`
+	Comment      string    `json:"comment"`
+	Qtypes       []string  `json:"qtypes"`
+	QtypesNegate bool      `json:"qtypesNegate"`
+	Reply        string    `json:"reply"` // "" | null | nxdomain | nodata | refused | custom_ip
+	ReplyIPv4    string    `json:"replyIpv4"`
+	ReplyIPv6    string    `json:"replyIpv6"`
+	Denyallow    []string  `json:"denyallow"`
+	Invert       bool      `json:"invert"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // RuleInput creates or updates a rule. For type subtree, "*.example.com",
 // "||example.com^" and "example.com" are all accepted and stored as
 // "example.com". Regex patterns are Go RE2, ≤ 1024 characters (matched
 // case-insensitively; enclosing slashes are removed). GroupIDs as in
-// ListInput.
+// ListInput. The members added in 0.13.0 are pointers (or nil slices):
+// absent or null keeps the stored value on update and takes the default on
+// create; a stored value that no longer fits the rule (a reply after it
+// became an allow rule, say) is reset when the request does not name it
+// and refused when it does.
 type RuleInput struct {
-	Action   string  `json:"action"`
-	Type     string  `json:"type"`
-	Pattern  string  `json:"pattern"`
-	Enabled  bool    `json:"enabled"`
-	GroupIDs []int64 `json:"groupIds"`
-	Comment  string  `json:"comment"`
+	Action       string   `json:"action"`
+	Type         string   `json:"type"`
+	Pattern      string   `json:"pattern"`
+	Enabled      bool     `json:"enabled"`
+	GroupIDs     []int64  `json:"groupIds"`
+	Comment      string   `json:"comment"`
+	Qtypes       []string `json:"qtypes"`
+	QtypesNegate *bool    `json:"qtypesNegate"`
+	Reply        *string  `json:"reply"`
+	ReplyIPv4    *string  `json:"replyIpv4"`
+	ReplyIPv6    *string  `json:"replyIpv6"`
+	Denyallow    []string `json:"denyallow"`
+	Invert       *bool    `json:"invert"`
 }
 
 // RuleQuery filters rules.
@@ -194,21 +238,36 @@ type Match struct {
 	Pattern   string  `json:"pattern"` // the matching entry (domain, ABP rule, regex)
 	Important bool    `json:"important,omitempty"`
 	GroupIDs  []int64 `json:"groupIds"`
-	Applies   bool    `json:"applies"` // shares an enabled group with the client
+	Applies   bool    `json:"applies"` // shares an enabled group with the client and applies to the type and the name
 	Decisive  bool    `json:"decisive"`
 	// Category is the list's category ("" for rules): the query panel
 	// shows list matches of category privacy as a known tracker (the
 	// substitute for an external tracker database).
 	Category string `json:"category"`
+	// The modifiers of the rule or list entry, the rule's reply ("" for
+	// list entries) and Skipped: the entry matches the name but does not
+	// apply to the query type ("qtype") or is excepted by its denyallow
+	// set ("denyallow"); it is then never decisive.
+	Qtypes       []string `json:"qtypes"`
+	QtypesNegate bool     `json:"qtypesNegate"`
+	Denyallow    []string `json:"denyallow"`
+	Invert       bool     `json:"invert"`
+	Reply        string   `json:"reply"`
+	Skipped      string   `json:"skipped,omitempty"`
 }
 
-// Stats describes the compiled matcher.
+// Stats describes the compiled matcher. Entries counts the domain,
+// modified and address entries of the enabled lists (patterns separately).
 type Stats struct {
 	Lists           int       `json:"lists"`
 	Entries         int       `json:"entries"`
 	Patterns        int       `json:"patterns"`        // regex + wildcard patterns
 	PatternsDropped int       `json:"patternsDropped"` // patterns beyond the total caps (20 000 patterns, 1 Mi estimated instructions)
+	ModifiedEntries int       `json:"modifiedEntries"` // of entries: list entries with $dnstype or $denyallow
+	ModifiedDropped int       `json:"modifiedDropped"` // modified entries beyond the total cap (20 000)
+	IPEntries       int       `json:"ipEntries"`       // of entries: address entries of lists of format ips
 	Rules           int       `json:"rules"`
+	IPRules         int       `json:"ipRules"` // enabled IP rules
 	CompiledAt      time.Time `json:"compiledAt,omitzero"`
 	CompileMs       int64     `json:"compileMs"`
 	MemoryBytes     int64     `json:"memoryBytes"`
@@ -216,6 +275,7 @@ type Stats struct {
 	FailedLists     int       `json:"failedLists"`   // enabled lists in failed-* state
 	StaleLists      int       `json:"staleLists"`    // last success older than 3× update interval
 	TLDGuardLists   int       `json:"tldGuardLists"` // enabled own lists (no catalogue key) with entries the TLD guard ignores
+	IPGuardLists    int       `json:"ipGuardLists"`  // enabled own lists of format ips with blocks the IP guard ignores
 }
 
 // CatalogEntry is a curated list suggestion (embedded, no network needed).
@@ -332,6 +392,10 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client,
 		cancel()
 		return nil, err
 	}
+	if err := e.rebuildIPRules(ctx); err != nil {
+		cancel()
+		return nil, err
+	}
 	return e, nil
 }
 
@@ -369,17 +433,28 @@ func (e *Engine) beginOp() bool {
 	return true
 }
 
-// Check evaluates qname (lower-case, no trailing dot) for a client with the
-// given enabled group IDs, with the precedence of ARCHITECTURE 7.2. Hot
+// Check evaluates qname (lower-case, no trailing dot) queried with type
+// qtype for a client with the given enabled group IDs, with the precedence
+// of ARCHITECTURE 7.2: a rule or list entry that does not apply to the
+// type or the name ($dnstype, $denyallow) is skipped as if absent. Hot
 // path: lock-free, allocation-free in the common case.
-func (e *Engine) Check(qname string, groups []int64) Decision {
-	return e.snap.Load().check(qname, groups, false)
+func (e *Engine) Check(qname string, qtype uint16, groups []int64) Decision {
+	return e.snap.Load().check(qname, qtype, groups, false)
 }
 
 // CheckRules evaluates only user rules (used before the download cache DNS
 // answers: a user block rule for the client's groups wins over them).
-func (e *Engine) CheckRules(qname string, groups []int64) Decision {
-	return e.snap.Load().check(qname, groups, true)
+func (e *Engine) CheckRules(qname string, qtype uint16, groups []int64) Decision {
+	return e.snap.Load().check(qname, qtype, groups, true)
+}
+
+// CheckIP evaluates an answer address for a client with the given groups
+// (ARCHITECTURE 7.2, response addresses): user IP allow, user IP block,
+// list IP allow, list IP block; the first tier with a matching entry that
+// shares a group with the client wins. Lock-free and allocation-free; it
+// returns at once when no address entry or IP rule is enabled.
+func (e *Engine) CheckIP(ip netip.Addr, groups []int64) Decision {
+	return e.snap.Load().checkIP(ip, groups)
 }
 
 // CheckProtection evaluates only the enabled protection lists (lists of
@@ -389,8 +464,8 @@ func (e *Engine) CheckRules(qname string, groups []int64) Decision {
 // block, but a protection list's own @@ entries apply. The DNS server
 // enforces it like parental controls (step 7a). Hot path: lock-free and
 // allocation-free; it returns at once when no protection list is enabled.
-func (e *Engine) CheckProtection(qname string, groups []int64) Decision {
-	return e.snap.Load().checkProtection(qname, groups)
+func (e *Engine) CheckProtection(qname string, qtype uint16, groups []int64) Decision {
+	return e.snap.Load().checkProtection(qname, qtype, groups)
 }
 
 // Stats returns matcher statistics.
@@ -404,10 +479,14 @@ func (e *Engine) Stats() Stats {
 		Entries:         s.lists.entries,
 		Patterns:        s.lists.patterns,
 		PatternsDropped: s.lists.dropped,
+		ModifiedEntries: s.lists.modified,
+		ModifiedDropped: s.lists.modDropped,
+		IPEntries:       s.lists.ipEntries,
 		Rules:           len(s.rules.rules),
+		IPRules:         len(s.ipRules.rules),
 		CompiledAt:      e.compiledAt,
 		CompileMs:       e.compileMs,
-		MemoryBytes:     s.lists.memory + s.rules.memory,
+		MemoryBytes:     s.lists.memory + s.rules.memory + s.ipRules.memory,
 		Updating:        e.busy.Load() > 0,
 	}
 	for _, rt := range e.lists {
@@ -423,6 +502,9 @@ func (e *Engine) Stats() Stats {
 		if rt.CatalogKey == "" && rt.tldBlocksIgnored() > 0 {
 			st.TLDGuardLists++
 		}
+		if rt.ipBlocksIgnored() > 0 {
+			st.IPGuardLists++
+		}
 		last := rt.LastSuccess
 		if last.IsZero() {
 			last = rt.CreatedAt
@@ -437,7 +519,7 @@ func (e *Engine) Stats() Stats {
 // publishLocked stores a new snapshot. nil arguments keep the current
 // matcher; list names and groups are always rebuilt from e.lists, so a list
 // that was disabled or deleted stops applying immediately. e.mu must be held.
-func (e *Engine) publishLocked(lists *listMatcher, rules *ruleMatcher) {
+func (e *Engine) publishLocked(lists *listMatcher, rules *ruleMatcher, ipRules *ipRuleMatcher) {
 	cur := e.snap.Load()
 	if lists == nil {
 		lists = cur.lists
@@ -445,9 +527,14 @@ func (e *Engine) publishLocked(lists *listMatcher, rules *ruleMatcher) {
 	if rules == nil {
 		rules = cur.rules
 	}
+	if ipRules == nil {
+		ipRules = cur.ipRules
+	}
 	next := &snapshot{
 		lists:      lists,
 		rules:      rules,
+		ipRules:    ipRules,
+		hasIP:      lists.ipEntries > 0 || len(ipRules.rules) > 0,
 		listNames:  make([]string, len(lists.ids)),
 		listCats:   make([]string, len(lists.ids)),
 		listGroups: make([][]int64, len(lists.ids)),
@@ -527,7 +614,7 @@ func (e *Engine) compile() {
 	e.compiledGen = gen
 	e.compiledAt = e.now()
 	e.compileMs = took.Milliseconds()
-	e.publishLocked(m, nil)
+	e.publishLocked(m, nil, nil)
 	e.mu.Unlock()
 	e.log.Info("blocklists compiled", slog.Int("lists", len(ids)), slog.Int("entries", m.entries),
 		slog.Int("patterns", m.patterns), slog.Int("patternsDropped", m.dropped),

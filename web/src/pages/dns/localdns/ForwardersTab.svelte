@@ -2,16 +2,18 @@
   @component
   Conditional forwarders: domains answered by other DNS servers (router,
   company DNS) or by the default upstreams. The most specific enabled
-  forwarder wins. Admins can also import forwarders from a list.
+  forwarder wins. Admins can also import forwarders from a list and select
+  rows to enable, disable or delete them together.
   Query: ?tab=forwarders&sel=<forwarder id>
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
-  import { api, resource, UNQUALIFIED_DOMAIN, type Forwarder } from '$lib/api'
+  import { api, resource, UNQUALIFIED_DOMAIN, type BatchAction, type Forwarder } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { Button, EmptyState, Panel, Table, toast, Toggle, type Column } from '$lib/ui'
+  import { BulkBar, Button, EmptyState, Panel, Table, toast, Toggle, type Column } from '$lib/ui'
+  import { runBatch } from '../shared/batch'
   import ForwarderPanel from './ForwarderPanel.svelte'
   import { domainLabel, forwarderDomains, forwarderTitle, usesDefault } from './forwarders'
   import ImportDialog from './ImportDialog.svelte'
@@ -21,6 +23,8 @@
   let addOpen = $state(false)
   let importOpen = $state(false)
   let toggling = $state<number[]>([])
+  let checked = $state<number[]>([])
+  let busy = $state(false)
 
   const selId = $derived(Number(router.param('sel')) || 0)
   const selected = $derived(forwarders.data?.find((f) => f.id === selId))
@@ -44,6 +48,26 @@
       void forwarders.refresh()
     } finally {
       toggling = toggling.filter((x) => x !== f.id)
+    }
+  }
+
+  async function batch(action: BatchAction) {
+    busy = true
+    try {
+      const ok = await runBatch({
+        action,
+        ids: checked,
+        what: (n) => tn('dns.forwarders.count', n),
+        run: (req) => api.dns.forwarders.batch(req),
+      })
+      if (!ok) return
+      if (action === 'delete') {
+        if (selected && checked.includes(selected.id)) router.setQuery({ sel: null })
+        checked = []
+      }
+      void forwarders.refresh()
+    } finally {
+      busy = false
     }
   }
 
@@ -116,6 +140,9 @@
     onrowclick={(f) => router.setQuery({ sel: f.id })}
     selected={selected?.id}
     caption={t('dns.forwarders.title')}
+    selectable={session.isAdmin}
+    bind:checked
+    checkLabel={(f) => t('dns.forwarders.selectNamed', { domain: forwarderTitle(f) })}
   >
     {#snippet empty()}
       <EmptyState compact icon="link" title={t('dns.forwarders.empty')} text={t('dns.forwarders.emptyText')}>
@@ -127,6 +154,18 @@
       </EmptyState>
     {/snippet}
   </Table>
+  {#if session.isAdmin}
+    <BulkBar
+      count={checked.length}
+      {busy}
+      onclear={() => (checked = [])}
+      actions={[
+        { label: t('common.action.enable'), icon: 'play', onselect: () => batch('enable') },
+        { label: t('common.action.disable'), icon: 'pause', onselect: () => batch('disable') },
+        { label: t('common.action.delete'), icon: 'trash', danger: true, onselect: () => batch('delete') },
+      ]}
+    />
+  {/if}
 </Panel>
 
 <ForwarderPanel bind:open={addOpen} onsaved={() => forwarders.refresh()} />

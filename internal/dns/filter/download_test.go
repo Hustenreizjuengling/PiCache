@@ -104,7 +104,7 @@ func TestDownloadConditionalGet(t *testing.T) {
 	if l.Status != statusOK || l.Entries != 2 || srv.conditional {
 		t.Fatalf("first download: %+v (conditional %v)", l, srv.conditional)
 	}
-	if !e.Check("x.a.example", []int64{1}).Blocked() {
+	if !e.Check("x.a.example", qtypeA, []int64{1}).Blocked() {
 		t.Fatal("list not applied")
 	}
 	firstUpdate := l.LastUpdated
@@ -133,7 +133,7 @@ func TestDownloadConditionalGet(t *testing.T) {
 	if l, err = e.RefreshList(ctx, l.ID); err != nil || l.Status != statusOK || l.Entries != 1 {
 		t.Fatalf("new content: %+v %v", l, err)
 	}
-	if e.Check("a.example", []int64{1}).Blocked() || !e.Check("c.example", []int64{1}).Blocked() {
+	if e.Check("a.example", qtypeA, []int64{1}).Blocked() || !e.Check("c.example", qtypeA, []int64{1}).Blocked() {
 		t.Error("matcher not rebuilt from the new content")
 	}
 
@@ -142,7 +142,7 @@ func TestDownloadConditionalGet(t *testing.T) {
 	if l, err = e.RefreshList(ctx, l.ID); err != nil {
 		t.Fatal(err)
 	}
-	if l.Status != statusFailedCached || !strings.Contains(l.LastError, "500") || !e.Check("c.example", []int64{1}).Blocked() {
+	if l.Status != statusFailedCached || !strings.Contains(l.LastError, "500") || !e.Check("c.example", qtypeA, []int64{1}).Blocked() {
 		t.Errorf("failure: %+v", l)
 	}
 	// An HTML error page with status 200 is rejected, the copy is kept.
@@ -152,7 +152,7 @@ func TestDownloadConditionalGet(t *testing.T) {
 	if l, err = e.RefreshList(ctx, l.ID); err != nil {
 		t.Fatal(err)
 	}
-	if l.Status != statusFailedCached || !strings.Contains(l.LastError, "HTML") || !e.Check("c.example", []int64{1}).Blocked() {
+	if l.Status != statusFailedCached || !strings.Contains(l.LastError, "HTML") || !e.Check("c.example", qtypeA, []int64{1}).Blocked() {
 		t.Errorf("html: %+v", l)
 	}
 }
@@ -187,7 +187,7 @@ func TestEmptyDownloadKeepsLastGoodCopy(t *testing.T) {
 			if l.Status != statusFailedCached || !strings.Contains(l.LastError, "no entries") || l.Entries != 2 {
 				t.Errorf("body %d: status %q error %q entries %d, want failed-cached with 2 entries", i, l.Status, l.LastError, l.Entries)
 			}
-			if !e.Check("x.a.example", []int64{1}).Blocked() || !e.Check("b.example", []int64{1}).Blocked() {
+			if !e.Check("x.a.example", qtypeA, []int64{1}).Blocked() || !e.Check("b.example", qtypeA, []int64{1}).Blocked() {
 				t.Errorf("body %d: the last good copy is no longer applied", i)
 			}
 			if cached, _ := os.ReadFile(e.cachePath(l.ID)); string(cached) != string(good) {
@@ -201,7 +201,7 @@ func TestEmptyDownloadKeepsLastGoodCopy(t *testing.T) {
 	if l, err = e.RefreshList(ctx, l.ID); err != nil || l.Status != statusOK || l.Entries != 1 {
 		t.Fatalf("recovery: %+v %v", l, err)
 	}
-	if e.Check("a.example", []int64{1}).Blocked() || !e.Check("c.example", []int64{1}).Blocked() {
+	if e.Check("a.example", qtypeA, []int64{1}).Blocked() || !e.Check("c.example", qtypeA, []int64{1}).Blocked() {
 		t.Error("matcher not rebuilt after recovery")
 	}
 
@@ -330,7 +330,7 @@ func TestSchedulerJitter(t *testing.T) {
 		if n := ft.requests.Load(); n != 1 {
 			t.Fatalf("requests after start = %d, want 1", n)
 		}
-		if !e.Check("sched.example", []int64{1}).Blocked() {
+		if !e.Check("sched.example", qtypeA, []int64{1}).Blocked() {
 			t.Fatal("list not compiled after the first download")
 		}
 		time.Sleep(53 * time.Minute) // below 0.9 × 1 h

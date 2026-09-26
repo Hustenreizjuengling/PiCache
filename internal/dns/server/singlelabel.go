@@ -78,7 +78,7 @@ func (s *Server) singleLabel(qc *qctx) (result, bool) {
 // source for the trace.
 func (s *Server) singleLabelLocal(qc *qctx, full string, recordsOnly bool) (result, string, bool) {
 	what := "local record"
-	if _, ok := s.zone.Load().lookup(full); !ok {
+	if _, ok := s.zone.Load().lookup(full, qc.id.GroupIDs); !ok || !qc.set.DNS.LocalRecordsEnabled {
 		if recordsOnly || s.d.Leases == nil {
 			return result{}, "", false
 		}

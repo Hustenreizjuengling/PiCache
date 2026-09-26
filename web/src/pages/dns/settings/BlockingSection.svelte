@@ -1,15 +1,17 @@
 <!--
   @component
-  How blocked names are answered (blocking mode, custom addresses, TTL),
-  CNAME inspection, the list update interval and the special domains that
-  keep browsers and Apple devices on PiCache. Edits the filter section
-  (only changed members are saved, so the blocking pause is never touched).
+  How blocked names are answered (blocking mode, custom addresses or this
+  server's address per family, TTL), CNAME inspection, the list update
+  interval and the special domains that keep browsers and Apple devices on
+  PiCache. Edits the filter section (only changed members are saved, so the
+  blocking pause is never touched).
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
   import type { BlockingMode, FilterSettings } from '$lib/api'
   import type { SettingsForm } from '$lib/settings.svelte'
-  import { Field, Input, Panel, Select, Toggle } from '$lib/ui'
+  import { Field, Panel, Select, Toggle } from '$lib/ui'
+  import AddressInput from '../shared/AddressInput.svelte'
   import NumberInput from '../shared/NumberInput.svelte'
 
   let { form }: { form: SettingsForm<'filter'> } = $props()
@@ -50,13 +52,23 @@
     </div>
     {#if d.blockingMode === 'custom_ip'}
       <div class="grid">
-        <Field label={t('dns.settings.blocking.ipv4')} required error={form.error('blockingIpv4')}>
-          <Input bind:value={d.blockingIpv4} mono placeholder="192.168.1.2" maxlength={64} />
-        </Field>
-        <Field label={t('dns.settings.blocking.ipv6')} optional help={t('dns.settings.blocking.ipv6Help')} error={form.error('blockingIpv6')}>
-          <Input bind:value={d.blockingIpv6} mono placeholder="fd00::2" maxlength={64} />
-        </Field>
+        <AddressInput
+          bind:value={d.blockingIpv4}
+          label={t('dns.settings.blocking.ipv4')}
+          placeholder="192.168.1.2"
+          required
+          error={form.error('blockingIpv4')}
+        />
+        <AddressInput
+          bind:value={d.blockingIpv6}
+          label={t('dns.settings.blocking.ipv6')}
+          placeholder="fd00::2"
+          optional
+          help={t('dns.settings.blocking.ipv6Help')}
+          error={form.error('blockingIpv6')}
+        />
       </div>
+      <p class="small muted">{t('dns.settings.blocking.selfHelp')}</p>
     {/if}
     <Toggle bind:checked={d.cnameInspection} label={t('dns.settings.blocking.cname')} description={t('dns.settings.blocking.cnameHelp')} />
     <Field label={t('dns.settings.blocking.interval')} help={t('dns.settings.blocking.intervalHelp')} error={form.error('updateIntervalHours')}>

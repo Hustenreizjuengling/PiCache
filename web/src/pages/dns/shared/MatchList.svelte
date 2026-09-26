@@ -2,13 +2,16 @@
   @component
   "Why is this blocked?": the decision in one sentence and every list or
   rule entry matching the domain (from /filter/explain or /dns/lookup), in
-  precedence order, with the decisive one marked.
+  precedence order, with the decisive one marked, their query types,
+  exceptions, inversion and answer, and why an entry that matches the name
+  does not apply (another query type, an exception).
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import type { ClientGroup, FilterMatch } from '$lib/api'
   import { href } from '$lib/router.svelte'
   import { Badge, Chip, Table, type Column } from '$lib/ui'
+  import { replyShort, typesText } from '../filtering/rules'
   import { groupNames } from './groups'
 
   interface Props {
@@ -52,14 +55,35 @@
     return kind
   }
 
+  function hasOptions(m: FilterMatch): boolean {
+    return m.qtypes.length > 0 || m.denyallow.length > 0 || m.invert || !!m.reply
+  }
+
+  // The options column only when an entry has options.
+  const withOptions = $derived(matches.some(hasOptions))
+
   const columns: Column<Row>[] = $derived([
     { key: 'effect', label: t('dns.shared.match.effect'), cell: effectCell },
     { key: 'source', label: t('dns.shared.match.source'), cell: sourceCell },
     { key: 'kind', label: t('dns.shared.match.kind'), value: (m) => kindLabel(m.kind) },
     { key: 'pattern', label: t('dns.shared.match.pattern'), mono: true, truncate: true, width: '34%', value: (m) => m.pattern },
-    { key: 'groups', label: t('common.label.groups'), value: (m) => groupNames(m.groupIds, groups) },
+    ...(withOptions ? [{ key: 'options', label: t('dns.rules.options'), cell: optionsCell }] : []),
+    { key: 'groups', label: t('common.label.groups'), value: (m: Row) => groupNames(m.groupIds, groups) },
   ])
 </script>
+
+{#snippet optionsCell(m: Row)}
+  {@const reply = replyShort(m)}
+  <span class="effect">
+    {#if m.qtypes.length > 0}<Badge title={t('dns.rules.qtypes')}>{typesText(m.qtypes, m.qtypesNegate)}</Badge>{/if}
+    {#if reply}<Badge tone="info" title={t('dns.rules.reply')}>{reply}</Badge>{/if}
+    {#if m.denyallow.length > 0}
+      <Badge title={t('dns.rules.badge.exceptHelp', { domains: m.denyallow.join(', ') })}>{tn('dns.rules.badge.except', m.denyallow.length)}</Badge>
+    {/if}
+    {#if m.invert}<Badge tone="warn" title={t('dns.rules.invertHelp')}>{t('dns.rules.badge.invert')}</Badge>{/if}
+    {#if !hasOptions(m)}<span class="subtle">–</span>{/if}
+  </span>
+{/snippet}
 
 {#snippet effectCell(m: Row)}
   <span class="effect">
@@ -69,6 +93,10 @@
         pair={m.action === 'block' ? 'orange' : 'blue'}
         label={m.action === 'block' ? t('dns.shared.match.blocks') : t('dns.shared.match.allows')}
       />
+    {:else if m.skipped === 'qtype'}
+      <span class="subtle" title={t('dns.shared.match.skippedQtypeHelp')}>{t('dns.shared.match.skippedQtype')}</span>
+    {:else if m.skipped === 'denyallow'}
+      <span class="subtle" title={t('dns.shared.match.skippedDenyallowHelp')}>{t('dns.shared.match.skippedDenyallow')}</span>
     {:else if m.applies}
       <span class="muted">{m.action === 'block' ? t('dns.shared.match.blockOverridden') : t('dns.shared.match.allowOverridden')}</span>
     {:else}

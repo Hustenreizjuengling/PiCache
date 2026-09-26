@@ -334,6 +334,9 @@ func TestRestoreOlderBackupIsMigrated(t *testing.T) {
 		`UPDATE settings SET doc = json_set(json_remove(doc, '$.downloadCache'), '$.`+oldName+`', json(json_extract(doc, '$.downloadCache')))`,
 		`ALTER TABLE client_clients RENAME COLUMN download_cache_bypass TO `+oldName+`_bypass`,
 		`ALTER TABLE client_clients DROP COLUMN ignore_stats`, // added by clients v3 (0.12.0)
+		`ALTER TABLE client_groups DROP COLUMN upstreams`,     // added by clients v4 (0.13.0)
+		`ALTER TABLE client_groups DROP COLUMN upstream_preset`,
+		`ALTER TABLE client_groups DROP COLUMN device_client_id`,
 		`DELETE FROM schema_migrations WHERE component IN ('settings', 'clients') AND version > 1`)
 
 	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {

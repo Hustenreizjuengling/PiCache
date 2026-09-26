@@ -69,6 +69,15 @@ var migrations = []string{
 	// single flag of 0.11. Like v2 it also converts a restored older backup.
 	`ALTER TABLE client_clients ADD COLUMN ignore_stats INTEGER NOT NULL DEFAULT 0;
 	UPDATE client_clients SET ignore_stats = ignore_logs;`,
+	// v4 (0.13.0): upstreams per group (a JSON array, or a preset key) and
+	// the marker of the group "Only for this device" created for a client
+	// (NULL: none; the default SQLite requires for an added REFERENCES
+	// column; client IDs can be reused, so the marker goes with its client).
+	// Columns only, like v3: a rebuilt client_groups would lose every
+	// membership and group link through ON DELETE CASCADE.
+	`ALTER TABLE client_groups ADD COLUMN upstreams        TEXT NOT NULL DEFAULT '[]';
+	ALTER TABLE client_groups ADD COLUMN upstream_preset  TEXT NOT NULL DEFAULT '';
+	ALTER TABLE client_groups ADD COLUMN device_client_id INTEGER REFERENCES client_clients(id) ON DELETE SET NULL;`,
 }
 
 // reload rebuilds the identification snapshot from the database and the
@@ -121,41 +130,57 @@ func cleanText(field, s string, required bool, max int) (string, error) {
 
 // --- groups ---
 
+const groupColumns = `g.id, g.name, g.comment, g.enabled, g.created_at,
+	(SELECT COUNT(*) FROM client_memberships m WHERE m.group_id = g.id), g.upstreams, g.upstream_preset, g.device_client_id`
+
+// scanGroup scans one row of groupColumns.
+func scanGroup(sc interface{ Scan(...any) error }) (Group, error) {
+	var g Group
+	var created int64
+	var ups string
+	var device sql.NullInt64
+	if err := sc.Scan(&g.ID, &g.Name, &g.Comment, &g.Enabled, &created, &g.ClientCount, &ups, &g.UpstreamPreset, &device); err != nil {
+		return g, err
+	}
+	g.CreatedAt = db.Time(created)
+	g.Upstreams = decodeUpstreams(ups)
+	if device.Valid {
+		g.DeviceClientID = &device.Int64
+	}
+	return g, nil
+}
+
 // Groups lists all groups.
 func (r *Registry) Groups(ctx context.Context) ([]Group, error) {
-	rows, err := r.db.R.QueryContext(ctx, `SELECT g.id, g.name, g.comment, g.enabled, g.created_at,
-		(SELECT COUNT(*) FROM client_memberships m WHERE m.group_id = g.id)
-		FROM client_groups g ORDER BY g.id`)
+	return queryGroups(ctx, r.db.R)
+}
+
+// queryGroups lists all groups (q: the read pool or a transaction).
+func queryGroups(ctx context.Context, q queryer) ([]Group, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+groupColumns+` FROM client_groups g ORDER BY g.id`)
 	if err != nil {
 		return nil, fmt.Errorf("clients: list groups: %w", err)
 	}
 	defer rows.Close()
 	out := []Group{}
 	for rows.Next() {
-		var g Group
-		var created int64
-		if err := rows.Scan(&g.ID, &g.Name, &g.Comment, &g.Enabled, &created, &g.ClientCount); err != nil {
+		g, err := scanGroup(rows)
+		if err != nil {
 			return nil, fmt.Errorf("clients: scan group: %w", err)
 		}
-		g.CreatedAt = db.Time(created)
 		out = append(out, g)
 	}
 	return out, rows.Err()
 }
 
 func (r *Registry) group(ctx context.Context, id int64) (Group, error) {
-	var g Group
-	var created int64
-	err := r.db.R.QueryRowContext(ctx, `SELECT g.id, g.name, g.comment, g.enabled, g.created_at,
-		(SELECT COUNT(*) FROM client_memberships m WHERE m.group_id = g.id)
-		FROM client_groups g WHERE g.id = ?`, id).Scan(&g.ID, &g.Name, &g.Comment, &g.Enabled, &created, &g.ClientCount)
+	g, err := scanGroup(r.db.R.QueryRowContext(ctx, `SELECT `+groupColumns+` FROM client_groups g WHERE g.id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return g, apperr.NotFound("group", id)
 	}
 	if err != nil {
 		return g, fmt.Errorf("clients: get group: %w", err)
 	}
-	g.CreatedAt = db.Time(created)
 	return g, nil
 }
 
@@ -189,6 +214,10 @@ func (r *Registry) CreateGroup(ctx context.Context, in GroupInput) (Group, error
 	if err != nil {
 		return Group{}, err
 	}
+	var ups groupUpstreams
+	if ups, err = resolveGroupUpstreams(0, in.Upstreams, in.UpstreamPreset, groupUpstreams{Upstreams: []string{}}); err != nil {
+		return Group{}, err
+	}
 	var id int64
 	err = r.write(ctx, func(tx *sql.Tx) error {
 		var n int
@@ -201,13 +230,15 @@ func (r *Registry) CreateGroup(ctx context.Context, in GroupInput) (Group, error
 		if err := groupNameTaken(ctx, tx, in.Name, 0); err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO client_groups (name, comment, enabled, created_at) VALUES (?, ?, ?, ?)`,
-			in.Name, in.Comment, in.Enabled, db.NowMs())
+		res, err := tx.ExecContext(ctx, `INSERT INTO client_groups (name, comment, enabled, created_at, upstreams, upstream_preset)
+			VALUES (?, ?, ?, ?, ?, ?)`, in.Name, in.Comment, in.Enabled, db.NowMs(), encodeUpstreams(ups.Upstreams), ups.Preset)
 		if err != nil {
 			return err
 		}
-		id, err = res.LastInsertId()
-		return err
+		if id, err = res.LastInsertId(); err != nil {
+			return err
+		}
+		return checkUpstreamBounds(ctx, tx)
 	})
 	if err != nil {
 		return Group{}, err
@@ -215,25 +246,30 @@ func (r *Registry) CreateGroup(ctx context.Context, in GroupInput) (Group, error
 	return r.group(ctx, id)
 }
 
-// UpdateGroup updates a group.
+// UpdateGroup updates a group. Upstreams and UpstreamPreset left out keep
+// their stored values.
 func (r *Registry) UpdateGroup(ctx context.Context, id int64, in GroupInput) (Group, error) {
 	in, err := validateGroup(in)
 	if err != nil {
 		return Group{}, err
 	}
 	err = r.write(ctx, func(tx *sql.Tx) error {
-		if err := groupNameTaken(ctx, tx, in.Name, id); err != nil {
-			return err
-		}
-		res, err := tx.ExecContext(ctx, `UPDATE client_groups SET name = ?, comment = ?, enabled = ? WHERE id = ?`,
-			in.Name, in.Comment, in.Enabled, id)
+		old, err := groupUpstreamsOf(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return apperr.NotFound("group", id)
+		ups, err := resolveGroupUpstreams(id, in.Upstreams, in.UpstreamPreset, old)
+		if err != nil {
+			return err
 		}
-		return nil
+		if err := groupNameTaken(ctx, tx, in.Name, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE client_groups SET name = ?, comment = ?, enabled = ?, upstreams = ?, upstream_preset = ?
+			WHERE id = ?`, in.Name, in.Comment, in.Enabled, encodeUpstreams(ups.Upstreams), ups.Preset, id); err != nil {
+			return err
+		}
+		return checkUpstreamBounds(ctx, tx)
 	})
 	if err != nil {
 		return Group{}, err
@@ -246,7 +282,7 @@ func (r *Registry) UpdateGroup(ctx context.Context, id int64, in GroupInput) (Gr
 // silently loses its filtering.
 func (r *Registry) DeleteGroup(ctx context.Context, id int64) error {
 	if id == DefaultGroupID {
-		return apperr.Forbidden("the Default group cannot be deleted")
+		return errDefaultGroup
 	}
 	return r.write(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `DELETE FROM client_groups WHERE id = ?`, id)
@@ -256,11 +292,20 @@ func (r *Registry) DeleteGroup(ctx context.Context, id int64) error {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return apperr.NotFound("group", id)
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO client_memberships (client_id, group_id)
-			SELECT c.id, ? FROM client_clients c
-			WHERE NOT EXISTS (SELECT 1 FROM client_memberships m WHERE m.client_id = c.id)`, DefaultGroupID)
-		return err
+		return adoptOrphans(ctx, tx)
 	})
+}
+
+// errDefaultGroup refuses to delete group 1.
+var errDefaultGroup = apperr.Forbidden("the Default group cannot be deleted")
+
+// adoptOrphans moves the clients left without a group into the Default
+// group.
+func adoptOrphans(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO client_memberships (client_id, group_id)
+		SELECT c.id, ? FROM client_clients c
+		WHERE NOT EXISTS (SELECT 1 FROM client_memberships m WHERE m.client_id = c.id)`, DefaultGroupID)
+	return err
 }
 
 // --- clients ---

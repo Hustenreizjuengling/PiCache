@@ -356,7 +356,7 @@ const (
 // the step), otherwise the mechanism of the status.
 func purposeOf(res result) string {
 	switch res.status {
-	case StatusBlockedList, StatusBlockedRegex, StatusBlockedCNAME:
+	case StatusBlockedList, StatusBlockedRegex, StatusBlockedCNAME, StatusBlockedIP:
 		if res.purpose != "" {
 			return res.purpose
 		}

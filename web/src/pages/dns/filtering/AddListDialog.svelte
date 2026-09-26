@@ -65,6 +65,7 @@
       groupIds: [DEFAULT_GROUP_ID],
       comment: '',
       category: '',
+      format: 'domains',
     }
   }
 

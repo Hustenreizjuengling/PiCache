@@ -212,9 +212,12 @@ type Resolver struct {
 	closed bool
 	wg     sync.WaitGroup // exchange and refresh goroutines
 
-	mu  sync.Mutex // serialises rebuilds and guards via
+	mu  sync.Mutex // serialises rebuilds and guards via and groupCfg
 	def atomic.Pointer[defaultSets]
 	via map[string]*upstreamSet
+	// groups are the group sets built from groupCfg (SetGroupUpstreams).
+	groups   atomic.Pointer[groupSets]
+	groupCfg []GroupUpstreams
 	// viaOrder is the insertion order of via (oldest first) for eviction.
 	viaOrder []string
 
@@ -285,6 +288,9 @@ func (r *Resolver) Close() error {
 			ds.close()
 		}
 		r.dropViaLocked()
+		if gs := r.groups.Swap(nil); gs != nil {
+			gs.close()
+		}
 		r.mu.Unlock()
 		r.wg.Wait()
 	})
@@ -371,6 +377,9 @@ func (r *Resolver) rebuild(d settings.DNS) {
 		old.close()
 	}
 	r.dropViaLocked()
+	if len(r.groupCfg) > 0 {
+		r.rebuildGroupsLocked(boot) // named group upstreams depend on the bootstrap servers
+	}
 	var fallbacks []string
 	if ds.fallback != nil {
 		fallbacks = ds.fallback.names()

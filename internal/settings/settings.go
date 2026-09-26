@@ -125,7 +125,42 @@ type DNS struct {
 	// DNS64 synthesises AAAA answers for IPv4-only names (NAT64 networks).
 	// It cannot be combined with DisableAAAA.
 	DNS64 DNS64 `json:"dns64"`
+
+	// LocalRecordsEnabled answers the configured local records and their
+	// automatic PTR records; false switches all of them off (the names of
+	// DHCP leases are not affected).
+	LocalRecordsEnabled bool `json:"localRecordsEnabled"`
+	// LocalizeRecords orders the addresses of an A or AAAA answer of local
+	// records with several addresses by the client's network: off, first
+	// (addresses on a network of the client first) or only (only those,
+	// all when none is).
+	LocalizeRecords string `json:"localizeRecords"`
+	// ServerNameAddresses answer this server's names (serverNames) instead
+	// of the detected addresses, per family (empty = automatic).
+	ServerNameAddresses ServerNameAddresses `json:"serverNameAddresses"`
 }
+
+// ServerNameAddresses are the addresses this server's names are answered
+// with (dns.serverNameAddresses); each family is used when it is not empty.
+type ServerNameAddresses struct {
+	IPv4 []string `json:"ipv4"`
+	IPv6 []string `json:"ipv6"`
+}
+
+// Values of dns.localizeRecords.
+const (
+	LocalizeOff   = "off"
+	LocalizeFirst = "first"
+	LocalizeOnly  = "only"
+)
+
+// MaxServerNameAddresses bounds each family of dns.serverNameAddresses.
+const MaxServerNameAddresses = 8
+
+// SelfAddress in filter.blockingIpv4/Ipv6 and in the reply addresses of a
+// filter rule stands for this server's own address: the first address of
+// the family a server-name answer would give the client.
+const SelfAddress = "self"
 
 // ECS configures the EDNS client subnet (RFC 7871) sent to the default
 // upstreams: "off"; "client" = the /24 (IPv4) or /56 (IPv6) of the source

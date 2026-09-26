@@ -5,7 +5,9 @@
   (statistics). In edit mode it also shows the client's statistics with the
   addresses they came from (IPv6 addresses the server recognised through the
   device's MAC address included), its activity over the range and links to
-  its queries (all those addresses) and downloads.
+  its queries (all those addresses) and downloads. Below the groups it
+  names the DNS resolver in effect and warns when the groups name
+  different resolvers.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -19,11 +21,12 @@
     type ClientGroup,
     type ClientInput,
     type RangePreset,
+    type UpstreamPreset,
   } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { formatBytes, formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { href } from '$lib/router.svelte'
-  import { Button, Checkbox, confirm, Field, Input, KeyValue, toast } from '$lib/ui'
+  import { Button, Checkbox, confirm, Field, Input, KeyValue, Notice, toast } from '$lib/ui'
   import { isV4 } from '../network/checks'
   import { clientValues } from '../querylog/filters'
   import AddressList from '../shared/AddressList.svelte'
@@ -33,6 +36,7 @@
   import FormPanel from '../shared/FormPanel.svelte'
   import GroupPicker from '../shared/GroupPicker.svelte'
   import LinesInput from '../shared/LinesInput.svelte'
+  import { resolverGroups, resolversDiffer, resolverText } from '../shared/resolver'
   import type { Totals } from './clientStats'
 
   interface Props {
@@ -42,6 +46,8 @@
     /** Initial values for a new client (e.g. from a recently seen address). */
     preset?: Partial<ClientInput>
     groups: readonly ClientGroup[] | undefined
+    /** Family resolver presets (names of the resolver in effect). */
+    presets?: readonly UpstreamPreset[]
     /** Statistics of the edited client over `range`. */
     totals?: Totals
     range: RangePreset
@@ -49,7 +55,7 @@
     ondeleted?: (id: number) => void
   }
 
-  let { open = $bindable(false), client, preset, groups, totals, range, onsaved, ondeleted }: Props = $props()
+  let { open = $bindable(false), client, preset, groups, presets, totals, range, onsaved, ondeleted }: Props = $props()
 
   function blank(): ClientInput {
     return {
@@ -96,6 +102,8 @@
     lineError(err, 'identifiers') ?? (submitted && draft.identifiers.length === 0 ? t('dns.clients.identifiersRequired') : undefined),
   )
   const generalError = $derived(err && !err.field ? errorText(err) : undefined)
+  // The resolver of the groups being edited (a client without a group is in Default).
+  const resolvers = $derived(resolverGroups(draft.groupIds.length > 0 ? draft.groupIds : [DEFAULT_GROUP_ID], groups))
   /** Room for every identifier (a device's MAC plus its IPv4 and ULA addresses) and one more line. */
   const idRows = $derived(Math.min(8, Math.max(3, draft.identifiers.length + 1)))
 
@@ -208,6 +216,21 @@
     help={t('dns.clients.groupsHelp')}
     emptyWarning={t('dns.clients.noGroupWarning')}
   />
+  {#if groups}
+    <p class="small muted">
+      {resolvers.length > 0
+        ? t('dns.resolver.inEffect', { resolver: resolverText(resolvers[0], presets), group: resolvers[0].name })
+        : t('dns.resolver.inEffectDefault')}
+    </p>
+    {#if resolversDiffer(resolvers)}
+      <Notice tone="warn">
+        {t('dns.resolver.differ', {
+          list: resolvers.map((g) => `${resolverText(g, presets)} (${g.name})`).join(', '),
+          resolver: resolverText(resolvers[0], presets),
+        })}
+      </Notice>
+    {/if}
+  {/if}
   <Checkbox bind:checked={draft.downloadCacheBypass} label={t('dns.clients.bypass')} description={t('dns.clients.bypassHelp')} />
   <Checkbox bind:checked={draft.ignoreLogs} label={t('dns.clients.ignoreLogs')} description={t('dns.clients.ignoreLogsHelp')} />
   <Checkbox bind:checked={draft.ignoreStats} label={t('dns.clients.ignoreStats')} description={t('dns.clients.ignoreStatsHelp')} />

@@ -28,6 +28,8 @@ const queryStyles: Record<LookupStatus, ChipStyle> = {
   'blocked-service': { pair: 'orange' },
   'blocked-upstream': { pair: 'orange', striped: true },
   'blocked-rebind': { pair: 'orange' },
+  // Decided by the answer (like blocked-cname): an address in it is blocked.
+  'blocked-ip': { pair: 'orange', striped: true },
   // Answered, but with the search engine's restricted address: a secondary state of "answered normally".
   safesearch: { pair: 'blue', striped: true },
   refused: { tone: 'warn' },

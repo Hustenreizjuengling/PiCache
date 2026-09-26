@@ -105,7 +105,7 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 		}
 	}
 	if s.d.Filter != nil {
-		matches, err := s.d.Filter.Explain(ctx, name, qc.id.GroupIDs)
+		matches, err := s.d.Filter.Explain(ctx, name, qtype, qc.id.GroupIDs)
 		switch {
 		case err != nil:
 			out.Steps = append(out.Steps, "filter explanation unavailable: "+errText(err))

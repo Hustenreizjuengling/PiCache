@@ -45,7 +45,7 @@ func (s *Server) safeSearch(qc *qctx) (result, bool) {
 		return result{}, false
 	}
 	if qc.blocking && s.d.Filter != nil {
-		qc.dec, qc.decided = s.d.Filter.Check(qc.qname, qc.groups), true
+		qc.dec, qc.decided = s.d.Filter.Check(qc.qname, qc.qtype, qc.groups), true
 		if qc.dec.Blocked() {
 			qc.note("safe search: not applied, " + qc.qname + " is blocked for the client")
 			return result{}, false
@@ -71,7 +71,7 @@ func (s *Server) safeSearch(qc *qctx) (result, bool) {
 	sub.req = qc.req.Copy()
 	sub.req.Question = []dns.Question{{Name: target, Qtype: qc.qtype, Qclass: dns.ClassINET}}
 	sub.q, sub.qname = sub.req.Question[0], rw.Target
-	// The target is not filtered: steps 11, 14 and the blocked-name check
+	// The target is not filtered: steps 11, 14, 14d and the blocked-name check
 	// of 14b depend on an active blocking.
 	sub.blocking, sub.dec, sub.decided = false, filter.Decision{}, false
 	r := s.forward(&sub)

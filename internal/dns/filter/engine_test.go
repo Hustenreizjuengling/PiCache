@@ -252,13 +252,13 @@ func TestRulesCRUD(t *testing.T) {
 		"sub.exact.example.com": ActionBlock, "example.org": ActionNone,
 	}
 	for q, want := range checks {
-		if got := e.Check(q, g1).Action; got != want {
+		if got := e.Check(q, qtypeA, g1).Action; got != want {
 			t.Errorf("Check(%s) = %v, want %v", q, got, want)
 		}
-		if got := e.CheckRules(q, g1).Action; got != want {
+		if got := e.CheckRules(q, qtypeA, g1).Action; got != want {
 			t.Errorf("CheckRules(%s) = %v, want %v", q, got, want)
 		}
-		if got := e.Check(q, []int64{2}).Action; got != ActionNone {
+		if got := e.Check(q, qtypeA, []int64{2}).Action; got != ActionNone {
 			t.Errorf("Check(%s) for group 2 = %v", q, got)
 		}
 	}
@@ -291,13 +291,13 @@ func TestRulesCRUD(t *testing.T) {
 	if err != nil || !slices.Equal(r.GroupIDs, []int64{2}) {
 		t.Fatalf("update: %+v %v", r, err)
 	}
-	if e.Check("a.example.com", g1).Blocked() || !e.Check("a.example.com", []int64{2}).Blocked() {
+	if e.Check("a.example.com", qtypeA, g1).Blocked() || !e.Check("a.example.com", qtypeA, []int64{2}).Blocked() {
 		t.Error("group change not applied")
 	}
 	if _, err := e.UpdateRule(ctx, blockID, RuleInput{Action: "block", Type: "subtree", Pattern: "example.com"}); err != nil {
 		t.Fatal(err)
 	}
-	if e.Check("a.example.com", []int64{2}).Blocked() {
+	if e.Check("a.example.com", qtypeA, []int64{2}).Blocked() {
 		t.Error("disabled rule applied")
 	}
 	if r, _ := e.rule(ctx, blockID); !slices.Equal(r.GroupIDs, []int64{2}) {
@@ -313,7 +313,7 @@ func TestRulesCRUD(t *testing.T) {
 	if err != nil || len(r.GroupIDs) != 0 {
 		t.Fatalf("%+v %v", r, err)
 	}
-	if e.Check("nobody.example", []int64{1, 2, 3}).Blocked() {
+	if e.Check("nobody.example", qtypeA, []int64{1, 2, 3}).Blocked() {
 		t.Error("rule without groups applied")
 	}
 
@@ -354,7 +354,7 @@ func TestListGroupsAndLifecycle(t *testing.T) {
 	if l.Status != statusOK || l.Entries != 2 || l.SizeBytes == 0 || l.LastSuccess.IsZero() || l.LastUpdated.IsZero() {
 		t.Fatalf("after refresh: %+v", l)
 	}
-	d := e.Check("a.blocked.example", []int64{1})
+	d := e.Check("a.blocked.example", qtypeA, []int64{1})
 	if !d.Blocked() || d.Name != "Mine" || d.ListID != l.ID || d.Source != "list" || d.Kind != "subtree" {
 		t.Fatalf("decision %+v", d)
 	}
@@ -369,10 +369,10 @@ func TestListGroupsAndLifecycle(t *testing.T) {
 	if after.lists != before.lists {
 		t.Error("group edit rebuilt the matcher")
 	}
-	if e.Check("a.blocked.example", []int64{1}).Blocked() {
+	if e.Check("a.blocked.example", qtypeA, []int64{1}).Blocked() {
 		t.Error("old group still applies")
 	}
-	if d := e.Check("a.blocked.example", []int64{2}); !d.Blocked() || d.Name != "Renamed" {
+	if d := e.Check("a.blocked.example", qtypeA, []int64{2}); !d.Blocked() || d.Name != "Renamed" {
 		t.Errorf("new group: %+v", d)
 	}
 
@@ -383,7 +383,7 @@ func TestListGroupsAndLifecycle(t *testing.T) {
 	if err := e.ReloadGroups(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if e.Check("a.blocked.example", []int64{2}).Blocked() {
+	if e.Check("a.blocked.example", qtypeA, []int64{2}).Blocked() {
 		t.Error("membership of the deleted group still applies")
 	}
 	if ls, _ := e.Lists(ctx); len(ls[0].GroupIDs) != 0 {
@@ -395,7 +395,7 @@ func TestListGroupsAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.Check("a.blocked.example", []int64{1}).Blocked() {
+	if e.Check("a.blocked.example", qtypeA, []int64{1}).Blocked() {
 		t.Error("disabled list applies")
 	}
 	e.compile()
@@ -416,7 +416,7 @@ func TestListGroupsAndLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.compile()
-	if !e.Check("host.example.org", []int64{1}).Blocked() {
+	if !e.Check("host.example.org", qtypeA, []int64{1}).Blocked() {
 		t.Error("re-enabled list not loaded")
 	}
 
@@ -428,14 +428,14 @@ func TestListGroupsAndLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.compile()
-	if d := e.Check("host.example.org", []int64{1}); d.Action != ActionAllow {
+	if d := e.Check("host.example.org", qtypeA, []int64{1}); d.Action != ActionAllow {
 		t.Errorf("allow list: %+v", d)
 	}
 
 	if err := e.DeleteList(ctx, l.ID); err != nil {
 		t.Fatal(err)
 	}
-	if e.Check("host.example.org", []int64{1}).Action != ActionNone {
+	if e.Check("host.example.org", qtypeA, []int64{1}).Action != ActionNone {
 		t.Error("deleted list applies")
 	}
 	if e.hasCache(l.ID) {
@@ -462,7 +462,7 @@ func TestExplain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ms, err := e.Explain(ctx, "X.Good.Example.com.", []int64{1})
+	ms, err := e.Explain(ctx, "X.Good.Example.com.", qtypeA, []int64{1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestExplain(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("explain rows:\n got  %v\n want %v", got, want)
 	}
-	if d := e.Check("x.good.example.com", []int64{1}); !d.Blocked() || !d.Important {
+	if d := e.Check("x.good.example.com", qtypeA, []int64{1}); !d.Blocked() || !d.Important {
 		t.Errorf("Check disagrees with Explain: %+v", d)
 	}
 	for _, m := range ms {
@@ -502,20 +502,20 @@ func TestExplain(t *testing.T) {
 	if _, err := e.RefreshList(ctx, pl.ID); err != nil {
 		t.Fatal(err)
 	}
-	if ms, err := e.Explain(ctx, "a.tracker.example.com", []int64{1}); err != nil ||
+	if ms, err := e.Explain(ctx, "a.tracker.example.com", qtypeA, []int64{1}); err != nil ||
 		!slices.ContainsFunc(ms, func(m Match) bool { return m.Name == "Trackers" && m.Category == CategoryPrivacy }) {
 		t.Errorf("privacy list: %+v, %v", ms, err)
 	}
 	// With group 2 the user allow rule is decisive.
-	ms, _ = e.Explain(ctx, "x.good.example.com", []int64{1, 2})
+	ms, _ = e.Explain(ctx, "x.good.example.com", qtypeA, []int64{1, 2})
 	if !ms[0].Decisive || ms[0].Source != "rule" {
 		t.Errorf("group 2: %+v", ms[0])
 	}
 	// $badfilter-cancelled entries are not reported.
-	if ms, _ := e.Explain(ctx, "cancelled.example.com", []int64{1}); len(ms) != 1 || ms[0].Pattern != "||example.com^" {
+	if ms, _ := e.Explain(ctx, "cancelled.example.com", qtypeA, []int64{1}); len(ms) != 1 || ms[0].Pattern != "||example.com^" {
 		t.Errorf("badfilter: %+v", ms)
 	}
-	_, err = e.Explain(ctx, "not a domain", []int64{1})
+	_, err = e.Explain(ctx, "not a domain", qtypeA, []int64{1})
 	wantKind(t, "explain invalid", err, apperr.KindInvalid)
 }
 
@@ -537,14 +537,14 @@ func TestStartLoadsCachedLists(t *testing.T) {
 	}
 
 	e2 := newEngineAt(t, dir, d, testClient())
-	if e2.Check("cached.example", []int64{1}).Blocked() {
+	if e2.Check("cached.example", qtypeA, []int64{1}).Blocked() {
 		t.Fatal("blocked before Start")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { e2.Start(ctx); close(done) }()
 	deadline := time.Now().Add(10 * time.Second)
-	for !e2.Check("cached.example", []int64{1}).Blocked() {
+	for !e2.Check("cached.example", qtypeA, []int64{1}).Blocked() {
 		if time.Now().After(deadline) {
 			t.Fatal("cached list not loaded after Start")
 		}
@@ -659,7 +659,7 @@ func TestLocalListConfinement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l, _ = e.RefreshList(ctx, l.ID); l.Status != statusFailedEmpty || e.Check("leak.example", []int64{1}).Blocked() {
+	if l, _ = e.RefreshList(ctx, l.ID); l.Status != statusFailedEmpty || e.Check("leak.example", qtypeA, []int64{1}).Blocked() {
 		t.Errorf("symlink escaped the local directory: %+v", l)
 	}
 }

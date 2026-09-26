@@ -193,18 +193,38 @@ func (d DroppedDomain) String() string {
 	if d.Type == 0 {
 		return d.Domain
 	}
-	return d.Domain + ":" + typeName(d.Type)
+	return d.Domain + ":" + QTypeName(d.Type)
 }
 
-// typeName returns the mnemonic of t as ParseDroppedDomain accepts it back,
-// else "TYPEnnn".
-func typeName(t uint16) string {
+// QTypeName returns the normalised name of a record type: the upper-case
+// mnemonic known to the DNS library as ParseQType accepts it back, else
+// "TYPEnnn". dns.droppedDomains and the query types of filter rules are
+// stored in this form.
+func QTypeName(t uint16) string {
 	if s, ok := dns.TypeToString[t]; ok {
 		if u := strings.ToUpper(s); dns.StringToType[u] == t {
 			return u
 		}
 	}
 	return "TYPE" + strconv.Itoa(int(t))
+}
+
+// ParseQType parses a record type: a mnemonic known to the DNS library
+// (case-insensitive) or TYPEnnn (1–65535, no leading zero).
+func ParseQType(s string) (uint16, error) {
+	typ := strings.ToUpper(strings.TrimSpace(s))
+	if n, ok := strings.CutPrefix(typ, "TYPE"); ok && n != "" {
+		v, err := strconv.ParseUint(n, 10, 16)
+		if err != nil || v == 0 || (len(n) > 1 && n[0] == '0') {
+			return 0, errors.New("TYPEnnn must be between TYPE1 and TYPE65535")
+		}
+		return uint16(v), nil
+	}
+	t, ok := dns.StringToType[typ]
+	if !ok || t == 0 {
+		return 0, fmt.Errorf("unknown record type %q", typ)
+	}
+	return t, nil
 }
 
 // ParseDroppedDomain parses "domain" or "domain:TYPE" (TYPE a mnemonic known
@@ -232,18 +252,9 @@ func ParseDroppedDomain(s string) (DroppedDomain, error) {
 	if !hasType {
 		return out, nil
 	}
-	typ = strings.ToUpper(strings.TrimSpace(typ))
-	if n, ok := strings.CutPrefix(typ, "TYPE"); ok && n != "" {
-		v, err := strconv.ParseUint(n, 10, 16)
-		if err != nil || v == 0 || (len(n) > 1 && n[0] == '0') {
-			return out, errors.New("TYPEnnn must be between TYPE1 and TYPE65535")
-		}
-		out.Type = uint16(v)
-		return out, nil
-	}
-	t, ok := dns.StringToType[typ]
-	if !ok || t == 0 {
-		return out, fmt.Errorf("unknown record type %q", typ)
+	t, err := ParseQType(typ)
+	if err != nil {
+		return out, err
 	}
 	out.Type = t
 	return out, nil
@@ -332,6 +343,54 @@ func validECSSubnet(p netip.Prefix) bool {
 		return p.Bits() >= 8 && p.Bits() <= 24
 	}
 	return p.Bits() >= 32 && p.Bits() <= 56
+}
+
+// ValidReplyAddress reports whether s can be a blocking reply address of
+// the family (filter.blockingIpv4/Ipv6, the reply addresses of a filter
+// rule): SelfAddress, or an IPv4 address (v6 false) or an IPv6 address that
+// is not IPv4-mapped (v6 true), without zone.
+func ValidReplyAddress(s string, v6 bool) bool {
+	if s == SelfAddress {
+		return true
+	}
+	ip, err := netip.ParseAddr(s)
+	if err != nil || ip.Zone() != "" {
+		return false
+	}
+	if v6 {
+		return ip.Is6() && !ip.Is4In6()
+	}
+	return ip.Is4()
+}
+
+// validate checks dns.serverNameAddresses: at most 8 addresses per family,
+// each a unicast address of its family (not loopback, link-local,
+// unspecified, multicast or broadcast; IPv6 not IPv4-mapped).
+func (s *ServerNameAddresses) validate() error {
+	for _, fam := range []struct {
+		field string
+		list  []string
+		v6    bool
+	}{{"dns.serverNameAddresses.ipv4", s.IPv4, false}, {"dns.serverNameAddresses.ipv6", s.IPv6, true}} {
+		if len(fam.list) > MaxServerNameAddresses {
+			return apperr.Invalid(fam.field, "at most %d entries", MaxServerNameAddresses)
+		}
+		for i, v := range fam.list {
+			ip, err := netip.ParseAddr(v)
+			ok := err == nil && ip.Zone() == "" && ip.Is6() == fam.v6 && !ip.Is4In6() && !ip.IsUnspecified() &&
+				!ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsMulticast() && !ip.IsLinkLocalMulticast() &&
+				ip != netip.AddrFrom4([4]byte{255, 255, 255, 255})
+			if !ok {
+				kind := "an IPv4"
+				if fam.v6 {
+					kind = "an IPv6"
+				}
+				return apperr.Invalid(fam.field+"["+strconv.Itoa(i)+"]",
+					"must be %s unicast address (not loopback, link-local, unspecified or multicast)", kind)
+			}
+		}
+	}
+	return nil
 }
 
 // validateLists checks the list members of the DNS section added in 0.9.0

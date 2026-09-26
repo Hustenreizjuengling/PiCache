@@ -13,14 +13,16 @@ import (
 const maxUpstreamLen = 512
 
 // upstreamsView is the response of GET /dns/upstreams: the statistics of the
-// default upstreams in use and of the fallbacks (never null), and when a
-// fallback last answered (omitted if never since the start).
+// default upstreams in use and of the fallbacks (never null), when a
+// fallback last answered (omitted if never since the start) and the group
+// sets (upstreams per client group; never null).
 type upstreamsView struct {
-	Upstreams        []upstream.UpstreamStat `json:"upstreams"`
-	Fallbacks        []upstream.UpstreamStat `json:"fallbacks"`
-	FallbackLastUsed time.Time               `json:"fallbackLastUsed,omitzero"`
-	Cache            upstream.CacheStat      `json:"cache"`
-	ClockGuard       bool                    `json:"clockGuard"`
+	Upstreams        []upstream.UpstreamStat      `json:"upstreams"`
+	Fallbacks        []upstream.UpstreamStat      `json:"fallbacks"`
+	FallbackLastUsed time.Time                    `json:"fallbackLastUsed,omitzero"`
+	Cache            upstream.CacheStat           `json:"cache"`
+	ClockGuard       bool                         `json:"clockGuard"`
+	Groups           []upstream.GroupUpstreamStat `json:"groups"`
 }
 
 // upstreamTestInput is the body of POST /dns/upstreams/test.
@@ -38,7 +40,7 @@ func (s *Server) registerUpstreamRoutes() {
 func (s *Server) handleUpstreamList(w http.ResponseWriter, r *http.Request) error {
 	up := s.d.Upstream
 	return ok(w, upstreamsView{Upstreams: up.Stats(), Fallbacks: up.FallbackStats(), FallbackLastUsed: up.LastFallback(),
-		Cache: up.CacheStats(), ClockGuard: up.ClockGuard()})
+		Cache: up.CacheStats(), ClockGuard: up.ClockGuard(), Groups: up.GroupStats()})
 }
 
 // handleUpstreamTest resolves a fixed name through one upstream string. It

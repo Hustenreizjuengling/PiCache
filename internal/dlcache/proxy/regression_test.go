@@ -27,8 +27,14 @@ func TestDownloadCacheDisabled(t *testing.T) {
 		{"GET", "attacker.example", "/depot/7/chunk/x"},
 	} {
 		req := hdr("User-Agent", "Valve/Steam HTTP Client 1.0")
-		if resp, _ := h.get(tc.method, tc.host, tc.uri, req); resp.StatusCode != http.StatusForbidden {
+		resp, _ := h.get(tc.method, tc.host, tc.uri, req)
+		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("%s %s%s: status %d, want 403", tc.method, tc.host, tc.uri, resp.StatusCode)
+		}
+		// A browser sent here by a blocking reply of this server's
+		// address gets its connection closed while the cache is off too.
+		if !resp.Close {
+			t.Fatalf("%s %s%s: 403 without Connection: close: %v", tc.method, tc.host, tc.uri, resp.Header)
 		}
 	}
 	if n := len(h.origin.requests()); n != 0 {

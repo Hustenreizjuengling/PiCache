@@ -5,6 +5,104 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Databases:** `picache.db` gets the rule modifiers, the list format and
+  automatic name, the IP rules (filter migration 3), the record scope and
+  other-family columns with their group links (dns migration 3) and the
+  upstreams of client groups (clients migration 4). The migrations only add
+  columns and tables: every rule, list and record keeps its groups, the list
+  IDs stay, every existing record keeps answering everyone and every group
+  keeps the default upstreams. `logs.db` has no migration.
+- **Behaviour changes:** lines of subscribed lists with `$dnstype` (on
+  exact and subtree lines) or `$denyallow` (on subtree block lines) were
+  skipped as unsupported and now apply (the list's counts change after its
+  next update or start).
+  `dns.localizeRecords` is `first` by default: a local record with several
+  addresses now answers the addresses in the client's network first
+  (nothing is removed; set it to `off` for the stored order). A new query
+  status `blocked-ip` (class blocked) appears once lists of answer
+  addresses or IP rules are used.
+- **API:** every new member of `RuleInput`, `ListInput`, `RecordInput` and
+  `GroupInput` may be left out: a body written for 0.12 keeps the stored
+  values (a stored member that no longer fits is reset). The dry runs of
+  the imports are locked by `PICACHE_CONFIG_LOCKED` like the imports.
+- **Downgrade:** a version before 0.13.0 refuses the migrated `picache.db`
+  (clients schema 4, filter schema 3, dns schema 3) and does not start: go
+  back with the copy `<data>/backups/picache-<old version>-<timestamp>.db`
+  made at the first start (the update helper's rollback does this itself;
+  Docker users restore it before starting an older image). `logs.db` stays
+  readable; 0.12 shows `blocked-ip` rows with the raw status. Backups made
+  by 0.13 are refused by 0.12; 0.12 backups are accepted and migrated.
+
+### Added
+
+- **Rules per query type** (`qtypes`, `qtypesNegate`): a rule applies only
+  to the listed types (or to all but them); a rule for A or AAAA also
+  covers HTTPS and SVCB. Every filter check passes the query's type, so
+  an allow rule for A lifts nothing for AAAA.
+- **A reply per rule** (`reply`, `replyIpv4`, `replyIpv6`): NXDOMAIN,
+  NODATA, REFUSED, the null address or custom addresses instead of the
+  blocking mode; `self` (this server's address) also for
+  `filter.blockingIpv4`/`blockingIpv6`. A blocked download service name
+  never gets this server's address (the download cache would serve it
+  anyway): that address family is answered empty.
+- **Exceptions and inverted expressions:** `denyallow` excepts
+  subdomains from a subtree or regex block rule; `invert` makes a regex
+  block rule block every name its expression does not match (at most 32).
+- **Import and export of rules** (`POST /filter/rules/import` with a
+  preview, `GET /filter/rules/export`): the list syntax with `$dnstype`,
+  `$denyallow`, `$reply`, `$dnsrewrite` (addresses and NXDOMAIN, REFUSED,
+  NOERROR), `$invert` and the `;querytype=`, `;reply=` and `;invert`
+  suffixes of regular expressions; all or nothing, errors by line.
+- **Batch changes** (`POST …/batch`): delete, enable or disable many rules,
+  IP rules, lists, records, forwarders, groups (and delete clients) at
+  once, all or nothing, audited once. Enabling lists beyond the entry
+  budget asks for confirmation (`force`).
+- **"Only for this device"** (`POST /filter/rules/device`, the query log):
+  a rule for one device, through a client and a group of its own that
+  never joins an existing group of the same name.
+- **Blocking by answer address:** lists of the format `ips` (addresses and
+  networks of malicious servers) and IP rules (`/filter/ip-rules`) block
+  answers that contain a listed address (status `blocked-ip`); the IP
+  guard ignores list entries for broad, private and special networks and
+  for networks inside or around the IPv6 prefixes that carry IPv4
+  addresses (`ipBlocksIgnored`, health warning); lists judge NAT64 and
+  DNS64 addresses by the IPv4 address they carry.
+- **List titles:** a list added without a name takes the title from its
+  header after the first download (cleaned, at most 100 characters).
+- **Search** (`GET /filter/search`): finds a text in your rules, IP rules
+  and the downloaded lists (bounded, never downloads).
+- **Local DNS:** record types SRV, MX, PTR, HTTPS and SVCB (with a
+  structured `data` form); records per group (split horizon, `scope`,
+  `groupIds`: a record scoped to deleted groups answers nobody, never
+  everyone); `otherFamily: forward` asks the upstreams for the other
+  address family; `dns.localRecordsEnabled` switches all records off;
+  `dns.localizeRecords` answers the client's local addresses first or only;
+  import from a hosts file (`POST /dns/records/import`, a pasted blocklist
+  is recognised).
+- **This server's addresses** (`dns.serverNameAddresses`) for macvlan and
+  NAT set-ups: answered for PiCache's names and their PTR.
+- **Upstreams per group:** a group's own resolver list or a family-safe
+  preset (Cloudflare for Families, OpenDNS FamilyShield, CleanBrowsing
+  Family Filter; `GET /groups/upstream-presets`,
+  `PUT /groups/{id}/upstreams`). It stays on while blocking is paused,
+  fails closed (SERVFAIL, no fallback, never the bootstrap servers) and
+  shows in `GET /dns/upstreams` (`groups`) and the health check.
+- **Explain** takes a query type and shows why an entry was skipped
+  (`qtype`, `denyallow`).
+
+### Changed
+
+- The download cache closes the connection of a request for a host that
+  is not a download service, and of every request while it is switched
+  off (403 with `Connection: close`), so browsers sent to this server's
+  address by a blocking reply do not use up the per-client connection
+  limit.
+- `filter.Stats` counts modified list entries and address entries
+  (`modifiedEntries`, `modifiedDropped`, `ipEntries`, `ipRules`,
+  `ipGuardLists`); `entries` includes them.
+
 ## [0.12.0] - 2026-09-26
 
 ### Upgrade notes

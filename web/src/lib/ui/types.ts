@@ -62,6 +62,17 @@ export type MenuItem =
   /** A short explanation between the items (not focusable; it also describes the menu). */
   | { note: string }
 
+/** An action of a BulkBar. */
+export interface BulkAction {
+  label: string
+  icon?: IconName
+  danger?: boolean
+  disabled?: boolean
+  /** Why the action is disabled (tooltip). */
+  title?: string
+  onselect: () => void
+}
+
 /** A tab of Tabs. */
 export interface TabItem {
   id: string

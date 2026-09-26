@@ -26,6 +26,15 @@ type dnsLists struct {
 	revZones map[string]bool           // reverse zones of dns.privateReverseNetworks
 	trusted  []netip.Addr              // dns.ednsClientTrusted
 	ecs      netip.Prefix              // dns.ecs.customSubnet if public (invalid otherwise)
+	// serverV4 and serverV6 are dns.serverNameAddresses (empty =
+	// automatic).
+	serverV4, serverV6 []netip.Addr
+}
+
+// isServerAddr reports whether ip is one of dns.serverNameAddresses.
+func (l *dnsLists) isServerAddr(ip netip.Addr) bool {
+	ip = netutil.Canon(ip)
+	return slices.Contains(l.serverV4, ip) || slices.Contains(l.serverV6, ip)
 }
 
 // droppedEntry is one entry of dns.droppedDomains for its domain.
@@ -63,6 +72,16 @@ func newDNSLists(set *settings.All) *dnsLists {
 	}
 	if p := d.ECSSubnet(); p.IsValid() && netutil.IsPublicUnicast(p.Addr()) {
 		l.ecs = p
+	}
+	for _, v := range d.ServerNameAddresses.IPv4 {
+		if ip, err := netip.ParseAddr(v); err == nil && ip.Unmap().Is4() {
+			l.serverV4 = append(l.serverV4, ip.Unmap())
+		}
+	}
+	for _, v := range d.ServerNameAddresses.IPv6 {
+		if ip, err := netip.ParseAddr(v); err == nil && ip.Is6() && !ip.Is4In6() && ip.Zone() == "" {
+			l.serverV6 = append(l.serverV6, ip)
+		}
 	}
 	return l
 }

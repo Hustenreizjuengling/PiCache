@@ -43,6 +43,7 @@ export function listInput(l: FilterList): FilterListInput {
     groupIds: [...l.groupIds],
     comment: l.comment,
     category: l.category,
+    format: l.format,
   }
 }
 
@@ -56,6 +57,11 @@ export function categoryLabel(c: string): string {
 /** Lists of these categories are enforced like parental controls (also while blocking is paused). */
 export function isProtection(c: string | undefined): boolean {
   return !!c && (PROTECTION_CATEGORIES as readonly string[]).includes(c as ListCategory)
+}
+
+/** The format of a list in words ("Domains", "Answer addresses"). */
+export function formatLabel(l: Pick<FilterList, 'format'>): string {
+  return l.format === 'ips' ? t('dns.lists.format.ips') : t('dns.lists.format.domains')
 }
 
 /** "470,000 entries · about 11 MB of memory". */

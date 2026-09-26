@@ -60,20 +60,33 @@ func (rt *listRT) copy() List {
 	l := rt.List
 	l.GroupIDs = slices.Clone(nonNil(rt.GroupIDs))
 	l.TLDBlocksIgnored = rt.tldBlocksIgnored()
+	l.IPBlocksIgnored = rt.ipBlocksIgnored()
 	return l
 }
 
 // tldBlocksIgnored returns the entries of the loaded copy that the TLD
 // guard ignores (0 while none is loaded in the current format).
 func (rt *listRT) tldBlocksIgnored() int {
-	if rt.parsed == nil || rt.parsed.format != rt.format() {
+	if rt.parsed == nil || rt.parsed.format != rt.format() || rt.parsed.format.ips {
+		return 0
+	}
+	return rt.parsed.broad
+}
+
+// ipBlocksIgnored returns the blocks of the loaded copy of a list of format
+// ips that the IP guard ignores (0 while none is loaded in the current
+// format).
+func (rt *listRT) ipBlocksIgnored() int {
+	if rt.parsed == nil || rt.parsed.format != rt.format() || !rt.parsed.format.ips {
 		return 0
 	}
 	return rt.parsed.broad
 }
 
 // format returns the parse format of the list's configuration.
-func (rt *listRT) format() listFormat { return formatOf(rt.Kind, rt.PlainDomains, rt.Category) }
+func (rt *listRT) format() listFormat {
+	return formatOf(rt.Kind, rt.PlainDomains, rt.Category, rt.Format)
+}
 
 func sortedLists(m map[int64]*listRT) []*listRT {
 	out := make([]*listRT, 0, len(m))
@@ -86,7 +99,7 @@ func sortedLists(m map[int64]*listRT) []*listRT {
 
 // CreateList adds a list and triggers its first download (background).
 func (e *Engine) CreateList(ctx context.Context, in ListInput) (List, error) {
-	in, err := e.validateList(in)
+	in, nameGiven, err := e.validateList(in)
 	if err != nil {
 		return List{}, err
 	}
@@ -97,22 +110,49 @@ func (e *Engine) CreateList(ctx context.Context, in ListInput) (List, error) {
 		}
 		return List{}, apperr.Invalid("kind", "this catalogue list is a blocklist")
 	}
+	format := FormatDomains
+	if in.Format != nil {
+		format = *in.Format
+	}
+	if format == FormatIPs && isCatalog {
+		return List{}, apperr.Invalid("format", "this catalogue list holds domain names")
+	}
+	in.Format = &format
 	fallback := CategoryOther
 	if isCatalog {
 		fallback = entry.Category
 	}
+	explicit := in.Category
 	if in.Category, err = resolveCategory(in.Category, fallback, in.Kind); err != nil {
+		return List{}, err
+	}
+	if in.Category, err = ipListCategory(format, in.Category, explicit != ""); err != nil {
 		return List{}, err
 	}
 	if in.GroupIDs == nil {
 		in.GroupIDs = []int64{defaultGroupID}
 	}
-	return e.createList(ctx, in, entry.Key)
+	return e.createList(ctx, in, entry.Key, !nameGiven)
+}
+
+// ipListCategory checks the category of a list of answer addresses: a
+// blocklist has the category security or other, an allowlist allow; such a
+// list is never a protection list. A category the request named (explicit)
+// that does not fit is refused, a stored or derived one becomes other.
+func ipListCategory(format, category string, explicit bool) (string, error) {
+	if format != FormatIPs || category == CategorySecurity || category == CategoryOther || category == CategoryAllow {
+		return category, nil
+	}
+	if explicit {
+		return "", apperr.Invalid("category", "lists of answer addresses have the category security or other")
+	}
+	return CategoryOther, nil
 }
 
 // createList inserts a validated list (catalogKey: the catalogue key of its
-// URL, "" if none).
-func (e *Engine) createList(ctx context.Context, in ListInput, catalogKey string) (List, error) {
+// URL, "" if none; nameAuto: the name was derived from the URL and the
+// first download's title replaces it).
+func (e *Engine) createList(ctx context.Context, in ListInput, catalogKey string, nameAuto bool) (List, error) {
 	e.listMu.Lock()
 	defer e.listMu.Unlock()
 	now := e.now()
@@ -128,8 +168,10 @@ func (e *Engine) createList(ctx context.Context, in ListInput, catalogKey string
 		if err := checkGroups(ctx, tx, in.GroupIDs); err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO filter_lists (name, url, kind, plain_domains, category, catalog_key, enabled, comment, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, in.Name, in.URL, in.Kind, in.PlainDomains, in.Category, catalogKey, in.Enabled, in.Comment, db.Ms(now))
+		res, err := tx.ExecContext(ctx, `INSERT INTO filter_lists (name, url, kind, plain_domains, category, catalog_key, enabled, comment,
+				created_at, format, name_auto)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, in.Name, in.URL, in.Kind, in.PlainDomains, in.Category, catalogKey, in.Enabled,
+			in.Comment, db.Ms(now), *in.Format, nameAuto)
 		if isUniqueViolation(err) {
 			return apperr.Conflict("a list with this URL already exists")
 		}
@@ -146,7 +188,7 @@ func (e *Engine) createList(ctx context.Context, in ListInput, catalogKey string
 	}
 	rt := &listRT{
 		List: List{
-			ID: id, Name: in.Name, URL: in.URL, Kind: in.Kind, PlainDomains: in.PlainDomains,
+			ID: id, Name: in.Name, NameAuto: nameAuto, URL: in.URL, Kind: in.Kind, Format: *in.Format, PlainDomains: in.PlainDomains,
 			Category: in.Category, CatalogKey: catalogKey,
 			Enabled: in.Enabled, GroupIDs: in.GroupIDs, Comment: in.Comment, Status: statusPending,
 			CreatedAt: db.Time(db.Ms(now)),
@@ -165,7 +207,7 @@ func (e *Engine) createList(ctx context.Context, in ListInput, catalogKey string
 
 // UpdateList updates a list.
 func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, error) {
-	in, err := e.validateList(in)
+	in, nameGiven, err := e.validateList(in)
 	if err != nil {
 		return List{}, err
 	}
@@ -184,8 +226,33 @@ func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, 
 	if in.GroupIDs == nil {
 		in.GroupIDs = old.GroupIDs
 	}
+	format, formatNamed := old.Format, in.Format != nil
+	if formatNamed {
+		format = *in.Format
+	}
+	if _, isCatalog := catalogByURL(in.URL); isCatalog && format == FormatIPs {
+		if formatNamed {
+			return List{}, apperr.Invalid("format", "this catalogue list holds domain names")
+		}
+		format = FormatDomains
+	}
+	in.Format = &format
+	explicit := in.Category
 	if in.Category, err = resolveCategory(in.Category, old.Category, in.Kind); err != nil {
 		return List{}, err
+	}
+	if in.Category, err = ipListCategory(format, in.Category, explicit != ""); err != nil {
+		return List{}, err
+	}
+	// The name: a new one given by the request is the user's; an empty one
+	// makes it automatic again (the host name now, the title after the next
+	// successful download); the stored name sent back keeps its state.
+	nameAuto := old.NameAuto
+	switch {
+	case !nameGiven:
+		nameAuto = true
+	case in.Name != old.Name:
+		nameAuto = false
 	}
 	urlChanged := in.URL != old.URL
 	catalogKey := old.CatalogKey
@@ -198,13 +265,13 @@ func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, 
 			return err
 		}
 		query := `UPDATE filter_lists SET name = ?, url = ?, kind = ?, plain_domains = ?, category = ?, catalog_key = ?,
-			enabled = ?, comment = ?`
+			enabled = ?, comment = ?, format = ?, name_auto = ?`
 		if urlChanged {
 			query += `, status = 'pending', last_error = '', last_updated = 0, last_checked = 0, last_success = 0,
 				entries = 0, invalid = 0, unsupported = 0, size_bytes = 0, etag = '', last_modified = '', content_hash = ''`
 		}
 		res, err := tx.ExecContext(ctx, query+` WHERE id = ?`, in.Name, in.URL, in.Kind, in.PlainDomains, in.Category, catalogKey,
-			in.Enabled, in.Comment, id)
+			in.Enabled, in.Comment, format, nameAuto, id)
 		if isUniqueViolation(err) {
 			return apperr.Conflict("a list with this URL already exists")
 		}
@@ -227,16 +294,16 @@ func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, 
 		return List{}, apperr.NotFound("list", id)
 	}
 	oldFormat := rt.format()
-	rt.Name, rt.URL, rt.Kind, rt.PlainDomains = in.Name, in.URL, in.Kind, in.PlainDomains
-	rt.Category, rt.CatalogKey = in.Category, catalogKey
+	rt.Name, rt.NameAuto, rt.URL, rt.Kind, rt.PlainDomains = in.Name, nameAuto, in.URL, in.Kind, in.PlainDomains
+	rt.Format, rt.Category, rt.CatalogKey = format, in.Category, catalogKey
 	rt.Comment, rt.GroupIDs = in.Comment, in.GroupIDs
-	reparse := rt.format() != oldFormat // kind, plainDomains, or a category change into or out of abused-tlds
+	reparse := rt.format() != oldFormat // kind, format, plainDomains, or a category change into or out of abused-tlds
 	wasEnabled := rt.Enabled
 	rt.Enabled = in.Enabled
 	if urlChanged {
 		rt.List = List{
-			ID: rt.ID, Name: rt.Name, URL: rt.URL, Kind: rt.Kind, PlainDomains: rt.PlainDomains,
-			Category: rt.Category, CatalogKey: rt.CatalogKey,
+			ID: rt.ID, Name: rt.Name, NameAuto: rt.NameAuto, URL: rt.URL, Kind: rt.Kind, Format: rt.Format,
+			PlainDomains: rt.PlainDomains, Category: rt.Category, CatalogKey: rt.CatalogKey,
 			Enabled: rt.Enabled, GroupIDs: rt.GroupIDs, Comment: rt.Comment, Status: statusPending,
 			CreatedAt: rt.CreatedAt,
 		}
@@ -263,7 +330,7 @@ func (e *Engine) UpdateList(ctx context.Context, id int64, in ListInput) (List, 
 			rt.wantDownload = true
 		}
 	}
-	e.publishLocked(nil, nil)
+	e.publishLocked(nil, nil, nil)
 	e.requestCompile()
 	e.signal()
 	return rt.copy(), nil
@@ -286,39 +353,49 @@ func (e *Engine) DeleteList(ctx context.Context, id int64) error {
 		e.parseGen++
 	}
 	e.removeFiles(id)
-	e.publishLocked(nil, nil)
+	e.publishLocked(nil, nil, nil)
 	e.mu.Unlock()
 	e.requestCompile()
 	return nil
 }
 
-// validateList normalises and validates a list input.
-func (e *Engine) validateList(in ListInput) (ListInput, error) {
+// validateList normalises and validates a list input; nameGiven reports
+// whether the request named the list (an empty name is derived from the
+// URL: its host name, or the file name of a local list).
+func (e *Engine) validateList(in ListInput) (_ ListInput, nameGiven bool, _ error) {
 	in.URL = strings.TrimSpace(in.URL)
 	if in.URL == "" {
-		return in, apperr.Invalid("url", "is required")
+		return in, false, apperr.Invalid("url", "is required")
 	}
 	if len(in.URL) > maxURLLen {
-		return in, apperr.Invalid("url", "must be at most %d characters", maxURLLen)
+		return in, false, apperr.Invalid("url", "must be at most %d characters", maxURLLen)
 	}
 	u, err := e.checkListURL(in.URL)
 	if err != nil {
-		return in, err
+		return in, false, err
 	}
 	in.URL = u.String()
 	in.Name = strings.TrimSpace(in.Name)
-	if in.Name == "" {
+	nameGiven = in.Name != ""
+	if !nameGiven {
 		in.Name = u.Hostname()
 		if u.Scheme == "file" || in.Name == "" {
 			in.Name = path.Base(u.Path)
 		}
 	}
 	if err := checkText("name", in.Name, maxNameLen); err != nil {
-		return in, err
+		return in, false, err
 	}
 	in.Comment = strings.TrimSpace(in.Comment)
 	if err := checkText("comment", in.Comment, maxCommentLen); err != nil {
-		return in, err
+		return in, false, err
+	}
+	if in.Format != nil {
+		f := strings.ToLower(strings.TrimSpace(*in.Format))
+		if f != FormatDomains && f != FormatIPs {
+			return in, false, apperr.Invalid("format", "must be %s or %s", FormatDomains, FormatIPs)
+		}
+		in.Format = &f
 	}
 	in.Kind = strings.ToLower(strings.TrimSpace(in.Kind))
 	if in.Kind == "" {
@@ -328,20 +405,20 @@ func (e *Engine) validateList(in ListInput) (ListInput, error) {
 		}
 	}
 	if in.Kind != "block" && in.Kind != "allow" {
-		return in, apperr.Invalid("kind", "must be block or allow")
+		return in, false, apperr.Invalid("kind", "must be block or allow")
 	}
 	in.Category = strings.ToLower(strings.TrimSpace(in.Category))
 	if in.Category != "" && !validCategory(in.Category) {
-		return in, apperr.Invalid("category", "must be one of %s or %s", strings.Join(Categories, ", "), CategoryOther)
+		return in, false, apperr.Invalid("category", "must be one of %s or %s", strings.Join(Categories, ", "), CategoryOther)
 	}
 	in.PlainDomains = cmp.Or(strings.ToLower(strings.TrimSpace(in.PlainDomains)), "exact")
 	if in.PlainDomains != "exact" && in.PlainDomains != "subtree" {
-		return in, apperr.Invalid("plainDomains", "must be exact or subtree")
+		return in, false, apperr.Invalid("plainDomains", "must be exact or subtree")
 	}
 	if in.GroupIDs, err = normalizeGroups(in.GroupIDs); err != nil {
-		return in, err
+		return in, false, err
 	}
-	return in, nil
+	return in, nameGiven, nil
 }
 
 // resolveCategory returns the category to store: explicit (validated by
@@ -481,7 +558,7 @@ func (e *Engine) reloadListGroups(ctx context.Context) error {
 		}
 	}
 	if changed {
-		e.publishLocked(nil, nil)
+		e.publishLocked(nil, nil, nil)
 	}
 	return nil
 }

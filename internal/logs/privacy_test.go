@@ -194,6 +194,7 @@ func TestHideDomainsFieldRules(t *testing.T) {
 		{"blocked-rule", "||" + secret + "^", ""},
 		{"blocked-cname", "list (CNAME " + secret + ")", ""},
 		{"blocked-rebind", "rebind: 192.168.1.1", ""},
+		{"blocked-ip", "Bad addresses: 198.51.100.66", ""},
 		{"special", "bogus-nxdomain", "bogus-nxdomain"},
 		{"forwarded", "fallback", "fallback"},
 		{"special", "fe80::1", ""},

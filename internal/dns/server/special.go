@@ -74,17 +74,36 @@ func (s *Server) specialAddrs(qc *qctx, name string) (v4, v6 []netip.Addr, what 
 	case inZone(name, "localhost"):
 		return localhostV4, localhostV6, "localhost", true
 	case serverName(qc.set, name):
-		if st := s.cacheIPs.Load(); st.bridge && !qc.source.IsLoopback() {
-			// Bridge addresses are unreachable for clients: answer with the
-			// configured cache addresses (NODATA until they are set).
-			return st.v4, st.v6, "this server's own name", true
-		}
-		h := s.host.Load()
-		return h.addrsFor(qc.source, false), h.addrsFor(qc.source, true), "this server's own name", true
+		v4, v6 := s.serverNameAddrs(qc)
+		return v4, v6, "this server's own name", true
 	case inZone(name, "resolver.arpa"):
 		return nil, nil, "resolver.arpa", true
 	}
 	return nil, nil, "", false
+}
+
+// serverNameAddrs returns the addresses this server's names are answered
+// with for qc's source, per family: dns.serverNameAddresses when the family
+// is set; in a container bridge network the configured cache addresses
+// (the bridge address is unreachable; NODATA until they are set); else the
+// addresses on the client's connected subnet or the primary address
+// (hostInfo.addrsFor). Loopback clients always get the loopback addresses.
+func (s *Server) serverNameAddrs(qc *qctx) (v4, v6 []netip.Addr) {
+	h := s.host.Load()
+	if qc.source.IsLoopback() {
+		return h.addrsFor(qc.source, false), h.addrsFor(qc.source, true)
+	}
+	l, st := s.lists.Load(), s.cacheIPs.Load()
+	family := func(configured, cache []netip.Addr, v6 bool) []netip.Addr {
+		switch {
+		case len(configured) > 0:
+			return configured
+		case st.bridge:
+			return cache
+		}
+		return h.addrsFor(qc.source, v6)
+	}
+	return family(l.serverV4, st.v4, false), family(l.serverV6, st.v6, true)
 }
 
 // addrAnswer answers A/AAAA with the given addresses (NODATA for other
@@ -140,7 +159,7 @@ func (s *Server) reverseZone(qc *qctx, zone string) result {
 		return r
 	}
 	if qc.qtype == dns.TypePTR {
-		if ip, ok := parseReverse(qc.qname); ok && s.host.Load().isOwn(ip) {
+		if ip, ok := parseReverse(qc.qname); ok && (s.host.Load().isOwn(ip) || s.lists.Load().isServerAddr(ip)) {
 			if name, ok := ownPTRName(qc.set); ok {
 				qc.note("address of this server")
 				m := newReply(qc.req)

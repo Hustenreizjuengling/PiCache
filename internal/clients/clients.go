@@ -82,20 +82,31 @@ const (
 )
 
 // Group is a policy group. Lists and rules (package filter) reference groups.
+// Upstreams or UpstreamPreset (a key of settings.UpstreamPresets; never
+// both, never for the Default group) replace the DNS upstreams for the
+// group's clients (ARCHITECTURE 7.4, group sets). DeviceClientID marks the
+// group of "Only for this device": the client it was created for.
 type Group struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Comment     string    `json:"comment"`
-	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"createdAt"`
-	ClientCount int       `json:"clientCount"`
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	Comment        string    `json:"comment"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"createdAt"`
+	ClientCount    int       `json:"clientCount"`
+	Upstreams      []string  `json:"upstreams"`
+	UpstreamPreset string    `json:"upstreamPreset"`
+	DeviceClientID *int64    `json:"deviceClientId,omitempty"`
 }
 
-// GroupInput creates or updates a group.
+// GroupInput creates or updates a group. Upstreams nil (absent or null)
+// and UpstreamPreset nil keep the stored values on update and mean none on
+// create.
 type GroupInput struct {
-	Name    string `json:"name"`
-	Comment string `json:"comment"`
-	Enabled bool   `json:"enabled"`
+	Name           string   `json:"name"`
+	Comment        string   `json:"comment"`
+	Enabled        bool     `json:"enabled"`
+	Upstreams      []string `json:"upstreams"`
+	UpstreamPreset *string  `json:"upstreamPreset"`
 }
 
 // Client is a configured client. Identifiers are IPs, CIDRs or MAC addresses

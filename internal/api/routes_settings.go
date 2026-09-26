@@ -123,6 +123,9 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(
 		if err := checkTLSMinVersion(r, old, a); err != nil {
 			return err
 		}
+		if err := s.checkGroupUpstreamSettings(r, old, a); err != nil {
+			return err
+		}
 		return s.checkDHCP(old, a)
 	})
 	if err != nil {
@@ -174,6 +177,43 @@ func (s *Server) checkBlockedClients(old, next *settings.All) error {
 	for i, entry := range list {
 		if why := dnsserver.BlockedClientLockout(entry, protected); why != "" {
 			return apperr.Invalid(fmt.Sprintf("dns.blockedClients[%d]", i), "%s", why)
+		}
+	}
+	return nil
+}
+
+// checkGroupUpstreamSettings keeps the upstreams of the client groups
+// usable when dns.bootstrap or dns.localDomain change (like checkDHCP; the
+// upstreams of a group are checked against the settings when they are
+// saved): no bootstrap servers while a group has a preset or an upstream
+// given by name (400 dns.bootstrap), no local domain that a group's plain
+// upstream name falls under (400 dns.localDomain). Restores and recovery do
+// not run it; a group set that cannot be built fails closed.
+func (s *Server) checkGroupUpstreamSettings(r *http.Request, old, next *settings.All) error {
+	noBoot := len(next.DNS.Bootstrap) == 0 && len(old.DNS.Bootstrap) != 0
+	domain := next.DNS.LocalDomain != old.DNS.LocalDomain && next.DNS.LocalDomain != ""
+	if s.d.Clients == nil || (!noBoot && !domain) {
+		return nil
+	}
+	groups, err := s.d.Clients.Groups(r.Context())
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		if noBoot && g.UpstreamPreset != "" {
+			return apperr.Invalid("dns.bootstrap", "required while group %s uses upstreams given by host name", g.Name)
+		}
+		for _, u := range g.Upstreams {
+			spec, err := settings.ParseUpstream(u)
+			if err != nil || spec.IsIPLit {
+				continue
+			}
+			if noBoot {
+				return apperr.Invalid("dns.bootstrap", "required while group %s uses upstreams given by host name", g.Name)
+			}
+			if domain && (spec.Proto == "udp" || spec.Proto == "tcp") && !settings.PublicUpstreamName(spec.Host, next.DNS.LocalDomain) {
+				return apperr.Invalid("dns.localDomain", "group %s uses the upstream %s below this domain", g.Name, spec.Host)
+			}
 		}
 	}
 	return nil

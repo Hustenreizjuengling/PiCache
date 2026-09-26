@@ -449,7 +449,20 @@ export interface DnsSettings {
   disableAAAA: boolean
   /** Synthesise AAAA records from A records for NAT64 networks (RFC 6147). */
   dns64: Dns64Settings
+  /** false switches off every local record and its reverse record (DHCP names stay). */
+  localRecordsEnabled: boolean
+  /** Order of multi-address local answers: the client's own network first, only those, or as stored. */
+  localizeRecords: LocalizeRecords
+  /**
+   * Addresses that server-name answers give (and blocked names with `self`);
+   * empty = automatic. At most 8 per family (errors
+   * "dns.serverNameAddresses.ipv4[i]", "….ipv6[i]").
+   */
+  serverNameAddresses: { ipv4: string[]; ipv6: string[] }
 }
+
+/** dns.localizeRecords */
+export type LocalizeRecords = 'off' | 'first' | 'only'
 
 /**
  * settings.ECS: `client` sends the /24 (IPv4) or /56 (IPv6) of public client
@@ -469,12 +482,17 @@ export interface Dns64Settings {
 
 export type BlockingMode = 'null' | 'nxdomain' | 'nodata' | 'refused' | 'custom_ip'
 
+/** The address value meaning "this server's address" (blocking and rule replies). */
+export const SELF_ADDRESS = 'self'
+
 /** settings.Filter */
 export interface FilterSettings {
   enabled: boolean
   pausedUntil?: Timestamp
   blockingMode: BlockingMode
+  /** An IPv4 address or "self" (mode custom_ip). */
   blockingIpv4: string
+  /** An IPv6 address, "self" or "" (mode custom_ip). */
   blockingIpv6: string
   blockedTtl: number
   cnameInspection: boolean
@@ -687,6 +705,8 @@ export type QueryStatus =
   | 'blocked-service'
   | 'blocked-upstream'
   | 'blocked-rebind'
+  /** An address of the answer is on a list of answer addresses or an IP rule (ruleId is then an IP rule id). */
+  | 'blocked-ip'
   | 'safesearch'
   | 'refused'
   | 'error'
@@ -702,6 +722,7 @@ export const BLOCKED_STATUSES: readonly QueryStatus[] = [
   'blocked-service',
   'blocked-upstream',
   'blocked-rebind',
+  'blocked-ip',
 ]
 
 /** Status of a traced lookup: a query status, or `dropped` (blocked client or dropped domain; never logged). */
@@ -761,29 +782,128 @@ export interface RouterStatus {
   domain: string
 }
 
-export type RecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT'
+export type RecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'SRV' | 'MX' | 'PTR' | 'HTTPS' | 'SVCB'
 
-/** dnsserver.Record */
+/** Record types whose `data` holds the structured form. */
+export const STRUCTURED_RECORD_TYPES: readonly RecordType[] = ['SRV', 'MX', 'PTR', 'HTTPS', 'SVCB']
+
+/** SRV: `<priority> <weight> <port> <target>` (target a name or "."). */
+export interface SrvData {
+  priority: number
+  weight: number
+  port: number
+  target: string
+}
+
+/** MX: `<preference> <host>` (host "." only with preference 0). */
+export interface MxData {
+  preference: number
+  host: string
+}
+
+/** PTR: the record name is a complete in-addr.arpa or ip6.arpa name. */
+export interface PtrData {
+  target: string
+}
+
+/** HTTPS and SVCB: priority 0 (alias form) takes no parameters. */
+export interface SvcbData {
+  priority: number
+  target: string
+  /** 1–8 protocol ids (e.g. h2, h3). */
+  alpn: string[]
+  port?: number
+  ipv4hint: string[]
+  ipv6hint: string[]
+}
+
+export type RecordData = SrvData | MxData | PtrData | SvcbData
+
+/** Who a record answers: everyone, or the clients of its groups (none: nobody). */
+export type RecordScope = 'all' | 'groups'
+
+/** An A or AAAA answer set without a record of the asked family: no data, or on to the upstreams. */
+export type OtherFamily = 'nodata' | 'forward'
+
+/** dnsserver.Record: `value` is the presentation form of every type, `data` the structured form of SRV, MX, PTR, HTTPS and SVCB. */
 export interface DnsRecord {
   id: number
   name: string
   type: RecordType
   value: string
+  data?: RecordData
   ttl: number
   enabled: boolean
   comment: string
+  scope: RecordScope
+  groupIds: number[]
+  otherFamily: OtherFamily
   createdAt: Timestamp
   updatedAt: Timestamp
 }
 
-/** dnsserver.RecordInput (ttl 0 → 300) */
+/**
+ * dnsserver.RecordInput (ttl 0 → 300). `data` wins over `value`. Absent
+ * scope, groupIds and otherFamily keep the stored value (create: all, [],
+ * nodata). Errors name type, name, value, data.<member>, scope, groupIds or
+ * otherFamily.
+ */
 export interface DnsRecordInput {
   name: string
   type: RecordType
   value: string
+  data?: RecordData
   ttl: number
   enabled: boolean
   comment: string
+  scope?: RecordScope
+  groupIds?: number[]
+  otherFamily?: OtherFamily
+}
+
+/** One refused line of an import (line 0 = the text as a whole; `field` names the part, e.g. syntax or name). */
+export interface ImportLineError {
+  line: number
+  field: string
+  message: string
+}
+
+/**
+ * Result of the rule and hosts imports: with any error nothing is written
+ * (the counts say what the valid lines would do). `errors` holds the first
+ * error of each line (at most 1000), `errorCount` counts every line with one.
+ */
+export interface LineImportResult {
+  applied: boolean
+  added: number
+  unchanged: number
+  skipped: number
+  errors: ImportLineError[]
+  errorCount: number
+}
+
+/** POST /dns/records/import: hosts lines become A and AAAA records. */
+export interface RecordImportRequest {
+  format: 'hosts'
+  text: string
+  scope?: RecordScope
+  groupIds?: number[]
+  dryRun: boolean
+}
+
+/** Batch change of the selected rows (1–1000 ids; all or nothing). */
+export type BatchAction = 'delete' | 'enable' | 'disable'
+
+export interface BatchRequest {
+  action: BatchAction
+  ids: number[]
+  /** Lists only: enable although the entry budget would be exceeded (409 with field "force" otherwise). */
+  force?: boolean
+}
+
+/** Rows whose state changed (deleting counts every id). */
+export interface BatchResult {
+  changed: number
 }
 
 /** Forwarder domain matching single-label names (A, AAAA, HTTPS, SVCB, ANY; never the root). */
@@ -838,6 +958,12 @@ export interface ForwarderImportResult {
   unchanged: number
   errors: ForwarderImportError[]
 }
+
+/** POST /filter/rules/import answer. */
+export type RuleImportResult = LineImportResult
+
+/** POST /dns/records/import answer. */
+export type RecordImportResult = LineImportResult
 
 /** POST /dns/blocked-clients: `entry` is the stored or the already matching entry. */
 export interface BlockClientResult {
@@ -898,6 +1024,18 @@ export interface UpstreamCacheStat {
   types: { type: string; entries: number }[]
 }
 
+/** The upstreams of one group upstream list, shared by the groups that name it. */
+export interface GroupUpstreamSet {
+  groupIds: number[]
+  /** Preset key ("" for an own list). */
+  preset: string
+  upstreams: UpstreamStat[]
+  /** The clock guard is active: only the list's plain IP upstreams are asked. */
+  clockGuard: boolean
+  /** Why the set could not be built (its clients get SERVFAIL). */
+  error?: string
+}
+
 /** GET /dns/upstreams */
 export interface UpstreamsState {
   upstreams: UpstreamStat[]
@@ -907,6 +1045,8 @@ export interface UpstreamsState {
   fallbackLastUsed?: Timestamp
   cache: UpstreamCacheStat
   clockGuard: boolean
+  /** The upstream lists of groups. */
+  groups: GroupUpstreamSet[]
 }
 
 /** upstream.TestResult */
@@ -928,13 +1068,35 @@ export interface ClientGroup {
   enabled: boolean
   createdAt: Timestamp
   clientCount: number
+  /** The group's own upstreams ([] = none). */
+  upstreams: string[]
+  /** A family resolver preset ("" = none); excludes `upstreams`. */
+  upstreamPreset: string
+  /** Made by "Only for this device" for this client. */
+  deviceClientId?: number
 }
 
-/** clients.GroupInput */
+/** clients.GroupInput: absent upstreams and upstreamPreset keep the stored values. */
 export interface ClientGroupInput {
   name: string
   comment: string
   enabled: boolean
+  upstreams?: string[]
+  upstreamPreset?: string
+}
+
+/** PUT /groups/{id}/upstreams (both required; [] and "" = none). Errors upstreams, upstreams[i], upstreamPreset. */
+export interface GroupUpstreamsInput {
+  upstreams: string[]
+  upstreamPreset: string
+}
+
+/** GET /groups/upstream-presets: a family resolver (DNS over HTTPS) with its plain addresses for the clock guard. */
+export interface UpstreamPreset {
+  key: string
+  name: string
+  upstreams: string[]
+  plain: string[]
 }
 
 /** clients.Client */
@@ -1587,6 +1749,9 @@ export type ListCategory = CatalogCategory | 'other'
  */
 export const PROTECTION_CATEGORIES: readonly ListCategory[] = ['adult', 'gambling', 'dating', 'piracy', 'doh-vpn-bypass']
 
+/** What a list holds: domain names, or addresses that must not appear in answers. */
+export type ListFormat = 'domains' | 'ips'
+
 /** filter.List */
 export interface FilterList {
   id: number
@@ -1600,6 +1765,10 @@ export interface FilterList {
   category: ListCategory
   /** Key of the catalogue entry with exactly this URL ("" for the user's own lists). */
   catalogKey: string
+  /** `ips`: a list of answer addresses (category security or other; allowlists allow). */
+  format: ListFormat
+  /** The name is the host name for now: the first download's `! Title:` line replaces it. */
+  nameAuto: boolean
   status: ListStatus
   lastError?: string
   lastUpdated?: Timestamp
@@ -1616,12 +1785,18 @@ export interface FilterList {
    * Lists of the category abused-tlds are exempt.
    */
   tldBlocksIgnored: number
+  /**
+   * Entries of the loaded copy that the IP guard ignores: too broad networks,
+   * private, loopback or multicast ranges (part of `invalid`).
+   */
+  ipBlocksIgnored: number
 }
 
 /**
  * filter.ListInput. `category` absent or "" means: the catalogue entry's
  * category on create (else `other`), the stored one on update; `allow` is
  * stored for every allowlist (400 field "category"/"kind" otherwise).
+ * `format` absent keeps the stored one (create: domains; 400 "format").
  */
 export interface FilterListInput {
   name: string
@@ -1632,10 +1807,14 @@ export interface FilterListInput {
   groupIds: number[]
   comment: string
   category?: ListCategory | ''
+  format?: ListFormat
 }
 
 export type RuleAction = 'allow' | 'block'
 export type RuleType = 'exact' | 'subtree' | 'regex'
+
+/** How a block rule answers: "" = the global blocking mode (settings filter.blockingMode). */
+export type RuleReply = '' | 'null' | 'nxdomain' | 'nodata' | 'refused' | 'custom_ip'
 
 /** filter.Rule */
 export interface FilterRule {
@@ -1646,24 +1825,100 @@ export interface FilterRule {
   enabled: boolean
   groupIds: number[]
   comment: string
+  /** Query types the rule applies to (empty: every type), normalised and sorted by type number. */
+  qtypes: string[]
+  /** Applies to every type except `qtypes`. */
+  qtypesNegate: boolean
+  reply: RuleReply
+  /** An IPv4 address, "self" or "" (reply custom_ip). */
+  replyIpv4: string
+  /** An IPv6 address, "self" or "" (reply custom_ip). */
+  replyIpv6: string
+  /** Names equal to or below these domains are excepted (subtree and regex block rules). */
+  denyallow: string[]
+  /** Regex block rules: blocks every name the expression does not match. */
+  invert: boolean
   createdAt: Timestamp
   updatedAt: Timestamp
 }
 
-/** filter.RuleInput */
+/**
+ * filter.RuleInput: absent optional members keep the stored value (create:
+ * the default). Errors name action, type, pattern, groupIds, comment,
+ * qtypes[i], qtypesNegate, reply, replyIpv4, replyIpv6, denyallow[i], invert.
+ */
 export interface FilterRuleInput {
   action: RuleAction
   type: RuleType
   pattern: string
   enabled: boolean
-  groupIds: number[]
+  groupIds?: number[]
   comment: string
+  qtypes?: string[]
+  qtypesNegate?: boolean
+  reply?: RuleReply
+  replyIpv4?: string
+  replyIpv6?: string
+  denyallow?: string[]
+  invert?: boolean
 }
 
 /** GET /filter/rules query */
 export interface RuleQuery {
   action?: RuleAction
   type?: RuleType
+  search?: string
+}
+
+/** POST /filter/rules/import: groupIds absent = the Default group, [] = no group. */
+export interface RuleImportRequest {
+  text: string
+  groupIds?: number[]
+  dryRun: boolean
+}
+
+/** POST /filter/rules/device: a rule that applies to one device only (errors clientIp, rule.<field>). */
+export interface DeviceRuleRequest {
+  clientIp: string
+  /** Without groupIds: the server chooses the device's own group. */
+  rule: FilterRuleInput
+}
+
+/** Answer of POST /filter/rules/device. */
+export interface DeviceRuleResult {
+  client: Client
+  group: ClientGroup
+  rule: FilterRule
+  createdClient: boolean
+  createdGroup: boolean
+  createdRule: boolean
+}
+
+/** filter.IPRule: blocks or allows an address (or network) in answers. */
+export interface IPRule {
+  id: number
+  action: RuleAction
+  /** A canonical address or masked CIDR (at least /8 for IPv4, /32 for IPv6). */
+  pattern: string
+  enabled: boolean
+  groupIds: number[]
+  comment: string
+  createdAt: Timestamp
+  updatedAt: Timestamp
+}
+
+/** filter.IPRuleInput (errors action, pattern, comment, groupIds). */
+export interface IPRuleInput {
+  action: RuleAction
+  pattern: string
+  enabled: boolean
+  groupIds?: number[]
+  comment: string
+}
+
+/** GET /filter/ip-rules query (search: part of the pattern or comment, at most 256 characters). */
+export interface IPRuleQuery {
+  action?: RuleAction
   search?: string
 }
 
@@ -1682,11 +1937,53 @@ export interface FilterMatch {
   decisive: boolean
   /** The list's category ("" for rules); `privacy` marks a known tracker. */
   category: string
+  qtypes: string[]
+  qtypesNegate: boolean
+  denyallow: string[]
+  invert: boolean
+  /** Rules: the rule's reply ("" = the global mode); always "" for list entries. */
+  reply: RuleReply
+  /** The entry matches the name but does not apply to this query type or name (then never decisive). */
+  skipped?: 'qtype' | 'denyallow'
+}
+
+/** One hit of GET /filter/search. */
+export interface SearchItem {
+  source: 'rule' | 'ip-rule' | 'list'
+  ruleId?: number
+  listId?: number
+  /** The rule pattern or the list name. */
+  name: string
+  /** The export line of a rule, the line of a list (without its inline comment). */
+  entry: string
+  kind: 'exact' | 'subtree' | 'regex' | 'ip'
+  action: RuleAction
+  qtypes: string[]
+  qtypesNegate: boolean
+  denyallow: string[]
+  groupIds: number[]
+  /** The rule's or IP rule's flag (list entries: true, only enabled lists are searched). */
+  enabled: boolean
+  /** Only with clientIp: the entry is enabled and shares an enabled group with the client. */
+  applies?: boolean
+}
+
+/** GET /filter/search (503 while two searches or explanations run). */
+export interface SearchResult {
+  q: string
+  items: SearchItem[]
+  /** The limit was reached. */
+  truncated: boolean
+  /** The 10 s budget ran out: the hits so far. */
+  timedOut: boolean
+  scannedLists: number
+  totalLists: number
 }
 
 /** filter.Stats */
 export interface FilterStats {
   lists: number
+  /** Every entry, answer addresses and entries with modifiers included. */
   entries: number
   patterns: number
   /** Patterns beyond the total cap of 20 000. */
@@ -1700,6 +1997,16 @@ export interface FilterStats {
   staleLists: number
   /** Enabled own lists (no catalogue key) with entries the TLD guard ignores. */
   tldGuardLists: number
+  /** Answer addresses of the lists (part of entries). */
+  ipEntries: number
+  /** Enabled IP rules. */
+  ipRules: number
+  /** List entries with query types or exceptions (part of entries). */
+  modifiedEntries: number
+  /** Such entries beyond the total cap. */
+  modifiedDropped: number
+  /** Enabled own lists with entries the IP guard ignores. */
+  ipGuardLists: number
 }
 
 /** filter.CatalogEntry (every member always present). */
@@ -1725,6 +2032,8 @@ export interface CatalogEntry {
 /** POST /filter/explain */
 export interface ExplainResult {
   domain: string
+  /** The query type evaluated (default A). */
+  qtype: string
   groupIds: number[]
   matches: FilterMatch[]
   decision: { action: string; name: string; source: string; kind: string }

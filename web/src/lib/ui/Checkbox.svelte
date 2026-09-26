@@ -10,7 +10,10 @@
     label?: string
     description?: string
     disabled?: boolean
-    /** Accessible name when there is no visible label. */
+    /**
+     * Accessible name: when there is no visible label, or to give a visible
+     * label its context (then it contains the label, e.g. "IPv4 address: …").
+     */
     ariaLabel?: string
     name?: string
     value?: string
@@ -38,7 +41,7 @@
     {disabled}
     {name}
     {value}
-    aria-label={label ? undefined : ariaLabel}
+    aria-label={ariaLabel}
     onchange={() => onchange?.(checked)}
   />
   {#if label}

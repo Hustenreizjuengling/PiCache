@@ -1,8 +1,10 @@
 <!--
   @component
-  Details of a filter list (category, download state, entries, skipped
-  lines, last error) with its settings, "Update now" and Delete. A
-  protection list says that it is enforced like parental controls.
+  Details of a filter list (category, format, download state, entries,
+  skipped lines, entries the guards ignore, last error) with its settings,
+  "Update now" and Delete. A protection list says that it is enforced like
+  parental controls; a list whose name is still automatic says that its
+  title will replace the name.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -14,7 +16,7 @@
   import { Button, Chip, confirm, KeyValue, Notice, toast } from '$lib/ui'
   import FormPanel from '../shared/FormPanel.svelte'
   import ListFields from './ListFields.svelte'
-  import { categoryLabel, isProtection, listInput, listStatus } from './listStatus'
+  import { categoryLabel, formatLabel, isProtection, listInput, listStatus } from './listStatus'
 
   interface Props {
     open?: boolean
@@ -36,6 +38,7 @@
     groupIds: [],
     comment: '',
     category: '',
+    format: 'domains',
   })
   let saving = $state(false)
   let refreshing = $state(false)
@@ -141,9 +144,16 @@
       {#if list.tldBlocksIgnored > 0}
         <Notice tone="warn">{tn('dns.lists.tldIgnored', list.tldBlocksIgnored)}</Notice>
       {/if}
+      {#if list.ipBlocksIgnored > 0}
+        <Notice tone="warn">{tn('dns.lists.ipIgnored', list.ipBlocksIgnored, { count: formatNumber(list.ipBlocksIgnored) })}</Notice>
+      {/if}
+      {#if list.nameAuto}
+        <Notice tone="info">{t('dns.lists.nameAuto')}</Notice>
+      {/if}
       <KeyValue
         items={[
           { label: t('dns.lists.categoryLabel'), value: categoryLabel(list.category || 'other') },
+          { label: t('dns.lists.format'), value: formatLabel(list) },
           { label: t('dns.lists.entries'), value: formatNumber(list.entries) },
           { label: t('dns.lists.invalid'), value: formatNumber(list.invalid) },
           { label: t('dns.lists.unsupported'), value: formatNumber(list.unsupported) },
@@ -164,7 +174,7 @@
     </Button>
   {/snippet}
 
-  <ListFields bind:draft {err} {groups} {submitted} />
+  <ListFields bind:draft {err} {groups} {submitted} nameAuto={list?.nameAuto} />
 </FormPanel>
 
 <style>

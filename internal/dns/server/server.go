@@ -37,6 +37,7 @@ package dnsserver
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -84,6 +85,9 @@ const (
 	StatusBlockedUpstream = "blocked-upstream"
 	// StatusBlockedRebind: DNS rebinding protection (step 14c).
 	StatusBlockedRebind = "blocked-rebind"
+	// StatusBlockedIP: an address of the answer is blocked by an IP rule or
+	// a list of answer addresses (step 14d).
+	StatusBlockedIP = "blocked-ip"
 	// StatusSafeSearch: safe search answered the name with a CNAME to the
 	// search engine's restricted host (step 7c); not a blocked status.
 	StatusSafeSearch = "safesearch"
@@ -107,13 +111,16 @@ const (
 
 // Consumer-side interfaces (implemented by the concrete packages; fakes in tests).
 
-// Filter is the part of *filter.Engine the server uses.
+// Filter is the part of *filter.Engine the server uses. Every check gets
+// the query type ($dnstype of rules and list entries).
 type Filter interface {
-	Check(qname string, groups []int64) filter.Decision
-	CheckRules(qname string, groups []int64) filter.Decision
+	Check(qname string, qtype uint16, groups []int64) filter.Decision
+	CheckRules(qname string, qtype uint16, groups []int64) filter.Decision
 	// CheckProtection evaluates only the protection lists (step 7a).
-	CheckProtection(qname string, groups []int64) filter.Decision
-	Explain(ctx context.Context, qname string, groups []int64) ([]filter.Match, error)
+	CheckProtection(qname string, qtype uint16, groups []int64) filter.Decision
+	// CheckIP evaluates an answer address (step 14d).
+	CheckIP(ip netip.Addr, groups []int64) filter.Decision
+	Explain(ctx context.Context, qname string, qtype uint16, groups []int64) ([]filter.Match, error)
 }
 
 // Services is the part of *services.Registry the server uses.
@@ -137,6 +144,13 @@ type Upstream interface {
 	// to send (invalid = none).
 	Resolve(ctx context.Context, req *dns.Msg, ecs netip.Prefix) (*dns.Msg, upstream.Info, error)
 	ResolveVia(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, upstream.Info, error)
+	// GroupFor picks the group whose upstreams answer a client with these
+	// enabled groups (a preset first, then the lowest id); ResolveGroup
+	// answers through that group set (no fallbacks, no client subnet;
+	// fail closed) and GroupName names the group for reasons and traces.
+	GroupFor(groups []int64) (groupID int64, ok bool)
+	ResolveGroup(ctx context.Context, req *dns.Msg, groupID int64) (*dns.Msg, upstream.Info, error)
+	GroupName(groupID int64) string
 	Probe(ctx context.Context, server netip.Addr) bool
 }
 
@@ -193,28 +207,44 @@ type LeaseNames interface {
 	LeasePTR(ip netip.Addr) (name string, ttl uint32, ok bool)
 }
 
-// Record is a local DNS record.
+// Record is a local DNS record. Value is the presentation form for every
+// type; Data is the structured form of SRV, MX, PTR, HTTPS and SVCB records
+// (SRVData, MXData, PTRData, SVCBData; absent for the others). Scope all
+// serves every client; scope groups serves the clients of GroupIDs (none:
+// nobody). OtherFamily "forward" (A and AAAA only) sends a query for the
+// other address family upstream instead of answering NODATA.
 type Record struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"` // lower-case FQDN without trailing dot; "*.x" = subdomains of x
-	Type      string    `json:"type"` // A | AAAA | CNAME | TXT
-	Value     string    `json:"value"`
-	TTL       uint32    `json:"ttl"`
-	Enabled   bool      `json:"enabled"`
-	Comment   string    `json:"comment"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"` // lower-case FQDN without trailing dot; "*.x" = subdomains of x
+	Type        string    `json:"type"` // A | AAAA | CNAME | TXT | SRV | MX | PTR | HTTPS | SVCB
+	Value       string    `json:"value"`
+	Data        any       `json:"data,omitempty"`
+	TTL         uint32    `json:"ttl"`
+	Enabled     bool      `json:"enabled"`
+	Comment     string    `json:"comment"`
+	Scope       string    `json:"scope"` // all | groups
+	GroupIDs    []int64   `json:"groupIds"`
+	OtherFamily string    `json:"otherFamily"` // nodata | forward
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
-// RecordInput creates or updates a record (TTL 0 → 300). A CNAME may not
-// share its name with any other record (apperr.Conflict).
+// RecordInput creates or updates a record (TTL 0 → 300). A typed record
+// takes Value or Data (Data wins). A CNAME may not share its name with any
+// other record of the same scope (apperr.Conflict). Scope, GroupIDs and
+// OtherFamily left out (or null) keep the stored values on update and are
+// all, none and nodata on create.
 type RecordInput struct {
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Value   string `json:"value"`
-	TTL     uint32 `json:"ttl"`
-	Enabled bool   `json:"enabled"`
-	Comment string `json:"comment"`
+	Name        string         `json:"name"`
+	Type        string         `json:"type"`
+	Value       string         `json:"value"`
+	Data        jsontext.Value `json:"data,omitzero"`
+	TTL         uint32         `json:"ttl"`
+	Enabled     bool           `json:"enabled"`
+	Comment     string         `json:"comment"`
+	Scope       *string        `json:"scope"`
+	GroupIDs    []int64        `json:"groupIds"`
+	OtherFamily *string        `json:"otherFamily"`
 }
 
 // Forwarder sends domains (each apex + subdomains; "*.x" = subdomains

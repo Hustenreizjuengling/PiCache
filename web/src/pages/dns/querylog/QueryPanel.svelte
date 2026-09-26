@@ -5,7 +5,7 @@
   domain (creates a rule), explain the filter decision, narrow the log to
   this domain or client, open the client, show the client's cache traffic
   around that moment and block the device (admins, not while client
-  addresses are anonymised). Answers blocked by the upstream say why a rule
+  addresses are anonymised, nor for an entry whose address was). Answers blocked by the upstream say why a rule
   cannot help; answers blocked by rebinding protection offer to allow the
   name; safe-search answers point to parental controls. After "Explain",
   a client in exactly one group other than Default can have that group's
@@ -14,6 +14,10 @@
   "Known tracker" (PiCache has no tracker database of its own). The
   upstream's own answer is shown where it differs from the final one.
   Entries recorded while domains were hidden offer no domain actions.
+  "Only for this device" creates the rule for a group that holds only the
+  client (admins, not while addresses are anonymised). Answers blocked for
+  an address in them link the list or IP rule and explain that an allow
+  rule for the name lifts the check.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -25,6 +29,7 @@
     type ApiError,
     type BlockClientResult,
     type ClientGroup,
+    type DeviceRuleResult,
     type ExplainResult,
     type FilterList,
     type FilterRuleInput,
@@ -42,6 +47,7 @@
   import MatchList from '../shared/MatchList.svelte'
   import PauseMenu from '../shared/PauseMenu.svelte'
   import { edeText } from './ede'
+  import { looksAnonymised } from './filters'
 
   interface Props {
     open?: boolean
@@ -65,6 +71,9 @@
   let explaining = $state(false)
   let ruleOpen = $state(false)
   let rulePreset = $state.raw<Partial<FilterRuleInput>>({})
+  /** The rule panel is in device mode ("Only for this device"). */
+  let ruleDevice = $state.raw<{ ip: string; name?: string } | undefined>(undefined)
+  let deviceResult = $state.raw<DeviceRuleResult | undefined>(undefined)
   let blockResult = $state.raw<BlockClientResult | undefined>(undefined)
   let allowing = $state(false)
   let ctrl: AbortController | undefined
@@ -78,6 +87,7 @@
       explainErr = undefined
       explaining = false
       blockResult = undefined
+      deviceResult = undefined
     })
   })
   $effect(() => () => ctrl?.abort())
@@ -108,8 +118,15 @@
     return href('/cache/downloads', { client: event.clientIp, from: at - CACHE_WINDOW, to: at + CACHE_WINDOW })
   })
 
-  // Anonymised addresses (logs.anonymizeClientIps) name a whole network, not the device.
-  const canBlockDevice = $derived(session.isAdmin && !!settings && !settings.logs.anonymizeClientIps)
+  // Anonymised addresses (logs.anonymizeClientIps, also of entries logged while it was on) name a
+  // whole network, not the device.
+  const canBlockDevice = $derived(
+    session.isAdmin && !!settings && !settings.logs.anonymizeClientIps && !!event && !looksAnonymised(event.clientIp),
+  )
+  /** "Only for this device": next to the rule action, for an entry with a client address. */
+  const canDeviceRule = $derived(!!ruleAction && canBlockDevice && !!event?.clientIp)
+  /** The IP rule that blocked an answer (ruleId of blocked-ip entries names an IP rule). */
+  const ipRuleId = $derived(event?.status === 'blocked-ip' ? event.ruleId : undefined)
 
   // Pausing a group from here is offered only when the client is in exactly one
   // group and that is not Default (which covers every unknown device).
@@ -137,7 +154,7 @@
     explaining = true
     explainErr = undefined
     try {
-      explain = await api.filter.explain(e.qname, e.clientIp, { signal: c.signal })
+      explain = await api.filter.explain(e.qname, e.clientIp, e.qtype, { signal: c.signal })
     } catch (err) {
       const ae = toApiError(err)
       if (ae.code !== 'aborted') explainErr = ae
@@ -146,7 +163,7 @@
     }
   }
 
-  function createRule() {
+  function createRule(forDevice = false) {
     if (!event || !ruleAction) return
     rulePreset = {
       action: ruleAction,
@@ -154,7 +171,13 @@
       pattern: event.qname,
       groupIds: [DEFAULT_GROUP_ID],
     }
+    ruleDevice = forDevice ? { ip: event.clientIp, name: event.clientName } : undefined
     ruleOpen = true
+  }
+
+  function deviceDone(res: DeviceRuleResult) {
+    deviceResult = res
+    if (explain) void runExplain()
   }
 
   function filterBy(patch: QueryPatch) {
@@ -221,7 +244,10 @@
           <dt>{t('dns.queryLog.blockedByList')}</dt>
           <dd><a href={href('/dns/filtering', { tab: 'lists', sel: event.listId })}>{listName}</a></dd>
         {/if}
-        {#if event.ruleId}
+        {#if ipRuleId}
+          <dt>{t('dns.queryLog.blockedByIpRule')}</dt>
+          <dd><a href={href('/dns/filtering', { tab: 'rules', view: 'ip', sel: ipRuleId })}>{t('dns.queryLog.ipRuleNumber', { id: ipRuleId })}</a></dd>
+        {:else if event.ruleId}
           <dt>{t('dns.queryLog.blockedByRule')}</dt>
           <dd><a href={href('/dns/filtering', { tab: 'rules', sel: event.ruleId })}>{t('dns.queryLog.ruleNumber', { id: event.ruleId })}</a></dd>
         {/if}
@@ -269,6 +295,8 @@
             <Button size="sm" variant="ghost" href={href('/dns/settings', { section: 'protection' })}>{t('dns.queryLog.rebindSetting')}</Button>
           {/snippet}
         </Notice>
+      {:else if event.status === 'blocked-ip'}
+        <Notice tone="info" title={t('dns.queryLog.ipBlockTitle')}>{t('dns.queryLog.ipBlockText')}</Notice>
       {:else if event.status === 'safesearch'}
         <Notice tone="info" title={t('dns.queryLog.safeSearchTitle')}>
           {t('dns.queryLog.safeSearchText')}
@@ -284,9 +312,14 @@
             variant={ruleAction === 'allow' && event.status !== 'blocked-rebind' ? 'primary' : 'secondary'}
             icon={ruleAction === 'allow' ? 'shield-off' : 'shield'}
             disabled={!session.isAdmin}
-            onclick={createRule}
+            onclick={() => createRule()}
           >
             {ruleAction === 'allow' ? t('dns.queryLog.allowDomain') : t('dns.queryLog.blockDomain')}
+          </Button>
+        {/if}
+        {#if canDeviceRule}
+          <Button icon="user" title={t('dns.queryLog.onlyDeviceHelp')} onclick={() => createRule(true)}>
+            {ruleAction === 'allow' ? t('dns.queryLog.allowForDevice') : t('dns.queryLog.blockForDevice')}
           </Button>
         {/if}
         {#if !hidden}
@@ -308,6 +341,21 @@
           {t('dns.queryLog.onlyClient')}
         </Button>
       </div>
+
+      {#if deviceResult}
+        {@const r = deviceResult}
+        <Notice tone="ok" title={t('dns.queryLog.deviceRuleTitle', { client: r.client.name, group: r.group.name })}>
+          <ul class="done small">
+            <li>{r.createdClient ? t('dns.queryLog.deviceClientCreated', { name: r.client.name }) : t('dns.queryLog.deviceClientUsed', { name: r.client.name })}</li>
+            <li>{r.createdGroup ? t('dns.queryLog.deviceGroupCreated', { name: r.group.name }) : t('dns.queryLog.deviceGroupUsed', { name: r.group.name })}</li>
+            <li>{r.createdRule ? t('dns.queryLog.deviceRuleCreated', { pattern: r.rule.pattern }) : t('dns.queryLog.deviceRuleShared', { pattern: r.rule.pattern })}</li>
+          </ul>
+          {#snippet actions()}
+            <Button size="sm" variant="ghost" href={href('/dns/filtering', { tab: 'rules', sel: r.rule.id })}>{t('dns.queryLog.openRule')}</Button>
+            <Button size="sm" variant="ghost" href={href('/dns/clients', { tab: 'groups', sel: r.group.id })}>{t('dns.queryLog.openGroup')}</Button>
+          {/snippet}
+        </Notice>
+      {/if}
 
       {#if blockResult}
         <Notice tone={blockResult.added ? 'ok' : 'info'}>
@@ -347,7 +395,7 @@
             </div>
           {/if}
           <p class="small">
-            <a href={href('/dns/filtering', { tab: 'test', domain: event.qname, client: event.clientIp })}>
+            <a href={href('/dns/filtering', { tab: 'test', domain: event.qname, client: event.clientIp, qtype: event.qtype === 'A' ? undefined : event.qtype })}>
               {t('dns.queryLog.openTester')}
             </a>
           </p>
@@ -357,9 +405,21 @@
   {/if}
 </SidePanel>
 
-<RulePanel bind:open={ruleOpen} preset={rulePreset} {groups} onsaved={() => explain && runExplain()} />
+<RulePanel
+  bind:open={ruleOpen}
+  preset={rulePreset}
+  device={ruleDevice}
+  {groups}
+  onsaved={() => explain && runExplain()}
+  ondevice={deviceDone}
+/>
 
 <style>
+  .done {
+    margin: 0;
+    padding-left: var(--sp-4);
+    overflow-wrap: anywhere;
+  }
   .headline {
     display: flex;
     flex-wrap: wrap;

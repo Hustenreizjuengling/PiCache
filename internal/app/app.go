@@ -399,6 +399,17 @@ func (a *App) build(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("dns: %w", err)
 	}
+	// Group changes reach the local records (a deleted group's record
+	// links cascade: its records then serve nobody) and the upstream sets
+	// of the groups.
+	a.syncGroupUpstreams(ctx)
+	a.clients.OnChange(func() {
+		bg := context.Background()
+		if err := a.dns.ReloadRecords(bg); err != nil {
+			log.Warn("reload local records", slog.Any("err", err))
+		}
+		a.syncGroupUpstreams(bg)
+	})
 	if a.proxy, err = proxy.New(ctx, proxy.Deps{
 		DB: a.cdb, Settings: a.set, Services: a.services, Lookup: lookup4, Store: a.proxyStore,
 		StoreFull: a.storeFull.Load, Clients: a.clients, Logs: a.logs, ACL: a.acl,
@@ -418,6 +429,21 @@ func (a *App) build(ctx context.Context) error {
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil
+}
+
+// syncGroupUpstreams hands the upstreams of the enabled client groups to
+// the resolver, which builds one set per distinct list (ARCHITECTURE 7.4).
+func (a *App) syncGroupUpstreams(ctx context.Context) {
+	cfg, err := a.clients.GroupUpstreamConfigs(ctx)
+	if err != nil {
+		a.log.Warn("read the upstreams of the groups", slog.Any("err", err))
+		return
+	}
+	groups := make([]upstream.GroupUpstreams, 0, len(cfg))
+	for _, c := range cfg {
+		groups = append(groups, upstream.GroupUpstreams{ID: c.ID, Name: c.Name, Preset: c.Preset, Upstreams: c.Upstreams})
+	}
+	a.up.SetGroupUpstreams(groups)
 }
 
 // openLogs opens logs.db. A broken database is moved aside and recreated;

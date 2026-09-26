@@ -100,7 +100,7 @@ func TestParseLine(t *testing.T) {
 		{line: "/tracker/$important", status: lineOK, want: []entry{{kind: kindPattern, important: true, re: `tracker`}}},
 		// unsupported
 		{line: "||example.com^$third-party", status: lineUnsupported},
-		{line: "||example.com^$dnstype=AAAA", status: lineUnsupported},
+		{line: "||example.com^$dnstype=AAAA", status: lineOK, want: []entry{sub("example.com")}}, // modifiersTest checks the type set
 		{line: "||example.com^$client=192.168.1.1", status: lineUnsupported},
 		{line: "/ads/banner.gif", status: lineUnsupported},
 		{line: "||example.com/path^", status: lineUnsupported},
@@ -368,4 +368,6 @@ func TestParseListPatternCostBudget(t *testing.T) {
 }
 
 // testFormat is the format of a general list of kind (TLD guard on).
-func testFormat(kind string) listFormat { return formatOf(kind, "exact", CategoryGeneral) }
+func testFormat(kind string) listFormat {
+	return formatOf(kind, "exact", CategoryGeneral, FormatDomains)
+}

@@ -31,12 +31,23 @@ unprivileged Proxmox LXC container.
   telemetry, adult content, gambling, dating, piracy, social networks,
   encrypted-DNS/VPN bypass, abused TLDs, URL shorteners, stalkerware,
   regional lists and allowlists), with their size, maintainer and license.
-  A list cannot block a whole top-level domain by mistake.
+  A list cannot block a whole top-level domain by mistake. List lines with
+  query types (`$dnstype`) and exceptions (`$denyallow`) are understood, and
+  a list's title becomes its name.
 - Your own allow and block rules for exact names, subdomains or regular
-  expressions. Allow rules and exact or subdomain block rules take precedence
-  over the lists. The UI explains which rule or list decided.
+  expressions, per query type (for example only AAAA), with their own reply
+  (NXDOMAIN, an address, this server's address, …), exceptions for
+  subdomains and inverted regular expressions. Allow rules and exact or
+  subdomain block rules take precedence over the lists. The UI explains
+  which rule or list decided, searches your rules and the downloaded lists,
+  imports and exports rules as text and changes many rules at once.
+- Blocking by answer address: lists of malicious server addresses and your
+  own IP rules block answers that point at them; broad and private
+  networks can never be blocked by a list.
 - Groups: clients (by IP, CIDR or MAC) get the lists and rules of their
-  groups.
+  groups; "Only for this device" in the query log makes a rule for one
+  device. A group can use its own upstream resolver, such as a family-safe
+  DNS service (Cloudflare for Families, OpenDNS FamilyShield, CleanBrowsing).
 - Parental controls per group: block apps and sites such as YouTube,
   TikTok or Roblox from a built-in list of 144 services (video, social,
   messaging, games, music, AI, dating, gambling, shopping, VPN apps, app
@@ -68,8 +79,10 @@ unprivileged Proxmox LXC container.
 - Blocking modes (null IP, NXDOMAIN, NODATA, REFUSED, custom IP), a timed
   pause, CNAME inspection, and blocking of the Firefox DoH canary and iCloud
   Private Relay.
-- Local DNS records (A, AAAA, CNAME, TXT, wildcards, automatic PTR),
-  conditional forwarding (several domains per forwarder, exceptions back to
+- Local DNS records (A, AAAA, CNAME, TXT, SRV, MX, PTR, HTTPS, SVCB,
+  wildcards, automatic PTR), per group (split horizon: another answer for
+  guests than for staff), with the local address first for multi-address
+  names, imported from a hosts file; conditional forwarding (several domains per forwarder, exceptions back to
   the default upstreams, a catch-all for bare names, bulk import), and local
   names and reverse lookups from your router. Address lookups of bare names
   such as `nas` are answered from the local domain and never sent to the
@@ -535,10 +548,13 @@ project follows its [code of conduct](CODE_OF_CONDUCT.md).
 PiCache ist ein filternder DNS-Server und ein Download-Cache in einem
 einzigen Programm mit Weboberfläche (Deutsch und Englisch).
 
-- **DNS-Filter** für das ganze Netz: Blocklisten, eigene Regeln,
-  Gruppen pro Client, lokale DNS-Einträge, verschlüsselte Upstreams
-  (DoH/DoT) mit Ausweich-DNS, Schutz vor DNS-Rebinding, Abfrageprotokoll
-  und Statistiken.
+- **DNS-Filter** für das ganze Netz: Blocklisten, eigene Regeln (auch pro
+  Abfragetyp, mit eigener Antwort, Import und Export), Sperren nach
+  Antwortadresse, Gruppen pro Client, „Nur für dieses Gerät“, lokale
+  DNS-Einträge (auch SRV, MX, PTR, HTTPS, pro Gruppe, Import aus einer
+  hosts-Datei), verschlüsselte Upstreams (DoH/DoT) mit Ausweich-DNS, ein
+  eigener Resolver pro Gruppe (etwa ein familienfreundlicher DNS-Dienst),
+  Schutz vor DNS-Rebinding, Abfrageprotokoll und Statistiken.
 - **Jugendschutz** pro Gruppe: Dienste wie YouTube, TikTok oder Roblox
   sperren (144 Dienste), Zeitpläne (Schlafenszeit, Hausaufgabenzeit),
   „Internet jetzt sperren“ oder „Einschränkungen aufheben“ auf Zeit,

@@ -55,6 +55,8 @@
 
   const clients = resource((signal) => api.clients.list({ signal }))
   const groups = resource((signal) => api.groups.list({ signal }))
+  // Names of the family resolvers groups may use.
+  const presets = resource((signal) => api.groups.upstreamPresets({ signal }))
   const known = resource((signal) => api.clients.known(within, { signal }), { interval: 60_000 })
   // Traffic of configured clients, grouped by device on the server: every
   // address a client was recognised by counts (also the IPv6 addresses of a
@@ -125,9 +127,18 @@
             onchanged={changed}
           />
         {:else if active === 'groups'}
-          <GroupsTab {groups} onchanged={changed} />
+          <GroupsTab {groups} clients={clients.data} presets={presets.data} onchanged={changed} />
         {:else}
-          <ClientsTab {clients} groups={groups.data} stats={clientStats.data} known={known.data} {range} {rangePicker} onchanged={changed} />
+          <ClientsTab
+            {clients}
+            groups={groups.data}
+            presets={presets.data}
+            stats={clientStats.data}
+            known={known.data}
+            {range}
+            {rangePicker}
+            onchanged={changed}
+          />
         {/if}
       </div>
     {/snippet}

@@ -3,19 +3,20 @@
   Configured clients: name, identifiers, groups, options and their traffic
   over the selected range (all addresses the client was recognised by; the
   ones beyond its identifiers show as "+N addresses"). Rows open the client
-  panel.
+  panel; admins select clients to delete them together.
   Query: ?sel=<client id>&group=<group id> (only the clients of that group)
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { t } from '$i18n/index.svelte'
-  import type { Client, ClientGroup, ClientStat, KnownClient, RangePreset, Resource } from '$lib/api'
+  import { t, tn } from '$i18n/index.svelte'
+  import { api, type Client, type ClientGroup, type ClientStat, type KnownClient, type RangePreset, type Resource, type UpstreamPreset } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { Badge, Button, Chip, EmptyState, IconButton, Panel, Table, type Column } from '$lib/ui'
+  import { Badge, BulkBar, Button, Chip, EmptyState, IconButton, Panel, Table, type Column } from '$lib/ui'
   import AddressList from '../shared/AddressList.svelte'
+  import { runBatch } from '../shared/batch'
   import { groupNames } from '../shared/groups'
   import ClientPanel from './ClientPanel.svelte'
   import { clientTotals, type Totals } from './clientStats'
@@ -23,6 +24,7 @@
   interface Props {
     clients: Resource<Client[]>
     groups: readonly ClientGroup[] | undefined
+    presets: readonly UpstreamPreset[] | undefined
     stats: readonly ClientStat[] | undefined
     known: readonly KnownClient[] | undefined
     range: RangePreset
@@ -31,11 +33,13 @@
     onchanged: () => void
   }
 
-  let { clients, groups, stats, known, range, rangePicker, onchanged }: Props = $props()
+  let { clients, groups, presets, stats, known, range, rangePicker, onchanged }: Props = $props()
 
   type Row = Client & { totals: Totals }
 
   let addOpen = $state(false)
+  let checked = $state<number[]>([])
+  let busy = $state(false)
 
   // ?group=<id> (from the parental controls page): only the clients of that group.
   const groupId = $derived(Number(router.param('group')) || 0)
@@ -47,6 +51,25 @@
   )
   const selId = $derived(Number(router.param('sel')) || 0)
   const selected = $derived(rows?.find((c) => c.id === selId))
+
+  async function deleteChecked() {
+    busy = true
+    try {
+      const ok = await runBatch({
+        action: 'delete',
+        ids: checked,
+        what: (n) => tn('dns.clients.count', n),
+        run: (req) => api.clients.batch(req),
+        deleteText: t('dns.clients.batchDeleteText'),
+      })
+      if (!ok) return
+      if (selected && checked.includes(selected.id)) router.setQuery({ sel: null })
+      checked = []
+      onchanged()
+    } finally {
+      busy = false
+    }
+  }
 
   function blockedShare(r: Row): number | undefined {
     return r.totals.queries > 0 ? r.totals.blocked / r.totals.queries : undefined
@@ -123,6 +146,9 @@
     onrowclick={(c) => router.setQuery({ sel: c.id })}
     selected={selected?.id}
     caption={t('dns.clients.title')}
+    selectable={session.isAdmin}
+    bind:checked
+    checkLabel={(c) => t('dns.clients.selectNamed', { name: c.name })}
   >
     {#snippet empty()}
       {#if groupId && clients.data?.length}
@@ -139,14 +165,23 @@
       {/if}
     {/snippet}
   </Table>
+  {#if session.isAdmin}
+    <BulkBar
+      count={checked.length}
+      {busy}
+      onclear={() => (checked = [])}
+      actions={[{ label: t('common.action.delete'), icon: 'trash', danger: true, onselect: deleteChecked }]}
+    />
+  {/if}
 </Panel>
 
-<ClientPanel bind:open={addOpen} {groups} {range} onsaved={onchanged} />
+<ClientPanel bind:open={addOpen} {groups} {presets} {range} onsaved={onchanged} />
 <ClientPanel
   bind:open={() => !!selected, (v) => !v && router.setQuery({ sel: null })}
   client={selected}
   totals={selected?.totals}
   {groups}
+  {presets}
   {range}
   onsaved={onchanged}
   ondeleted={onchanged}

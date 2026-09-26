@@ -39,6 +39,9 @@ func Defaults() All {
 			ServeStale:             true,
 			ServeStaleMaxAgeSec:    3600,
 			DNS64:                  DNS64{Prefix: DefaultDNS64Prefix},
+			LocalRecordsEnabled:    true,
+			LocalizeRecords:        LocalizeFirst,
+			ServerNameAddresses:    ServerNameAddresses{IPv4: []string{}, IPv6: []string{}},
 		},
 		Filter: Filter{
 			Enabled:                 true,

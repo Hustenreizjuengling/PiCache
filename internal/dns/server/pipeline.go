@@ -62,6 +62,12 @@ type qctx struct {
 	// recordsOnly: local records only, no DHCP lease names (wpad and
 	// isatap in step 11a).
 	recordsOnly bool
+	// The group whose upstreams answer instead of the default set
+	// (groupUpstream; computed once).
+	grp        int64
+	grpName    string
+	grpOK      bool
+	grpChecked bool
 }
 
 func newQuery(ctx context.Context, req *dns.Msg, source netip.Addr, proto string, set *settings.All) *qctx {
@@ -170,7 +176,7 @@ func (s *Server) process(qc *qctx) result {
 	}
 	if qc.blocking && s.d.Filter != nil { // 11
 		if !qc.decided {
-			qc.dec, qc.decided = s.d.Filter.Check(qc.qname, qc.groups), true
+			qc.dec, qc.decided = s.d.Filter.Check(qc.qname, qc.qtype, qc.groups), true
 		}
 		if qc.dec.Action == filter.ActionAllow {
 			if qc.tracing() {
@@ -191,7 +197,7 @@ func (s *Server) process(qc *qctx) result {
 	return s.forward(qc)
 }
 
-// forward runs steps 12a–14c: AAAA disabled, conditional forwarding or the
+// forward runs steps 12a–14d: AAAA disabled, conditional forwarding or the
 // default upstreams, and the checks of their answer.
 func (s *Server) forward(qc *qctx) result {
 	if r, ok := s.aaaaDisabled(qc); ok { // 12a
@@ -222,6 +228,7 @@ func (s *Server) forward(qc *qctx) result {
 	stripIPv6Hints(qc, &r)             // 14a
 	s.synthesizeAAAA(qc, &r, via, ips) // 14b
 	s.rebindCheck(qc, &r)              // 14c
+	s.responseIPCheck(qc, &r)          // 14d
 	up.keep(&r)
 	return r
 }
@@ -263,7 +270,7 @@ func (up upstreamAnswer) keep(r *result) {
 	}
 	switch {
 	case r.status == StatusBlockedCNAME, r.status == StatusBlockedUpstream, r.status == StatusBlockedRebind,
-		r.reason == ReasonBogusNXDomain:
+		r.status == StatusBlockedIP, r.reason == ReasonBogusNXDomain:
 		if !up.early {
 			up.summary = summarize(up.msg.Answer)
 		}
@@ -274,8 +281,18 @@ func (up upstreamAnswer) keep(r *result) {
 }
 
 // resolveVia forwards the query to specific resolvers (via == nil: the
-// default set) and converts the reply into a result.
+// default set, or the client's group set) and converts the reply into a
+// result.
 func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, what string) result {
+	if len(via) == 0 {
+		if _, name, ok := s.groupUpstream(qc); ok {
+			if what == "upstreams" {
+				what = "group upstreams of " + name
+			} else {
+				what += " (group upstreams of " + name + ")"
+			}
+		}
+	}
 	resp, info, err := s.exchange(qc, qc.q, via, ips)
 	if err != nil {
 		if qc.tracing() {
@@ -303,10 +320,10 @@ func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, what strin
 	return r
 }
 
-// exchange sends a fresh query for q upstream: via == nil asks the default
-// set with the client subnet of dns.ecs. A query from one of the target
-// resolvers themselves (the source address) is refused with errLoop (loop
-// guard).
+// exchange sends a fresh query for q upstream: via == nil asks the client's
+// group set (groupUpstream; fail closed) or else the default set with the
+// client subnet of dns.ecs. A query from one of the target resolvers
+// themselves (the source address) is refused with errLoop (loop guard).
 func (s *Server) exchange(qc *qctx, q dns.Question, via []string, ips []netip.Addr) (*dns.Msg, upstream.Info, error) {
 	if s.d.Upstream == nil {
 		return nil, upstream.Info{}, errNoUpstream
@@ -321,7 +338,14 @@ func (s *Server) exchange(qc *qctx, q dns.Question, via []string, ips []netip.Ad
 		err  error
 	)
 	if len(via) == 0 {
-		resp, info, err = s.d.Upstream.Resolve(qc.ctx, req, s.ecsFor(qc))
+		if gid, name, ok := s.groupUpstream(qc); ok {
+			resp, info, err = s.d.Upstream.ResolveGroup(qc.ctx, req, gid)
+			if err != nil {
+				err = fmt.Errorf("group upstreams of %s failed: %w", name, err)
+			}
+		} else {
+			resp, info, err = s.d.Upstream.Resolve(qc.ctx, req, s.ecsFor(qc))
+		}
 	} else {
 		resp, info, err = s.d.Upstream.ResolveVia(qc.ctx, req, via)
 	}
@@ -364,7 +388,7 @@ func (s *Server) inspectCNAMEs(qc *qctx, r *result) {
 			continue
 		}
 		target := normalizeName(c.Target)
-		d := s.d.Filter.Check(target, qc.groups)
+		d := s.d.Filter.Check(target, qc.qtype, qc.groups)
 		if !d.Blocked() {
 			continue
 		}
@@ -375,6 +399,21 @@ func (s *Server) inspectCNAMEs(qc *qctx, r *result) {
 		r.upstream, r.def, r.ede = upstreamName, def, ede
 		return
 	}
+}
+
+// groupUpstream returns the group whose upstreams answer the client instead
+// of the default set (Upstream.GroupFor with all its groups: pauses do not
+// matter), computed once per query.
+func (s *Server) groupUpstream(qc *qctx) (int64, string, bool) {
+	if !qc.grpChecked {
+		qc.grpChecked = true
+		if s.d.Upstream != nil && qc.id != nil {
+			if qc.grp, qc.grpOK = s.d.Upstream.GroupFor(qc.id.GroupIDs); qc.grpOK {
+				qc.grpName = s.d.Upstream.GroupName(qc.grp)
+			}
+		}
+	}
+	return qc.grp, qc.grpName, qc.grpOK
 }
 
 // servfail returns SERVFAIL with status error.

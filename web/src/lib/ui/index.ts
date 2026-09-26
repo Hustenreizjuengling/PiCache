@@ -1,6 +1,7 @@
 // UI components (docs/DESIGN.md "Components"): import { Button, Table, … } from '$lib/ui'.
 
 export { default as Badge } from './Badge.svelte'
+export { default as BulkBar } from './BulkBar.svelte'
 export { default as Button } from './Button.svelte'
 export { default as CacheStatusChip } from './CacheStatusChip.svelte'
 export { default as Chart } from './Chart.svelte'
@@ -27,6 +28,7 @@ export { default as PairStrip } from './PairStrip.svelte'
 export { default as Panel } from './Panel.svelte'
 export { default as QueryStatusChip } from './QueryStatusChip.svelte'
 export { default as Select } from './Select.svelte'
+export { default as Segmented } from './Segmented.svelte'
 export { default as SidePanel } from './SidePanel.svelte'
 export { default as Skeleton } from './Skeleton.svelte'
 export { default as Spinner } from './Spinner.svelte'
@@ -45,6 +47,7 @@ export { CursorStack } from './cursor.svelte'
 export { getFieldContext, type FieldContext } from './field'
 export { toast } from './toast.svelte'
 export type {
+  BulkAction,
   ChartSeries,
   Column,
   KeyValueItem,

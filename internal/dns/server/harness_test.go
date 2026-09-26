@@ -3,6 +3,7 @@ package dnsserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -41,6 +42,44 @@ type fakeUpstream struct {
 	probe  bool
 	// onProbe runs during Probe (e.g. to look at the server meanwhile).
 	onProbe func()
+	// groups are the groups with group upstreams (GroupFor: the first
+	// in the client's order; presets are not modelled); groupFail makes
+	// ResolveGroup fail.
+	groups    map[int64]string
+	groupFail error
+}
+
+// GroupFor returns the lowest group of groups that has group upstreams.
+func (f *fakeUpstream) GroupFor(groups []int64) (int64, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, g := range groups {
+		if _, ok := f.groups[g]; ok {
+			return g, true
+		}
+	}
+	return 0, false
+}
+
+func (f *fakeUpstream) GroupName(id int64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.groups[id]
+}
+
+// ResolveGroup records the call with via ["group:<id>"].
+func (f *fakeUpstream) ResolveGroup(_ context.Context, req *dns.Msg, id int64) (*dns.Msg, upstream.Info, error) {
+	f.mu.Lock()
+	fail := f.groupFail
+	f.mu.Unlock()
+	if fail != nil {
+		q := req.Question[0]
+		f.mu.Lock()
+		f.calls = append(f.calls, upCall{name: normalizeName(q.Name), qtype: q.Qtype, via: []string{fmt.Sprintf("group:%d", id)}})
+		f.mu.Unlock()
+		return nil, upstream.Info{}, fail
+	}
+	return f.exchange(req, []string{fmt.Sprintf("group:%d", id)})
 }
 
 func (f *fakeUpstream) Resolve(_ context.Context, req *dns.Msg, ecs netip.Prefix) (*dns.Msg, upstream.Info, error) {
@@ -135,11 +174,22 @@ type fakeFilter struct {
 	checked map[string][][]int64
 	// scoped: the decisions for the name apply only to this group.
 	scoped map[string]int64
+	// types: the decisions for the name apply only to this query type
+	// ($dnstype); checkedTypes records the types Check was asked with.
+	types        map[string]uint16
+	checkedTypes map[string][]uint16
+	// ruleTypes limits only the user-rule decisions (CheckRules) of a
+	// name to a type (a typed allow rule next to a protection list).
+	ruleTypes map[string]uint16
+	// ips are the decisions of CheckIP; ipChecked the addresses asked.
+	ips       map[netip.Addr]filter.Decision
+	ipChecked []netip.Addr
 }
 
 func newFakeFilter() *fakeFilter {
 	return &fakeFilter{check: map[string]filter.Decision{}, rules: map[string]filter.Decision{},
-		protect: map[string]filter.Decision{}, checked: map[string][][]int64{}, scoped: map[string]int64{}}
+		protect: map[string]filter.Decision{}, checked: map[string][][]int64{}, scoped: map[string]int64{},
+		types: map[string]uint16{}, checkedTypes: map[string][]uint16{}, ruleTypes: map[string]uint16{}, ips: map[netip.Addr]filter.Decision{}}
 }
 
 // applies reports whether the decisions for qname apply to groups (f.mu held).
@@ -149,11 +199,16 @@ func (f *fakeFilter) applies(qname string, groups []int64) bool {
 }
 
 // Check returns check[qname] (the full-precedence decision) if set, else
-// the user rule decision.
-func (f *fakeFilter) Check(qname string, groups []int64) filter.Decision {
+// the user rule decision; a decision limited to a type (types) applies to
+// that type only.
+func (f *fakeFilter) Check(qname string, qtype uint16, groups []int64) filter.Decision {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checked[qname] = append(f.checked[qname], slices.Clone(groups))
+	f.checkedTypes[qname] = append(f.checkedTypes[qname], qtype)
+	if t, ok := f.types[qname]; ok && t != qtype {
+		return filter.Decision{}
+	}
 	if !f.applies(qname, groups) {
 		return filter.Decision{}
 	}
@@ -163,22 +218,40 @@ func (f *fakeFilter) Check(qname string, groups []int64) filter.Decision {
 	return f.rules[qname]
 }
 
-func (f *fakeFilter) CheckRules(qname string, groups []int64) filter.Decision {
+func (f *fakeFilter) CheckRules(qname string, qtype uint16, groups []int64) filter.Decision {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.applies(qname, groups) {
+		return filter.Decision{}
+	}
+	t, ok := f.ruleTypes[qname]
+	if !ok {
+		t, ok = f.types[qname]
+	}
+	if ok && t != qtype {
 		return filter.Decision{}
 	}
 	return f.rules[qname]
 }
 
-func (f *fakeFilter) CheckProtection(qname string, groups []int64) filter.Decision {
+func (f *fakeFilter) CheckProtection(qname string, qtype uint16, groups []int64) filter.Decision {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.applies(qname, groups) {
 		return filter.Decision{}
 	}
+	if t, ok := f.types[qname]; ok && t != qtype {
+		return filter.Decision{}
+	}
 	return f.protect[qname]
+}
+
+// CheckIP returns ips[ip] (canonical).
+func (f *fakeFilter) CheckIP(ip netip.Addr, groups []int64) filter.Decision {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ipChecked = append(f.ipChecked, ip)
+	return f.ips[ip.Unmap()]
 }
 
 // lastChecked returns the groups of the last Check of qname.
@@ -192,7 +265,7 @@ func (f *fakeFilter) lastChecked(qname string) []int64 {
 	return c[len(c)-1]
 }
 
-func (f *fakeFilter) Explain(context.Context, string, []int64) ([]filter.Match, error) {
+func (f *fakeFilter) Explain(context.Context, string, uint16, []int64) ([]filter.Match, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.matches, nil
@@ -348,6 +421,11 @@ func newEnv(t *testing.T, mutate func(*settings.All)) *testEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
+	// The tables of the clients package (records per group reference
+	// client_groups; the dns component migrates after it, as in app).
+	if err := d.Migrate(ctx, "clients", clients.Migrations()); err != nil {
+		t.Fatal(err)
+	}
 	set, err := settings.Open(ctx, d, quietLog())
 	if err != nil {
 		t.Fatal(err)

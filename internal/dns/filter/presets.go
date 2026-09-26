@@ -170,7 +170,7 @@ func (e *Engine) SetPresets(ctx context.Context, group int64, want map[string]bo
 						return err
 					}
 					rows = append(rows, &listRT{List: List{
-						ID: id, Name: entry.Name, URL: entry.URL, Kind: entry.Kind, PlainDomains: entry.PlainDomains,
+						ID: id, Name: entry.Name, URL: entry.URL, Kind: entry.Kind, Format: FormatDomains, PlainDomains: entry.PlainDomains,
 						Category: entry.Category, CatalogKey: entry.Key, Enabled: true, GroupIDs: []int64{group},
 						Status: statusPending, CreatedAt: db.Time(db.Ms(now)),
 					}})
@@ -337,7 +337,7 @@ func (e *Engine) RevertPresets(ctx context.Context, c PresetChange) (deleted []i
 			}
 			e.removeFiles(id)
 		}
-		e.publishLocked(nil, nil)
+		e.publishLocked(nil, nil, nil)
 		e.mu.Unlock()
 		e.requestCompile()
 	}
@@ -385,7 +385,7 @@ func (e *Engine) syncLists(rows []*listRT, ids []int64) []List {
 		changed = true
 	}
 	if changed {
-		e.publishLocked(nil, nil)
+		e.publishLocked(nil, nil, nil)
 		e.requestCompile()
 		e.signal()
 	}

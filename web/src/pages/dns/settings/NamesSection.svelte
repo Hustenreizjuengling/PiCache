@@ -1,15 +1,16 @@
 <!--
   @component
   Local names: the local domain (never sent to public upstreams), the names
-  PiCache answers with its own addresses, the router resolver (auto =
-  default gateway, a fixed address, or off), single-label names kept local
-  and extra networks whose reverse lookups stay local (with a warning for
-  public ranges).
+  PiCache answers with its own addresses and, optionally, which addresses
+  those are (with this machine's interface addresses as help), the router
+  resolver (auto = default gateway, a fixed address, or off), single-label
+  names kept local and extra networks whose reverse lookups stay local
+  (with a warning for public ranges).
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
   import { t } from '$i18n/index.svelte'
-  import type { DnsSettings, RouterStatus } from '$lib/api'
+  import { api, resource, type DnsSettings, type RouterStatus } from '$lib/api'
   import type { SettingsForm } from '$lib/settings.svelte'
   import { Field, Input, Notice, Panel, Select, Toggle } from '$lib/ui'
   import { lineError } from '../shared/errors'
@@ -25,6 +26,17 @@
   let { form, status }: Props = $props()
 
   const d = $derived(form.draft as DnsSettings)
+
+  // This machine's addresses, as help for the server-name addresses (link-local ones are never answered).
+  const interfaces = resource((signal) => api.dhcp.interfaces({ signal }))
+  const ownV4 = $derived(
+    (interfaces.data ?? []).flatMap((i) => i.ipv4.map((a) => `${a.split('/')[0]} (${i.name})`)),
+  )
+  const ownV6 = $derived(
+    (interfaces.data ?? []).flatMap((i) =>
+      i.ipv6.filter((a) => a.kind !== 'link-local' && !a.temporary).map((a) => `${a.address} (${i.name})`),
+    ),
+  )
 
   type Mode = 'auto' | 'off' | 'manual'
 
@@ -81,6 +93,28 @@
         <LinesInput bind:value={d.serverNames} rows={2} placeholder="picache" />
       </Field>
     </div>
+    <section class="stack-sm sub" aria-labelledby="dns-names-addr">
+      <h3 id="dns-names-addr">{t('dns.settings.names.addresses')}</h3>
+      <p class="small muted">{t('dns.settings.names.addressesHelp')}</p>
+      <div class="grid">
+        <Field
+          label={t('dns.settings.names.addressesV4')}
+          optional
+          help={ownV4.length > 0 ? t('dns.settings.names.ownAddresses', { addresses: ownV4.join(', ') }) : undefined}
+          error={lineError(form.saveError, 'dns.serverNameAddresses.ipv4')}
+        >
+          <LinesInput bind:value={d.serverNameAddresses.ipv4} rows={2} placeholder={t('dns.settings.names.automatic')} />
+        </Field>
+        <Field
+          label={t('dns.settings.names.addressesV6')}
+          optional
+          help={ownV6.length > 0 ? t('dns.settings.names.ownAddresses', { addresses: ownV6.join(', ') }) : undefined}
+          error={lineError(form.saveError, 'dns.serverNameAddresses.ipv6')}
+        >
+          <LinesInput bind:value={d.serverNameAddresses.ipv6} rows={2} placeholder={t('dns.settings.names.automatic')} />
+        </Field>
+      </div>
+    </section>
     <div class="grid">
       <Field label={t('dns.settings.names.router')} help={statusText ?? t('dns.settings.names.routerHelp')} error={form.error('routerResolver')}>
         <Select
@@ -126,6 +160,13 @@
 </Panel>
 
 <style>
+  .sub {
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--line);
+  }
+  h3 {
+    font-size: var(--fs-md);
+  }
   .err {
     color: var(--danger);
     font-size: var(--fs-sm);

@@ -19,7 +19,13 @@ import (
 // migrations of component "filter" (append-only). Version 1 also creates the
 // default list (HaGeZi Multi NORMAL) and links it to the Default group.
 // Version 2 adds the category and catalogue key of a list; New fills them
-// for existing lists (backfillCategories).
+// for existing lists (backfillCategories). Version 3 (0.13.0) adds the list
+// format and the automatic name, the modifiers of user rules and the user
+// IP rules with their groups; it only adds columns, tables and an index
+// (a rebuilt filter_rules or filter_lists would lose their group links
+// through ON DELETE CASCADE, and a rebuilt filter_lists could reset its
+// AUTOINCREMENT sequence, which the matcher and the cached copies rely
+// on).
 var migrations = []string{
 	`CREATE TABLE filter_lists (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused: the matcher refers to list IDs
@@ -72,6 +78,31 @@ var migrations = []string{
 	INSERT INTO filter_list_groups (list_id, group_id) SELECT 1, id FROM client_groups WHERE id = 1;`,
 	`ALTER TABLE filter_lists ADD COLUMN category TEXT NOT NULL DEFAULT '';
 	ALTER TABLE filter_lists ADD COLUMN catalog_key TEXT NOT NULL DEFAULT '';`,
+	`ALTER TABLE filter_lists ADD COLUMN format    TEXT    NOT NULL DEFAULT 'domains'; -- domains | ips (checked in Go)
+	ALTER TABLE filter_lists ADD COLUMN name_auto INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE filter_rules ADD COLUMN qtypes        TEXT    NOT NULL DEFAULT '[]'; -- JSON array of normalised type names
+	ALTER TABLE filter_rules ADD COLUMN qtypes_negate INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE filter_rules ADD COLUMN reply         TEXT    NOT NULL DEFAULT '';
+	ALTER TABLE filter_rules ADD COLUMN reply_ipv4    TEXT    NOT NULL DEFAULT '';
+	ALTER TABLE filter_rules ADD COLUMN reply_ipv6    TEXT    NOT NULL DEFAULT '';
+	ALTER TABLE filter_rules ADD COLUMN denyallow     TEXT    NOT NULL DEFAULT '[]'; -- JSON array of domains
+	ALTER TABLE filter_rules ADD COLUMN invert        INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE filter_ip_rules (
+		id         INTEGER PRIMARY KEY,
+		action     TEXT    NOT NULL CHECK (action IN ('allow', 'block')),
+		pattern    TEXT    NOT NULL, -- canonical address or masked CIDR
+		enabled    INTEGER NOT NULL DEFAULT 1,
+		comment    TEXT    NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		UNIQUE (action, pattern)
+	);
+	CREATE TABLE filter_ip_rule_groups (
+		rule_id  INTEGER NOT NULL REFERENCES filter_ip_rules(id) ON DELETE CASCADE,
+		group_id INTEGER NOT NULL REFERENCES client_groups(id) ON DELETE CASCADE,
+		PRIMARY KEY (rule_id, group_id)
+	) WITHOUT ROWID;
+	CREATE INDEX filter_ip_rule_groups_group ON filter_ip_rule_groups(group_id);`,
 }
 
 // backfillCategories gives every list with an empty category the category
@@ -135,7 +166,7 @@ func mostlyTLDs(ctx context.Context, path, plain string) bool {
 		return false
 	}
 	defer f.Close()
-	lp := newLineParser(formatOf("block", plain, CategoryOther))
+	lp := newLineParser(formatOf("block", plain, CategoryOther, FormatDomains))
 	broad, total := 0, 0
 	err = scanLines(ctx, io.LimitReader(f, maxListBytes), func(line []byte, long bool) {
 		if long {
@@ -173,7 +204,7 @@ type querier interface {
 
 const listColumns = `id, name, url, kind, plain_domains, category, catalog_key, enabled, comment, status, last_error,
 	last_updated, last_checked, last_success, entries, invalid, unsupported, size_bytes,
-	etag, last_modified, content_hash, created_at`
+	etag, last_modified, content_hash, created_at, format, name_auto`
 
 // loadLists reads all lists with their groups (q: the read pool, or the
 // transaction that is about to change them).
@@ -189,7 +220,7 @@ func loadLists(ctx context.Context, q querier) ([]*listRT, error) {
 		var updated, checked, success, created int64
 		if err := rows.Scan(&rt.ID, &rt.Name, &rt.URL, &rt.Kind, &rt.PlainDomains, &rt.Category, &rt.CatalogKey, &rt.Enabled, &rt.Comment,
 			&rt.Status, &rt.LastError, &updated, &checked, &success, &rt.Entries, &rt.Invalid,
-			&rt.Unsupported, &rt.SizeBytes, &rt.etag, &rt.lastModified, &rt.hash, &created); err != nil {
+			&rt.Unsupported, &rt.SizeBytes, &rt.etag, &rt.lastModified, &rt.hash, &created, &rt.Format, &rt.NameAuto); err != nil {
 			return nil, fmt.Errorf("filter: load lists: %w", err)
 		}
 		rt.LastUpdated, rt.LastChecked, rt.LastSuccess, rt.CreatedAt = db.Time(updated), db.Time(checked), db.Time(success), db.Time(created)

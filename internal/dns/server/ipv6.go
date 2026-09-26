@@ -151,7 +151,7 @@ func (s *Server) dns64Blocked(qc *qctx, name string, check bool) bool {
 	if !check || !qc.blocking || s.d.Filter == nil || qc.dec.Action == filter.ActionAllow {
 		return false
 	}
-	return s.d.Filter.Check(name, qc.groups).Blocked()
+	return s.d.Filter.Check(name, qc.qtype, qc.groups).Blocked()
 }
 
 // answerChain follows the CNAME chain of owner through rrs (at most
