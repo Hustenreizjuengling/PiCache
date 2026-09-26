@@ -31,6 +31,7 @@ type upCall struct {
 	qtype uint16
 	via   []string
 	do    bool
+	ecs   netip.Prefix
 }
 
 type fakeUpstream struct {
@@ -38,23 +39,34 @@ type fakeUpstream struct {
 	calls  []upCall
 	answer func(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error)
 	probe  bool
+	// onProbe runs during Probe (e.g. to look at the server meanwhile).
+	onProbe func()
 }
 
-func (f *fakeUpstream) Resolve(_ context.Context, req *dns.Msg) (*dns.Msg, upstream.Info, error) {
-	return f.exchange(req, nil)
+func (f *fakeUpstream) Resolve(_ context.Context, req *dns.Msg, ecs netip.Prefix) (*dns.Msg, upstream.Info, error) {
+	return f.exchangeECS(req, nil, ecs)
 }
 
 func (f *fakeUpstream) ResolveVia(_ context.Context, req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
 	return f.exchange(req, via)
 }
 
-func (f *fakeUpstream) Probe(context.Context, netip.Addr) bool { return f.probe }
+func (f *fakeUpstream) Probe(context.Context, netip.Addr) bool {
+	if f.onProbe != nil {
+		f.onProbe()
+	}
+	return f.probe
+}
 
 func (f *fakeUpstream) exchange(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
+	return f.exchangeECS(req, via, netip.Prefix{})
+}
+
+func (f *fakeUpstream) exchangeECS(req *dns.Msg, via []string, ecs netip.Prefix) (*dns.Msg, upstream.Info, error) {
 	q := req.Question[0]
 	opt := req.IsEdns0()
 	f.mu.Lock()
-	f.calls = append(f.calls, upCall{name: normalizeName(q.Name), qtype: q.Qtype, via: slices.Clone(via), do: opt != nil && opt.Do()})
+	f.calls = append(f.calls, upCall{name: normalizeName(q.Name), qtype: q.Qtype, via: slices.Clone(via), do: opt != nil && opt.Do(), ecs: ecs})
 	answer := f.answer
 	f.mu.Unlock()
 	if answer != nil {
@@ -73,6 +85,16 @@ func (f *fakeUpstream) callsFor(name string) []upCall {
 		}
 	}
 	return out
+}
+
+// last returns the most recent upstream call.
+func (f *fakeUpstream) last() upCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) == 0 {
+		return upCall{}
+	}
+	return f.calls[len(f.calls)-1]
 }
 
 func (f *fakeUpstream) setAnswer(fn func(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error)) {
@@ -155,8 +177,15 @@ func (f fakeServices) MatchDNS(qname string) (string, bool) {
 type fakeClients struct {
 	mu        sync.Mutex
 	ids       map[netip.Addr]*clients.Identity
+	byMAC     map[string]*clients.Identity // IdentifyDerived with a MAC
 	seen      map[netip.Addr]int
 	transient map[netip.Addr]int
+	derived   []derivedCall
+}
+
+type derivedCall struct {
+	ip  netip.Addr
+	mac string
 }
 
 func (f *fakeClients) Identify(ip netip.Addr) *clients.Identity {
@@ -166,6 +195,19 @@ func (f *fakeClients) Identify(ip netip.Addr) *clients.Identity {
 		return id
 	}
 	return &clients.Identity{IP: ip, GroupIDs: []int64{clients.DefaultGroupID}}
+}
+
+func (f *fakeClients) IdentifyDerived(ip netip.Addr, mac string) *clients.Identity {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.derived = append(f.derived, derivedCall{ip, mac})
+	if id, ok := f.ids[ip]; ok && ip.IsValid() {
+		return id
+	}
+	if id, ok := f.byMAC[mac]; ok && mac != "" {
+		return id
+	}
+	return &clients.Identity{IP: ip, MAC: mac, GroupIDs: []int64{clients.DefaultGroupID}}
 }
 
 func (f *fakeClients) Seen(ip netip.Addr) {

@@ -194,7 +194,7 @@ func TestMetricsEndpointAccess(t *testing.T) {
 func TestWriteMetrics(t *testing.T) {
 	var buf bytes.Buffer
 	writeMetrics(&buf, metricsSnapshot{
-		Version: `v1.0 "x"`, DNSQueries: 42, DNSRateLimited: 3, CacheBytesHit: 1 << 30, CacheBytesWAN: 5,
+		Version: `v1.0 "x"`, DNSQueries: 42, DNSRateLimited: 3, DNSBlocked: 4, DNSDropped: 6, CacheBytesHit: 1 << 30, CacheBytesWAN: 5,
 		StoreOnline: true, StoreBytes: 1000, StoreFreeBytes: 2000,
 		Upstreams:  []upstream.UpstreamStat{{Upstream: "https://dns.quad9.net/dns-query", AvgRTTMs: 12.5}, {Upstream: "a\\b\nc"}},
 		LogDropped: 7,
@@ -204,6 +204,10 @@ func TestWriteMetrics(t *testing.T) {
 		"# TYPE picache_dns_queries_total counter",
 		"picache_dns_queries_total 42",
 		"picache_dns_rate_limited_total 3",
+		"# TYPE picache_dns_blocked_clients_total counter",
+		"picache_dns_blocked_clients_total 4",
+		"# TYPE picache_dns_dropped_total counter",
+		"picache_dns_dropped_total 6",
 		"picache_cache_bytes_hit_total 1073741824",
 		"picache_cache_bytes_wan_total 5",
 		"# TYPE picache_cache_store_bytes gauge",

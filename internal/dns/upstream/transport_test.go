@@ -43,7 +43,7 @@ func TestPlainUDPRetriesOverTCPOnTruncation(t *testing.T) {
 	st := newStore(t, func(d *settings.DNS) { d.Upstreams = []string{addr.String()}; d.CacheEnabled = false })
 	r := newTestResolver(t, st, testOptions(), nil)
 	defer r.Close()
-	m, info, err := r.Resolve(context.Background(), query("big.example.", dns.TypeA, 3, false))
+	m, info, err := r.Resolve(context.Background(), query("big.example.", dns.TypeA, 3, false), noECS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestTCPUpstreamNeverUsesUDP(t *testing.T) {
 	st := newStore(t, func(d *settings.DNS) { d.Upstreams = []string{"tcp://" + addr.String()} })
 	r := newTestResolver(t, st, testOptions(), nil)
 	defer r.Close()
-	if _, _, err := r.Resolve(context.Background(), query("tcp.example.", dns.TypeA, 1, false)); err != nil {
+	if _, _, err := r.Resolve(context.Background(), query("tcp.example.", dns.TypeA, 1, false), noECS); err != nil {
 		t.Fatal(err)
 	}
 	if udp.Load() != 0 || tcp.Load() != 1 {
@@ -112,7 +112,7 @@ func TestQuestionMismatchIsRejected(t *testing.T) {
 			r := newTestResolver(t, st, opts, nil)
 			defer r.Close()
 			begin := time.Now()
-			m, _, err := r.Resolve(context.Background(), query("good.example.", dns.TypeA, 1, false))
+			m, _, err := r.Resolve(context.Background(), query("good.example.", dns.TypeA, 1, false), noECS)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want %q", err, tc.wantErr)
@@ -186,7 +186,7 @@ func TestUnreachableUpstreamFailsFast(t *testing.T) {
 	st := newStore(t, func(d *settings.DNS) { d.Upstreams = []string{"tcp://" + addr} })
 	r := newTestResolver(t, st, testOptions(), nil)
 	defer r.Close()
-	_, _, err = r.Resolve(context.Background(), query("x.example.", dns.TypeA, 1, false))
+	_, _, err = r.Resolve(context.Background(), query("x.example.", dns.TypeA, 1, false), noECS)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

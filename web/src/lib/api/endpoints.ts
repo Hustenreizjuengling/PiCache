@@ -147,6 +147,18 @@ const dns = {
     update: (id: number, f: T.ForwarderInput, o?: ReqOpts) =>
       http.put<T.Forwarder>(`/dns/forwarders/${seg(id)}`, f, o),
     remove: (id: number, o?: ReqOpts) => http.del(`/dns/forwarders/${seg(id)}`, o),
+    /** Checks (dryRun) or applies `[/domain/…/]target …` lines; per-line errors in the 200 answer, nothing written if there is any. */
+    import: (req: T.ForwarderImportRequest, o?: ReqOpts) =>
+      http.post<T.ForwarderImportResult>('/dns/forwarders/import', req, o),
+  },
+  /** dns.blockedClients one entry at a time (400 field "client"/"entry" also for a lockout; 409 when the list is full). */
+  blockedClients: {
+    /** With `device`, an IP address whose MAC address is known is stored as that MAC. Idempotent: `added` false when an entry already matches. */
+    add: (client: string, device = false, o?: ReqOpts) =>
+      http.post<T.BlockClientResult>('/dns/blocked-clients', device ? { client, device } : { client }, o),
+    /** 404 when the entry is not stored. */
+    remove: (entry: string, o?: ReqOpts) =>
+      http.del<{ blockedClients: string[] }>('/dns/blocked-clients', { ...o, query: { entry } }),
   },
 }
 

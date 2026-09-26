@@ -18,7 +18,7 @@ import (
 type UpstreamSpec struct {
 	Raw     string // original string
 	Proto   string // udp | tcp | tls | https
-	Host    string // IP literal (udp/tcp) or hostname/IP (tls/https)
+	Host    string // hostname or IP literal (lower-case, without brackets)
 	Port    int
 	URL     string // full URL for https
 	IsIPLit bool   // Host is an IP literal
@@ -27,9 +27,12 @@ type UpstreamSpec struct {
 // Addr returns host:port.
 func (u UpstreamSpec) Addr() string { return net.JoinHostPort(u.Host, strconv.Itoa(u.Port)) }
 
-// ParseUpstream parses and validates an upstream string.
+// ParseUpstream parses and validates an upstream string. Plain DNS
+// upstreams (udp/tcp) may be given by name; whether such a name may be used
+// (PublicUpstreamName) depends on the local domain and is checked by the
+// callers.
 //
-//	9.9.9.9 | 9.9.9.9:53 | [2620:fe::fe]:53 | udp://… | tcp://… | tls://dns.quad9.net[:853] | https://dns.quad9.net/dns-query
+//	9.9.9.9 | 9.9.9.9:53 | [2620:fe::fe]:53 | dns.example | udp://… | tcp://… | tls://dns.quad9.net[:853] | https://dns.quad9.net/dns-query
 func ParseUpstream(s string) (UpstreamSpec, error) {
 	s = strings.TrimSpace(s)
 	spec := UpstreamSpec{Raw: s}
@@ -66,11 +69,12 @@ func ParseUpstream(s string) (UpstreamSpec, error) {
 	}
 	switch spec.Proto {
 	case "udp", "tcp":
-		if !spec.IsIPLit {
-			return spec, errors.New("plain DNS upstreams must be IP addresses")
-		}
 		if u.Path != "" && u.Path != "/" {
 			return spec, errors.New("plain DNS upstreams take no path")
+		}
+		if !spec.IsIPLit && numericTLD(spec.Host) {
+			// "192.168.1781", "10.0.0": a mistyped address, never a name.
+			return spec, errors.New("not a valid IP address")
 		}
 	case "tls":
 		if u.Path != "" && u.Path != "/" {
@@ -133,7 +137,24 @@ func (a *All) normalize() {
 	}
 	d := &a.DNS
 	d.Upstreams = clean(d.Upstreams, false)
+	d.FallbackUpstreams = clean(d.FallbackUpstreams, false)
 	d.Bootstrap = clean(d.Bootstrap, true)
+	d.RebindAllow = normalizeList(d.RebindAllow, func(s string) string { return strings.Trim(strings.ToLower(s), ".") })
+	d.PrivateReverseNetworks = normalizeList(d.PrivateReverseNetworks, normalizePrefix)
+	d.BlockedClients = NormalizeBlockedClients(d.BlockedClients)
+	d.DroppedDomains = normalizeList(d.DroppedDomains, func(s string) string {
+		if e, ok := parseDroppedDomain(s); ok {
+			return e.String()
+		}
+		return s
+	})
+	d.BogusNXDomain = normalizeList(d.BogusNXDomain, normalizeAddrOrPrefix)
+	d.EDNSClientTrusted = normalizeList(d.EDNSClientTrusted, normalizeAddrOrPrefix)
+	d.ECS.Mode = strings.ToLower(strings.TrimSpace(d.ECS.Mode))
+	if d.ECS.Mode == "" {
+		d.ECS.Mode = ECSOff
+	}
+	d.ECS.CustomSubnet = normalizePrefix(strings.TrimSpace(d.ECS.CustomSubnet))
 	d.LocalPTRUpstreams = clean(d.LocalPTRUpstreams, false)
 	d.ServerNames = clean(d.ServerNames, true)
 	d.AllowedNetworks = clean(d.AllowedNetworks, true)
@@ -210,14 +231,37 @@ func (a *All) Validate() error {
 			return apperr.Invalid(field, "at most 256 entries")
 		}
 	}
-	needBootstrap := false
-	for i, u := range d.Upstreams {
-		spec, err := ParseUpstream(u)
-		if err != nil {
-			return apperr.Invalid("dns.upstreams["+strconv.Itoa(i)+"]", "%v", err)
+	for field, lim := range map[string][2]int{
+		"dns.fallbackUpstreams":      {len(d.FallbackUpstreams), MaxFallbackUpstreams},
+		"dns.rebindAllow":            {len(d.RebindAllow), MaxRebindAllow},
+		"dns.privateReverseNetworks": {len(d.PrivateReverseNetworks), MaxPrivateReverseNetworks},
+		"dns.blockedClients":         {len(d.BlockedClients), MaxBlockedClients},
+		"dns.droppedDomains":         {len(d.DroppedDomains), MaxDroppedDomains},
+		"dns.bogusNxdomain":          {len(d.BogusNXDomain), MaxBogusNXDomain},
+		"dns.ednsClientTrusted":      {len(d.EDNSClientTrusted), MaxEDNSClientTrusted},
+	} {
+		if lim[0] > lim[1] {
+			return apperr.Invalid(field, "at most %d entries", lim[1])
 		}
-		if !spec.IsIPLit {
+	}
+	needBootstrap := false
+	for _, list := range []struct {
+		field string
+		ups   []string
+	}{{"dns.upstreams", d.Upstreams}, {"dns.fallbackUpstreams", d.FallbackUpstreams}} {
+		for i, u := range list.ups {
+			field := list.field + "[" + strconv.Itoa(i) + "]"
+			spec, err := ParseUpstream(u)
+			if err != nil {
+				return apperr.Invalid(field, "%v", err)
+			}
+			if spec.IsIPLit {
+				continue
+			}
 			needBootstrap = true
+			if (spec.Proto == "udp" || spec.Proto == "tcp") && !PublicUpstreamName(spec.Host, d.LocalDomain) {
+				return apperr.Invalid(field, "%s", ErrPlainUpstreamName)
+			}
 		}
 	}
 	for i, b := range d.Bootstrap {
@@ -226,7 +270,10 @@ func (a *All) Validate() error {
 		}
 	}
 	if needBootstrap && len(d.Bootstrap) == 0 {
-		return apperr.Invalid("dns.bootstrap", "required when an upstream is given by hostname")
+		return apperr.Invalid("dns.bootstrap", "required when an upstream or fallback is given by host name")
+	}
+	if err := d.validateLists(); err != nil {
+		return err
 	}
 	for i, u := range d.LocalPTRUpstreams {
 		spec, err := ParseUpstream(u)
@@ -235,12 +282,21 @@ func (a *All) Validate() error {
 		}
 	}
 	switch d.UpstreamMode {
-	case "load_balance", "parallel", "strict":
+	case "load_balance", "parallel", "strict", "fastest_addr":
 	default:
-		return apperr.Invalid("dns.upstreamMode", "must be load_balance, parallel or strict")
+		return apperr.Invalid("dns.upstreamMode", "must be load_balance, parallel, strict or fastest_addr")
 	}
 	if d.UpstreamTimeoutMs < 500 || d.UpstreamTimeoutMs > 60000 {
 		return apperr.Invalid("dns.upstreamTimeoutMs", "must be between 500 and 60000")
+	}
+	if d.UpstreamBlockedTTL < 10 || d.UpstreamBlockedTTL > 86400 {
+		return apperr.Invalid("dns.upstreamBlockedTtl", "must be between 10 and 86400")
+	}
+	if d.RateLimitIPv4Prefix < 8 || d.RateLimitIPv4Prefix > 32 {
+		return apperr.Invalid("dns.rateLimitIpv4Prefix", "must be between 8 and 32")
+	}
+	if d.RateLimitIPv6Prefix < 32 || d.RateLimitIPv6Prefix > 64 {
+		return apperr.Invalid("dns.rateLimitIpv6Prefix", "must be between 32 and 64")
 	}
 	if d.LocalDomain != "" && !validHostname(d.LocalDomain) {
 		return apperr.Invalid("dns.localDomain", "invalid domain")

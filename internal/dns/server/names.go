@@ -156,6 +156,22 @@ func privateReverseZone(name string) (string, bool) {
 	return "", false
 }
 
+// privateReverseZone returns the locally served reverse zone containing
+// name: a built-in one or one of dns.privateReverseNetworks (served exactly
+// like the built-in zones, step 6). The most specific zone wins.
+func (s *Server) privateReverseZone(name string) (string, bool) {
+	if !strings.HasSuffix(name, ".arpa") {
+		return "", false
+	}
+	rev := s.lists.Load().revZones
+	for n := name; n != ""; n = parent(n) {
+		if privateReverseZones[n] || rev[n] {
+			return n, true
+		}
+	}
+	return "", false
+}
+
 // specialZones are special-use domains that never reach the default
 // upstreams (RFC 6761, RFC 7686, RFC 6762, ICANN .internal).
 var specialZones = []string{"test", "invalid", "onion", "internal", "local"}

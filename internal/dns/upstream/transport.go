@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"time"
 
@@ -55,7 +56,8 @@ func newQuery(name string, qtype, qclass uint16, do bool) *dns.Msg {
 }
 
 // checkReply verifies that m answers q: a response to a standard query that
-// echoes the question (name compared case-insensitively).
+// echoes the question (name compared case-insensitively) and, when q sent a
+// client subnet, does not carry another one (checkECS).
 func checkReply(q, m *dns.Msg) error {
 	if !m.Response || m.Opcode != dns.OpcodeQuery {
 		return errNotResponse
@@ -67,18 +69,51 @@ func checkReply(q, m *dns.Msg) error {
 	if a.Qtype != b.Qtype || a.Qclass != b.Qclass || !equalFoldASCII(a.Name, b.Name) {
 		return errQuestionMismatch
 	}
-	return nil
+	return checkECS(q, m)
 }
 
+// errNoPublicAddr fails an attempt to a plain upstream given by name whose
+// resolved addresses are all private, loopback or this machine's.
+var errNoPublicAddr = errors.New("resolves to no public address")
+
 // plainTransport is classic DNS over UDP (retried over TCP when the reply
-// is truncated) or TCP only.
+// is truncated) or TCP only. An upstream given by name (host) is resolved
+// through the bootstrap servers like DoT and DoH, and only its public
+// unicast addresses that are not this machine's are dialled (filter), in
+// the bootstrap order.
 type plainTransport struct {
-	addr    string
+	addr    string // IP literal upstreams: "ip:port"
 	tcpOnly bool
+
+	host   string // named upstreams: the name, its port and resolver
+	port   uint16
+	boot   *bootstrap
+	filter func(ctx context.Context, addrs []netip.Addr) ([]netip.Addr, error)
 }
 
 func (t *plainTransport) exchange(ctx context.Context, q *dns.Msg, wire []byte) (*dns.Msg, error) {
-	return exchangePlain(ctx, t.addr, q, wire, t.tcpOnly)
+	if t.host == "" {
+		return exchangePlain(ctx, t.addr, q, wire, t.tcpOnly)
+	}
+	addrs, err := t.boot.lookup(ctx, t.host)
+	if err != nil {
+		return nil, err
+	}
+	if addrs, err = t.filter(ctx, addrs); err != nil || len(addrs) == 0 {
+		return nil, errNoPublicAddr
+	}
+	var lastErr error
+	for _, a := range addrs {
+		m, err := exchangePlain(ctx, netip.AddrPortFrom(a, t.port).String(), q, wire, t.tcpOnly)
+		if err == nil {
+			return m, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || errors.Is(err, errTimeout) {
+			break // an address that did not answer in time used up the attempt
+		}
+	}
+	return nil, lastErr
 }
 
 func (t *plainTransport) close() {}

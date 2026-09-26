@@ -115,7 +115,7 @@ func TestForwarderMatch(t *testing.T) {
 	}
 	for _, tc := range tests {
 		got := ""
-		if f := tbl.match(tc.name); f != nil {
+		if f := tbl.match(tc.name, false); f != nil {
 			got = f.domain
 		}
 		if got != tc.want {
@@ -148,7 +148,7 @@ func TestForwarderCRUD(t *testing.T) {
 		{Domain: "fritz.box", Upstreams: []string{"192.168.178.2"}},
 		{Domain: "bad domain", Upstreams: []string{"1.1.1.1"}},
 		{Domain: "x.example", Upstreams: nil},
-		{Domain: "x.example", Upstreams: []string{"udp://dns.example"}},
+		{Domain: "x.example", Upstreams: []string{"udp://dns.lan"}}, // a plain target by a local name
 		{Domain: "localhost", Upstreams: []string{"1.1.1.1"}},
 	} {
 		if _, err := e.srv.CreateForwarder(ctx, in); err == nil {
@@ -158,7 +158,7 @@ func TestForwarderCRUD(t *testing.T) {
 	if _, err := e.srv.UpdateForwarder(ctx, f.ID, ForwarderInput{Domain: "*.fritz.box", Upstreams: []string{"192.168.178.1:5353"}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.srv.fwd.Load().match("fritz.box"); got != nil {
+	if got := e.srv.fwd.Load().match("fritz.box", false); got != nil {
 		t.Errorf("*.fritz.box must not match the apex, got %+v", got)
 	}
 	// Forwarder targets are exempt from the rate limit.

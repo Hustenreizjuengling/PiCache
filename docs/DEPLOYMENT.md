@@ -522,6 +522,132 @@ IPv6:
 
 ---
 
+## DNS resolution and protection
+
+### Upstream DNS servers and fallback
+
+By default PiCache sends queries over DNS-over-HTTPS to **Quad9**
+(`https://dns.quad9.net/dns-query`), which blocks known malware domains.
+Quad9's blocks show in the query log as **Blocked by upstream**
+(`blocked-upstream`) and count as blocked. Allow rules cannot lift such a
+block (the upstream answered nothing usable); to reach a name Quad9 blocks,
+create a conditional forwarder for it to another resolver.
+
+If Quad9 does not answer at all (no reply within 3 seconds per upstream and
+at most 7 seconds for all of them, or network errors), PiCache asks the
+**fallback** upstream, **Cloudflare's malware-filtering resolver**
+(`https://security.cloudflare-dns.com/dns-query`), another operator, so an
+outage of one provider is bridged by the other. A reply of any kind (also
+an error reply) never switches to the fallback, which gets at most another
+2.5 seconds. While a fallback answers, the health check warns "fallback DNS
+in use". A network that blocks both providers (for example a firewall that
+allows only its own DNS server) needs its own upstreams in **DNS settings →
+Upstream DNS servers**, e.g. the router's address.
+
+Installations upgraded from a version before 0.9.0 that still used the old
+default list (Quad9 and Cloudflare) get Quad9 and the fallback. An
+installation with its own upstream list keeps it and gets no fallback, so
+queries never start going to another operator; turn the fallback on in
+**DNS settings → Upstream DNS servers → Fallback DNS** if you want one.
+
+- A **local resolver** as upstream (a Docker service such as unbound, a
+  NAS, the router) is entered by its **IP address**. Plain DNS upstreams
+  may also be given by name (`dns.example.com`, `tcp://dns.example.com:5353`),
+  but only public names: PiCache resolves them through the bootstrap
+  servers and dials only public addresses.
+- **Connect to upstreams over IPv6 first** (`dns.bootstrapPreferIpv6`)
+  dials DoT, DoH and named upstreams over IPv6 first, for IPv6-only and
+  DS-Lite networks.
+- **Client subnet (ECS)** (`dns.ecs`, off by default) sends a part of the
+  client's address to the upstreams, so CDNs can pick a nearby server.
+  Quad9's default endpoint and Cloudflare ignore it (Quad9's
+  `https://dns11.quad9.net/dns-query` uses it). Mode `client` discloses the
+  /56 of global IPv6 client addresses, the household's prefix, also for
+  queries sent over IPv4.
+- **Fastest address** (upstream mode `fastest_addr`) asks the upstreams in
+  parallel and puts the address of an answer first that accepts a TCP
+  connection fastest. PiCache then connects to addresses of names its
+  clients look up (bounded, public addresses only, SECURITY.md).
+
+### DNS rebinding protection
+
+Many routers (the FRITZ!Box among them) block DNS answers that point public
+names at addresses of the home network. Once the devices use PiCache, the
+router no longer sees these queries, so PiCache does it itself
+(`dns.rebindProtection`, on by default): an answer from the upstreams that
+points a name at a private, loopback or link-local address is blocked and
+logged as **Rebinding blocked** (`blocked-rebind`). Names of the local
+domain, local records, DHCP names, conditional forwarders with their own
+targets and the router's answers are not affected.
+
+When a legitimate service answers with private addresses:
+
+- add its domain to the allowed domains in **DNS settings → Protection**
+  (`dns.rebindAllow`; the query panel of a `blocked-rebind` row offers
+  **Allow rebinding for `<name>`**). `plex.direct` (Plex) is allowed by
+  default;
+- the host names in `web.allowedHosts` (a public name you gave the PiCache
+  web UI) are allowed automatically;
+- a **local resolver used as default upstream** answers LAN names with LAN
+  addresses: allow its domains, or better create a conditional forwarder
+  for them (forwarders with their own targets are not checked);
+- **DNSBL zones** that a mail server on your network queries through
+  PiCache (they answer with 127.0.0.x) must be allowed too; public DNSBLs
+  usually refuse queries that come through public resolvers anyway.
+
+### Bare names
+
+An address query (A, AAAA, HTTPS, SVCB, ANY) for a bare name without a dot
+(`nas`, `printer`) is answered as
+`<name>.<local domain>` (`nas.lan`): from local records, DHCP names, a
+conditional forwarder, the router, else "does not exist". It is never sent
+to the upstreams, so device names do not leak (`dns.domainNeeded`, on by
+default; other query types such as `NS` or `DS` of top-level names still go
+upstream, so validating resolvers behind PiCache keep working). `wpad` and
+`isatap` come only from local records, never from a device that calls
+itself so. A conditional forwarder with the domain `(unqualified)` (**Single-label
+names** in the forwarder form) gets the bare names that nothing local
+answers.
+
+### Blocked clients
+
+The blocked clients in **DNS settings → Access** (`dns.blockedClients`), and
+**Block device** in the query log and **DNS → Clients & groups → Seen
+recently**,
+drop all DNS queries of an address, a network or a device's MAC address
+without an answer. It is a DNS block only: the device can still use the
+download cache, and a device that uses another DNS server is not affected.
+A MAC entry covers all addresses of a device, but a brand-new address (a
+fresh IPv6 privacy address) passes until the neighbour table knows its
+MAC. PiCache refuses entries that would block itself, the router, the
+container network's gateway or a trusted forwarder, and never drops them
+even if such an entry got into the settings (a restored backup, a changed
+router).
+
+**Dropped domains** (`dns.droppedDomains`) get no answer at all and are not
+logged, which makes troubleshooting harder; over TCP the connection is
+closed, and other queries pipelined on it are lost.
+
+### Forwarders that name their clients (EDNS)
+
+When another DNS server forwards its clients' queries to PiCache (a second
+router, a dnsmasq instance), PiCache sees only that server. If it adds each
+client's address (ECS) and MAC (option 65001), PiCache can identify the
+devices behind it: add the forwarder's address to the trusted EDNS forwarders in
+**DNS settings → Access** (`dns.ednsClientTrusted`). The forwarder must remove
+the options its own clients send and add its own, otherwise any client
+behind it can claim to be another device (and get its groups, parental
+controls and rules). For dnsmasq:
+
+```
+--strip-subnet --strip-mac --add-subnet=32,128 --add-mac
+```
+
+Trusted forwarders are exempt from the rate limit (a whole network behind
+one address).
+
+---
+
 ## DHCP server
 
 PiCache can hand out IPv4 addresses itself and announce itself as IPv6 DNS
@@ -1194,7 +1320,7 @@ sudo systemctl start picache
 ```
 
 Pick the copy named after the version you go back to. An older binary cannot
-be expected to open a database that a newer version has migrated. Changes to
+be expected to open a database that a newer version has migrated. A version before 0.9.0 refuses the `picache.db` of 0.9.0 or later (newer schema) and does not start: go back with the copy 0.9.0 made at its first start (`picache-<old version>-<timestamp>.db`); the rollback of the update helper does this itself, Docker users must restore that copy before starting an older image. An older version cannot open the newer `logs.db` either and sets it aside, so the query log and the statistics start fresh after such a downgrade. Changes to
 the configuration made since the upgrade are lost. With Docker, set the
 previous image tag in the compose file and restore the copy from the
 `picache-data` volume the same way.

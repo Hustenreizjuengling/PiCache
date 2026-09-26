@@ -67,6 +67,47 @@ func clean(s string, n int) string {
 	return s[:i]
 }
 
+// maxEDETextLen bounds the text of an upstream Extended DNS Error.
+const maxEDETextLen = 200
+
+// cleanEDEText bounds the text of an upstream EDE like the resolver does
+// (it comes from the upstream, untrusted): cut to 200 bytes at a rune
+// boundary, valid UTF-8, without C0 controls, DEL, C1 controls and the
+// bidi controls U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069.
+func cleanEDEText(s string) string {
+	s = clean(strings.ToValidUTF8(s, ""), maxEDETextLen)
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f,
+			r == 0x061c, r == 0x200e, r == 0x200f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// cleanECS returns the canonical masked form of a client subnet ("" if it
+// does not parse); with anon, IPv4 is kept to at most /16 and IPv6 to at
+// most /48 (like anonymised client addresses).
+func cleanECS(s string, anon bool) string {
+	p, err := netip.ParsePrefix(strings.TrimSpace(s))
+	if err != nil || p.Addr().Zone() != "" {
+		return ""
+	}
+	addr, bits := p.Addr(), p.Bits()
+	if addr.Is4In6() && bits >= 96 {
+		addr, bits = addr.Unmap(), bits-96
+	}
+	if anon {
+		if addr.Is4() {
+			bits = min(bits, 16)
+		} else {
+			bits = min(bits, 48)
+		}
+	}
+	return netip.PrefixFrom(addr, bits).Masked().String()
+}
+
 // cleanName lower-cases a DNS/host name and strips the trailing dot.
 func cleanName(s string) string {
 	return clean(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), "."), maxNameLen)
@@ -114,6 +155,13 @@ func cleanQuery(e QueryEvent, anon bool, now time.Time) QueryEvent {
 	e.DurationUs = min(nonNeg(e.DurationUs), maxEventSpan.Microseconds())
 	e.Answer = clean(e.Answer, maxTextLen)
 	e.Protocol = strings.ToLower(clean(e.Protocol, maxShortLen))
+	if e.UpstreamEDE != nil {
+		ede := *e.UpstreamEDE // the producer's value is not modified
+		ede.Code = min(max(ede.Code, 0), 65535)
+		ede.Text = cleanEDEText(ede.Text)
+		e.UpstreamEDE = &ede
+	}
+	e.ECS = cleanECS(e.ECS, anon)
 	return e
 }
 

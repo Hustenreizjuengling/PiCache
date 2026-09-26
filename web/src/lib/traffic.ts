@@ -3,7 +3,7 @@
 // brown = fetched from the Internet. Striped = secondary state of the same
 // meaning. Errors and refusals use status tones, not pair colours.
 
-import type { CacheStatus, HealthStatus, QueryStatus } from './api/types'
+import type { CacheStatus, HealthStatus, LookupStatus } from './api/types'
 import type { Pair, Tone } from './ui/types'
 
 export interface ChipStyle {
@@ -12,7 +12,7 @@ export interface ChipStyle {
   tone?: Tone
 }
 
-const queryStyles: Record<QueryStatus, ChipStyle> = {
+const queryStyles: Record<LookupStatus, ChipStyle> = {
   forwarded: { pair: 'blue' },
   cached: { pair: 'blue', striped: true },
   stale: { pair: 'blue', striped: true },
@@ -26,13 +26,16 @@ const queryStyles: Record<QueryStatus, ChipStyle> = {
   'blocked-special': { pair: 'orange', striped: true },
   'blocked-schedule': { pair: 'orange' },
   'blocked-service': { pair: 'orange' },
+  'blocked-upstream': { pair: 'orange', striped: true },
+  'blocked-rebind': { pair: 'orange' },
   refused: { tone: 'warn' },
   error: { tone: 'fail' },
+  dropped: { tone: 'warn' },
 }
 
 /** Chip colours for a DNS query status. */
 export function queryStatusStyle(status: string): ChipStyle {
-  return queryStyles[status as QueryStatus] ?? { tone: 'neutral' }
+  return queryStyles[status as LookupStatus] ?? { tone: 'neutral' }
 }
 
 /** Whether a query status is one of the blocked-* statuses. */

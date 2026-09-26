@@ -182,9 +182,11 @@ func fakeInterfaces(t *testing.T, cidrs ...string) {
 	old := interfaceAddrs
 	interfaceAddrs = func() ([]net.Addr, error) { return addrs, nil }
 	onLinkV6Cache.reset()
+	onLinkV4Cache.reset()
 	t.Cleanup(func() {
 		interfaceAddrs = old
 		onLinkV6Cache.reset()
+		onLinkV4Cache.reset()
 	})
 }
 
@@ -318,7 +320,7 @@ func TestRateLimiterReconfigureKeepsState(t *testing.T) {
 	if ok, _ := r.Allow(ip); ok {
 		t.Fatal("burst of 1 expected")
 	}
-	r.Reconfigure(1000, 1000, nil)
+	r.Reconfigure(1000, 1000, nil, 32, 64)
 	if ok, _ := r.Allow(ip); !ok {
 		t.Error("a raised limit must apply immediately to existing buckets")
 	}
@@ -334,18 +336,18 @@ func TestRateLimiterReconfigureKeepsState(t *testing.T) {
 	if n != 1 {
 		t.Errorf("buckets = %d, want them kept", n)
 	}
-	r.Reconfigure(1, 1, []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")})
+	r.Reconfigure(1, 1, []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")}, 32, 64)
 	for range 5 {
 		if ok, _ := r.Allow(ip); !ok {
 			t.Fatal("newly exempt client limited")
 		}
 	}
-	r.Reconfigure(1, 1, nil)
+	r.Reconfigure(1, 1, nil, 32, 64)
 	r.Allow(ip)
 	if ok, _ := r.Allow(ip); ok {
 		t.Error("lowered limit must apply")
 	}
-	r.Reconfigure(0, 0, nil)
+	r.Reconfigure(0, 0, nil, 32, 64)
 	if ok, _ := r.Allow(ip); !ok {
 		t.Error("qps 0 must disable limiting")
 	}

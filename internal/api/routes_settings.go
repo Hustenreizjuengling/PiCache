@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strings"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
+	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
 )
@@ -102,6 +106,12 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(
 		if err := s.checkBackupDestination(r, old.Backups.Destination, a.Backups.Destination); err != nil {
 			return err
 		}
+		if err := s.checkBlockedClients(old, a); err != nil {
+			return err
+		}
+		if err := checkECSSubnet(old, a); err != nil {
+			return err
+		}
 		return s.checkDHCP(old, a)
 	})
 	if err != nil {
@@ -132,6 +142,43 @@ func (s *Server) checkBackupDestination(r *http.Request, old, dest string) error
 	}
 	if _, err := s.d.Storage.Target(r.Context(), dest); err != nil {
 		return apperr.Invalid("backups.destination", "no storage target with this id")
+	}
+	return nil
+}
+
+// checkBlockedClients refuses dns.blockedClients entries that would block a
+// client PiCache depends on (docs/ARCHITECTURE.md 6.1): an entry that equals
+// or contains a loopback address, one of this machine's addresses, the
+// router, the container network's gateway in a bridge network or a trusted
+// EDNS forwarder, or a MAC entry of the router, this machine or a trusted
+// EDNS forwarder (its neighbour-table MAC). Checked whenever the list
+// changes (PATCH /settings/dns, PUT /settings); the settings package
+// checks only the form.
+func (s *Server) checkBlockedClients(old, next *settings.All) error {
+	list := settings.NormalizeBlockedClients(next.DNS.BlockedClients)
+	if s.d.DNS == nil || slices.Equal(settings.NormalizeBlockedClients(old.DNS.BlockedClients), list) {
+		return nil
+	}
+	protected := s.d.DNS.ProtectedClients(next.DNS.EDNSClientTrusted, s.neighbourMAC)
+	for i, entry := range list {
+		if why := dnsserver.BlockedClientLockout(entry, protected); why != "" {
+			return apperr.Invalid(fmt.Sprintf("dns.blockedClients[%d]", i), "%s", why)
+		}
+	}
+	return nil
+}
+
+// checkECSSubnet refuses a changed custom client subnet that is not public
+// (netutil.IsPublicUnicast: no private, CGNAT, link-local, documentation or
+// embedded private address); the settings package checks the form (the
+// settings package cannot use netutil, which depends on it).
+func checkECSSubnet(old, next *settings.All) error {
+	cur := strings.TrimSpace(next.DNS.ECS.CustomSubnet)
+	if cur == "" || (cur == old.DNS.ECS.CustomSubnet && strings.EqualFold(strings.TrimSpace(next.DNS.ECS.Mode), old.DNS.ECS.Mode)) {
+		return nil
+	}
+	if p, err := netip.ParsePrefix(cur); err == nil && !netutil.IsPublicUnicast(p.Masked().Addr()) {
+		return apperr.Invalid("dns.ecs.customSubnet", "must be a public network (not private, carrier-grade NAT, link-local, documentation or another special-use range)")
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
@@ -11,11 +12,15 @@ import (
 // maxUpstreamLen bounds the upstream string accepted by the test endpoint.
 const maxUpstreamLen = 512
 
-// upstreamsView is the response of GET /dns/upstreams.
+// upstreamsView is the response of GET /dns/upstreams: the statistics of the
+// default upstreams in use and of the fallbacks (never null), and when a
+// fallback last answered (omitted if never since the start).
 type upstreamsView struct {
-	Upstreams  []upstream.UpstreamStat `json:"upstreams"`
-	Cache      upstream.CacheStat      `json:"cache"`
-	ClockGuard bool                    `json:"clockGuard"`
+	Upstreams        []upstream.UpstreamStat `json:"upstreams"`
+	Fallbacks        []upstream.UpstreamStat `json:"fallbacks"`
+	FallbackLastUsed time.Time               `json:"fallbackLastUsed,omitzero"`
+	Cache            upstream.CacheStat      `json:"cache"`
+	ClockGuard       bool                    `json:"clockGuard"`
 }
 
 // upstreamTestInput is the body of POST /dns/upstreams/test.
@@ -32,7 +37,8 @@ func (s *Server) registerUpstreamRoutes() {
 
 func (s *Server) handleUpstreamList(w http.ResponseWriter, r *http.Request) error {
 	up := s.d.Upstream
-	return ok(w, upstreamsView{Upstreams: up.Stats(), Cache: up.CacheStats(), ClockGuard: up.ClockGuard()})
+	return ok(w, upstreamsView{Upstreams: up.Stats(), Fallbacks: up.FallbackStats(), FallbackLastUsed: up.LastFallback(),
+		Cache: up.CacheStats(), ClockGuard: up.ClockGuard()})
 }
 
 // handleUpstreamTest resolves a fixed name through one upstream string. It

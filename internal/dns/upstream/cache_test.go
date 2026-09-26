@@ -32,7 +32,7 @@ func TestCacheHitDecrementsTTLAndKeepsQuestionCase(t *testing.T) {
 		defer r.Close()
 		ctx := context.Background()
 
-		m, info, err := r.Resolve(ctx, query("Example.COM.", dns.TypeA, 1, false))
+		m, info, err := r.Resolve(ctx, query("Example.COM.", dns.TypeA, 1, false), noECS)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -45,7 +45,7 @@ func TestCacheHitDecrementsTTLAndKeepsQuestionCase(t *testing.T) {
 
 		time.Sleep(100 * time.Second)
 		req := query("EXAMPLE.com.", dns.TypeA, 4242, false)
-		m, info, err = r.Resolve(ctx, req)
+		m, info, err = r.Resolve(ctx, req, noECS)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestCacheHitDecrementsTTLAndKeepsQuestionCase(t *testing.T) {
 		}
 
 		time.Sleep(201 * time.Second) // expired: served stale (serve-stale is on by default)
-		_, info, _ = r.Resolve(ctx, query("example.com.", dns.TypeA, 5, false))
+		_, info, _ = r.Resolve(ctx, query("example.com.", dns.TypeA, 5, false), noECS)
 		if !info.Stale {
 			t.Errorf("expected a stale answer after expiry, got %+v", info)
 		}
@@ -110,7 +110,7 @@ func TestNegativeCaching(t *testing.T) {
 				r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f})
 				defer r.Close()
 				ctx := context.Background()
-				m, _, err := r.Resolve(ctx, query("missing.example.", dns.TypeA, 1, false))
+				m, _, err := r.Resolve(ctx, query("missing.example.", dns.TypeA, 1, false), noECS)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -121,19 +121,19 @@ func TestNegativeCaching(t *testing.T) {
 					t.Errorf("fresh SOA ttl = %d, want %d", m.Ns[0].Header().Ttl, tc.wantTTL)
 				}
 				if !tc.cached {
-					_, info, _ := r.Resolve(ctx, query("missing.example.", dns.TypeA, 2, false))
+					_, info, _ := r.Resolve(ctx, query("missing.example.", dns.TypeA, 2, false), noECS)
 					if info.Cached || f.calls() != 2 {
 						t.Fatalf("answer without SOA must not be cached (calls %d)", f.calls())
 					}
 					return
 				}
 				time.Sleep(time.Duration(tc.wantTTL-1) * time.Second)
-				m, info, _ := r.Resolve(ctx, query("missing.example.", dns.TypeA, 2, false))
+				m, info, _ := r.Resolve(ctx, query("missing.example.", dns.TypeA, 2, false), noECS)
 				if !info.Cached || m.Ns[0].Header().Ttl != 1 {
 					t.Fatalf("before expiry: info %+v soa ttl %d", info, m.Ns[0].Header().Ttl)
 				}
 				time.Sleep(time.Second)
-				if _, info, _ = r.Resolve(ctx, query("missing.example.", dns.TypeA, 3, false)); info.Cached {
+				if _, info, _ = r.Resolve(ctx, query("missing.example.", dns.TypeA, 3, false), noECS); info.Cached {
 					t.Fatal("negative answer served after its TTL")
 				}
 			})
@@ -192,7 +192,7 @@ func TestCNAMEChainNegativeCaching(t *testing.T) {
 				r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f})
 				defer r.Close()
 				ctx := context.Background()
-				m, _, err := r.Resolve(ctx, query("www.example.com.", tc.qtype, 1, false))
+				m, _, err := r.Resolve(ctx, query("www.example.com.", tc.qtype, 1, false), noECS)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -200,13 +200,13 @@ func TestCNAMEChainNegativeCaching(t *testing.T) {
 					t.Errorf("fresh SOA ttl = %d, want %d", m.Ns[0].Header().Ttl, tc.soaTTL)
 				}
 				if tc.lifetime == 0 {
-					if _, info, _ := r.Resolve(ctx, query("www.example.com.", tc.qtype, 2, false)); info.Cached || f.calls() != 2 {
+					if _, info, _ := r.Resolve(ctx, query("www.example.com.", tc.qtype, 2, false), noECS); info.Cached || f.calls() != 2 {
 						t.Fatalf("reply must not be cached (cached %v, calls %d)", info.Cached, f.calls())
 					}
 					return
 				}
 				time.Sleep(time.Duration(tc.lifetime-1) * time.Second)
-				m, info, _ := r.Resolve(ctx, query("www.example.com.", tc.qtype, 2, false))
+				m, info, _ := r.Resolve(ctx, query("www.example.com.", tc.qtype, 2, false), noECS)
 				if !info.Cached || f.calls() != 1 {
 					t.Fatalf("before expiry: info %+v, calls %d", info, f.calls())
 				}
@@ -214,7 +214,7 @@ func TestCNAMEChainNegativeCaching(t *testing.T) {
 					t.Errorf("cached SOA ttl = %d, want %d", m.Ns[0].Header().Ttl, tc.soaTTL-(tc.lifetime-1))
 				}
 				time.Sleep(time.Second)
-				if _, info, _ = r.Resolve(ctx, query("www.example.com.", tc.qtype, 3, false)); info.Cached || f.calls() != 2 {
+				if _, info, _ = r.Resolve(ctx, query("www.example.com.", tc.qtype, 3, false), noECS); info.Cached || f.calls() != 2 {
 					t.Fatalf("reply served from the cache after %d s (calls %d)", tc.lifetime, f.calls())
 				}
 			})
@@ -230,7 +230,7 @@ func TestServfailCachedFiveSeconds(t *testing.T) {
 		defer r.Close()
 		ctx := context.Background()
 		for i, wantCalls := range []int{1, 1, 2} {
-			m, _, err := r.Resolve(ctx, query("broken.example.", dns.TypeA, 1, false))
+			m, _, err := r.Resolve(ctx, query("broken.example.", dns.TypeA, 1, false), noECS)
 			if err != nil || m.Rcode != dns.RcodeServerFailure {
 				t.Fatalf("query %d: %v %v", i, m, err)
 			}
@@ -255,7 +255,7 @@ func TestTTLClamp(t *testing.T) {
 		r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f})
 		defer r.Close()
 		for name, want := range map[string]uint32{"short.example.": 60, "long.example.": 600} {
-			m, _, err := r.Resolve(context.Background(), query(name, dns.TypeA, 1, false))
+			m, _, err := r.Resolve(context.Background(), query(name, dns.TypeA, 1, false), noECS)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -264,7 +264,7 @@ func TestTTLClamp(t *testing.T) {
 			}
 		}
 		time.Sleep(59 * time.Second)
-		if _, info, _ := r.Resolve(context.Background(), query("short.example.", dns.TypeA, 1, false)); !info.Cached {
+		if _, info, _ := r.Resolve(context.Background(), query("short.example.", dns.TypeA, 1, false), noECS); !info.Cached {
 			t.Error("short TTL was not raised to the minimum")
 		}
 	})
@@ -284,7 +284,7 @@ func TestCacheKeyIncludesDOAndQtype(t *testing.T) {
 			query("A.EXAMPLE.", dns.TypeA, 4, false), // same key as the first
 		}
 		for _, q := range reqs {
-			if _, _, err := r.Resolve(ctx, q); err != nil {
+			if _, _, err := r.Resolve(ctx, q, noECS); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -305,15 +305,15 @@ func TestLRUEvictionAndFlush(t *testing.T) {
 		defer r.Close()
 		ctx := context.Background()
 		for _, n := range []string{"a.example.", "b.example.", "a.example.", "c.example."} {
-			if _, _, err := r.Resolve(ctx, query(n, dns.TypeA, 1, false)); err != nil {
+			if _, _, err := r.Resolve(ctx, query(n, dns.TypeA, 1, false), noECS); err != nil {
 				t.Fatal(err)
 			}
 		}
 		// b was least recently used and must be gone; a must still be cached.
-		if _, info, _ := r.Resolve(ctx, query("a.example.", dns.TypeA, 1, false)); !info.Cached {
+		if _, info, _ := r.Resolve(ctx, query("a.example.", dns.TypeA, 1, false), noECS); !info.Cached {
 			t.Error("a.example evicted")
 		}
-		if _, info, _ := r.Resolve(ctx, query("b.example.", dns.TypeA, 1, false)); info.Cached {
+		if _, info, _ := r.Resolve(ctx, query("b.example.", dns.TypeA, 1, false), noECS); info.Cached {
 			t.Error("b.example not evicted")
 		}
 		if got := r.CacheStats(); got.Entries != 2 || got.Capacity != 2 {
@@ -333,7 +333,7 @@ func TestCacheDisabled(t *testing.T) {
 		r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f})
 		defer r.Close()
 		for range 2 {
-			if _, info, err := r.Resolve(context.Background(), query("a.example.", dns.TypeA, 1, false)); err != nil || info.Cached {
+			if _, info, err := r.Resolve(context.Background(), query("a.example.", dns.TypeA, 1, false), noECS); err != nil || info.Cached {
 				t.Fatal(info, err)
 			}
 		}
@@ -361,12 +361,12 @@ func TestServeStaleRefreshesOncePerKey(t *testing.T) {
 		defer stop()
 		synctest.Wait()
 		ctx := context.Background()
-		if _, _, err := r.Resolve(ctx, query("stale.example.", dns.TypeA, 1, false)); err != nil {
+		if _, _, err := r.Resolve(ctx, query("stale.example.", dns.TypeA, 1, false), noECS); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(15 * time.Second)
 		for i := range 5 {
-			m, info, err := r.Resolve(ctx, query("stale.example.", dns.TypeA, uint16(i), false))
+			m, info, err := r.Resolve(ctx, query("stale.example.", dns.TypeA, uint16(i), false), noECS)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -381,7 +381,7 @@ func TestServeStaleRefreshesOncePerKey(t *testing.T) {
 		}
 		close(release)
 		synctest.Wait()
-		m, info, _ := r.Resolve(ctx, query("stale.example.", dns.TypeA, 9, false))
+		m, info, _ := r.Resolve(ctx, query("stale.example.", dns.TypeA, 9, false), noECS)
 		if ip, ttl := firstA(t, m); info.Stale || ip != "192.0.2.20" || ttl != 10 {
 			t.Fatalf("after refresh: %+v %s ttl %d", info, ip, ttl)
 		}
@@ -405,13 +405,13 @@ func TestStaleEntrySurvivesFailedRefresh(t *testing.T) {
 		defer stop()
 		synctest.Wait()
 		ctx := context.Background()
-		if _, _, err := r.Resolve(ctx, query("stale.example.", dns.TypeA, 1, false)); err != nil {
+		if _, _, err := r.Resolve(ctx, query("stale.example.", dns.TypeA, 1, false), noECS); err != nil {
 			t.Fatal(err)
 		}
 		fail = true
 		time.Sleep(20 * time.Second)
 		for range 2 {
-			_, info, err := r.Resolve(ctx, query("stale.example.", dns.TypeA, 2, false))
+			_, info, err := r.Resolve(ctx, query("stale.example.", dns.TypeA, 2, false), noECS)
 			if err != nil || !info.Stale {
 				t.Fatalf("want stale answer, got %+v %v", info, err)
 			}
@@ -421,7 +421,7 @@ func TestStaleEntrySurvivesFailedRefresh(t *testing.T) {
 			t.Fatalf("calls = %d: refresh must back off after a failure", f.calls())
 		}
 		time.Sleep(refreshBackoff)
-		if _, info, _ := r.Resolve(ctx, query("stale.example.", dns.TypeA, 3, false)); !info.Stale {
+		if _, info, _ := r.Resolve(ctx, query("stale.example.", dns.TypeA, 3, false), noECS); !info.Stale {
 			t.Fatal("SERVFAIL replaced the stale entry")
 		}
 		synctest.Wait()
@@ -438,9 +438,9 @@ func TestStaleWindowEnds(t *testing.T) {
 		r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f})
 		defer r.Close()
 		ctx := context.Background()
-		_, _, _ = r.Resolve(ctx, query("old.example.", dns.TypeA, 1, false))
+		_, _, _ = r.Resolve(ctx, query("old.example.", dns.TypeA, 1, false), noECS)
 		time.Sleep(10*time.Second + time.Minute)
-		if _, info, _ := r.Resolve(ctx, query("old.example.", dns.TypeA, 1, false)); info.Cached {
+		if _, info, _ := r.Resolve(ctx, query("old.example.", dns.TypeA, 1, false), noECS); info.Cached {
 			t.Fatal("entry served beyond the serve-stale window")
 		}
 	})

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,10 +114,21 @@ func TestUpstreamRoutesList(t *testing.T) {
 	if got.Cache.Capacity != def.CacheSize || got.ClockGuard {
 		t.Errorf("cache = %+v clockGuard = %v", got.Cache, got.ClockGuard)
 	}
-	for _, member := range []string{`"upstreams":[`, `"cache":{`, `"clockGuard":false`, `"avgRttMs"`, `"staleHits"`} {
+	for _, member := range []string{`"upstreams":[`, `"fallbacks":[`, `"cache":{`, `"clockGuard":false`, `"avgRttMs"`, `"staleHits"`} {
 		if !strings.Contains(w.Body.String(), member) {
 			t.Errorf("response lacks %s: %s", member, w.Body)
 		}
+	}
+	if len(got.Fallbacks) != len(def.FallbackUpstreams) || got.Fallbacks[0].Upstream != def.FallbackUpstreams[0] ||
+		strings.Contains(w.Body.String(), "fallbackLastUsed") {
+		t.Errorf("fallbacks = %+v (never used: no fallbackLastUsed): %s", got.Fallbacks, w.Body)
+	}
+	// Without fallbacks the list is empty, never null.
+	if _, err := s.d.Settings.Update(context.Background(), func(a *settings.All) error { a.DNS.FallbackUpstreams = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if w := callUpstream(s, s.handleUpstreamList, http.MethodGet, ""); !strings.Contains(w.Body.String(), `"fallbacks":[]`) {
+		t.Errorf("without fallbacks: %s", w.Body)
 	}
 }
 
@@ -165,7 +177,7 @@ func TestUpstreamRoutesFlush(t *testing.T) {
 	s, up := newUpstreamTestServer(t, addr)
 	q := new(dns.Msg)
 	q.SetQuestion("cached.example.", dns.TypeA)
-	if _, _, err := up.Resolve(context.Background(), q); err != nil {
+	if _, _, err := up.Resolve(context.Background(), q, netip.Prefix{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := up.CacheStats().Entries; n != 1 {

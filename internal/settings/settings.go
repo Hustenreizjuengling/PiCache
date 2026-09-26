@@ -36,12 +36,27 @@ type All struct {
 
 // DNS configures the resolver side.
 type DNS struct {
-	// Upstreams: "https://host/dns-query", "tls://host[:port]", "udp://ip[:port]",
-	// "tcp://ip[:port]" or plain "ip[:port]".
-	Upstreams         []string `json:"upstreams"`
+	// Upstreams: "https://host/dns-query", "tls://host[:port]",
+	// "udp://host[:port]", "tcp://host[:port]" or plain "host[:port]"; plain
+	// DNS upstreams given by name must be public names (PublicUpstreamName).
+	Upstreams []string `json:"upstreams"`
+	// FallbackUpstreams are asked only when every default upstream failed
+	// to reply at all (transport errors, timeouts; never after a reply of
+	// any rcode). Same syntax as Upstreams; empty = no fallback.
+	FallbackUpstreams []string `json:"fallbackUpstreams"`
 	Bootstrap         []string `json:"bootstrap"`    // plain IPs, used only to resolve upstream hostnames
-	UpstreamMode      string   `json:"upstreamMode"` // load_balance | parallel | strict
+	UpstreamMode      string   `json:"upstreamMode"` // load_balance | parallel | strict | fastest_addr
 	UpstreamTimeoutMs int      `json:"upstreamTimeoutMs"`
+	// UpstreamBlockedTTL is the cache lifetime (seconds) of answers the
+	// default upstreams blocked themselves (EDE 15–17, 0.0.0.0/::, block
+	// pages, Quad9's NXDOMAIN without RA).
+	UpstreamBlockedTTL int `json:"upstreamBlockedTtl"`
+	// BootstrapPreferIPv6 dials the resolved addresses of DoT, DoH and
+	// named plain upstreams IPv6 first (IPv4 first otherwise).
+	BootstrapPreferIPv6 bool `json:"bootstrapPreferIpv6"`
+	// ECS sends an EDNS client subnet with the client queries answered by
+	// the default upstreams (off by default).
+	ECS               ECS      `json:"ecs"`
 	LocalPTRUpstreams []string `json:"localPtrUpstreams"` // resolvers for private reverse zones (e.g. the router)
 	LocalDomain       string   `json:"localDomain"`       // e.g. "lan" or "fritz.box"; never sent to public upstreams
 	ServerNames       []string `json:"serverNames"`       // names answered with this server's addresses
@@ -57,11 +72,42 @@ type DNS struct {
 	// connected to, public ones included (netutil.ConnectedSubnets; follows
 	// prefix changes). Off by default: on a cloud server the on-link
 	// network can contain other tenants.
-	TrustConnectedNetworks bool     `json:"trustConnectedNetworks"`
-	RateLimitQPS           int      `json:"rateLimitQps"` // per client key (netutil.ClientKey: a device address; public IPv6 per /64); 0 disables
-	RateLimitBurst         int      `json:"rateLimitBurst"`
-	RateLimitExempt        []string `json:"rateLimitExempt"` // CIDRs (loopback, router and forwarder targets are exempt automatically)
-	RefuseANY              bool     `json:"refuseAny"`
+	TrustConnectedNetworks bool `json:"trustConnectedNetworks"`
+	// BlockedClients are IP addresses, CIDRs or MAC addresses whose DNS
+	// queries are dropped (DNS only; the download cache is not affected).
+	BlockedClients []string `json:"blockedClients"`
+	RateLimitQPS   int      `json:"rateLimitQps"` // per rate-limit key (netutil.RateKey); 0 disables
+	RateLimitBurst int      `json:"rateLimitBurst"`
+	// RateLimitIPv4Prefix and RateLimitIPv6Prefix are the prefix lengths
+	// that public sources share one rate-limit bucket by (LAN sources are
+	// always limited per address).
+	RateLimitIPv4Prefix int      `json:"rateLimitIpv4Prefix"`
+	RateLimitIPv6Prefix int      `json:"rateLimitIpv6Prefix"`
+	RateLimitExempt     []string `json:"rateLimitExempt"` // CIDRs (loopback, router, forwarder targets and trusted EDNS sources are exempt automatically)
+	RefuseANY           bool     `json:"refuseAny"`
+	// EDNSClientTrusted are forwarders (single IP addresses) whose queries
+	// may carry the client's address (ECS) and MAC (option 65001).
+	EDNSClientTrusted []string `json:"ednsClientTrusted"`
+
+	// RebindProtection blocks answers of the default upstreams that point
+	// names at private, loopback or link-local addresses (DNS rebinding);
+	// RebindAllow lists domains (with their subdomains) that may do so.
+	RebindProtection bool     `json:"rebindProtection"`
+	RebindAllow      []string `json:"rebindAllow"`
+	// DomainNeeded answers A/AAAA/HTTPS/SVCB/ANY queries of single-label
+	// names as <name>.<localDomain> and never sends them to the default
+	// upstreams.
+	DomainNeeded bool `json:"domainNeeded"`
+	// PrivateReverseNetworks are networks whose reverse zones are served
+	// locally like the RFC 6303 zones (IPv4 /8, /16, /24; IPv6 /16–/124 in
+	// steps of 4).
+	PrivateReverseNetworks []string `json:"privateReverseNetworks"`
+	// DroppedDomains ("domain" or "domain:TYPE", subtree) get no answer at
+	// all and are not logged.
+	DroppedDomains []string `json:"droppedDomains"`
+	// BogusNXDomain are addresses (IPs or CIDRs) that turn an answer of the
+	// default upstreams into NXDOMAIN.
+	BogusNXDomain []string `json:"bogusNxdomain"`
 
 	CacheEnabled        bool   `json:"cacheEnabled"`
 	CacheSize           int    `json:"cacheSize"` // entries
@@ -79,6 +125,32 @@ type DNS struct {
 	// It cannot be combined with DisableAAAA.
 	DNS64 DNS64 `json:"dns64"`
 }
+
+// ECS configures the EDNS client subnet (RFC 7871) sent to the default
+// upstreams: "off"; "client" = the /24 (IPv4) or /56 (IPv6) of the source
+// address when it is public; "custom" = CustomSubnet.
+type ECS struct {
+	Mode         string `json:"mode"`
+	CustomSubnet string `json:"customSubnet"` // a public IPv4 /8–/24 or IPv6 /32–/56 network (host bits masked)
+}
+
+// ECS modes.
+const (
+	ECSOff    = "off"
+	ECSClient = "client"
+	ECSCustom = "custom"
+)
+
+// Limits of the DNS lists (validation errors name them).
+const (
+	MaxFallbackUpstreams      = 4
+	MaxRebindAllow            = 256
+	MaxPrivateReverseNetworks = 32
+	MaxBlockedClients         = 256
+	MaxDroppedDomains         = 256
+	MaxBogusNXDomain          = 64
+	MaxEDNSClientTrusted      = 16
+)
 
 // DNS64 configures AAAA synthesis (RFC 6147) for NAT64 networks.
 type DNS64 struct {
@@ -340,13 +412,35 @@ var migrations = []string{
 	WHERE CASE WHEN json_valid(doc) AND json_type(doc, '$.dns.bootstrap') = 'array'
 		THEN json(json_extract(doc, '$.dns.bootstrap')) = json('` + bootstrapV2 + `')
 		ELSE 0 END;`,
+	// v4 (0.9.0): the default upstreams are Quad9 only (it filters malware;
+	// load-balancing it with an unfiltered resolver made blocking random),
+	// with a fallback of another operator. A stored list equal to the old
+	// default becomes the new one. A document without fallbacks whose own
+	// upstream list differs from the new default gets none, so an admin's
+	// own resolver never starts sending queries to another operator; only
+	// installations on the defaults get the default fallback (by decoding
+	// on top of Defaults). Like v3 it also converts a document restored
+	// from an older backup.
+	`UPDATE settings SET doc = json_set(doc, '$.dns.upstreams', json('` + upstreamsV4 + `'))
+	WHERE CASE WHEN json_valid(doc) AND json_type(doc, '$.dns.upstreams') = 'array'
+		THEN json(json_extract(doc, '$.dns.upstreams')) = json('` + upstreamsV3 + `')
+		ELSE 0 END;
+	UPDATE settings SET doc = json_set(doc, '$.dns.fallbackUpstreams', json('[]'))
+	WHERE CASE WHEN json_valid(doc) AND json_type(doc, '$.dns.upstreams') = 'array'
+			AND json_type(doc, '$.dns.fallbackUpstreams') IS NULL
+		THEN json(json_extract(doc, '$.dns.upstreams')) != json('` + upstreamsV4 + `')
+		ELSE 0 END;`,
 }
 
 // Default bootstrap lists: bootstrapV2 until 0.5.x, bootstrapV3 since 0.6.0
-// (settings migration v3; Defaults uses the same addresses).
+// (settings migration v3; Defaults uses the same addresses). Default
+// upstream lists: upstreamsV3 until 0.8.x, upstreamsV4 since 0.9.0
+// (settings migration v4).
 const (
 	bootstrapV2 = `["9.9.9.9","149.112.112.112","1.1.1.1","1.0.0.1"]`
 	bootstrapV3 = `["9.9.9.9","149.112.112.112","1.1.1.1","1.0.0.1","2620:fe::fe","2606:4700:4700::1111"]`
+	upstreamsV3 = `["https://dns.quad9.net/dns-query","https://cloudflare-dns.com/dns-query"]`
+	upstreamsV4 = `["https://dns.quad9.net/dns-query"]`
 )
 
 // Open loads the settings document, creating it from Defaults on first start.

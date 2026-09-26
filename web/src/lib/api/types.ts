@@ -286,24 +286,55 @@ export interface TotpBegin {
 
 // ---------------------------------------------------------------- settings
 
+/** How upstreams are asked (fastest_addr: like parallel, then the fastest-connecting address first). */
+export type UpstreamMode = 'load_balance' | 'parallel' | 'strict' | 'fastest_addr'
+
 /** settings.DNS */
 export interface DnsSettings {
   upstreams: string[]
+  /** Asked only when every default upstream failed to answer (transport error or timeout); at most 4, [] = off. */
+  fallbackUpstreams: string[]
   bootstrap: string[]
-  upstreamMode: 'load_balance' | 'parallel' | 'strict'
+  /** Dial the resolved addresses of DoT, DoH and named plain upstreams IPv6 first. */
+  bootstrapPreferIpv6: boolean
+  upstreamMode: UpstreamMode
   upstreamTimeoutMs: number
+  /** Cache lifetime of answers the upstream blocked (10..86400 s). */
+  upstreamBlockedTtl: number
+  /** EDNS Client Subnet sent to the default upstreams. */
+  ecs: EcsSettings
   localPtrUpstreams: string[]
   localDomain: string
   serverNames: string[]
   routerResolver: string
+  /** Answer single-label names (A, AAAA, HTTPS, SVCB, ANY) as <name>.<localDomain>, never from the upstreams. */
+  domainNeeded: boolean
+  /** Extra reverse zones answered like the private ones (IPv4 /8, /16, /24; IPv6 /16../124 in steps of 4; at most 32). */
+  privateReverseNetworks: string[]
   allowedNetworks: string[]
   allowAllNetworks: boolean
   /** Also trust every network this machine is connected to (public prefixes too; rebuilt every minute). */
   trustConnectedNetworks: boolean
+  /** DNS queries of these IP addresses, networks or MAC addresses are dropped (at most 256; DNS only). */
+  blockedClients: string[]
+  /** Forwarders whose EDNS client address (ECS /32, /128) and MAC option (65001) identify the client (at most 16). */
+  ednsClientTrusted: string[]
   rateLimitQps: number
   rateLimitBurst: number
   rateLimitExempt: string[]
+  /** Public IPv4 sources share a bucket per network of this length (8..32). */
+  rateLimitIpv4Prefix: number
+  /** Public IPv6 sources share a bucket per network of this length (32..64). */
+  rateLimitIpv6Prefix: number
   refuseAny: boolean
+  /** Block default-upstream answers with private or loopback addresses (DNS rebinding). */
+  rebindProtection: boolean
+  /** Domains (with subdomains) exempt from rebind protection (at most 256). */
+  rebindAllow: string[]
+  /** Answers with an address in one of these (IP or CIDR) become NXDOMAIN (at most 64). */
+  bogusNxdomain: string[]
+  /** "domain" or "domain:TYPE" (subtree): queries get no answer and are not logged (at most 256). */
+  droppedDomains: string[]
   cacheEnabled: boolean
   cacheSize: number
   cacheMinTtl: number
@@ -315,6 +346,16 @@ export interface DnsSettings {
   disableAAAA: boolean
   /** Synthesise AAAA records from A records for NAT64 networks (RFC 6147). */
   dns64: Dns64Settings
+}
+
+/**
+ * settings.ECS: `client` sends the /24 (IPv4) or /56 (IPv6) of public client
+ * addresses, `custom` sends `customSubnet` (a public IPv4 /8–/24 or IPv6
+ * /32–/56; errors "dns.ecs.mode", "dns.ecs.customSubnet").
+ */
+export interface EcsSettings {
+  mode: 'off' | 'client' | 'custom'
+  customSubnet: string
 }
 
 /** settings.DNS64: `prefix` must be a /96 network (400 field "dns.dns64.prefix"). */
@@ -501,6 +542,8 @@ export type QueryStatus =
   | 'blocked-special'
   | 'blocked-schedule'
   | 'blocked-service'
+  | 'blocked-upstream'
+  | 'blocked-rebind'
   | 'refused'
   | 'error'
 
@@ -513,7 +556,12 @@ export const BLOCKED_STATUSES: readonly QueryStatus[] = [
   'blocked-special',
   'blocked-schedule',
   'blocked-service',
+  'blocked-upstream',
+  'blocked-rebind',
 ]
+
+/** Status of a traced lookup: a query status, or `dropped` (blocked client or dropped domain; never logged). */
+export type LookupStatus = QueryStatus | 'dropped'
 
 /** dnsserver.BlockingStatus */
 export interface BlockingStatus {
@@ -539,6 +587,10 @@ export interface DnsStats {
   inFlight: number
   /** Dropped because too many queries were in flight. */
   overloaded: number
+  /** Queries of dns.blockedClients dropped since the start. */
+  blockedClients: number
+  /** Queries of dns.droppedDomains dropped since the start. */
+  dropped: number
   topRateLimited: RateLimited[]
 }
 
@@ -586,10 +638,17 @@ export interface DnsRecordInput {
   comment: string
 }
 
-/** dnsserver.Forwarder */
+/** Forwarder domain matching single-label names (A, AAAA, HTTPS, SVCB, ANY; never the root). */
+export const UNQUALIFIED_DOMAIN = '(unqualified)'
+/** Forwarder target meaning "the default upstreams" (must be the only target). */
+export const DEFAULT_TARGET = 'default'
+
+/** dnsserver.Forwarder: `domain` is `domains[0]`. */
 export interface Forwarder {
   id: number
   domain: string
+  /** Every domain of the forwarder (1–16). */
+  domains: string[]
   upstreams: string[]
   enabled: boolean
   comment: string
@@ -597,12 +656,46 @@ export interface Forwarder {
   updatedAt: Timestamp
 }
 
-/** dnsserver.ForwarderInput */
+/**
+ * dnsserver.ForwarderInput: `domains` wins, `domain` alone means [domain]
+ * (errors "domain", "domains", "domains[i]", "upstreams", "upstreams[i]";
+ * 409 for a domain another forwarder holds).
+ */
 export interface ForwarderInput {
-  domain: string
+  domain?: string
+  domains?: string[]
   upstreams: string[]
   enabled: boolean
   comment: string
+}
+
+/** POST /dns/forwarders/import: `[/d1/d2/]t1 t2` lines (`#` = default, `[//]` = single-label names). */
+export interface ForwarderImportRequest {
+  text: string
+  dryRun: boolean
+}
+
+/** One refused line of a forwarder import (`field`: syntax, domains, upstreams, or text with line 0). */
+export interface ForwarderImportError {
+  line: number
+  field: string
+  message: string
+}
+
+/** Result of POST /dns/forwarders/import; nothing is written when there is any error. */
+export interface ForwarderImportResult {
+  applied: boolean
+  added: number
+  updated: number
+  unchanged: number
+  errors: ForwarderImportError[]
+}
+
+/** POST /dns/blocked-clients: `entry` is the stored or the already matching entry. */
+export interface BlockClientResult {
+  entry: string
+  added: boolean
+  blockedClients: string[]
 }
 
 /** dnsserver.LookupRequest */
@@ -616,7 +709,7 @@ export interface LookupRequest {
 export interface LookupResult {
   name: string
   type: string
-  status: QueryStatus
+  status: LookupStatus
   rcode: string
   answers: string[]
   reason?: string
@@ -652,6 +745,10 @@ export interface UpstreamCacheStat {
 /** GET /dns/upstreams */
 export interface UpstreamsState {
   upstreams: UpstreamStat[]
+  /** Statistics of dns.fallbackUpstreams. */
+  fallbacks: UpstreamStat[]
+  /** When a fallback last answered (absent if never since the start). */
+  fallbackLastUsed?: Timestamp
   cache: UpstreamCacheStat
   clockGuard: boolean
 }
@@ -717,6 +814,8 @@ export interface KnownClient {
   firstSeen: Timestamp
   lastSeen: Timestamp
   queries: number
+  /** The first dns.blockedClients entry matching the address or MAC. */
+  blockedBy?: string
 }
 
 /** ID of the built-in "Default" group (cannot be deleted). */
@@ -1894,6 +1993,10 @@ export interface QueryEvent {
   answer?: string
   dnssec?: boolean
   protocol: 'udp' | 'tcp'
+  /** Extended DNS error of the upstream's reply (text bounded and cleaned by the server). */
+  upstreamEde?: { code: number; text: string }
+  /** The client's own EDNS Client Subnet option, e.g. "203.0.113.0/24". */
+  ecs?: string
 }
 
 export type CacheStatus = 'HIT' | 'MISS' | 'PARTIAL' | 'BYPASS' | 'PASS' | 'ERROR'

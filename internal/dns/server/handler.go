@@ -68,6 +68,15 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 		return
 	}
+	// 2a. Blocked sources (dns.blockedClients): no answer, the TCP
+	// connection is closed; not logged, not seen, not refused.
+	if _, blocked := s.blockedSource(ip); blocked {
+		s.blockedClients.Add(1)
+		if isTCP {
+			_ = w.Close()
+		}
+		return
+	}
 	set := s.d.Settings.Get()
 
 	// 1. Validation: one question (miekg answers FORMERR otherwise), opcode
@@ -91,7 +100,7 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		s.rateLimited.Add(1)
 		if first {
 			s.log.Warn("client exceeds the DNS rate limit; its queries are dropped (if it is a router or another DNS server forwarding to PiCache, add it to dns.rateLimitExempt)",
-				slog.String("client", netutil.ClientKey(ip).String()))
+				slog.String("client", netutil.RateKey(ip, set.DNS.RateLimitIPv4Prefix, set.DNS.RateLimitIPv6Prefix).String()))
 		}
 		if isTCP {
 			m := newReply(req)
@@ -121,22 +130,40 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// 5. Identify. Clients excluded from logs are not recorded as seen, and
-	// while client addresses are anonymised the activity is kept in memory
-	// only (nothing is written to logs.db).
-	qc.id = s.identify(ip)
+	// 4a + 5. Identify: a trusted forwarder may name its client in EDNS.
+	s.identifyClient(qc)
+	// Blocked identities (a MAC, an address from EDNS): dropped like
+	// blocked sources, before anything is recorded.
+	if _, blocked := s.blockedIdentity(qc); blocked {
+		s.blockedClients.Add(1)
+		if isTCP {
+			_ = w.Close()
+		}
+		return
+	}
+	// Clients excluded from logs are not recorded as seen, and while client
+	// addresses are anonymised the activity is kept in memory only (nothing
+	// is written to logs.db).
 	if s.d.Clients != nil && !qc.id.IgnoreLogs {
 		if set.Logs.AnonymizeClientIPs {
-			s.d.Clients.SeenTransient(ip)
+			s.d.Clients.SeenTransient(qc.client)
 		} else {
-			s.d.Clients.Seen(ip)
+			s.d.Clients.Seen(qc.client)
 		}
 	}
 
 	ctx, cancel := context.WithTimeout(h.ctx, queryTimeout)
 	defer cancel()
 	qc.ctx = ctx
-	s.reply(w, qc, s.process(qc), isTCP)
+	res := s.process(qc)
+	if res.drop { // 7b: dns.droppedDomains
+		s.dropped.Add(1)
+		if isTCP {
+			_ = w.Close()
+		}
+		return
+	}
+	s.reply(w, qc, res, isTCP)
 }
 
 // HealthProbeName is the name `picache healthcheck` (the Docker
@@ -166,7 +193,7 @@ func (s *Server) reply(w dns.ResponseWriter, qc *qctx, res result, isTCP bool) {
 	}
 	m := s.shape(qc, res, isTCP)
 	if err := w.WriteMsg(m); err != nil {
-		s.log.Debug("write DNS reply", slog.String("client", qc.client.String()), slog.Any("err", err))
+		s.log.Debug("write DNS reply", slog.String("client", qc.source.String()), slog.Any("err", err))
 	}
 	s.logQuery(qc, res, m)
 }
@@ -230,6 +257,9 @@ func (s *Server) shape(qc *qctx, res result, isTCP bool) *dns.Msg {
 		m.SetEdns0(ourUDPSize, do)
 		if res.blocked {
 			text := res.reason
+			if res.edeText != "" {
+				text = res.edeText
+			}
 			if len(text) > 128 {
 				text = text[:128]
 			}
@@ -274,7 +304,7 @@ func (s *Server) logQuery(qc *qctx, res result, reply *dns.Msg) {
 	if s.d.Logs == nil || qc.id == nil || qc.id.IgnoreLogs || qc.tracing() {
 		return
 	}
-	s.d.Logs.LogQuery(logs.QueryEvent{
+	e := logs.QueryEvent{
 		Time:       qc.start.UTC(),
 		ClientIP:   qc.client.String(),
 		ClientName: qc.id.Name,
@@ -291,7 +321,12 @@ func (s *Server) logQuery(qc *qctx, res result, reply *dns.Msg) {
 		Answer:     summarize(reply.Answer),
 		DNSSEC:     reply.AuthenticatedData,
 		Protocol:   qc.proto,
-	})
+		ECS:        clientSubnet(qc.req),
+	}
+	if res.ede != nil {
+		e.UpstreamEDE = &logs.UpstreamEDE{Code: int(res.ede.Code), Text: res.ede.Text}
+	}
+	s.d.Logs.LogQuery(e)
 }
 
 // summarize returns a compact answer summary (≤ 256 bytes), e.g.
@@ -340,8 +375,25 @@ func (s *Server) identify(ip netip.Addr) *clients.Identity {
 // allowed reports whether ip may use the DNS service.
 func (s *Server) allowed(ip netip.Addr) bool { return s.d.ACL.Get().Allowed(ip) }
 
-// aclReader drops UDP packets from sources outside the ACL before miekg
-// parses them, so disallowed sources never get any reply (not even FORMERR).
+// admitUDP reports whether a UDP packet from ip may be parsed: the source
+// is allowed by the ACL and not a blocked client (step 2a). Refused and
+// blocked packets are counted.
+func (s *Server) admitUDP(ip netip.Addr) bool {
+	if !s.allowed(ip) {
+		s.refused.Add(1)
+		s.refusedSrc.add(ip, time.Now())
+		return false
+	}
+	if _, blocked := s.blockedSource(ip); blocked {
+		s.blockedClients.Add(1)
+		return false
+	}
+	return true
+}
+
+// aclReader drops UDP packets from sources outside the ACL and from
+// blocked sources before miekg parses them, so they never get any reply
+// (not even FORMERR).
 type aclReader struct {
 	next dns.PacketConnReader
 	s    *Server
@@ -365,12 +417,9 @@ func (a *aclReader) ReadUDP(conn *net.UDPConn, timeout time.Duration) ([]byte, *
 		if err != nil {
 			return m, sess, err
 		}
-		ip := netutil.AddrFromNet(sess.RemoteAddr())
-		if a.s.allowed(ip) {
+		if a.s.admitUDP(netutil.AddrFromNet(sess.RemoteAddr())) {
 			return m, sess, nil
 		}
-		a.s.refused.Add(1)
-		a.s.refusedSrc.add(ip, time.Now())
 	}
 }
 
@@ -380,12 +429,9 @@ func (a *aclReader) ReadPacketConn(conn net.PacketConn, timeout time.Duration) (
 		if err != nil {
 			return m, addr, err
 		}
-		ip := netutil.AddrFromNet(addr)
-		if a.s.allowed(ip) {
+		if a.s.admitUDP(netutil.AddrFromNet(addr)) {
 			return m, addr, nil
 		}
-		a.s.refused.Add(1)
-		a.s.refusedSrc.add(ip, time.Now())
 	}
 }
 

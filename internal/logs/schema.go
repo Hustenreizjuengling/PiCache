@@ -187,6 +187,12 @@ var migrations = []string{
 	`ALTER TABLE logs_dns_minute RENAME COLUMN lancache TO override;
 	ALTER TABLE logs_dns_hourly RENAME COLUMN lancache TO override;
 	UPDATE logs_queries SET status = 'override' WHERE status = 'lancache';`,
+	// v3 (0.9.0): the upstream's Extended DNS Error (code -1 = none) and the
+	// client subnet a client sent. Adding columns with constant defaults
+	// does not rewrite the table.
+	`ALTER TABLE logs_queries ADD COLUMN upstream_ede_code INTEGER NOT NULL DEFAULT -1;
+	ALTER TABLE logs_queries ADD COLUMN upstream_ede_text TEXT NOT NULL DEFAULT '';
+	ALTER TABLE logs_queries ADD COLUMN ecs TEXT NOT NULL DEFAULT '';`,
 }
 
 // enableAutoVacuum switches a brand-new logs.db to incremental auto-vacuum so

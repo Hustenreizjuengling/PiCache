@@ -40,7 +40,9 @@ func (r *Resolver) LookupIP(ctx context.Context, host string, want6 bool) ([]net
 	if addrs, ok := r.ips.get(host, want6, time.Now()); ok {
 		return addrs, nil
 	}
-	set := r.defaultSet()
+	// The default route (with the fallbacks) and its cache, without a client
+	// subnet; blocks classified by the upstream are ignored here.
+	rt := r.defaultRoute()
 	type result struct {
 		addrs []netip.Addr
 		ttl   uint32
@@ -49,10 +51,10 @@ func (r *Resolver) LookupIP(ctx context.Context, host string, want6 bool) ([]net
 	var v6 result
 	var wg sync.WaitGroup
 	if want6 {
-		wg.Go(func() { v6.addrs, v6.ttl, v6.err = r.lookupType(ctx, set, host, dns.TypeAAAA) })
+		wg.Go(func() { v6.addrs, v6.ttl, v6.err = r.lookupType(ctx, rt, host, dns.TypeAAAA) })
 	}
 	var v4 result
-	v4.addrs, v4.ttl, v4.err = r.lookupType(ctx, set, host, dns.TypeA)
+	v4.addrs, v4.ttl, v4.err = r.lookupType(ctx, rt, host, dns.TypeA)
 	wg.Wait()
 
 	addrs := append(v4.addrs, v6.addrs...)
@@ -74,11 +76,11 @@ func (r *Resolver) LookupIP(ctx context.Context, host string, want6 bool) ([]net
 	return slices.Clone(addrs), nil
 }
 
-func (r *Resolver) lookupType(ctx context.Context, set *upstreamSet, host string, qtype uint16) ([]netip.Addr, uint32, error) {
+func (r *Resolver) lookupType(ctx context.Context, rt route, host string, qtype uint16) ([]netip.Addr, uint32, error) {
 	name := dns.Fqdn(host)
 	req := new(dns.Msg)
 	req.SetQuestion(name, qtype)
-	m, _, err := r.resolve(ctx, req, set)
+	m, _, err := r.resolve(ctx, req, rt, netip.Prefix{})
 	if err != nil {
 		return nil, 0, &net.DNSError{Err: err.Error(), Name: host, IsTemporary: true,
 			IsTimeout: errors.Is(err, errTimeout) || errors.Is(err, context.DeadlineExceeded), UnwrapErr: err}
@@ -176,7 +178,7 @@ func (r *Resolver) LookupPTR(ctx context.Context, ip netip.Addr, servers []strin
 	}
 	req := new(dns.Msg)
 	req.SetQuestion(arpa, dns.TypePTR)
-	m, _, err := r.resolve(ctx, req, set)
+	m, _, err := r.resolve(ctx, req, route{set: set}, netip.Prefix{})
 	if err != nil {
 		return "", err
 	}

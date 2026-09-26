@@ -23,12 +23,14 @@ const (
 	statusOverride  = "override"
 	statusRefused   = "refused"
 	statusError     = "error"
-	blockedPrefix   = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service
+	blockedPrefix   = "blocked" // blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service, blocked-upstream, blocked-rebind
 )
 
-// blockedStatuses are the blocked statuses (7.1 steps 7a, 8, 10, 11, 14).
+// blockedStatuses are the blocked statuses (7.1 steps 7a, 8, 10, 11, 13a, 14,
+// 14c).
 var blockedStatuses = []string{
 	"blocked-list", "blocked-rule", "blocked-regex", "blocked-cname", "blocked-special", "blocked-schedule", "blocked-service",
+	"blocked-upstream", "blocked-rebind",
 }
 
 // knownStatuses are the statuses accepted by query-log filters.

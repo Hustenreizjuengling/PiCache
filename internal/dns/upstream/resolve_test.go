@@ -32,7 +32,7 @@ func TestDedupSharesOneExchangeWithPrivateCopies(t *testing.T) {
 		var wg sync.WaitGroup
 		for i := range n {
 			wg.Go(func() {
-				m, _, err := r.Resolve(context.Background(), query(names[i%len(names)], dns.TypeA, uint16(100+i), false))
+				m, _, err := r.Resolve(context.Background(), query(names[i%len(names)], dns.TypeA, uint16(100+i), false), noECS)
 				if err != nil {
 					t.Error(err)
 				}
@@ -70,11 +70,11 @@ func TestWaiterCancellationDoesNotFailOthers(t *testing.T) {
 		defer cancel()
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			if _, _, err := r.Resolve(ctx, query("slow.example.", dns.TypeA, 1, false)); !errors.Is(err, context.DeadlineExceeded) {
+			if _, _, err := r.Resolve(ctx, query("slow.example.", dns.TypeA, 1, false), noECS); !errors.Is(err, context.DeadlineExceeded) {
 				t.Errorf("impatient caller: err = %v", err)
 			}
 		})
-		if _, _, err := r.Resolve(context.Background(), query("slow.example.", dns.TypeA, 2, false)); err != nil {
+		if _, _, err := r.Resolve(context.Background(), query("slow.example.", dns.TypeA, 2, false), noECS); err != nil {
 			t.Fatalf("patient caller: %v", err)
 		}
 		wg.Wait()
@@ -172,7 +172,7 @@ func TestModes(t *testing.T) {
 				r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f1, up2: f2})
 				defer r.Close()
 				for i := range tc.queries {
-					_, info, err := r.Resolve(context.Background(), query("mode.example.", dns.TypeA, uint16(i), false))
+					_, info, err := r.Resolve(context.Background(), query("mode.example.", dns.TypeA, uint16(i), false), noECS)
 					if tc.wantError {
 						if err == nil || !strings.Contains(err.Error(), "all upstreams failed") {
 							t.Fatalf("err = %v", err)
@@ -209,7 +209,7 @@ func TestTimeouts(t *testing.T) {
 		r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f1, up2: f2})
 		defer r.Close()
 		begin := time.Now()
-		_, _, err := r.Resolve(context.Background(), query("hang.example.", dns.TypeA, 1, false))
+		_, _, err := r.Resolve(context.Background(), query("hang.example.", dns.TypeA, 1, false), noECS)
 		if err == nil || !errors.Is(err, errTimeout) {
 			t.Fatalf("err = %v", err)
 		}
@@ -242,7 +242,7 @@ func TestResolveViaUsesSeparateNamespace(t *testing.T) {
 				t.Fatalf("via answer = %s", ip)
 			}
 		}
-		m, _, err := r.Resolve(ctx, query("nas.fritz.box.", dns.TypeA, 1, false))
+		m, _, err := r.Resolve(ctx, query("nas.fritz.box.", dns.TypeA, 1, false), noECS)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -271,7 +271,7 @@ func TestUpstreamQueryIsBuiltFresh(t *testing.T) {
 			&dns.EDNS0_SUBNET{Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24, Address: []byte{192, 168, 1, 0}},
 			&dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: "0123456789abcdef"})
 		before := req.Copy()
-		if _, _, err := r.Resolve(context.Background(), req); err != nil {
+		if _, _, err := r.Resolve(context.Background(), req, noECS); err != nil {
 			t.Fatal(err)
 		}
 		if req.String() != before.String() {
@@ -297,11 +297,11 @@ func TestSettingsChangeRebuildsUpstreams(t *testing.T) {
 	r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f1, up2: f2})
 	defer r.Close()
 	ctx := context.Background()
-	if _, info, _ := r.Resolve(ctx, query("a.example.", dns.TypeA, 1, false)); info.Upstream != up1 {
+	if _, info, _ := r.Resolve(ctx, query("a.example.", dns.TypeA, 1, false), noECS); info.Upstream != up1 {
 		t.Fatalf("answered by %q", info.Upstream)
 	}
 	updateDNS(t, st, func(d *settings.DNS) { d.Upstreams = []string{up2, up1} })
-	if _, info, _ := r.Resolve(ctx, query("a.example.", dns.TypeA, 1, false)); info.Upstream != up2 {
+	if _, info, _ := r.Resolve(ctx, query("a.example.", dns.TypeA, 1, false), noECS); info.Upstream != up2 {
 		t.Fatalf("after change answered by %q", info.Upstream)
 	}
 	stats := r.Stats()
@@ -313,11 +313,11 @@ func TestSettingsChangeRebuildsUpstreams(t *testing.T) {
 func TestResolveRejectsBadRequestsAndClosedResolver(t *testing.T) {
 	st := newStore(t, oneUpstream(nil))
 	r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: {fn: replyA("192.0.2.1", 60)}})
-	if _, _, err := r.Resolve(context.Background(), new(dns.Msg)); !errors.Is(err, errBadRequest) {
+	if _, _, err := r.Resolve(context.Background(), new(dns.Msg), noECS); !errors.Is(err, errBadRequest) {
 		t.Errorf("empty question: %v", err)
 	}
 	_ = r.Close()
-	if _, _, err := r.Resolve(context.Background(), query("a.example.", dns.TypeA, 1, false)); !errors.Is(err, errClosed) {
+	if _, _, err := r.Resolve(context.Background(), query("a.example.", dns.TypeA, 1, false), noECS); !errors.Is(err, errClosed) {
 		t.Errorf("after close: %v", err)
 	}
 }
@@ -351,14 +351,14 @@ func TestDuplicateRecordsAreRemoved(t *testing.T) {
 			"example.com.\t120\tIN\tA\t192.0.2.1",
 			"example.com.\t300\tIN\tA\t192.0.2.2",
 		}
-		m, _, err := r.Resolve(context.Background(), query("www.example.com.", dns.TypeA, 1, false))
+		m, _, err := r.Resolve(context.Background(), query("www.example.com.", dns.TypeA, 1, false), noECS)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got := rrStrings(m.Answer); !slices.Equal(got, want) {
 			t.Fatalf("answer %q, want %q", got, want)
 		}
-		m, info, err := r.Resolve(context.Background(), query("www.example.com.", dns.TypeA, 2, false))
+		m, info, err := r.Resolve(context.Background(), query("www.example.com.", dns.TypeA, 2, false), noECS)
 		if err != nil || !info.Cached {
 			t.Fatalf("second answer: %v %+v", err, info)
 		}

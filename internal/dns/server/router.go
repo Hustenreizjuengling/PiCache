@@ -22,6 +22,14 @@ type routerState struct {
 	// or the gateway. The loop guard and the rate-limit exemption apply to
 	// all of them.
 	addrs []netip.Addr
+	// protect are the router's addresses whatever the mode (addr, the
+	// IPv4 and IPv6 default gateways and every neighbour address with the
+	// MAC of one of them), macs those MACs and trustedMACs the neighbour
+	// MACs of the trusted EDNS forwarders: dns.blockedClients never drops
+	// them. A settings change keeps them until the next detection.
+	protect     []netip.Addr
+	macs        []string
+	trustedMACs []string
 }
 
 // usable reports the address to use: a manual address always, an
@@ -49,9 +57,19 @@ func configuredRouter(set *settings.All) *routerState {
 		st := &routerState{mode: "manual", addr: ip.Unmap()}
 		if st.addr.IsValid() {
 			st.addrs = []netip.Addr{netutil.Canon(st.addr)}
+			st.protect = st.addrs
 		}
 		return st
 	}
+}
+
+// startRouter returns the router state before the first detection: the
+// configured one, with the default gateways already protected from
+// dns.blockedClients (the detection adds the neighbour table).
+func (s *Server) startRouter(set *settings.All) *routerState {
+	st := configuredRouter(set)
+	st.protect, _ = routerAddrSet(append(slices.Clone(st.protect), s.gateways(s.host.Load())...), nil, false)
+	return st
 }
 
 // routerAddr returns the router resolver address if one is usable.
@@ -67,37 +85,48 @@ func routerUpstream(ip netip.Addr) string { return netip.AddrPortFrom(ip, 53).St
 // detectRouter re-reads the default gateways (auto mode: the IPv4 gateway,
 // else the IPv6 one) and the router's other addresses from the neighbour
 // table, and probes the router resolver. A gateway that is this machine is
-// never used (loop).
+// never used (loop). The addresses and MACs dns.blockedClients never drops
+// (every gateway, the trusted EDNS forwarders' MACs) are read in every
+// mode and apply before the probe.
 func (s *Server) detectRouter(ctx context.Context) {
 	set := s.d.Settings.Get()
 	cfg := set.DNS.RouterResolver
 	st := configuredRouter(set)
 	var nbs []clients.Neighbour
-	if st.mode != "off" && s.env.neighbours != nil {
+	if s.env.neighbours != nil {
 		var err error
 		if nbs, err = s.env.neighbours(ctx); err != nil {
 			s.log.Debug("router resolver: neighbour table unavailable", slog.Any("err", err))
 		}
 	}
 	host := s.host.Load()
-	var gateways []netip.Addr
-	if st.mode == "auto" {
-		for _, get := range []func() (netip.Addr, error){s.env.gateway, s.env.gateway6} {
-			if get == nil {
-				continue
-			}
-			if gw, err := get(); err == nil && gw.IsValid() && !host.isOwn(netutil.Canon(gw)) {
-				gateways = append(gateways, gw)
-			}
-		}
-		if len(gateways) > 0 {
-			st.addr = gateways[0]
-			if st.addr.Is6() {
-				st.addr = routerV6Addr(st.addr, nbs, host)
-			}
+	gateways := s.gateways(host)
+	if st.mode == "auto" && len(gateways) > 0 {
+		st.addr = gateways[0]
+		if st.addr.Is6() {
+			st.addr = routerV6Addr(st.addr, nbs, host)
 		}
 	}
-	st.addrs = routerAddrSet(st.addr, gateways, nbs)
+	seeds := append([]netip.Addr{st.addr}, gateways...)
+	if st.mode == "auto" {
+		st.addrs, _ = routerAddrSet(seeds, nbs, true)
+	} else {
+		st.addrs, _ = routerAddrSet(seeds[:1], nbs, true)
+	}
+	st.protect, st.macs = routerAddrSet(seeds, nbs, false)
+	for _, ip := range s.lists.Load().trusted {
+		if mac := neighbourMAC(ip, nbs); mac != "" && !slices.Contains(st.trustedMACs, mac) {
+			st.trustedMACs = append(st.trustedMACs, mac)
+		}
+	}
+	// The probe takes up to a second: protect the router meanwhile.
+	s.routerMu.Lock()
+	if ctx.Err() == nil && s.d.Settings.Get().DNS.RouterResolver == cfg {
+		cur := *s.router.Load()
+		cur.protect, cur.macs, cur.trustedMACs = st.protect, st.macs, st.trustedMACs
+		s.router.Store(&cur)
+	}
+	s.routerMu.Unlock()
 	if st.addr.IsValid() && s.d.Upstream != nil {
 		st.answers = s.d.Upstream.Probe(ctx, st.addr)
 	}
@@ -139,35 +168,53 @@ func routerV6Addr(gw netip.Addr, nbs []clients.Neighbour, host *hostInfo) netip.
 	return cands[0]
 }
 
-// routerAddrSet returns the router's addresses: addr, the gateways and
-// every neighbour address with the MAC of addr or of the first gateway that
-// has one (sorted, canonical).
-func routerAddrSet(addr netip.Addr, gateways []netip.Addr, nbs []clients.Neighbour) []netip.Addr {
+// gateways returns the IPv4 and IPv6 default gateways that are not this
+// machine (IPv4 first; link-local ones with their zone).
+func (s *Server) gateways(host *hostInfo) []netip.Addr {
+	var out []netip.Addr
+	for _, get := range []func() (netip.Addr, error){s.env.gateway, s.env.gateway6} {
+		if get == nil {
+			continue
+		}
+		if gw, err := get(); err == nil && gw.IsValid() && !host.isOwn(netutil.Canon(gw)) {
+			out = append(out, gw)
+		}
+	}
+	return out
+}
+
+// routerAddrSet returns the router's addresses: the seeds (its address and
+// the gateways; invalid ones skipped) and every neighbour address with the
+// MAC of a seed (sorted, canonical), and those MACs. With first only the
+// MAC of the first seed that has one counts (one router: the loop guard);
+// otherwise every seed's (dns.blockedClients protects a second gateway,
+// e.g. a separate IPv6 router, too).
+func routerAddrSet(seeds []netip.Addr, nbs []clients.Neighbour, first bool) ([]netip.Addr, []string) {
 	var out []netip.Addr
 	add := func(ip netip.Addr) {
 		if ip = netutil.Canon(ip); ip.IsValid() && !slices.Contains(out, ip) {
 			out = append(out, ip)
 		}
 	}
-	add(addr)
-	for _, gw := range gateways {
-		add(gw)
+	for _, ip := range seeds {
+		add(ip)
 	}
-	mac := ""
+	var macs []string
 	for _, ip := range out {
-		if mac = neighbourMAC(ip, nbs); mac != "" {
-			break
-		}
-	}
-	if mac != "" {
-		for _, nb := range nbs {
-			if nb.MAC == mac {
-				add(nb.IP)
+		if mac := neighbourMAC(ip, nbs); mac != "" && !slices.Contains(macs, mac) {
+			macs = append(macs, mac)
+			if first {
+				break
 			}
 		}
 	}
+	for _, nb := range nbs {
+		if slices.Contains(macs, nb.MAC) {
+			add(nb.IP)
+		}
+	}
 	slices.SortFunc(out, func(a, b netip.Addr) int { return a.Compare(b) })
-	return out
+	return out, macs
 }
 
 // neighbourMAC returns the MAC of ip in the neighbour table ("" if absent).

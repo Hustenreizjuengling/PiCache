@@ -1,8 +1,9 @@
 <!--
   @component
   Per-client rate limit (queries per second and burst per address; public
-  IPv6 addresses of other networks per /64), exempt networks and the clients that were limited recently, each with an
-  "Exempt" action that saves the exemption right away.
+  addresses of other networks per network of a configurable size, /32 and
+  /64 by default), exempt networks and the clients that were limited
+  recently, each with an "Exempt" action that saves the exemption right away.
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
@@ -89,6 +90,14 @@
       </Field>
       <Field label={t('dns.settings.rate.burst')} help={t('dns.settings.rate.burstHelp')} error={form.error('rateLimitBurst')}>
         <NumberInput bind:value={d.rateLimitBurst} min={0} max={10000000} unit={t('dns.shared.unit.queries')} />
+      </Field>
+    </div>
+    <div class="grid">
+      <Field label={t('dns.settings.rate.ipv4Prefix')} help={t('dns.settings.rate.ipv4PrefixHelp')} error={form.error('rateLimitIpv4Prefix')}>
+        <NumberInput bind:value={d.rateLimitIpv4Prefix} min={8} max={32} unit={t('dns.shared.unit.prefixBits')} />
+      </Field>
+      <Field label={t('dns.settings.rate.ipv6Prefix')} help={t('dns.settings.rate.ipv6PrefixHelp')} error={form.error('rateLimitIpv6Prefix')}>
+        <NumberInput bind:value={d.rateLimitIpv6Prefix} min={32} max={64} unit={t('dns.shared.unit.prefixBits')} />
       </Field>
     </div>
     <Field label={t('dns.settings.rate.exemptList')} optional help={t('dns.settings.rate.exemptHelp')} error={lineError(form.saveError, 'dns.rateLimitExempt')}>

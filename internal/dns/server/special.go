@@ -57,7 +57,7 @@ func (s *Server) specialUse(qc *qctx) (result, bool) {
 		qc.note("special-use name: " + what)
 		return s.addrAnswer(qc, v4, v6), true
 	}
-	if zone, ok := privateReverseZone(name); ok {
+	if zone, ok := s.privateReverseZone(name); ok {
 		return s.reverseZone(qc, zone), true
 	}
 	if zone, router, ok := s.localZone(qc.set, name); ok {
@@ -74,13 +74,13 @@ func (s *Server) specialAddrs(qc *qctx, name string) (v4, v6 []netip.Addr, what 
 	case inZone(name, "localhost"):
 		return localhostV4, localhostV6, "localhost", true
 	case serverName(qc.set, name):
-		if st := s.cacheIPs.Load(); st.bridge && !qc.client.IsLoopback() {
+		if st := s.cacheIPs.Load(); st.bridge && !qc.source.IsLoopback() {
 			// Bridge addresses are unreachable for clients: answer with the
 			// configured cache addresses (NODATA until they are set).
 			return st.v4, st.v6, "this server's own name", true
 		}
 		h := s.host.Load()
-		return h.addrsFor(qc.client, false), h.addrsFor(qc.client, true), "this server's own name", true
+		return h.addrsFor(qc.source, false), h.addrsFor(qc.source, true), "this server's own name", true
 	case inZone(name, "resolver.arpa"):
 		return nil, nil, "resolver.arpa", true
 	}
@@ -150,7 +150,7 @@ func (s *Server) reverseZone(qc *qctx, zone string) result {
 			}
 		}
 	}
-	if f := s.fwd.Load().match(qc.qname); f != nil {
+	if f := s.fwd.Load().match(qc.qname, true); f != nil {
 		return s.resolveVia(qc, f.upstreams, f.ips, "conditional forwarder "+f.domain)
 	}
 	if ups := qc.set.DNS.LocalPTRUpstreams; len(ups) > 0 {
@@ -205,7 +205,7 @@ func (s *Server) localZoneAnswer(qc *qctx, zone string, router bool) result {
 	if r, ok := s.localAnswer(qc); ok {
 		return r
 	}
-	if f := s.fwd.Load().match(qc.qname); f != nil {
+	if f := s.fwd.Load().match(qc.qname, true); f != nil {
 		return s.resolveVia(qc, f.upstreams, f.ips, "conditional forwarder "+f.domain)
 	}
 	if router {
@@ -219,15 +219,18 @@ func (s *Server) localZoneAnswer(qc *qctx, zone string, router bool) result {
 
 // routeName resolves a name on behalf of qc without filtering (CNAME targets
 // of local records): conditional forwarder, local zones (router resolver
-// only), otherwise the default upstreams. A nil reply means the name has no
-// resolver (local zone without router).
+// only), otherwise the default upstreams. Forwarders are matched like the
+// pipeline does: private and local names skip those with the target
+// default as if absent (step 6); for other names such a forwarder means
+// the default upstreams (step 12), never a less specific forwarder. A nil
+// reply means the name has no resolver (local zone without router).
 func (s *Server) routeName(qc *qctx, name string, q dns.Question) (*dns.Msg, upstream.Info, error) {
-	if f := s.fwd.Load().match(name); f != nil {
-		return s.exchange(qc, q, f.upstreams, f.ips)
-	}
-	_, private := privateReverseZone(name)
+	_, private := s.privateReverseZone(name)
 	_, router, local := s.localZone(qc.set, name)
 	special := inZone(name, "localhost") || inZone(name, "resolver.arpa") || serverName(qc.set, name)
+	if f := s.fwd.Load().match(name, private || local || special); f != nil && !f.def {
+		return s.exchange(qc, q, f.upstreams, f.ips)
+	}
 	switch {
 	case private && len(qc.set.DNS.LocalPTRUpstreams) > 0:
 		ups := qc.set.DNS.LocalPTRUpstreams

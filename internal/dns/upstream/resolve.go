@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -10,24 +11,39 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// Resolve answers req via the configured upstreams (with cache). req is not
-// modified; see the package doc for the reply contract.
-func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg) (*dns.Msg, Info, error) {
-	return r.resolve(ctx, req, r.defaultSet())
+// Resolve answers req via the default set (with cache): the configured
+// upstreams, the clock-guard set while the clock guard is active, and the
+// fallbacks when no default upstream replied. ecs is the client subnet to
+// send (invalid = none); it is part of the cache key. The answer is
+// classified (Info.Block) when the upstream blocked the name itself. req
+// is not modified; see the package doc for the reply contract.
+func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, ecs netip.Prefix) (*dns.Msg, Info, error) {
+	return r.resolve(ctx, req, r.defaultRoute(), ecs)
 }
 
 // ResolveVia answers req via the given upstreams (conditional forwarding,
 // router resolver, local PTR resolvers). Cached separately per upstream set.
-// The clock guard does not apply: these upstreams serve specific zones.
+// The clock guard, the fallbacks, the client subnet, the classification of
+// blocked answers and the fastest-address order do not apply: these
+// upstreams serve specific zones.
 func (r *Resolver) ResolveVia(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, Info, error) {
 	set, err := r.viaSet(upstreams)
 	if err != nil {
 		return nil, Info{}, err
 	}
-	return r.resolve(ctx, req, set)
+	return r.resolve(ctx, req, route{set: set}, netip.Prefix{})
 }
 
-func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, set *upstreamSet) (*dns.Msg, Info, error) {
+// route is the path of a fetch: the upstream set, the fallbacks asked when
+// none of them replied, and whether it is the default set (classification
+// of blocked answers, fastest-address order).
+type route struct {
+	set      *upstreamSet
+	fallback *upstreamSet // nil: none (ResolveVia, clock guard, not configured)
+	def      bool
+}
+
+func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, rt route, ecs netip.Prefix) (*dns.Msg, Info, error) {
 	if req == nil || len(req.Question) != 1 {
 		return nil, Info{}, errBadRequest
 	}
@@ -37,20 +53,23 @@ func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, set *upstreamSet) 
 	if opt := req.IsEdns0(); opt != nil && opt.Do() {
 		do = true
 	}
-	k := cacheKey{name: lowerASCII(q.Name), qtype: q.Qtype, qclass: q.Qclass, do: do, set: set.id}
+	if ecs.IsValid() {
+		ecs = ecs.Masked()
+	}
+	k := cacheKey{name: lowerASCII(q.Name), qtype: q.Qtype, qclass: q.Qclass, do: do, set: rt.set.id, ecs: ecs}
 	if pol := policy(d); pol.capacity > 0 {
 		now := time.Now()
 		if hit, ok := r.cache.get(k, now, pol.staleWindow); ok {
 			if m, err := hit.reply(req, now); err == nil {
 				if hit.stale {
-					r.scheduleRefresh(k, set)
+					r.scheduleRefresh(k, rt)
 				}
-				return m, Info{Cached: true, Stale: hit.stale}, nil
+				return m, Info{Cached: true, Stale: hit.stale, Block: hit.meta.block, EDE: hit.meta.ede, Fallback: hit.meta.fallback}, nil
 			}
 		}
 	}
 	res, err := r.doFlight(ctx, k, func(fctx context.Context) (exchangeResult, error) {
-		return r.fetch(fctx, k, set)
+		return r.fetch(fctx, k, rt)
 	})
 	if err != nil {
 		return nil, Info{}, err
@@ -59,21 +78,31 @@ func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, set *upstreamSet) 
 	m.Id = req.Id
 	m.Question = []dns.Question{q}
 	m.Compress = true
-	return m, Info{Upstream: res.upstream, RTT: res.rtt}, nil
+	return m, Info{Upstream: res.upstream, RTT: res.rtt, Block: res.block, EDE: res.ede, Fallback: res.fallback}, nil
 }
 
-// fetch queries the upstreams for k, removes duplicate records and caches
-// the answer. It owns the reply until it returns; afterwards the reply is
-// shared read-only.
-func (r *Resolver) fetch(ctx context.Context, k cacheKey, set *upstreamSet) (exchangeResult, error) {
+// fetch queries the upstreams of rt for k, removes duplicate records,
+// classifies the answer (default set only), orders its addresses (mode
+// fastest_addr, default set only) and caches it. It owns the reply until
+// it returns; afterwards the reply is shared read-only.
+func (r *Resolver) fetch(ctx context.Context, k cacheKey, rt route) (exchangeResult, error) {
 	d := r.set.Get().DNS
 	q := newQuery(k.name, k.qtype, k.qclass, k.do)
-	res, err := r.exchangeSet(ctx, set, q, d)
+	addECS(q, k.ecs)
+	res, err := r.exchangeRoute(ctx, rt, q, d)
 	if err != nil {
 		return res, err
 	}
 	dedupRRs(res.msg)
-	r.cache.store(k, res.msg, time.Now(), policy(d))
+	blocking, logged := parseEDE(res.msg)
+	res.ede = logged
+	if rt.def {
+		res.block = classify(res.msg, k.qtype, res.host, blocking)
+		if res.block == nil && d.UpstreamMode == "fastest_addr" {
+			r.prober.reorder(ctx, res.msg, k.qtype)
+		}
+	}
+	r.cache.store(k, res.msg, time.Now(), policy(d), entryMeta{block: res.block, ede: res.ede, fallback: res.fallback})
 	return res, nil
 }
 
@@ -110,7 +139,7 @@ next:
 }
 
 func policy(d settings.DNS) cachePolicy {
-	p := cachePolicy{minTTL: d.CacheMinTTL, maxTTL: d.CacheMaxTTL}
+	p := cachePolicy{minTTL: d.CacheMinTTL, maxTTL: d.CacheMaxTTL, blockedTTL: uint32(max(d.UpstreamBlockedTTL, 0))}
 	if d.CacheEnabled {
 		p.capacity = d.CacheSize
 	}
@@ -175,17 +204,17 @@ func (r *Resolver) doFlight(ctx context.Context, k cacheKey, fn func(context.Con
 // refreshJob asks for a background refresh of a stale entry.
 type refreshJob struct {
 	key cacheKey
-	set *upstreamSet
+	rt  route
 }
 
 // scheduleRefresh queues one background refresh per stale key (dropped
 // when the queue is full or the workers are not running).
-func (r *Resolver) scheduleRefresh(k cacheKey, set *upstreamSet) {
+func (r *Resolver) scheduleRefresh(k cacheKey, rt route) {
 	if !r.workers.Load() || !r.cache.beginRefresh(k, time.Now()) {
 		return
 	}
 	select {
-	case r.refreshQ <- refreshJob{key: k, set: set}:
+	case r.refreshQ <- refreshJob{key: k, rt: rt}:
 	default:
 		r.cache.endRefresh(k, time.Now())
 	}
@@ -198,7 +227,7 @@ func (r *Resolver) refreshLoop(ctx context.Context) {
 			return
 		case j := <-r.refreshQ:
 			_, _ = r.doFlight(ctx, j.key, func(fctx context.Context) (exchangeResult, error) {
-				return r.fetch(fctx, j.key, j.set)
+				return r.fetch(fctx, j.key, j.rt)
 			})
 			r.cache.endRefresh(j.key, time.Now())
 		}

@@ -59,16 +59,24 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 	s.traceClient(qc)
 
 	var res result
+	srcEntry, srcBlocked := s.blockedSource(client)
+	idEntry, idBlocked := s.blockedIdentity(qc)
 	switch rcode, reason := validate(msg); {
 	case s.healthProbe(msg, client):
 		qc.note("health probe from this machine: answered like localhost, never counted or logged")
 		res = s.addrAnswer(qc, localhostV4, localhostV6)
+	case srcBlocked:
+		qc.note("blocked client: " + srcEntry)
+		res = result{drop: true, status: StatusDropped, reason: srcEntry}
 	case rcode >= 0:
 		qc.note("refused: " + reason)
 		res = s.refusal(qc, rcode, reason)
 	case set.DNS.RefuseANY && qtype == dns.TypeANY:
 		qc.note("refused: ANY queries are refused (dns.refuseAny)")
 		res = s.refusal(qc, dns.RcodeNotImplemented, "ANY queries are refused")
+	case idBlocked:
+		qc.note("blocked client: " + idEntry)
+		res = result{drop: true, status: StatusDropped, reason: idEntry}
 	default:
 		res = s.process(qc)
 	}
@@ -78,7 +86,6 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 		Name:       name,
 		Type:       typ,
 		Status:     res.status,
-		RCode:      rcodeString(res.msg.Rcode),
 		Answers:    []string{},
 		Reason:     res.reason,
 		Upstream:   res.upstream,
@@ -87,11 +94,14 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 		Steps:      steps,
 		Matches:    []filter.Match{},
 	}
-	for _, rr := range res.msg.Answer {
-		if len(out.Answers) == maxLookupAnswers {
-			break
+	if res.msg != nil {
+		out.RCode = rcodeString(res.msg.Rcode)
+		for _, rr := range res.msg.Answer {
+			if len(out.Answers) == maxLookupAnswers {
+				break
+			}
+			out.Answers = append(out.Answers, rr.String())
 		}
-		out.Answers = append(out.Answers, rr.String())
 	}
 	if s.d.Filter != nil {
 		matches, err := s.d.Filter.Explain(ctx, name, qc.id.GroupIDs)
@@ -115,7 +125,7 @@ func (s *Server) traceClient(qc *qctx) {
 		who = fmt.Sprintf("unconfigured client %q", id.Name)
 	}
 	qc.note(fmt.Sprintf("client %s: %s, enabled groups %v", qc.client, who, id.GroupIDs))
-	if !s.allowed(qc.client) {
+	if !s.allowed(qc.source) {
 		qc.note("note: this address is not allowed by the DNS ACL; its real queries are dropped")
 	}
 	if id.DownloadCacheBypass {

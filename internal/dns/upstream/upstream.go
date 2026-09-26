@@ -1,6 +1,16 @@
 // Package upstream forwards DNS queries to upstream resolvers (UDP, TCP, DoT,
 // DoH) with a response cache, serve-stale, in-flight de-duplication and the
-// upstream modes load_balance/parallel/strict (docs/ARCHITECTURE.md 7.4).
+// upstream modes load_balance/parallel/strict/fastest_addr
+// (docs/ARCHITECTURE.md 7.4).
+//
+// The default set (Resolve, LookupIP) is the configured upstreams, the
+// clock-guard set while the clock guard is active, and the fallbacks, asked
+// only when no default upstream replied at all. Its answers are classified
+// at fetch time when the upstream blocked the name itself (Info.Block: EDE
+// 15–17, 0.0.0.0/::, block pages, Quad9's NXDOMAIN without RA), may carry
+// the client subnet of the query (part of the cache key) and are ordered by
+// the fastest address in mode fastest_addr. ResolveVia sets get none of
+// this. The EDE of every reply is returned (Info.EDE, sanitised).
 //
 // LookupIP resolves names for PiCache itself (cache proxy, SNI, list and
 // cache-domains downloads) and deliberately bypasses local records, the
@@ -31,7 +41,10 @@
 // distinct in-flight queries, 16 upstreams per set, 64 ResolveVia sets,
 // 256 queued stale refreshes, 4 idle DoT connections per upstream, DoH
 // bodies ≤ 64 KiB, 64 bootstrap hostnames, 1024 LookupIP results; the
-// duplicate check covers sections of at most 256 records.
+// duplicate check covers sections of at most 256 records; 16 EDE options
+// examined per reply, EDE texts ≤ 200 bytes; fastest-address probes: 8
+// addresses and 300 ms per answer, 32 dials at a time, 100 new targets per
+// second, 4096 cached results (10 minutes).
 package upstream
 
 import (
@@ -40,21 +53,34 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+	"net"
+	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
 
-// Info describes how a response was obtained.
+// Info describes how a response was obtained. Block, EDE and Fallback are
+// stored with a cached answer and returned by cache and stale hits too.
 type Info struct {
 	Upstream string        // upstream that answered ("" for cache hits)
 	Cached   bool          // served from the response cache
 	Stale    bool          // served stale (refresh in background)
 	RTT      time.Duration // upstream round-trip time (0 for cache hits)
+	// Block is set when an upstream of the default set blocked the name
+	// itself (EDE 15–17, 0.0.0.0/::, a block page, Quad9's NXDOMAIN
+	// without RA); never for ResolveVia answers.
+	Block *BlockInfo
+	// EDE is the Extended DNS Error of the upstream reply (any set), nil
+	// if it carried none.
+	EDE *EDE
+	// Fallback reports that a fallback upstream answered (Resolve only).
+	Fallback bool
 }
 
 // UpstreamStat is per-upstream health for the UI.
@@ -114,6 +140,12 @@ type options struct {
 	// transport, if set and returning non-nil, replaces the real transport
 	// for an upstream (fakes in tests).
 	transport func(spec settings.UpstreamSpec) transport
+	// publicFilter keeps the addresses that named plain upstreams and the
+	// fastest-address probes may dial: public unicast, not this machine
+	// (netutil.SafeDialer's filter). nil = that filter.
+	publicFilter func(ctx context.Context, addrs []netip.Addr) ([]netip.Addr, error)
+	// probeDial dials a fastest-address probe (nil = net.Dialer).
+	probeDial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 func defaultOptions() options {
@@ -122,6 +154,14 @@ func defaultOptions() options {
 		attempt:   defaultAttemptTimeout,
 		buildDate: parseBuildDate(version.Date),
 	}
+}
+
+// safeFilter is netutil.SafeDialer's destination filter without private
+// destinations: public unicast addresses that are not this machine's
+// (embedded IPv4 addresses judged too).
+func safeFilter(ctx context.Context, addrs []netip.Addr) ([]netip.Addr, error) {
+	d := netutil.SafeDialer{AllowPrivate: func(context.Context) bool { return false }}
+	return d.Filter(ctx, addrs)
 }
 
 // parseBuildDate parses version.Date (RFC 3339 or YYYY-MM-DD); anything else
@@ -138,9 +178,10 @@ func parseBuildDate(s string) time.Time {
 // defaultSets is the upstream configuration derived from one settings
 // snapshot. It is replaced as a whole when the upstreams change.
 type defaultSets struct {
-	normal *upstreamSet
-	guard  *upstreamSet // plain fallback for the clock guard; nil if none
-	boot   *bootstrap
+	normal   *upstreamSet
+	guard    *upstreamSet // plain fallback for the clock guard; nil if none
+	fallback *upstreamSet // dns.fallbackUpstreams; nil if none
+	boot     *bootstrap
 }
 
 // Resolver is safe for concurrent use. It follows settings changes.
@@ -169,8 +210,10 @@ type Resolver struct {
 	ips      ipCache
 	refreshQ chan refreshJob
 	workers  atomic.Bool // refresh workers are running
+	prober   *prober     // fastest-address probes
 
-	guardLogged atomic.Bool
+	guardLogged  atomic.Bool
+	lastFallback atomic.Int64 // unix nanoseconds a fallback last answered a fetch; 0 = never
 }
 
 // New creates a resolver from the current settings and subscribes to changes.
@@ -179,12 +222,20 @@ func New(set *settings.Store, log *slog.Logger) (*Resolver, error) {
 }
 
 func newResolver(set *settings.Store, log *slog.Logger, opts options) *Resolver {
+	if opts.publicFilter == nil {
+		opts.publicFilter = safeFilter
+	}
+	if opts.probeDial == nil {
+		var d net.Dialer
+		opts.probeDial = d.DialContext
+	}
 	r := &Resolver{
 		set:      set,
 		log:      log.With(slog.String("component", "upstream")),
 		opts:     opts,
 		via:      map[string]*upstreamSet{},
 		refreshQ: make(chan refreshJob, refreshQueueSize),
+		prober:   newProber(opts.probeDial, opts.publicFilter),
 	}
 	r.life, r.stop = context.WithCancel(context.Background())
 	r.cache.init()
@@ -251,10 +302,12 @@ func (r *Resolver) goTracked(fn func()) bool {
 	return true
 }
 
-// onSettings follows settings changes: a new upstream or bootstrap list
-// rebuilds the upstream sets; cache changes resize or empty the cache.
+// onSettings follows settings changes: a new upstream, fallback or
+// bootstrap list (or bootstrap order) rebuilds the upstream sets; cache
+// changes resize or empty the cache.
 func (r *Resolver) onSettings(old, next settings.DNS) {
-	if !slices.Equal(old.Upstreams, next.Upstreams) || !slices.Equal(old.Bootstrap, next.Bootstrap) {
+	if !slices.Equal(old.Upstreams, next.Upstreams) || !slices.Equal(old.FallbackUpstreams, next.FallbackUpstreams) ||
+		!slices.Equal(old.Bootstrap, next.Bootstrap) || old.BootstrapPreferIPv6 != next.BootstrapPreferIPv6 {
 		r.rebuild(next)
 	}
 	switch {
@@ -277,34 +330,52 @@ func (r *Resolver) rebuild(d settings.DNS) {
 	if closed {
 		return
 	}
-	prev := map[string]*upstreamStats{}
+	prev, prevFallback := map[string]*upstreamStats{}, map[string]*upstreamStats{}
 	old := r.def.Load()
 	if old != nil {
-		old.collectStats(prev)
+		old.collectStats(prev, prevFallback)
 	}
-	boot := newBootstrap(d.Bootstrap, r.opts.plainPort)
+	boot := newBootstrap(d.Bootstrap, r.opts.plainPort, d.BootstrapPreferIPv6)
 	normal, errs := r.buildSet("default", d.Upstreams, boot, prev)
 	for _, err := range errs {
 		r.log.Warn("ignoring upstream", slog.Any("err", err))
 	}
 	ds := &defaultSets{normal: normal, boot: boot, guard: r.buildGuardSet(d, boot, prev)}
+	if len(d.FallbackUpstreams) > 0 {
+		// Fallback answers are cached under the default set's key, so the
+		// fallback set needs no cache namespace of its own; its upstreams
+		// keep their own statistics.
+		fb, errs := r.buildSet("fallback", d.FallbackUpstreams, boot, prevFallback)
+		for _, err := range errs {
+			r.log.Warn("ignoring fallback upstream", slog.Any("err", err))
+		}
+		if len(fb.ups) > 0 {
+			ds.fallback = fb
+		}
+	}
 	r.def.Store(ds)
 	if old != nil {
 		old.close()
 	}
 	r.dropViaLocked()
-	r.log.Info("upstreams configured", slog.Any("upstreams", normal.names()), slog.Int("bootstrap", len(boot.servers)))
+	var fallbacks []string
+	if ds.fallback != nil {
+		fallbacks = ds.fallback.names()
+	}
+	r.log.Info("upstreams configured", slog.Any("upstreams", normal.names()), slog.Any("fallbacks", fallbacks),
+		slog.Int("bootstrap", len(boot.servers)))
 }
 
 // buildGuardSet returns the clock-guard fallback: the configured plain
-// upstreams followed by the bootstrap servers over plain DNS; nil if there
-// is neither.
+// upstreams given by IP address followed by the bootstrap servers over
+// plain DNS; nil if there is neither. Plain upstreams given by name are
+// left out (their names would need the upstreams the guard replaces).
 func (r *Resolver) buildGuardSet(d settings.DNS, boot *bootstrap, prev map[string]*upstreamStats) *upstreamSet {
 	var list []string
 	seen := map[string]bool{}
 	for _, u := range append(slices.Clone(d.Upstreams), boot.servers...) {
 		spec, err := settings.ParseUpstream(u)
-		if err == nil && (spec.Proto == "udp" || spec.Proto == "tcp") && !seen[spec.Addr()] {
+		if err == nil && spec.IsIPLit && (spec.Proto == "udp" || spec.Proto == "tcp") && !seen[spec.Addr()] {
 			seen[spec.Addr()] = true
 			list = append(list, u)
 		}
@@ -321,16 +392,21 @@ func (r *Resolver) buildGuardSet(d settings.DNS, boot *bootstrap, prev map[strin
 
 // defaultSet returns the set used by Resolve and LookupIP: the configured
 // upstreams, or the plain fallback while the clock guard is active.
-func (r *Resolver) defaultSet() *upstreamSet {
+func (r *Resolver) defaultSet() *upstreamSet { return r.defaultRoute().set }
+
+// defaultRoute returns the route of Resolve and LookupIP: the configured
+// upstreams with the fallbacks, or the clock-guard set (without fallbacks)
+// while the clock guard is active.
+func (r *Resolver) defaultRoute() route {
 	ds := r.def.Load()
 	if ds.guard != nil && r.clockBehind() {
 		if !r.guardLogged.Swap(true) {
 			r.log.Warn("system clock is before the build date: encrypted upstreams are skipped and plain DNS to the bootstrap servers is used until the clock is set",
 				slog.Time("buildDate", r.opts.buildDate), slog.Time("now", time.Now()))
 		}
-		return ds.guard
+		return route{set: ds.guard, def: true}
 	}
-	return ds.normal
+	return route{set: ds.normal, fallback: ds.fallback, def: true}
 }
 
 func (r *Resolver) clockBehind() bool {
@@ -372,27 +448,51 @@ func (r *Resolver) dropViaLocked() {
 }
 
 func (ds *defaultSets) close() {
-	ds.normal.close()
-	if ds.guard != nil {
-		ds.guard.close()
+	for _, s := range []*upstreamSet{ds.normal, ds.guard, ds.fallback} {
+		if s != nil {
+			s.close()
+		}
 	}
 }
 
-func (ds *defaultSets) collectStats(into map[string]*upstreamStats) {
-	for _, s := range []*upstreamSet{ds.normal, ds.guard} {
+func (ds *defaultSets) collectStats(into, fallbacks map[string]*upstreamStats) {
+	for _, s := range []*upstreamSet{ds.normal, ds.guard, ds.fallback} {
 		if s == nil {
 			continue
 		}
+		m := into
+		if s == ds.fallback {
+			m = fallbacks
+		}
 		for _, u := range s.ups {
-			into[u.name] = u.st
+			m[u.name] = u.st
 		}
 	}
 }
 
 // Stats returns per-upstream health of the upstreams currently in use (the
 // plain fallback while the clock guard is active).
-func (r *Resolver) Stats() []UpstreamStat {
-	set := r.defaultSet()
+func (r *Resolver) Stats() []UpstreamStat { return setStats(r.defaultSet()) }
+
+// FallbackStats returns per-upstream health of the fallback upstreams
+// (their own statistics; empty, never nil, without fallbacks).
+func (r *Resolver) FallbackStats() []UpstreamStat {
+	return setStats(r.def.Load().fallback)
+}
+
+// LastFallback returns the time a fallback upstream last answered a fetch
+// (zero if never since the start).
+func (r *Resolver) LastFallback() time.Time {
+	if ns := r.lastFallback.Load(); ns != 0 {
+		return time.Unix(0, ns).UTC()
+	}
+	return time.Time{}
+}
+
+func setStats(set *upstreamSet) []UpstreamStat {
+	if set == nil {
+		return []UpstreamStat{}
+	}
 	out := make([]UpstreamStat, 0, len(set.ups))
 	for _, u := range set.ups {
 		out = append(out, u.st.snapshot(u.name))

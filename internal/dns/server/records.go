@@ -50,6 +50,18 @@ var migrations = []string{
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);`,
+	// v2 (0.9.0): every domain of a forwarder in its order (position 0 is
+	// dns_forwarders.domain), so one forwarder serves several domains; a
+	// domain belongs to at most one forwarder. Back-filled from
+	// dns_forwarders, so a restored older backup is converted at the start
+	// that applies it; dns_forwarders and its indexes stay unchanged.
+	`CREATE TABLE dns_forwarder_domains (
+		forwarder_id INTEGER NOT NULL REFERENCES dns_forwarders(id) ON DELETE CASCADE,
+		position     INTEGER NOT NULL,
+		domain       TEXT    NOT NULL UNIQUE,
+		PRIMARY KEY (forwarder_id, position)
+	);
+	INSERT INTO dns_forwarder_domains (forwarder_id, position, domain) SELECT id, 0, domain FROM dns_forwarders;`,
 }
 
 // localRR is one enabled record of the in-memory zone.
@@ -348,7 +360,7 @@ func (s *Server) reloadConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fwds, err := s.queryForwarders(ctx, 0)
+	fwds, err := queryForwarders(ctx, s.d.DB.R, 0)
 	if err != nil {
 		return err
 	}
@@ -426,7 +438,7 @@ func (s *Server) lookupLocal(qc *qctx, z *zone, name string) ([]localRR, bool) {
 	if rrs, ok := z.lookup(name); ok {
 		return rrs, true
 	}
-	if s.d.Leases == nil {
+	if s.d.Leases == nil || qc.recordsOnly {
 		return nil, false
 	}
 	if ip, ok := parseReverse(name); ok {

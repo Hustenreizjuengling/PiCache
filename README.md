@@ -56,17 +56,25 @@ unprivileged Proxmox LXC container.
   pause, CNAME inspection, and blocking of the Firefox DoH canary and iCloud
   Private Relay.
 - Local DNS records (A, AAAA, CNAME, TXT, wildcards, automatic PTR),
-  conditional forwarding, and local names and reverse lookups from your
-  router.
-- Encrypted upstreams (DNS-over-HTTPS and DNS-over-TLS; plain UDP/TCP too)
-  with load balancing, a response cache and serve-stale.
+  conditional forwarding (several domains per forwarder, exceptions back to
+  the default upstreams, a catch-all for bare names, bulk import), and local
+  names and reverse lookups from your router. Address lookups of bare names
+  such as `nas` are answered from the local domain and never sent to the
+  internet.
+- Encrypted upstreams (DNS-over-HTTPS and DNS-over-TLS; plain UDP/TCP too,
+  also by host name) with load balancing, a fallback resolver of another
+  operator for outages, a response cache and serve-stale. Quad9 (which
+  blocks malware) by default; blocks of the upstream show as blocked in the
+  query log.
 - IPv6 on par with IPv4: clients configured by IPv4 address are recognised
   over IPv6 too (privacy addresses included), statistics per device instead
   of per address, the router over IPv6, an opt-in trust of the networks the
   machine is connected to (for a changing global IPv6 prefix), and DNS64
   or "no AAAA answers" for NAT64 and broken-IPv6 networks.
-- Safe by default: not an open resolver (private networks only), rate limits,
-  private reverse zones never leak upstream.
+- Safe by default: not an open resolver (private networks only), rate limits
+  (optionally per network), private reverse zones never leak upstream, and
+  DNS rebinding protection for answers that point public names at your LAN.
+  Clients can be blocked by address, network or MAC.
 
 **Download cache**
 
@@ -432,7 +440,7 @@ Details, including backup and restore, are in
   hashed with argon2id, sign-ins are throttled, and TOTP is optional.
 - Strict Content-Security-Policy, `HttpOnly` and `SameSite=Strict` session
   cookies, cross-origin protection and a host allowlist against DNS
-  rebinding.
+  rebinding; the resolver blocks rebinding answers for the whole network.
 - The HTTP cache serves only hosts of known cache services and, by
   default, connects only to public upstream addresses (SSRF protection).
   HTTPS is relayed without being decrypted.
@@ -486,7 +494,8 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
 
 - **DNS-Filter** für das ganze Netz: Blocklisten, eigene Regeln,
   Gruppen pro Client, lokale DNS-Einträge, verschlüsselte Upstreams
-  (DoH/DoT), Abfrageprotokoll und Statistiken.
+  (DoH/DoT) mit Ausweich-DNS, Schutz vor DNS-Rebinding, Abfrageprotokoll
+  und Statistiken.
 - **Jugendschutz** pro Gruppe: Dienste wie YouTube, TikTok oder Roblox
   sperren, Zeitpläne (Schlafenszeit, Hausaufgabenzeit) und „Internet jetzt
   sperren“ oder „Einschränkungen aufheben“ auf Zeit. Der **Netzwerk-Check**

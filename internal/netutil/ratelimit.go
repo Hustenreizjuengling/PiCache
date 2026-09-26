@@ -8,8 +8,9 @@ import (
 	"time"
 )
 
-// RateLimiter is a token bucket per client key (see ClientKey). It is safe
-// for concurrent use and every operation on the query path is O(1): buckets
+// RateLimiter is a token bucket per rate-limit key (RateKey with the
+// configured prefix lengths; the DNS rate limit). It is safe for concurrent
+// use and every operation on the query path is O(1): buckets
 // are kept in least-recently-seen order, so when the table is full the
 // oldest bucket is evicted (counted as overflow) instead of scanning the
 // table. Call Sweep periodically (every ~10 s) to drop idle buckets.
@@ -33,6 +34,8 @@ type rateConfig struct {
 	qps    float64
 	burst  float64
 	exempt []netip.Prefix
+	v4Bits int // RateKey prefix lengths of public sources
+	v6Bits int
 }
 
 // RateLimited describes a client that was rate limited recently.
@@ -56,29 +59,32 @@ type bucket struct {
 // maxBuckets bounds the bucket table (≈ 15 MB when full).
 const maxBuckets = 100_000
 
-// NewRateLimiter returns a limiter; qps <= 0 disables limiting.
+// NewRateLimiter returns a limiter keyed by RateKey with the prefix lengths
+// /32 and /64 (the keys of ClientKey); qps <= 0 disables limiting.
 func NewRateLimiter(qps, burst int, exempt []netip.Prefix) *RateLimiter {
 	r := &RateLimiter{max: maxBuckets, buckets: map[netip.Prefix]*bucket{}, limited: map[netip.Prefix]*RateLimited{}}
-	r.cfg.Store(newRateConfig(qps, burst, exempt))
+	r.cfg.Store(newRateConfig(qps, burst, exempt, 32, 64))
 	return r
 }
 
-func newRateConfig(qps, burst int, exempt []netip.Prefix) *rateConfig {
+func newRateConfig(qps, burst int, exempt []netip.Prefix, v4Bits, v6Bits int) *rateConfig {
 	if burst < 1 {
 		burst = 1
 	}
-	return &rateConfig{qps: float64(qps), burst: float64(burst), exempt: slices.Clone(exempt)}
+	return &rateConfig{qps: float64(qps), burst: float64(burst), exempt: slices.Clone(exempt), v4Bits: v4Bits, v6Bits: v6Bits}
 }
 
-// Reconfigure changes the limits and the exempt networks in place. Existing
-// buckets and drop statistics are kept; a bucket picks up the new rate on
-// its next request and gains the difference when the burst was raised, so
-// a raised limit applies immediately. qps <= 0 disables limiting.
-func (r *RateLimiter) Reconfigure(qps, burst int, exempt []netip.Prefix) {
+// Reconfigure changes the limits, the exempt networks and the prefix
+// lengths public sources are keyed by (RateKey) in place. Existing buckets
+// and drop statistics are kept; a bucket picks up the new rate on its next
+// request and gains the difference when the burst was raised, so a raised
+// limit applies immediately (buckets of keys that no longer occur are
+// swept). qps <= 0 disables limiting.
+func (r *RateLimiter) Reconfigure(qps, burst int, exempt []netip.Prefix, v4Bits, v6Bits int) {
 	if r == nil {
 		return
 	}
-	r.cfg.Store(newRateConfig(qps, burst, exempt))
+	r.cfg.Store(newRateConfig(qps, burst, exempt, v4Bits, v6Bits))
 }
 
 // Allow reports whether a request from ip may proceed. first reports whether
@@ -91,7 +97,7 @@ func (r *RateLimiter) Allow(ip netip.Addr) (ok, first bool) {
 	if cfg.qps <= 0 || inAny(ip, cfg.exempt) {
 		return true, false
 	}
-	key := ClientKey(ip)
+	key := RateKey(ip, cfg.v4Bits, cfg.v6Bits)
 	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()

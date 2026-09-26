@@ -276,16 +276,21 @@ func insertQueries(ctx context.Context, tx *sql.Tx, events []QueryEvent) error {
 	}
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO logs_queries
 		(ts, client_ip, client_name, qname, qtype, status, rcode, reason, list_id, rule_id, service, upstream,
-		 duration_us, answer, dnssec, protocol)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for i := range events {
 		e := &events[i]
+		edeCode, edeText := -1, ""
+		if e.UpstreamEDE != nil {
+			edeCode, edeText = e.UpstreamEDE.Code, e.UpstreamEDE.Text
+		}
 		if _, err := stmt.ExecContext(ctx, e.Time.UnixMilli(), e.ClientIP, e.ClientName, e.QName, e.QType, e.Status,
-			e.RCode, e.Reason, e.ListID, e.RuleID, e.Service, e.Upstream, e.DurationUs, e.Answer, e.DNSSEC, e.Protocol); err != nil {
+			e.RCode, e.Reason, e.ListID, e.RuleID, e.Service, e.Upstream, e.DurationUs, e.Answer, e.DNSSEC, e.Protocol,
+			edeCode, edeText, e.ECS); err != nil {
 			return err
 		}
 	}

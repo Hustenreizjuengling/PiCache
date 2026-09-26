@@ -29,22 +29,34 @@ var (
 
 // qctx is the state of one query travelling through the pipeline.
 type qctx struct {
-	ctx      context.Context
-	start    time.Time
-	req      *dns.Msg
-	q        dns.Question // as sent by the client (original case)
-	qname    string       // lower-case, no trailing dot
-	qtype    uint16
-	client   netip.Addr
+	ctx   context.Context
+	start time.Time
+	req   *dns.Msg
+	q     dns.Question // as sent by the client (original case)
+	qname string       // lower-case, no trailing dot
+	qtype uint16
+	// source is the transport address (ACL, blocked sources, rate limit,
+	// loop guard, this server's names, ECS "client"); client is the
+	// identity address: the source, or the address a trusted forwarder
+	// named in EDNS (derived; groups, blocked identities, query log).
+	source  netip.Addr
+	client  netip.Addr
+	derived bool
+	// ednsMAC: the identity's MAC came from the EDNS options of a trusted
+	// forwarder (otherwise from the neighbour table, the MAC of client).
+	ednsMAC  bool
 	proto    string // udp | tcp
 	id       *clients.Identity
 	set      *settings.All
 	blocking bool            // blocking active (not disabled or paused)
 	dec      filter.Decision // Filter.Check result (step 10/11; zero if blocking is off)
 	steps    *[]string       // pipeline trace (Lookup only)
+	// recordsOnly: local records only, no DHCP lease names (wpad and
+	// isatap in step 11a).
+	recordsOnly bool
 }
 
-func newQuery(ctx context.Context, req *dns.Msg, client netip.Addr, proto string, set *settings.All) *qctx {
+func newQuery(ctx context.Context, req *dns.Msg, source netip.Addr, proto string, set *settings.All) *qctx {
 	q := req.Question[0]
 	return &qctx{
 		ctx:      ctx,
@@ -53,7 +65,8 @@ func newQuery(ctx context.Context, req *dns.Msg, client netip.Addr, proto string
 		q:        q,
 		qname:    normalizeName(q.Name),
 		qtype:    q.Qtype,
-		client:   client,
+		source:   source,
+		client:   source,
 		proto:    proto,
 		set:      set,
 		blocking: set.Filter.BlockingActive(time.Now()),
@@ -71,7 +84,7 @@ func (qc *qctx) note(step string) {
 
 // result is the outcome of the pipeline.
 type result struct {
-	msg      *dns.Msg // reply before shaping; nil = drop
+	msg      *dns.Msg // reply before shaping; nil = no reply
 	status   string
 	reason   string
 	listID   int64
@@ -79,9 +92,20 @@ type result struct {
 	service  string
 	upstream string
 	blocked  bool // blocked reply: EDE 15 for EDNS clients
+	// edeText is the EDE 15 text when it must differ from reason (""
+	// = reason): an upstream block never shows the upstream's host.
+	edeText string
+	// drop: no answer at all (dns.droppedDomains): UDP drop, TCP close.
+	drop bool
+	// def: the answer came from the default set (steps 13a, 13b, 14c);
+	// block is the upstream's own block of it, ede the upstream reply's
+	// EDE (any set).
+	def   bool
+	block *upstream.BlockInfo
+	ede   *upstream.EDE
 }
 
-// process runs ARCHITECTURE 7.1 steps 5a–14 for a validated, admitted and
+// process runs ARCHITECTURE 7.1 steps 5a–14c for a validated, admitted and
 // identified query.
 func (s *Server) process(qc *qctx) result {
 	if r, ok := s.dns64PTR(qc); ok { // 5a
@@ -95,6 +119,10 @@ func (s *Server) process(qc *qctx) result {
 	}
 	if r, ok := s.parentalBlock(qc); ok { // 7a
 		return r
+	}
+	if entry, ok := s.droppedDomain(qc); ok { // 7b
+		qc.note("dropped by dns.droppedDomains (" + entry + ")")
+		return result{drop: true, status: StatusDropped, reason: entry}
 	}
 	if r, ok := s.downloadCacheOverride(qc); ok { // 8 (user rules) + 9
 		return r
@@ -112,6 +140,11 @@ func (s *Server) process(qc *qctx) result {
 			return s.blocked(qc, qc.dec, statusFor(qc.dec))
 		}
 	}
+	if r, ok := s.singleLabel(qc); ok { // 11a
+		s.inspectCNAMEs(qc, &r) // 14 (local answers are not inspected)
+		stripIPv6Hints(qc, &r)  // 14a
+		return r
+	}
 	if r, ok := s.aaaaDisabled(qc); ok { // 12a
 		return r
 	}
@@ -120,20 +153,30 @@ func (s *Server) process(qc *qctx) result {
 		via []string
 		ips []netip.Addr
 	)
-	if f := s.fwd.Load().match(qc.qname); f != nil { // 12
+	f := s.fwd.Load().match(qc.qname, false)
+	if f == nil && !qc.set.DNS.DomainNeeded && singleLabelQuery(qc) {
+		f = s.fwd.Load().unqualified // single-label names while dns.domainNeeded is off
+	}
+	switch {
+	case f != nil && f.def: // 12: the default upstreams (the step-13 path)
+		r = s.resolveVia(qc, nil, nil, "conditional forwarder "+f.domain+": default upstreams")
+	case f != nil: // 12
 		via, ips = f.upstreams, f.ips
 		r = s.resolveVia(qc, via, ips, "conditional forwarder "+f.domain)
-	} else { // 13
+	default: // 13
 		r = s.resolveVia(qc, nil, nil, "upstreams")
 	}
+	s.upstreamBlock(qc, &r)            // 13a
+	s.bogusNXDomain(qc, &r)            // 13b
 	s.inspectCNAMEs(qc, &r)            // 14
 	stripIPv6Hints(qc, &r)             // 14a
 	s.synthesizeAAAA(qc, &r, via, ips) // 14b
+	s.rebindCheck(qc, &r)              // 14c
 	return r
 }
 
 // resolveVia forwards the query to specific resolvers (via == nil: the
-// default upstreams) and converts the reply into a result.
+// default set) and converts the reply into a result.
 func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, what string) result {
 	resp, info, err := s.exchange(qc, qc.q, via, ips)
 	if err != nil {
@@ -154,16 +197,23 @@ func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, what strin
 	if qc.tracing() {
 		qc.note(fmt.Sprintf("answered via %s (%s, %s)", what, orDash(info.Upstream), status))
 	}
-	return result{msg: resp, status: status, upstream: info.Upstream}
+	r := result{msg: resp, status: status, upstream: info.Upstream, def: len(via) == 0, block: info.Block, ede: info.EDE}
+	if info.Fallback {
+		qc.note("fallback: answered by " + orDash(info.Upstream))
+		r.reason = ReasonFallback
+	}
+	return r
 }
 
-// exchange sends a fresh query for q upstream. A query from one of the
-// target resolvers themselves is refused with errLoop (loop guard).
+// exchange sends a fresh query for q upstream: via == nil asks the default
+// set with the client subnet of dns.ecs. A query from one of the target
+// resolvers themselves (the source address) is refused with errLoop (loop
+// guard).
 func (s *Server) exchange(qc *qctx, q dns.Question, via []string, ips []netip.Addr) (*dns.Msg, upstream.Info, error) {
 	if s.d.Upstream == nil {
 		return nil, upstream.Info{}, errNoUpstream
 	}
-	if slices.Contains(ips, qc.client) {
+	if slices.Contains(ips, qc.source) {
 		return nil, upstream.Info{}, errLoop
 	}
 	req := upstreamRequest(qc.req, q)
@@ -173,7 +223,7 @@ func (s *Server) exchange(qc *qctx, q dns.Question, via []string, ips []netip.Ad
 		err  error
 	)
 	if len(via) == 0 {
-		resp, info, err = s.d.Upstream.Resolve(qc.ctx, req)
+		resp, info, err = s.d.Upstream.Resolve(qc.ctx, req, s.ecsFor(qc))
 	} else {
 		resp, info, err = s.d.Upstream.ResolveVia(qc.ctx, req, via)
 	}
@@ -221,10 +271,10 @@ func (s *Server) inspectCNAMEs(qc *qctx, r *result) {
 			continue
 		}
 		qc.note("CNAME target " + target + " is blocked")
-		upstreamName := r.upstream
+		upstreamName, def, ede := r.upstream, r.def, r.ede
 		*r = s.blocked(qc, d, StatusBlockedCNAME)
 		r.reason = d.Name + " (CNAME " + target + ")"
-		r.upstream = upstreamName
+		r.upstream, r.def, r.ede = upstreamName, def, ede
 		return
 	}
 }

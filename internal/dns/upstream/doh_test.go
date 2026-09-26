@@ -73,7 +73,7 @@ func TestDoH(t *testing.T) {
 	r := newTestResolver(t, st, opts, nil)
 	defer r.Close()
 	for i := range 2 {
-		m, info, err := r.Resolve(context.Background(), query("doh"+strconv.Itoa(i)+".example.", dns.TypeA, 999, false))
+		m, info, err := r.Resolve(context.Background(), query("doh"+strconv.Itoa(i)+".example.", dns.TypeA, 999, false), noECS)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +175,7 @@ func TestDoHHostnameViaBootstrap(t *testing.T) {
 	r := newTestResolver(t, st, opts, nil)
 	defer r.Close()
 	for i := range 3 {
-		m, _, err := r.Resolve(context.Background(), query("q"+strconv.Itoa(i)+".example.", dns.TypeA, 1, false))
+		m, _, err := r.Resolve(context.Background(), query("q"+strconv.Itoa(i)+".example.", dns.TypeA, 1, false), noECS)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -210,7 +210,7 @@ func TestDoTWithConnectionReuse(t *testing.T) {
 	r := newTestResolver(t, st, opts, nil)
 	defer r.Close()
 	for i := range 3 {
-		m, _, err := r.Resolve(context.Background(), query("dot.example.", dns.TypeA, uint16(i), false))
+		m, _, err := r.Resolve(context.Background(), query("dot.example.", dns.TypeA, uint16(i), false), noECS)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,7 +240,7 @@ func TestDoTReconnectsAfterServerClosedIdleConnection(t *testing.T) {
 	r := newTestResolver(t, st, opts, nil)
 	defer r.Close()
 	for i := range 3 {
-		if _, _, err := r.Resolve(context.Background(), query("dot.example.", dns.TypeA, uint16(i), false)); err != nil {
+		if _, _, err := r.Resolve(context.Background(), query("dot.example.", dns.TypeA, uint16(i), false), noECS); err != nil {
 			t.Fatalf("query %d: %v", i, err)
 		}
 	}

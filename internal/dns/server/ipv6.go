@@ -96,8 +96,8 @@ func (s *Server) synthesizeAAAA(qc *qctx, r *result, via []string, ips []netip.A
 		qc.note("DNS64: " + normalizeName(final) + " is blocked: no synthesis")
 		return
 	}
-	resp, _, err := s.exchange(qc, dns.Question{Name: final, Qtype: dns.TypeA, Qclass: dns.ClassINET}, via, ips)
-	if err != nil || resp.Rcode != dns.RcodeSuccess {
+	resp, info, err := s.exchange(qc, dns.Question{Name: final, Qtype: dns.TypeA, Qclass: dns.ClassINET}, via, ips)
+	if err != nil || resp.Rcode != dns.RcodeSuccess || (len(via) == 0 && info.Block != nil) {
 		qc.note("DNS64: no A records of " + normalizeName(final) + ": NODATA")
 		return
 	}

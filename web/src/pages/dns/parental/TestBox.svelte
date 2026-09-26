@@ -81,12 +81,26 @@
     }
   }
 
-  const parental = $derived(!!result && (result.status === 'blocked-schedule' || result.status === 'blocked-service'))
-  const blocked = $derived(!!result && isBlockedStatus(result.status))
+  // Dropped (no answer at all) counts as blocked here: the device gets nothing.
+  const blocked = $derived(!!result && (isBlockedStatus(result.status) || result.status === 'dropped'))
   const verdict = $derived.by(() => {
     const r = result
     if (!r) return ''
-    if (parental) return t('dns.parental.test.blockedParental', { reason: r.reason ?? '' })
+    const reason = r.reason ?? ''
+    switch (r.status) {
+      case 'blocked-schedule':
+      case 'blocked-service':
+        return t('dns.parental.test.blockedParental', { reason })
+      case 'dropped':
+        // A blocked client (dns.blockedClients) or a dropped domain (dns.droppedDomains).
+        return r.steps.some((s) => s.startsWith('blocked client: '))
+          ? t('dns.parental.test.droppedClient', { reason })
+          : t('dns.parental.test.droppedDomain', { name: r.name, reason })
+      case 'blocked-upstream':
+        return t('dns.parental.test.blockedUpstream', { reason })
+      case 'blocked-rebind':
+        return t('dns.parental.test.blockedRebind', { reason })
+    }
     if (blocked) return r.reason ? t('dns.parental.test.blockedOther', { reason: r.reason }) : t('dns.parental.test.blockedOtherNoReason')
     return t('dns.parental.test.allowed', { name: r.name })
   })

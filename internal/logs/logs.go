@@ -110,6 +110,21 @@ type QueryEvent struct {
 	Answer     string    `json:"answer,omitempty"` // compact summary, max 256 chars
 	DNSSEC     bool      `json:"dnssec,omitempty"` // AD flag set
 	Protocol   string    `json:"protocol"`         // udp | tcp
+	// UpstreamEDE is the Extended DNS Error of the upstream reply (any
+	// upstream, also on cache hits); nil when it carried none.
+	UpstreamEDE *UpstreamEDE `json:"upstreamEde,omitempty"`
+	// ECS is the client subnet the client itself sent (its first ECS
+	// option, e.g. "203.0.113.0/24"; at most /16 or /48 while client
+	// addresses are anonymised); "" if none.
+	ECS string `json:"ecs,omitempty"`
+}
+
+// UpstreamEDE is an Extended DNS Error (RFC 8914) of an upstream reply.
+// Text is at most 200 bytes of valid UTF-8 without control or bidi
+// characters.
+type UpstreamEDE struct {
+	Code int    `json:"code"`
+	Text string `json:"text"`
 }
 
 // CacheEvent is one client request to the HTTP cache.

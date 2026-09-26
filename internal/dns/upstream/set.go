@@ -27,6 +27,7 @@ const (
 // upstream is one configured resolver.
 type upstream struct {
 	name string // the configured string (stats key)
+	host string // UpstreamSpec.Host: names the upstream in block reasons (never a DoH path)
 	t    transport
 	st   *upstreamStats
 }
@@ -61,7 +62,7 @@ func (r *Resolver) buildSet(kind string, list []string, boot *bootstrap, prev ma
 				prev[spec.Raw] = st // shared with the other sets of this generation
 			}
 		}
-		s.ups = append(s.ups, &upstream{name: spec.Raw, t: r.newTransport(spec, boot), st: st})
+		s.ups = append(s.ups, &upstream{name: spec.Raw, host: spec.Host, t: r.newTransport(spec, boot), st: st})
 	}
 	s.id = kind + "\x00" + joinKey(s.names())
 	return s, errs
@@ -74,15 +75,16 @@ func (r *Resolver) newTransport(spec settings.UpstreamSpec, boot *bootstrap) tra
 		}
 	}
 	switch spec.Proto {
-	case "tcp":
-		return &plainTransport{addr: spec.Addr(), tcpOnly: true}
 	case "tls":
 		return newDoT(spec, boot, r.opts.rootCAs)
 	case "https":
 		return newDoH(spec, boot, r.opts.rootCAs)
-	default:
-		return &plainTransport{addr: spec.Addr()}
 	}
+	t := &plainTransport{addr: spec.Addr(), tcpOnly: spec.Proto == "tcp"}
+	if !spec.IsIPLit {
+		t.host, t.port, t.boot, t.filter = spec.Host, uint16(spec.Port), boot, r.opts.publicFilter
+	}
+	return t
 }
 
 func (s *upstreamSet) names() []string {
@@ -170,28 +172,75 @@ func (s *upstreamStats) snapshot(name string) UpstreamStat {
 type exchangeResult struct {
 	msg      *dns.Msg
 	upstream string
+	host     string // UpstreamSpec.Host of the answering upstream
 	rtt      time.Duration
+	fallback bool       // answered by a fallback upstream
+	block    *BlockInfo // the default set's own block (classify)
+	ede      *EDE       // the reply's EDE (parseEDE)
 }
 
-// exchangeSet sends q to the upstreams of set according to the mode, each
-// attempt bounded by the attempt timeout and all of them by
-// dns.upstreamTimeoutMs. SERVFAIL and REFUSED replies make the next upstream
-// be tried; they are returned only if nothing better arrives.
-func (r *Resolver) exchangeSet(ctx context.Context, set *upstreamSet, q *dns.Msg, d settings.DNS) (exchangeResult, error) {
-	if len(set.ups) == 0 {
-		return exchangeResult{}, errNoUpstreams
-	}
+// Fallback budgets (ARCHITECTURE 7.4): with fallbacks configured the
+// default upstreams get at most primaryBudget, then all fallbacks are
+// asked at once for at most fallbackBudget, so one fallback round ends
+// within the 10 s a client query may take.
+const (
+	primaryBudget  = 7 * time.Second
+	fallbackBudget = 2500 * time.Millisecond
+)
+
+// exchangeRoute sends q through rt: the upstreams of rt.set according to
+// the mode and, when every attempt ended without any reply (transport
+// errors, timeouts) and the route has fallbacks, all fallbacks in
+// parallel. A reply of any rcode never leads to the fallbacks. Mode
+// fastest_addr asks the default set like parallel and ResolveVia sets like
+// load_balance.
+func (r *Resolver) exchangeRoute(ctx context.Context, rt route, q *dns.Msg, d settings.DNS) (exchangeResult, error) {
 	wire, err := q.Pack()
 	if err != nil {
 		return exchangeResult{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(d.UpstreamTimeoutMs)*time.Millisecond)
+	mode := d.UpstreamMode
+	if mode == "fastest_addr" {
+		mode = "load_balance"
+		if rt.def {
+			mode = "parallel"
+		}
+	}
+	timeout := time.Duration(d.UpstreamTimeoutMs) * time.Millisecond
+	if rt.fallback == nil || len(rt.fallback.ups) == 0 {
+		return r.exchangeSet(ctx, rt.set, q, wire, mode, timeout)
+	}
+	res, err := r.exchangeSet(ctx, rt.set, q, wire, mode, min(timeout, primaryBudget))
+	if err == nil || ctx.Err() != nil || errors.Is(err, errClosed) {
+		return res, err
+	}
+	fctx, cancel := context.WithTimeout(ctx, fallbackBudget)
 	defer cancel()
-	if d.UpstreamMode == "parallel" && len(set.ups) > 1 {
+	fres, ferr := r.exchangeParallel(fctx, rt.fallback.ups, q, wire)
+	if ferr != nil {
+		return exchangeResult{}, fmt.Errorf("%w; fallback: %w", err, ferr)
+	}
+	fres.fallback = true
+	r.lastFallback.Store(time.Now().UnixNano())
+	return fres, nil
+}
+
+// exchangeSet sends q (packed: wire) to the upstreams of set according to
+// mode, each attempt bounded by the attempt timeout and all of them by
+// timeout. SERVFAIL and REFUSED replies make the next upstream be tried;
+// they are returned only if nothing better arrives. An error means that no
+// upstream replied at all.
+func (r *Resolver) exchangeSet(ctx context.Context, set *upstreamSet, q *dns.Msg, wire []byte, mode string, timeout time.Duration) (exchangeResult, error) {
+	if len(set.ups) == 0 {
+		return exchangeResult{}, errNoUpstreams
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if mode == "parallel" && len(set.ups) > 1 {
 		return r.exchangeParallel(ctx, set.ups, q, wire)
 	}
 	order := set.ups
-	if d.UpstreamMode != "strict" {
+	if mode != "strict" {
 		order = loadBalanceOrder(set.ups)
 	}
 	var fallback exchangeResult
@@ -284,7 +333,7 @@ func (r *Resolver) attempt(ctx context.Context, u *upstream, q *dns.Msg, wire []
 	u.st.queries.Add(1)
 	if err == nil && m.Rcode == dns.RcodeRefused {
 		r.recordFailure(u, errRefused)
-		return exchangeResult{msg: m, upstream: u.name, rtt: rtt}, nil
+		return exchangeResult{msg: m, upstream: u.name, host: u.host, rtt: rtt}, nil
 	}
 	if err != nil {
 		r.recordFailure(u, err)
@@ -293,7 +342,7 @@ func (r *Resolver) attempt(ctx context.Context, u *upstream, q *dns.Msg, wire []
 	if u.st.success(rtt) {
 		r.log.Info("upstream recovered", slog.String("upstream", u.name))
 	}
-	return exchangeResult{msg: m, upstream: u.name, rtt: rtt}, nil
+	return exchangeResult{msg: m, upstream: u.name, host: u.host, rtt: rtt}, nil
 }
 
 func (r *Resolver) recordFailure(u *upstream, err error) {

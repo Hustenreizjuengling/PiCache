@@ -45,6 +45,8 @@ type metricsSnapshot struct {
 	Version        string
 	DNSQueries     int64
 	DNSRateLimited int64
+	DNSBlocked     int64 // queries of dns.blockedClients (no answer)
+	DNSDropped     int64 // queries of dns.droppedDomains (no answer)
 	CacheBytesHit  int64
 	CacheBytesWAN  int64
 	StoreOnline    bool
@@ -60,6 +62,8 @@ func (s *Server) collectMetrics() metricsSnapshot {
 		Version:        version.Version,
 		DNSQueries:     dns.Queries,
 		DNSRateLimited: dns.RateLimited,
+		DNSBlocked:     dns.BlockedClients,
+		DNSDropped:     dns.Dropped,
 		CacheBytesHit:  px.BytesHit,
 		CacheBytesWAN:  px.BytesWAN,
 		StoreOnline:    st.Online,
@@ -85,6 +89,10 @@ func writeMetrics(w io.Writer, m metricsSnapshot) {
 	fmt.Fprintf(w, "picache_dns_queries_total %d\n", m.DNSQueries)
 	family("picache_dns_rate_limited_total", "counter", "DNS queries dropped or refused by the per-client rate limit since start.")
 	fmt.Fprintf(w, "picache_dns_rate_limited_total %d\n", m.DNSRateLimited)
+	family("picache_dns_blocked_clients_total", "counter", "DNS queries of blocked clients (dns.blockedClients) that got no answer since start.")
+	fmt.Fprintf(w, "picache_dns_blocked_clients_total %d\n", m.DNSBlocked)
+	family("picache_dns_dropped_total", "counter", "DNS queries for dropped domains (dns.droppedDomains) that got no answer since start.")
+	fmt.Fprintf(w, "picache_dns_dropped_total %d\n", m.DNSDropped)
 
 	family("picache_cache_bytes_hit_total", "counter", "Bytes served from the download cache store since start.")
 	fmt.Fprintf(w, "picache_cache_bytes_hit_total %d\n", m.CacheBytesHit)

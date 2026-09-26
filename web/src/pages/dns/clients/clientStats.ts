@@ -114,6 +114,8 @@ export interface SeenDevice {
   lastSeen: Timestamp
   /** Queries since first seen, over all addresses. */
   queries: number
+  /** The dns.blockedClients entries blocking its addresses or its MAC address (unique). */
+  blockedBy: string[]
 }
 
 /** Groups recently seen addresses by MAC address; devices with the newest activity first. */
@@ -142,6 +144,7 @@ export function seenDevices(known: readonly KnownClient[]): SeenDevice[] {
       firstSeen: list.reduce((min, k) => (time(k.firstSeen) < time(min) ? k.firstSeen : min), list[0].firstSeen),
       lastSeen: list[0].lastSeen,
       queries: list.reduce((n, k) => n + k.queries, 0),
+      blockedBy: [...new Set(list.flatMap((k) => (k.blockedBy ? [k.blockedBy] : [])))],
     })
   }
   return out.sort((a, b) => time(b.lastSeen) - time(a.lastSeen))

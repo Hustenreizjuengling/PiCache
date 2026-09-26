@@ -5,6 +5,112 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Rebinding protection is on.** Answers from the upstreams that point a
+  public name at a private, loopback or link-local address are now blocked
+  and appear as **Rebinding blocked** (`blocked-rebind`) in the query log.
+  If a service you use answers with LAN addresses on purpose, allow its
+  domain (**Allow rebinding for `<name>`** in the query panel, or
+  `dns.rebindAllow`; `plex.direct` is allowed by default). The names in
+  `web.allowedHosts` are allowed automatically. A local resolver used as
+  default upstream (a router, unbound) needs its domains allowed or, better,
+  a conditional forwarder for them. DNSBL zones queried through PiCache
+  (e.g. by a mail server) must be allowed too.
+- **Bare names stay local.** A query for a name without a dot (`nas`) of
+  type A, AAAA, HTTPS, SVCB or ANY is answered as `nas.<local domain>` from
+  local records, DHCP names, conditional forwarders or the router, and is no
+  longer sent to the upstreams; `wpad` and `isatap` are answered only from
+  local records (`dns.domainNeeded`, on).
+- **Quad9's blocks are visible**: they appear as **Blocked by upstream**
+  (`blocked-upstream`) and count as blocked in the statistics.
+- **Default upstreams**: an installation on the old default list (Quad9 and
+  Cloudflare) now uses Quad9 only, with Cloudflare's malware-filtering
+  resolver as fallback when Quad9 does not answer. An installation with its
+  own upstream list keeps it and gets no fallback (turn it on in **DNS
+  settings → Upstream DNS servers → Fallback DNS**). A network that blocks both Quad9 and Cloudflare
+  needs its own upstreams.
+- **Downgrade**: a version before 0.9.0 refuses the migrated `picache.db`
+  (newer schema) and does not start. Going back needs the copy
+  `<data>/backups/picache-<old version>-<timestamp>.db` that 0.9.0 makes at
+  its first start: the rollback of the update helper (systemd) restores it
+  itself, Docker users restore it before starting an older image. An older
+  version cannot open the newer `logs.db` and sets it aside, so the query
+  log and the statistics start fresh after a downgrade.
+
+### Changed
+
+- **Default upstreams: Quad9 only** (`https://dns.quad9.net/dns-query`,
+  which filters malware), with **Cloudflare's malware-filtering resolver
+  as fallback** (`https://security.cloudflare-dns.com/dns-query`, another
+  operator). Load-balancing Quad9 with an unfiltered resolver made its
+  malware blocking random. Settings schema v4 converts stored settings
+  (see the upgrade notes).
+- The DNS rate limit can count a whole public network as one client
+  (`dns.rateLimitIpv4Prefix`, `dns.rateLimitIpv6Prefix`; LAN sources are
+  still limited per address; the defaults keep today's keys), and trusted
+  EDNS forwarders are exempt from it. Login throttling and the other limits
+  are unchanged.
+
+### Added
+
+- **DNS rebinding protection** (`dns.rebindProtection`, on;
+  `dns.rebindAllow`): answers of the default upstreams, the fallbacks and
+  `default` forwarders that point names at private, loopback or link-local
+  addresses (also as IPv4-mapped, IPv4-compatible, 6to4, NAT64 or DNS64
+  addresses) are blocked; such addresses are removed from HTTPS/SVCB hints
+  and the additional section. Also while blocking is paused.
+- **Detection of answers blocked by the upstream**: EDE 15–17, 0.0.0.0/`::`,
+  Cisco Umbrella block pages and Quad9's NXDOMAIN without RA become the
+  blocking reply with status `blocked-upstream` and the reason
+  `<host>: <kind>` (never the path of a DoH URL; clients get only
+  `blocked by upstream (<kind>)`, since a host name can carry a profile
+  ID); they are cached for
+  `dns.upstreamBlockedTtl` (300 s). The upstream's EDE (any code) is shown
+  in the query log (`upstreamEde`).
+- **Fallback DNS** (`dns.fallbackUpstreams`, at most 4): asked only when no
+  default upstream replied at all (never after an error reply), within the
+  10 s a query may take; `GET /dns/upstreams` shows their statistics
+  (`fallbacks`, `fallbackLastUsed`) and the health check warns while a
+  fallback answers.
+- **Keep bare names local** (`dns.domainNeeded`, on) and extra **private
+  reverse networks** (`dns.privateReverseNetworks`) whose PTR queries are
+  answered locally like the RFC 6303 zones.
+- **Blocked clients** (`dns.blockedClients`: addresses, networks or MAC
+  addresses; at most 256): their DNS queries get no answer (DNS only; the
+  download cache is unaffected). **Block device** in the query panel and
+  the Seen recently list (`POST /dns/blocked-clients`, `DELETE
+  /dns/blocked-clients?entry=`; `GET /clients/known` rows have
+  `blockedBy`). PiCache refuses entries that would block itself, the
+  router, the container network's gateway or a trusted forwarder (their
+  MAC addresses included), and never drops them at run time.
+- **Dropped domains** (`dns.droppedDomains`, optionally per query type): no
+  answer, not logged. **Bogus NXDOMAIN** (`dns.bogusNxdomain`): answers
+  with listed addresses become NXDOMAIN.
+- **Conditional forwarders**: several domains per forwarder (`domains`), the
+  target `default` (an exception back to the default upstreams, e.g.
+  `public.corp.example` inside `corp.example`), the domain `(unqualified)`
+  for bare names, and an import of dnsmasq-style lines
+  (`[/corp.example/]192.168.1.1`, `#` = default, `[//]` = bare names) with
+  a preview (`POST /dns/forwarders/import`).
+- Plain DNS upstreams and forwarder targets may be given by a public host
+  name (resolved through the bootstrap servers; only public addresses are
+  dialled). **Prefer IPv6** for DoT, DoH and named upstreams
+  (`dns.bootstrapPreferIpv6`).
+- Upstream mode **`fastest_addr`**: the upstreams are asked in parallel and
+  the address of an answer that connects fastest (TCP 443, else 80;
+  bounded, public addresses only) comes first. Off by default.
+- **EDNS client subnet** to the default upstreams (`dns.ecs`: off, the
+  client's /24 or /56 for public addresses, or a fixed public network), and
+  the subnet a client sent is shown in the query log (`ecs`).
+- **Clients behind a trusted forwarder** (`dns.ednsClientTrusted`): their
+  address (ECS) and MAC (option 65001) identify them, so groups, parental
+  controls and the query log see the real devices. The forwarder must strip
+  its clients' own options.
+- `dnsserver.Stats` has `blockedClients` and `dropped`; `/metrics` has
+  `picache_dns_blocked_clients_total` and `picache_dns_dropped_total`.
+  `POST /dns/lookup` traces every new step and reports `dropped`.
+
 ## [0.8.0] - 2026-09-26
 
 ### Changed

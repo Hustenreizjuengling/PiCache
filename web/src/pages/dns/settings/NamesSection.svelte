@@ -1,17 +1,20 @@
 <!--
   @component
   Local names: the local domain (never sent to public upstreams), the names
-  PiCache answers with its own addresses and the router resolver (auto =
-  default gateway, a fixed address, or off).
+  PiCache answers with its own addresses, the router resolver (auto =
+  default gateway, a fixed address, or off), single-label names kept local
+  and extra networks whose reverse lookups stay local (with a warning for
+  public ranges).
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
   import { t } from '$i18n/index.svelte'
   import type { DnsSettings, RouterStatus } from '$lib/api'
   import type { SettingsForm } from '$lib/settings.svelte'
-  import { Field, Input, Panel, Select } from '$lib/ui'
+  import { Field, Input, Notice, Panel, Select, Toggle } from '$lib/ui'
   import { lineError } from '../shared/errors'
   import LinesInput from '../shared/LinesInput.svelte'
+  import { isPublicNetwork } from './ranges'
 
   interface Props {
     form: SettingsForm<'dns'>
@@ -56,6 +59,9 @@
     { value: 'off', label: t('dns.router.mode.off') },
   ])
 
+  // Entries outside the private ranges take PTR queries away from the public upstreams.
+  const publicNetworks = $derived(d.privateReverseNetworks.filter(isPublicNetwork))
+
   const statusText = $derived.by(() => {
     if (!status || status.mode === 'off') return undefined
     if (!status.address) return t('dns.settings.names.routerNone')
@@ -91,10 +97,39 @@
         </Field>
       {/if}
     </div>
+    <div class="stack-sm">
+      <Toggle
+        bind:checked={d.domainNeeded}
+        label={t('dns.settings.names.domainNeeded')}
+        description={d.localDomain.trim()
+          ? t('dns.settings.names.domainNeededHelp', { example: `nas.${d.localDomain.trim()}` })
+          : t('dns.settings.names.domainNeededHelpNoDomain')}
+      />
+      {#if form.error('domainNeeded')}<p class="err">{form.error('domainNeeded')}</p>{/if}
+    </div>
+    <Field
+      label={t('dns.settings.names.reverse')}
+      optional
+      help={t('dns.settings.names.reverseHelp')}
+      error={lineError(form.saveError, 'dns.privateReverseNetworks')}
+    >
+      <LinesInput bind:value={d.privateReverseNetworks} rows={3} placeholder="10.8.0.0/16" />
+    </Field>
+    {#if publicNetworks.length > 0}
+      <Notice tone="warn">
+        {#each publicNetworks as n (n)}
+          <p>{t('dns.settings.names.reversePublic', { network: n })}</p>
+        {/each}
+      </Notice>
+    {/if}
   </div>
 </Panel>
 
 <style>
+  .err {
+    color: var(--danger);
+    font-size: var(--fs-sm);
+  }
   .grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

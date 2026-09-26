@@ -83,10 +83,12 @@ type hostInfo struct {
 	primary4  netip.Addr          // netutil.PrimaryIPv4 (invalid if none)
 	primary6  netip.Addr          // netutil.PrimaryIPv6, a stable address of its /64 instead of a temporary one (invalid if none)
 	search    []string            // resolv.conf search domains
+	macs      []string            // MAC addresses of this machine's interfaces (dns.blockedClients never drops them)
 }
 
 // loadHostInfo reads the interface addresses (with their IPv6 flags on
-// Linux), the primary addresses and the resolv.conf search domains.
+// Linux), the primary addresses, the resolv.conf search domains and the
+// interfaces' MAC addresses.
 func loadHostInfo() *hostInfo {
 	var p4, p6 netip.Addr
 	if ip, err := netutil.PrimaryIPv4(); err == nil {
@@ -95,7 +97,9 @@ func loadHostInfo() *hostInfo {
 	if ip, err := netutil.PrimaryIPv6(); err == nil {
 		p6 = ip
 	}
-	return newHostInfo(netutil.HostAddrs(), p4, p6, netutil.ResolvConfSearch())
+	h := newHostInfo(netutil.HostAddrs(), p4, p6, netutil.ResolvConfSearch())
+	h.macs = localMACs()
+	return h
 }
 
 // newHostInfo builds the host information from the interface addresses:

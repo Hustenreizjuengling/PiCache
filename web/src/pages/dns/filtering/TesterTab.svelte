@@ -78,10 +78,15 @@
 
   const res = $derived(result.data)
   const blocked = $derived(!!res && isBlockedStatus(res.status))
+  // Like the query panel: an allow rule cannot lift an upstream's block, and
+  // a dropped query (blocked client or dropped domain) is not a rule matter.
+  const ruleAction = $derived(
+    !res || res.status === 'blocked-upstream' || res.status === 'dropped' ? undefined : blocked ? 'allow' : 'block',
+  )
 
   function createRule() {
-    if (!res) return
-    rulePreset = { action: blocked ? 'allow' : 'block', type: 'exact', pattern: res.name, groupIds: [DEFAULT_GROUP_ID] }
+    if (!res || !ruleAction) return
+    rulePreset = { action: ruleAction, type: 'exact', pattern: res.name, groupIds: [DEFAULT_GROUP_ID] }
     ruleOpen = true
   }
 </script>
@@ -117,16 +122,26 @@
   {#if res && reqName}
     <Panel title={t('dns.tester.resultTitle', { name: res.name, type: res.type })}>
       {#snippet actions()}
-        <Button icon={blocked ? 'shield-off' : 'shield'} disabled={!session.isAdmin} onclick={createRule}>
-          {blocked ? t('dns.queryLog.allowDomain') : t('dns.queryLog.blockDomain')}
-        </Button>
+        {#if ruleAction}
+          <Button icon={ruleAction === 'allow' ? 'shield-off' : 'shield'} disabled={!session.isAdmin} onclick={createRule}>
+            {ruleAction === 'allow' ? t('dns.queryLog.allowDomain') : t('dns.queryLog.blockDomain')}
+          </Button>
+        {/if}
         <Button variant="ghost" icon="list" href={href('/dns/queries', { domain: `"${res.name}"` })}>{t('dns.tester.showInLog')}</Button>
       {/snippet}
       <div class="stack">
         <div class="row">
           <QueryStatusChip status={res.status} size="md" />
-          <span class="muted small">{res.rcode} · {formatMicros(res.durationUs)}</span>
+          <span class="muted small">{res.rcode ? `${res.rcode} · ` : ''}{formatMicros(res.durationUs)}</span>
         </div>
+        {#if res.status === 'blocked-upstream'}
+          <Notice tone="info" title={t('dns.queryLog.upstreamBlockTitle')}>
+            {t('dns.queryLog.upstreamBlockText')}
+            {#snippet actions()}
+              <Button size="sm" icon="link" href={href('/dns/local', { tab: 'forwarders' })}>{t('dns.queryLog.openForwarders')}</Button>
+            {/snippet}
+          </Notice>
+        {/if}
         <KeyValue
           items={[
             { label: t('dns.queryLog.reason'), value: res.reason },

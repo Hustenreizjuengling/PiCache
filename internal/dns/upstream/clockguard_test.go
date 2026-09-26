@@ -42,7 +42,7 @@ func TestClockGuard(t *testing.T) {
 			r := newTestResolver(t, st, opts, map[string]*fakeTransport{doh: encrypted})
 			defer r.Close()
 
-			m, info, err := r.Resolve(context.Background(), query("guard.example.", dns.TypeA, 1, false))
+			m, info, err := r.Resolve(context.Background(), query("guard.example.", dns.TypeA, 1, false), noECS)
 			if err != nil {
 				t.Fatal(err)
 			}

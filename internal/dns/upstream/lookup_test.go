@@ -101,7 +101,7 @@ func TestLookupIPUsesDefaultUpstreams(t *testing.T) {
 		if err != nil || got[0] != netip.MustParseAddr("198.51.100.1") {
 			t.Fatalf("LookupIP = %v %v", got, err)
 		}
-		if _, info, _ := r.Resolve(ctx, query("cdn.example.", dns.TypeA, 2, false)); !info.Cached {
+		if _, info, _ := r.Resolve(ctx, query("cdn.example.", dns.TypeA, 2, false), noECS); !info.Cached {
 			t.Error("LookupIP answer not shared with the response cache")
 		}
 	})
@@ -236,7 +236,7 @@ func TestTest(t *testing.T) {
 	if res2 := r.Test(ctx, srv.String()); !res2.OK || queries.Load() != 2 {
 		t.Errorf("Test must bypass the cache: %+v, queries %d", res2, queries.Load())
 	}
-	if len(r.Stats()) != 2 || r.Stats()[0].Queries != 0 {
+	if len(r.Stats()) != 1 || r.Stats()[0].Queries != 0 {
 		t.Errorf("Test must not touch the statistics: %+v", r.Stats())
 	}
 	if res := r.Test(ctx, "ftp://example.com"); res.OK || !strings.HasPrefix(res.Error, "invalid upstream") {

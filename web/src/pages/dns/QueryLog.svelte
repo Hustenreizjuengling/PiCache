@@ -58,6 +58,8 @@
   const log = resource((signal) => api.logs.queries(apiQuery(filters, live ? '' : cursor), { signal }))
   const groups = resource((signal) => api.groups.list({ signal }))
   const lists = resource((signal) => api.filter.lists.list({ signal }))
+  // For the panel: the rebinding allow list and whether client addresses are anonymised.
+  const settings = resource((signal) => api.settings.get({ signal }))
 
   let liveRows = $state.raw<Row[]>([])
   let stream = $state<LiveStream<QueryEvent> | null>(null)
@@ -123,6 +125,8 @@
   function openRow(r: Row) {
     selected = r
     panelOpen = true
+    // The panel's actions depend on settings another tab may have changed meanwhile.
+    void settings.refresh()
   }
 
   function setFilters(patch: QueryPatch) {
@@ -267,7 +271,15 @@
   </Panel>
 </div>
 
-<QueryPanel bind:open={panelOpen} event={selected} groups={groups.data} lists={lists.data} onfilter={setFilters} />
+<QueryPanel
+  bind:open={panelOpen}
+  event={selected}
+  groups={groups.data}
+  lists={lists.data}
+  settings={settings.data}
+  onsettings={(s) => settings.set(s)}
+  onfilter={setFilters}
+/>
 
 <style>
   .head {

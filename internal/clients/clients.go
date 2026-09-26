@@ -336,6 +336,52 @@ func (r *Registry) Identify(ip netip.Addr) *Identity {
 	return id
 }
 
+// IdentifyDerived returns the identity of a client behind a trusted
+// forwarder (dns.ednsClientTrusted) whose address (ip; invalid if none)
+// and/or MAC (mac; "" if none) came from the forwarder's EDNS options.
+// With an address, the usual order applies to it (exact IP → CIDR → MAC
+// identifier → learned MAC → Default), the MAC being mac, else the
+// neighbour table's MAC of the address (read only: no probe, no early
+// read). With only a MAC the address steps are skipped (the source is the
+// forwarder, not the client): MAC identifier → learned MAC → Default, and
+// the identity has no address. Nothing is cached or learned: EDNS MACs
+// never enter the neighbour table, the learned MACs or the device data.
+func (r *Registry) IdentifyDerived(ip netip.Addr, mac string) *Identity {
+	snap := r.snap.Load()
+	id := &Identity{}
+	var c *clientEntry
+	if ip.IsValid() {
+		ip = netutil.Canon(ip)
+		if mac == "" {
+			mac = (*r.arp.Load())[ip]
+		}
+		id.IP, id.MAC = ip, mac
+		c = r.match(snap, ip, mac)
+	} else if mac != "" {
+		id.MAC = mac
+		if c = snap.byMAC[mac]; c == nil {
+			if l := r.learned.Load(); l != nil && l.snap == snap {
+				c = l.byMAC[mac]
+			}
+		}
+	}
+	if c != nil {
+		id.ClientID, id.Name = c.id, c.name
+		id.GroupIDs = snap.enabledGroups(c.groups)
+		id.DownloadCacheBypass, id.IgnoreLogs = c.downloadCacheBypass, c.ignoreLogs
+	} else {
+		id.GroupIDs = snap.defaultGroups
+	}
+	if id.Name == "" {
+		if ip.IsValid() {
+			id.Name = r.name(ip, mac)
+		} else if l := r.learned.Load(); l != nil {
+			id.Name = r.macName(l.addrs[mac], netip.Addr{})
+		}
+	}
+	return id
+}
+
 // DisplayName returns the best display name for ip ("" if none).
 func (r *Registry) DisplayName(ip netip.Addr) string { return r.Identify(ip).Name }
 

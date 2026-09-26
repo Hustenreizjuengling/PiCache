@@ -346,12 +346,19 @@ func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) 
 		return QueryPage{}, err
 	}
 	return cursorPage(ctx, s, `SELECT id, ts, client_ip, client_name, qname, qtype, status, rcode, reason, list_id,
-		rule_id, service, upstream, duration_us, answer, dnssec, protocol FROM logs_queries`,
+		rule_id, service, upstream, duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs
+		FROM logs_queries`,
 		&w, listing.Clamp(f.Limit, 100, 1000), func(r *sql.Rows) (QueryEvent, int64, int64, error) {
 			var e QueryEvent
 			var ts int64
+			var edeCode int
+			var edeText string
 			err := r.Scan(&e.ID, &ts, &e.ClientIP, &e.ClientName, &e.QName, &e.QType, &e.Status, &e.RCode, &e.Reason,
-				&e.ListID, &e.RuleID, &e.Service, &e.Upstream, &e.DurationUs, &e.Answer, &e.DNSSEC, &e.Protocol)
+				&e.ListID, &e.RuleID, &e.Service, &e.Upstream, &e.DurationUs, &e.Answer, &e.DNSSEC, &e.Protocol,
+				&edeCode, &edeText, &e.ECS)
+			if edeCode >= 0 {
+				e.UpstreamEDE = &UpstreamEDE{Code: edeCode, Text: edeText}
+			}
 			e.Time = db.Time(ts)
 			return e, e.ID, ts, err
 		})

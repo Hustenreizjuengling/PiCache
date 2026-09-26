@@ -94,7 +94,12 @@ func TestParseUpstream(t *testing.T) {
 		{"tls://dns.quad9.net", "tls", "dns.quad9.net:853", true},
 		{"https://dns.quad9.net/dns-query", "https", "dns.quad9.net:443", true},
 		{"https://dns.quad9.net", "https", "dns.quad9.net:443", true},
-		{"dns.quad9.net", "", "", false},
+		{"dns.quad9.net", "udp", "dns.quad9.net:53", true}, // plain DNS by name (0.9.0)
+		{"tcp://dns.example:5353", "tcp", "dns.example:5353", true},
+		{"udp://dns.example/path", "", "", false},
+		{"192.168.1781", "", "", false}, // a mistyped address, not a name
+		{"udp://10.0.0:53", "", "", false},
+		{"tcp://9.dns.example", "tcp", "9.dns.example:53", true},
 		{"ftp://x", "", "", false},
 		{"https://user:pw@x.example/dns-query", "", "", false},
 	}

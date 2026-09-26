@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"container/list"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,13 +20,24 @@ const (
 	hardMaxTTL     = 7 * 86400       // cap for every cached TTL (RFC 8767 4 suggests 7 days)
 )
 
-// cacheKey identifies a cached answer. set is the upstream-set namespace.
+// cacheKey identifies a cached answer. set is the upstream-set namespace;
+// ecs is the client subnet sent upstream (invalid = none), so two subnets
+// never share an answer or an exchange.
 type cacheKey struct {
 	name   string // lower-case qname
 	qtype  uint16
 	qclass uint16
 	do     bool // DO bit sent upstream
 	set    string
+	ecs    netip.Prefix
+}
+
+// entryMeta is what a cached answer carries besides the reply: the default
+// set's own block, the reply's EDE and whether a fallback answered.
+type entryMeta struct {
+	block    *BlockInfo
+	ede      *EDE
+	fallback bool
 }
 
 // cacheEntry is an answer in packed wire form: exact memory accounting and
@@ -33,6 +45,7 @@ type cacheKey struct {
 type cacheEntry struct {
 	key         cacheKey
 	wire        []byte
+	meta        entryMeta
 	stored      time.Time
 	expires     time.Time
 	servfail    bool
@@ -46,6 +59,7 @@ type cachePolicy struct {
 	minTTL      uint32
 	maxTTL      uint32 // 0 = no cap
 	staleWindow time.Duration
+	blockedTTL  uint32 // lifetime of answers blocked by the upstream (dns.upstreamBlockedTtl)
 }
 
 // respCache is an LRU of upstream answers, bounded by entry count and total
@@ -64,6 +78,7 @@ func (c *respCache) init() { c.m = map[cacheKey]*list.Element{} }
 // cacheHit is a snapshot of an entry taken under the lock.
 type cacheHit struct {
 	wire   []byte // immutable
+	meta   entryMeta
 	stored time.Time
 	stale  bool
 }
@@ -88,7 +103,7 @@ func (c *respCache) get(k cacheKey, now time.Time, staleWindow time.Duration) (c
 		return cacheHit{}, false
 	}
 	c.lru.MoveToFront(el)
-	h := cacheHit{wire: e.wire, stored: e.stored, stale: stale}
+	h := cacheHit{wire: e.wire, meta: e.meta, stored: e.stored, stale: stale}
 	c.mu.Unlock()
 	c.hits.Add(1)
 	if stale {
@@ -100,12 +115,22 @@ func (c *respCache) get(k cacheKey, now time.Time, staleWindow time.Duration) (c
 // store caches m under k if it is cacheable. It may rewrite TTLs in m (the
 // TTL clamp and the negative TTL on the SOA), so the caller must own m. A
 // SERVFAIL never replaces an entry that can still be served (fresh or
-// stale): RFC 8767 prefers stale data over failures.
-func (c *respCache) store(k cacheKey, m *dns.Msg, now time.Time, p cachePolicy) {
+// stale): RFC 8767 prefers stale data over failures. An answer the upstream
+// blocked itself (meta.block) is stored whether or not it would be cached
+// otherwise (e.g. NXDOMAIN without SOA) for p.blockedTTL, which replaces
+// the normal or negative TTL, the TTL clamp and the negative cap (at most
+// the hard 7-day cap); its records are left as they came.
+func (c *respCache) store(k cacheKey, m *dns.Msg, now time.Time, p cachePolicy, meta entryMeta) {
 	if p.capacity <= 0 {
 		return
 	}
-	ttl, servfail, ok := prepareForCache(m, k.qtype, p)
+	var ttl uint32
+	var servfail, ok bool
+	if meta.block != nil {
+		ttl, ok = min(p.blockedTTL, hardMaxTTL), p.blockedTTL > 0
+	} else {
+		ttl, servfail, ok = prepareForCache(m, k.qtype, p)
+	}
 	if !ok {
 		return
 	}
@@ -125,7 +150,7 @@ func (c *respCache) store(k cacheKey, m *dns.Msg, now time.Time, p cachePolicy) 
 		}
 		c.removeLocked(el)
 	}
-	e := &cacheEntry{key: k, wire: wire, stored: now, expires: now.Add(time.Duration(ttl) * time.Second), servfail: servfail}
+	e := &cacheEntry{key: k, wire: wire, meta: meta, stored: now, expires: now.Add(time.Duration(ttl) * time.Second), servfail: servfail}
 	c.m[k] = c.lru.PushFront(e)
 	c.bytes += len(wire)
 	c.evictLocked(p.capacity)

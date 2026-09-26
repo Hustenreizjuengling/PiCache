@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/auth"
@@ -157,6 +158,9 @@ type Server struct {
 	mux     *http.ServeMux
 	handler http.Handler
 	hosts   *hostAllowlist
+	// macOf reads the neighbour-table MAC of an address (nil:
+	// Deps.Clients.NeighbourMAC; replaced in tests).
+	macOf func(ip netip.Addr) (string, bool)
 }
 
 // New builds the handler with all routes and middleware.

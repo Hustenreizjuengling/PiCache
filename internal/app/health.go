@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/api"
+	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 )
 
 // healthLoop evaluates health every 60 s, logs every status change once and
@@ -55,6 +56,36 @@ func (a *App) healthLoop(ctx context.Context) {
 	}
 }
 
+// fallbackRecent is how long after a fallback answered the health check
+// says that fallback DNS is in use.
+const fallbackRecent = 5 * time.Minute
+
+// upstreamHealth evaluates the health check "upstreams" (first match): the
+// clock guard warns; no default upstream healthy and no healthy fallback
+// (or none configured) fails; no default upstream healthy, or a fallback
+// that answered within the last 5 minutes, warns; ok otherwise.
+func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, lastFallback, now time.Time) (status, msg, hint string) {
+	healthy := func(list []upstream.UpstreamStat) int {
+		n := 0
+		for _, s := range list {
+			if s.Healthy {
+				n++
+			}
+		}
+		return n
+	}
+	primaryDown := len(stats) > 0 && healthy(stats) == 0
+	switch {
+	case clockGuard:
+		return "warn", "system clock is not set; using unencrypted DNS to the bootstrap servers", "enable NTP (e.g. systemd-timesyncd) on the host"
+	case primaryDown && healthy(fallbacks) == 0:
+		return "fail", "no upstream DNS server is answering", "check the internet connection and the upstream settings"
+	case primaryDown || (!lastFallback.IsZero() && now.Sub(lastFallback) < fallbackRecent):
+		return "warn", "fallback DNS in use: the upstream DNS servers are not answering", "check the internet connection and the upstream settings"
+	}
+	return "ok", "", ""
+}
+
 // Health returns the last evaluated health (evaluating now if none yet).
 func (a *App) Health(ctx context.Context) api.Health {
 	if h := a.health.Load(); h != nil {
@@ -87,22 +118,9 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 		add("listeners", "ok", "", "")
 	}
 
-	// Upstreams (+ clock guard)
-	stats := a.up.Stats()
-	healthy := 0
-	for _, s := range stats {
-		if s.Healthy {
-			healthy++
-		}
-	}
-	switch {
-	case a.up.ClockGuard():
-		add("upstreams", "warn", "system clock is not set; using unencrypted DNS to the bootstrap servers", "enable NTP (e.g. systemd-timesyncd) on the host")
-	case len(stats) > 0 && healthy == 0:
-		add("upstreams", "fail", "no upstream DNS server is answering", "check the internet connection and the upstream settings")
-	default:
-		add("upstreams", "ok", "", "")
-	}
+	// Upstreams (+ clock guard, fallbacks)
+	st, msg, hint := upstreamHealth(a.up.ClockGuard(), a.up.Stats(), a.up.FallbackStats(), a.up.LastFallback(), time.Now())
+	add("upstreams", st, msg, hint)
 
 	// Filtering
 	fs := a.filter.Stats()

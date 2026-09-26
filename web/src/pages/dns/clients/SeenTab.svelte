@@ -4,7 +4,8 @@
   activity first): addresses ("+N addresses" expands), host name, MAC, the
   client they belong to and their traffic (summed over their addresses).
   Unconfigured devices can be added as a client in one step (MAC address
-  plus IPv4 and ULA addresses).
+  plus IPv4 and ULA addresses). Admins can block a device's DNS queries
+  (by its MAC address when known) or lift the entries that block it.
   Query: ?tab=seen&within=24h|7d|30d&ip=<address> (selects the device with that address)
 -->
 <script lang="ts">
@@ -15,10 +16,11 @@
   import { formatBytes, formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { href, router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { Button, EmptyState, KeyValue, Notice, Panel, Select, SidePanel, Table, type Column } from '$lib/ui'
+  import { Badge, Button, EmptyState, IconButton, KeyValue, Notice, Panel, Select, SidePanel, Table, type Column } from '$lib/ui'
   import { isV4 } from '../network/checks'
   import { clientValues } from '../querylog/filters'
   import AddressList from '../shared/AddressList.svelte'
+  import { confirmBlockDevice, confirmUnblock } from '../shared/blockClient'
   import ClientPanel from './ClientPanel.svelte'
   import { clientFromKnown, deviceTotals, seenDevices, type SeenDevice, type Totals, type TrafficRange } from './clientStats'
 
@@ -63,6 +65,22 @@
     onchanged()
   }
 
+  async function block(d: SeenDevice) {
+    if (await confirmBlockDevice(d.ip, clientName(d) ?? d.hostname)) void known.refresh()
+  }
+
+  // GET /clients/known names only the first matching entry per address: after
+  // removing it, another entry (e.g. the MAC address) may still block the device.
+  async function unblock(d: SeenDevice) {
+    let entries = d.blockedBy
+    for (let more = false; entries.length > 0; more = true) {
+      if (!(await confirmUnblock(entries, more))) return
+      await known.refresh()
+      const still = known.data ? seenDevices(known.data).find((x) => x.key === d.key)?.blockedBy : undefined
+      entries = still?.filter((e) => !entries.includes(e)) ?? []
+    }
+  }
+
   /** The address for the downloads page (downloads come over IPv4 almost always). */
   function downloadAddress(d: SeenDevice): string {
     return d.addresses.find(isV4) ?? d.ip
@@ -96,11 +114,26 @@
       format: (d) => (d.stat ? formatNumber(d.stat.blocked) : '–'),
     },
     { key: 'seen', label: t('common.label.lastSeen'), sortable: true, value: (d) => d.lastSeen, cell: seenCell },
+    ...(session.isAdmin ? [{ key: 'actions', label: t('common.label.actions'), align: 'right' as const, width: '1%', cell: actionCell }] : []),
   ])
 </script>
 
 {#snippet addressCell(d: Row)}
-  <AddressList addresses={d.addresses} />
+  <span class="addr-cell">
+    <AddressList addresses={d.addresses} />
+    {#if d.blockedBy.length > 0}
+      <Badge tone="fail" title={t('dns.seen.blockedBy', { entry: d.blockedBy.join(', ') })}>{t('dns.seen.blocked')}</Badge>
+    {/if}
+  </span>
+{/snippet}
+
+<!-- Compact: the table is wide already (icon only for the common action, its name as tooltip). -->
+{#snippet actionCell(d: Row)}
+  {#if d.blockedBy.length > 0}
+    <Button size="sm" variant="ghost" onclick={() => unblock(d)}>{t('dns.shared.unblock')}</Button>
+  {:else}
+    <IconButton icon="ban" size="sm" label={t('dns.shared.blockDevice')} onclick={() => block(d)} />
+  {/if}
 {/snippet}
 
 {#snippet clientCell(d: Row)}
@@ -172,6 +205,7 @@
           { label: t('dns.seen.firstSeen'), value: formatDateTime(selected.firstSeen) },
           { label: t('common.label.lastSeen'), value: formatDateTime(selected.lastSeen) },
           { label: t('dns.seen.queriesSeen'), value: formatNumber(selected.queries) },
+          ...(selected.blockedBy.length > 0 ? [{ label: t('dns.seen.blockedByLabel'), value: selected.blockedBy.join(', '), mono: true }] : []),
         ]}
       />
       <section class="stack-sm" aria-labelledby="seen-addresses">
@@ -213,6 +247,15 @@
         <Button variant="ghost" icon="download" href={href('/cache/downloads', { client: downloadAddress(selected) })}>
           {t('dns.clients.showDownloads')}
         </Button>
+        {#if session.isAdmin}
+          {#if selected.blockedBy.length > 0}
+            <Button onclick={() => selected && unblock(selected)}>{t('dns.shared.unblock')}</Button>
+          {:else}
+            <Button icon="ban" onclick={() => selected && block(selected)}>
+              {t('dns.shared.blockDevice')}
+            </Button>
+          {/if}
+        {/if}
       </div>
     </div>
   {/if}
@@ -221,6 +264,12 @@
 <ClientPanel bind:open={addOpen} preset={addPreset} {groups} {range} onsaved={saved} />
 
 <style>
+  .addr-cell {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--sp-1) var(--sp-2);
+  }
   h3 {
     font-size: var(--fs-md);
   }

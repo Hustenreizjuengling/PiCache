@@ -22,24 +22,26 @@ const (
 
 var errNoAddrs = errors.New("no addresses")
 
-// bootstrap resolves DoT/DoH upstream hostnames over plain DNS to the
-// configured bootstrap IPs only (never the system resolver, never PiCache
-// itself). Results are cached by TTL (1 min to 1 h); an expired entry is
-// still used when the bootstrap servers cannot be reached.
+// bootstrap resolves the hostnames of DoT, DoH and named plain upstreams
+// over plain DNS to the configured bootstrap IPs only (never the system
+// resolver, never PiCache itself). Results are cached by TTL (1 min to
+// 1 h); an expired entry is still used when the bootstrap servers cannot be
+// reached.
 type bootstrap struct {
 	servers []string // "ip:port"
+	prefer6 bool     // dns.bootstrapPreferIpv6: IPv6 addresses first
 
 	mu    sync.Mutex
 	cache map[string]bootEntry
 }
 
 type bootEntry struct {
-	addrs   []netip.Addr
+	addrs   []netip.Addr // IPv4 first
 	expires time.Time
 }
 
-func newBootstrap(ips []string, port int) *bootstrap {
-	b := &bootstrap{cache: map[string]bootEntry{}}
+func newBootstrap(ips []string, port int, prefer6 bool) *bootstrap {
+	b := &bootstrap{cache: map[string]bootEntry{}, prefer6: prefer6}
 	for _, s := range ips {
 		ip, err := netip.ParseAddr(s)
 		if err != nil {
@@ -50,8 +52,26 @@ func newBootstrap(ips []string, port int) *bootstrap {
 	return b
 }
 
-// lookup returns the IPv4 and IPv6 addresses of host (IPv4 first).
+// lookup returns the IPv4 and IPv6 addresses of host in the order they are
+// dialled: IPv4 first, or IPv6 first with dns.bootstrapPreferIpv6.
 func (b *bootstrap) lookup(ctx context.Context, host string) ([]netip.Addr, error) {
+	addrs, err := b.lookupV4First(ctx, host)
+	if err != nil || !b.prefer6 {
+		return addrs, err
+	}
+	out := make([]netip.Addr, 0, len(addrs))
+	for _, family6 := range []bool{true, false} {
+		for _, a := range addrs {
+			if is6 := a.Is6() && !a.Is4In6(); is6 == family6 {
+				out = append(out, a)
+			}
+		}
+	}
+	return out, nil
+}
+
+// lookupV4First returns the IPv4 and IPv6 addresses of host (IPv4 first).
+func (b *bootstrap) lookupV4First(ctx context.Context, host string) ([]netip.Addr, error) {
 	now := time.Now()
 	b.mu.Lock()
 	e, cached := b.cache[host]

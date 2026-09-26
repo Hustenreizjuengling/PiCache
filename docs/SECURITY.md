@@ -41,7 +41,10 @@ fixes; please test against it or a current build of `main`.
 |---|---|
 | Open resolver, DNS amplification | Answers only loopback, private (RFC 1918, ULA, CGNAT, link-local) and directly connected private networks, plus CIDRs you add. "Allow every network this machine is connected to" (`dns.trustConnectedNetworks`, off by default) also answers the public networks of its interfaces (virtual bridges and tunnels excluded), for LANs with a global IPv6 prefix that changes; on a cloud server or VPS the connected network can contain other customers, so leave it off there. Other UDP queries are dropped; TCP connections are closed at accept. Per-client rate limit (default 50 qps, burst 200), `ANY` refused, CHAOS/`version.bind` refused, EDNS capped at 1232 bytes. `allowAllNetworks` is an explicit, dangerous switch. |
 | DNS cache poisoning | Encrypted upstreams by default (DNS-over-HTTPS; DNS-over-TLS is also supported), random IDs and ports, the question is verified on every reply, in-flight deduplication, no client EDNS options forwarded. |
-| Private reverse-DNS leaks | PTR/SOA/NS queries for private and special-use reverse zones never reach public upstreams. |
+| Private reverse-DNS leaks | PTR/SOA/NS queries for private and special-use reverse zones (and the extra networks of `dns.privateReverseNetworks`) never reach public upstreams, fallbacks or `default` forwarders. Address queries (A, AAAA, HTTPS, SVCB, ANY) for bare names (`nas`) are answered from the local domain and never sent to the upstreams (`dns.domainNeeded`, on by default); other types of bare names (e.g. `NS` or `DS` of top-level domains) still are, so validating resolvers behind PiCache keep working. |
+| DNS rebinding through PiCache's answers | Answers of the upstreams that point names at private, loopback or link-local addresses are blocked (`dns.rebindProtection`, on by default), also while blocking is paused. Details in [DNS protection](#dns-protection). |
+| Clients claiming another identity | Only forwarders listed in `dns.ednsClientTrusted` may name their clients by EDNS; their clients must not be able to send their own options. Details in [DNS protection](#dns-protection). |
+| Unwanted clients in the LAN | `dns.blockedClients` drops the DNS queries of addresses, networks or MAC addresses; loopback, this machine, the router and trusted forwarders can never be blocked, neither by their addresses nor by their MAC addresses. DNS only. |
 | Open HTTP proxy / SSRF via :80 | Only hosts of known cache services are served; unknown hosts get 403. Upstream addresses must be public unicast and not this machine; link-local (cloud metadata) is always refused, and redirects are re-checked. Non-canonical paths are never stored. Per-client fill limits and at most 16 ranges per request prevent WAN amplification. |
 | Open TLS relay via :443 | TLS is never terminated. The SNI must match an enabled service, the same SSRF rules apply, and connections are capped and time out. |
 | Hostile blocklists, cache-domains data or NAS content | Sizes, counts, names and patterns are validated; public-suffix patterns are rejected. Files are accessed through `os.Root`. Slice files carry validated, CRC-checked headers. |
@@ -434,6 +437,68 @@ and [§17](ARCHITECTURE.md#17-network-check-internalappnetcheckgo).
   systems other than Linux, or for IPv6. A scan can wake devices that sleep
   and may appear in the logs of intrusion detection on the LAN.
 
+## DNS protection
+
+**DNS rebinding.** A web page can point one of its own names at an address
+in your LAN (a router's web interface, a NAS, a service on the device
+itself) and then talk to it through the browser. Many routers block such
+answers, but once the devices use PiCache the router no longer sees the
+queries. PiCache therefore blocks answers of its upstreams (the default
+upstreams, the fallbacks and conditional forwarders with the target
+`default`) whose A/AAAA records point at 0.0.0.0/8, 10/8, 100.64/10,
+127/8 (it protects services on the client itself), 169.254/16, 172.16/12,
+192.168/16, `::`, `::1`, fc00::/7, fe80::/10 or 64:ff9b:1::/48, or at an
+IPv6 address that carries such an IPv4 address (IPv4-mapped,
+IPv4-compatible, 6to4, NAT64 and the configured DNS64 prefix). It removes
+such addresses from the hints of HTTPS/SVCB records and from the additional
+section. The protection is on by default and applies while blocking is
+paused, like the ACL. Local data (local records, DHCP names, forwarders
+with their own targets, the router, the local domain) is trusted as
+configured; `dns.rebindAllow` (by default `plex.direct`), the names of
+`web.allowedHosts` and user allow rules exempt names on purpose.
+
+**Client identity from EDNS.** A forwarder (a second router, dnsmasq) can
+add each client's address (ECS) and MAC (option 65001) to the queries it
+forwards. PiCache believes them only from the addresses in
+`dns.ednsClientTrusted`, only in a strict form (exactly one option of each
+kind, a full-length unicast address, a unicast MAC), and never lets them
+into the neighbour table or the device data. The identity decides groups,
+parental controls, rules and the query log, so **a trusted forwarder must
+strip or replace the options its own clients send** (dnsmasq:
+`--strip-subnet --strip-mac --add-subnet=32,128 --add-mac`); otherwise any
+client behind it can claim another device's identity and escape its
+parental controls or rules. The transport address stays in charge of the
+ACL, the blocked clients, the rate limit, the loop guard and this server's
+names, so a trusted source cannot turn a derived address into more rights
+on the DNS server itself.
+
+**Client subnet (ECS) privacy.** Off by default. Mode `client` sends the
+/24 (IPv4) or /56 (IPv6) of a public client address to the default
+upstreams, and discloses the household's IPv6 prefix also for queries that
+go out over IPv4; mode `custom` sends a fixed public network. The subnet
+is never sent to conditional forwarders with their own targets, the
+router, the bootstrap servers or with PiCache's own lookups, and a reply
+that carries another subnet is discarded. Client subnets sent by clients
+are never forwarded (they are only logged, anonymised with the client
+addresses).
+
+**Fastest-address probes.** With the upstream mode `fastest_addr` (off by
+default) PiCache opens TCP connections to the addresses of answers, which
+the owner of a queried name chooses. The probes are bounded: only public
+unicast addresses that are not this machine (the rules of the download
+cache's SSRF guard), at most 8 per answer, a connect to 443 (80 only after
+443 failed) and an immediate close without data or TLS, 300 ms per answer,
+at most 32 at a time and 100 new addresses per second (beyond that nothing
+is probed), results cached for 10 minutes. They tell the remote side that
+someone behind PiCache resolved the name.
+
+**Answers blocked by the upstream.** Quad9 and Cloudflare's security
+resolver block malware domains themselves. PiCache recognises their blocks
+(EDE 15–17, 0.0.0.0/`::`, block pages, Quad9's NXDOMAIN without the RA
+flag), shows them as blocked and names only the upstream's host (never the
+path of a DoH URL, which can carry a profile ID); the upstream's own error
+text is never passed on to clients.
+
 ## Hardening checklist
 
 **Network**
@@ -445,6 +510,11 @@ and [§17](ARCHITECTURE.md#17-network-check-internalappnetcheckgo).
       network is shared with others (cloud servers, VPS).
 - [ ] The machine has a static address, and routers do not hand out another
       resolver (DHCP or IPv6 RA) that bypasses the filter.
+- [ ] DNS rebinding protection stays on (`dns.rebindProtection`), and only
+      domains that really answer with LAN addresses are allowed. Trusted EDNS
+      forwarders (`dns.ednsClientTrusted`) strip the ECS and MAC options of
+      their own clients. The client subnet (`dns.ecs`) stays off unless a
+      CDN needs it.
 
 **Web UI**
 

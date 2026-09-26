@@ -1,20 +1,29 @@
 // Package dnsserver serves DNS over UDP and TCP and implements the request
-// pipeline of docs/ARCHITECTURE.md 7.1: ACL, rate limit, hardening, client
-// identity, special-use names, local records (and the names of DHCP
-// leases, Deps.Leases), parental controls, download
-// cache answers, special domains, filtering, conditional forwarding / router
-// resolver, upstream resolution, CNAME inspection, reply shaping and
-// logging. It also owns local DNS records and conditional forwarders.
-// Health probes from this machine (HealthProbeName) are answered before the
-// pipeline and never counted or logged.
+// pipeline of docs/ARCHITECTURE.md 7.1: ACL, blocked clients, rate limit,
+// hardening, client identity (with EDNS from trusted forwarders),
+// special-use names, local records (and the names of DHCP leases,
+// Deps.Leases), parental controls, dropped domains, download cache answers,
+// special domains, filtering, single-label names, conditional forwarding /
+// router resolver, upstream resolution, upstream blocks, bogus NXDOMAIN,
+// CNAME inspection, DNS rebinding protection, reply shaping and logging.
+// It also owns local DNS records and conditional forwarders. Health probes
+// from this machine (HealthProbeName) are answered before the pipeline and
+// never counted or logged.
+//
+// Two addresses describe a query: the source (the transport peer: ACL,
+// blocked sources, rate limit, loop guard, this server's names, ECS) and
+// the client (the identity: the source, or the address a trusted forwarder
+// named in EDNS: groups, blocked identities, query log, statistics).
 //
 // Serving: UDP with (&dns.Server{PacketConn: pc, Handler: h}).ActivateAndServe()
 // (miekg replies from the query's destination address via IP_PKTINFO) and TCP
 // with Listener: ln, MaxTCPQueries 128, IdleTimeout 8 s. No custom
 // ReadFrom/WriteTo loops; a reader decorator drops UDP packets from sources
-// outside the ACL before they are parsed. The rate limiter is swept every 10 s.
+// outside the ACL and from blocked sources before they are parsed. The rate
+// limiter is swept every 10 s.
 //
-// Tables (picache.db, component "dns"): dns_records, dns_forwarders.
+// Tables (picache.db, component "dns"): dns_records, dns_forwarders,
+// dns_forwarder_domains.
 //
 // Bounds: CNAME chains (local and upstream) are followed at most 8 hops with
 // a visited set (else SERVFAIL, status "error"); records that reference
@@ -68,8 +77,16 @@ const (
 	// StatusBlockedService: parental controls, a blocked service (always or
 	// by a schedule).
 	StatusBlockedService = "blocked-service"
-	StatusRefused        = "refused"
-	StatusError          = "error"
+	// StatusBlockedUpstream: a default upstream blocked the name itself
+	// (step 13a).
+	StatusBlockedUpstream = "blocked-upstream"
+	// StatusBlockedRebind: DNS rebinding protection (step 14c).
+	StatusBlockedRebind = "blocked-rebind"
+	StatusRefused       = "refused"
+	StatusError         = "error"
+	// StatusDropped: the query gets no answer (a blocked client, a dropped
+	// domain); reported by Lookup only, never logged.
+	StatusDropped = "dropped"
 )
 
 // Background intervals.
@@ -100,13 +117,18 @@ type Services interface {
 // Clients is the part of *clients.Registry the server uses.
 type Clients interface {
 	Identify(ip netip.Addr) *clients.Identity
+	// IdentifyDerived identifies a client behind a trusted forwarder by
+	// the address and/or MAC of its EDNS options (step 4a).
+	IdentifyDerived(ip netip.Addr, mac string) *clients.Identity
 	Seen(ip netip.Addr)          // activity, persisted to logs.db
 	SeenTransient(ip netip.Addr) // activity kept in memory only (client addresses anonymised)
 }
 
 // Upstream is the part of *upstream.Resolver the server uses.
 type Upstream interface {
-	Resolve(ctx context.Context, req *dns.Msg) (*dns.Msg, upstream.Info, error)
+	// Resolve answers through the default set; ecs is the client subnet
+	// to send (invalid = none).
+	Resolve(ctx context.Context, req *dns.Msg, ecs netip.Prefix) (*dns.Msg, upstream.Info, error)
 	ResolveVia(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, upstream.Info, error)
 	Probe(ctx context.Context, server netip.Addr) bool
 }
@@ -181,12 +203,15 @@ type RecordInput struct {
 	Comment string `json:"comment"`
 }
 
-// Forwarder sends a domain (apex + subdomains; "*.x" = subdomains only) to
-// specific upstreams, e.g. "fritz.box" → 192.168.178.1 or
-// "178.168.192.in-addr.arpa" → 192.168.178.1.
+// Forwarder sends domains (each apex + subdomains; "*.x" = subdomains
+// only; Unqualified = single-label names) to specific upstreams, e.g.
+// "fritz.box" → 192.168.178.1 or "178.168.192.in-addr.arpa" →
+// 192.168.178.1, or to the default upstreams (the single target
+// DefaultTarget). Domain is the first of Domains.
 type Forwarder struct {
 	ID        int64     `json:"id"`
 	Domain    string    `json:"domain"`
+	Domains   []string  `json:"domains"`
 	Upstreams []string  `json:"upstreams"`
 	Enabled   bool      `json:"enabled"`
 	Comment   string    `json:"comment"`
@@ -194,9 +219,11 @@ type Forwarder struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// ForwarderInput creates or updates a forwarder.
+// ForwarderInput creates or updates a forwarder: Domains (1–16) wins,
+// Domain alone means [Domain]; with both, Domains[0] must be Domain.
 type ForwarderInput struct {
-	Domain    string   `json:"domain"`
+	Domain    string   `json:"domain,omitempty"`
+	Domains   []string `json:"domains,omitempty"`
 	Upstreams []string `json:"upstreams"`
 	Enabled   bool     `json:"enabled"`
 	Comment   string   `json:"comment"`
@@ -209,7 +236,9 @@ type LookupRequest struct {
 	ClientIP string `json:"clientIp"` // evaluate as this client (default: the caller)
 }
 
-// LookupResult explains how PiCache would answer.
+// LookupResult explains how PiCache would answer. Status "dropped" (a
+// blocked client or a dropped domain: no answer at all) comes with an
+// empty RCode and no answers.
 type LookupResult struct {
 	Name       string         `json:"name"`
 	Type       string         `json:"type"`
@@ -264,6 +293,8 @@ type Stats struct {
 	InFlight       int64                 `json:"inFlight"`
 	Overloaded     int64                 `json:"overloaded"` // dropped because too many queries were in flight
 	TopRateLimited []netutil.RateLimited `json:"topRateLimited"`
+	BlockedClients int64                 `json:"blockedClients"` // queries of dns.blockedClients dropped (UDP) or closed (TCP)
+	Dropped        int64                 `json:"dropped"`        // queries of dns.droppedDomains dropped (UDP) or closed (TCP)
 }
 
 // Server is the DNS server.
@@ -284,11 +315,13 @@ type Server struct {
 	limKey  string     // configuration the limiter was last set to (under limMu)
 	limiter *netutil.RateLimiter
 
-	routerKick chan struct{}
-	rotate     atomic.Uint32
-	refusedSrc refusedTable // sources dropped by the ACL
+	routerKick  chan struct{}
+	rotate      atomic.Uint32
+	refusedSrc  refusedTable // sources dropped by the ACL
+	lists       atomic.Pointer[dnsLists]
+	protectWarn protectWarnings
 
-	queries, refused, rateLimited, inFlight, overloaded atomic.Int64
+	queries, refused, rateLimited, inFlight, overloaded, blockedClients, dropped atomic.Int64
 
 	qpsMu      sync.Mutex
 	qpsSamples []qpsSample // the last 7 (time, queries) samples, 10 s apart
@@ -321,8 +354,9 @@ func New(ctx context.Context, d Deps) (*Server, error) {
 		return nil, err
 	}
 	set := d.Settings.Get()
+	s.lists.Store(newDNSLists(&set.DNS))
 	s.host.Store(s.env.host())
-	s.router.Store(configuredRouter(set))
+	s.router.Store(s.startRouter(set))
 	s.updateCacheIPs(set)
 	if err := s.reloadConfig(ctx); err != nil {
 		return nil, err
@@ -331,13 +365,25 @@ func New(ctx context.Context, d Deps) (*Server, error) {
 	return s, nil
 }
 
-// settingsChanged applies settings live: rate limits, cache IPs and the
-// router resolver. Everything else is read per query.
+// settingsChanged applies settings live: the compiled DNS lists, rate
+// limits, cache IPs and the router resolver. Everything else is read per
+// query.
 func (s *Server) settingsChanged(old, cur *settings.All) {
-	if old.DNS.RouterResolver != cur.DNS.RouterResolver {
+	s.lists.Store(newDNSLists(&cur.DNS))
+	routerChanged := old.DNS.RouterResolver != cur.DNS.RouterResolver
+	if routerChanged {
+		// Until the detection has run again, the router's known addresses
+		// and MACs stay protected from dns.blockedClients.
 		s.routerMu.Lock()
-		s.router.Store(configuredRouter(cur))
+		prev := s.router.Load()
+		st := configuredRouter(cur)
+		st.protect, _ = routerAddrSet(append(slices.Clone(st.protect), prev.protect...), nil, false)
+		st.macs, st.trustedMACs = prev.macs, prev.trustedMACs
+		s.router.Store(st)
 		s.routerMu.Unlock()
+	}
+	// A changed trusted-forwarder list needs their MACs (routerState.trustedMACs).
+	if routerChanged || !slices.Equal(old.DNS.EDNSClientTrusted, cur.DNS.EDNSClientTrusted) {
 		select {
 		case s.routerKick <- struct{}{}:
 		default:
@@ -350,7 +396,10 @@ func (s *Server) settingsChanged(old, cur *settings.All) {
 // reconfigureLimiter applies the rate-limit configuration when it changed.
 // The limiter keeps its buckets and drop statistics. Exempt:
 // dns.rateLimitExempt, loopback, the router resolver (all of its addresses,
-// routerState.addrs), local PTR upstreams and conditional forwarder targets.
+// routerState.addrs), local PTR upstreams, conditional forwarder targets
+// and the trusted EDNS forwarders (a whole LAN behind one source). Public
+// sources are keyed by dns.rateLimitIpv4Prefix/rateLimitIpv6Prefix
+// (netutil.RateKey).
 func (s *Server) reconfigureLimiter() {
 	s.limMu.Lock()
 	defer s.limMu.Unlock()
@@ -362,6 +411,11 @@ func (s *Server) reconfigureLimiter() {
 	if t := s.fwd.Load(); t != nil {
 		ips = append(ips, t.ips...)
 	}
+	for _, v := range set.DNS.EDNSClientTrusted {
+		if ip, err := netip.ParseAddr(v); err == nil {
+			ips = append(ips, netutil.Canon(ip))
+		}
+	}
 	for _, ip := range ips {
 		exempt = append(exempt, netip.PrefixFrom(ip, ip.BitLen()))
 	}
@@ -370,12 +424,13 @@ func (s *Server) reconfigureLimiter() {
 		keys = append(keys, p.String())
 	}
 	slices.Sort(keys)
-	key := fmt.Sprintf("%d/%d/%s", set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, strings.Join(slices.Compact(keys), ","))
+	v4, v6 := set.DNS.RateLimitIPv4Prefix, set.DNS.RateLimitIPv6Prefix
+	key := fmt.Sprintf("%d/%d/%d/%d/%s", set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, v4, v6, strings.Join(slices.Compact(keys), ","))
 	if s.limKey == key {
 		return
 	}
 	s.limKey = key
-	s.limiter.Reconfigure(set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, exempt)
+	s.limiter.Reconfigure(set.DNS.RateLimitQPS, set.DNS.RateLimitBurst, exempt, v4, v6)
 }
 
 // Serve answers queries on the pre-bound sockets until ctx ends (blocks).
@@ -513,5 +568,7 @@ func (s *Server) Stats() Stats {
 		InFlight:       s.inFlight.Load(),
 		Overloaded:     s.overloaded.Load(),
 		TopRateLimited: top,
+		BlockedClients: s.blockedClients.Load(),
+		Dropped:        s.dropped.Load(),
 	}
 }

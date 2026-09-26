@@ -139,6 +139,72 @@ func ClientKey(ip netip.Addr) netip.Prefix {
 	return p
 }
 
+// cgnatV4 is the shared address space of carrier-grade NAT (RFC 6598).
+var cgnatV4 = mustPrefixes("100.64.0.0/10")
+
+// RateKey returns the DNS rate-limit key of a source (docs/ARCHITECTURE.md
+// 6.1): LAN sources are limited per address (IPv4: loopback, RFC 1918,
+// CGNAT, link-local and on-link addresses keep /32; IPv6: loopback,
+// link-local, ULA and on-link addresses keep /128), other sources share
+// the bucket of their /v4Bits or /v6Bits network. With 32 and 64 it
+// returns the keys of ClientKey. Only the DNS rate limiter uses it; the
+// other users of ClientKey (login throttling, fill caps, connection
+// limits) keep their keys.
+func RateKey(ip netip.Addr, v4Bits, v6Bits int) netip.Prefix {
+	ip = Canon(ip)
+	if ip.Is4() {
+		if v4Bits <= 0 || v4Bits >= 32 || ip.IsLoopback() || IsRFC1918(ip) || inAny(ip, cgnatV4) ||
+			ip.IsLinkLocalUnicast() || onLinkV4(ip) {
+			return netip.PrefixFrom(ip, 32)
+		}
+		p, _ := ip.Prefix(v4Bits)
+		return p
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || IsULA(ip) || onLinkV6(ip) {
+		return netip.PrefixFrom(ip, 128)
+	}
+	if v6Bits <= 0 || v6Bits > 128 {
+		v6Bits = 64
+	}
+	p, _ := ip.Prefix(v6Bits)
+	return p
+}
+
+// Rebind targets (docs/ARCHITECTURE.md 6.1): addresses a public name must
+// not resolve to, so a web page cannot reach services in the LAN or on the
+// client itself through its own name (DNS rebinding).
+var (
+	rebindV4 = mustPrefixes("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+		"172.16.0.0/12", "192.168.0.0/16")
+	rebindV6 = mustPrefixes("::/128", "::1/128", "fc00::/7", "fe80::/10",
+		"64:ff9b:1::/48") // RFC 8215 local-use NAT64 prefix, as a whole
+)
+
+// RebindTarget reports whether ip is a rebind target: an IPv4 address in
+// 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12 or 192.168/16; the
+// IPv6 unspecified or loopback address, a ULA, a link-local address or an
+// address of 64:ff9b:1::/48; or an IPv6 address that carries such an IPv4
+// address: IPv4-mapped (::ffff:0:0/96), IPv4-compatible (::/96), 6to4
+// (2002::/16), the NAT64 well-known prefix (64:ff9b::/96) and dns64Prefix
+// (the configured DNS64 /96, whether DNS64 is on or not; invalid = none).
+func RebindTarget(ip netip.Addr, dns64Prefix netip.Prefix) bool {
+	ip = Canon(ip) // an IPv4-mapped address is judged as IPv4
+	if ip.Is4() {
+		return inAny(ip, rebindV4)
+	}
+	if inAny(ip, rebindV6) {
+		return true
+	}
+	if v4, ok := EmbeddedIPv4(ip); ok && inAny(v4, rebindV4) {
+		return true
+	}
+	if dns64Prefix.IsValid() && dns64Prefix.Bits() == 96 && dns64Prefix.Addr().Is6() && dns64Prefix.Contains(ip) {
+		b := ip.As16()
+		return inAny(netip.AddrFrom4([4]byte(b[12:16])), rebindV4)
+	}
+	return false
+}
+
 // onLinkTTL is how long the cached directly connected subnets are used
 // before they are re-read (interfaces can be renumbered).
 const onLinkTTL = time.Minute
@@ -146,6 +212,24 @@ const onLinkTTL = time.Minute
 // onLinkV6Cache caches the directly connected IPv6 subnets for ClientKey
 // (hot path).
 var onLinkV6Cache = prefixCache{load: connectedV6Subnets}
+
+// onLinkV4Cache caches the directly connected IPv4 subnets for RateKey.
+var onLinkV4Cache = prefixCache{load: connectedV4Subnets}
+
+// onLinkV4 reports whether ip is inside a directly connected IPv4 subnet.
+func onLinkV4(ip netip.Addr) bool { return inAny(ip, onLinkV4Cache.get()) }
+
+// connectedV4Subnets returns the IPv4 subnets (at least /8) of this
+// machine's interfaces, loopback excluded.
+func connectedV4Subnets() []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range interfacePrefixes() {
+		if a := p.Addr(); a.Is4() && p.Bits() >= 8 && !a.IsLoopback() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // interfaceAddrs lists interface addresses (replaced in tests).
 var interfaceAddrs = net.InterfaceAddrs

@@ -1,7 +1,10 @@
 package api
 
 import (
+	"errors"
 	"net/http"
+	"net/netip"
+	"slices"
 	"strconv"
 	"time"
 
@@ -9,6 +12,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // registerDNSRoutes registers the dns endpoints (docs/API.md).
@@ -27,8 +31,12 @@ func (s *Server) registerDNSRoutes() {
 
 	s.route("GET /api/v1/dns/forwarders", permRead, s.dnsForwardersList)
 	s.route("POST /api/v1/dns/forwarders", permAdmin, s.dnsForwarderCreate)
+	s.route("POST /api/v1/dns/forwarders/import", permAdmin, s.dnsForwardersImport)
 	s.route("PUT /api/v1/dns/forwarders/{id}", permAdmin, s.dnsForwarderUpdate)
 	s.route("DELETE /api/v1/dns/forwarders/{id}", permAdmin, s.dnsForwarderDelete)
+
+	s.route("POST /api/v1/dns/blocked-clients", permAdmin, s.dnsBlockClient)
+	s.route("DELETE /api/v1/dns/blocked-clients", permAdmin, s.dnsUnblockClient)
 
 	s.route("GET /api/v1/clients", permRead, s.clientsList)
 	s.route("POST /api/v1/clients", permAdmin, s.clientCreate)
@@ -198,6 +206,143 @@ func (s *Server) dnsForwarderDelete(w http.ResponseWriter, r *http.Request) erro
 	return noContent(w)
 }
 
+// dnsForwardersImport imports forwarders from dnsmasq-like lines; always
+// 200 with the result unless the request itself is invalid. Only an
+// applied import is audited.
+func (s *Server) dnsForwardersImport(w http.ResponseWriter, r *http.Request) error {
+	var in dnsserver.ForwarderImport
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	res, err := s.d.DNS.ImportForwarders(r.Context(), in)
+	if err != nil {
+		return err
+	}
+	if res.Applied {
+		s.audit(r, "dns.forwarder.import", "", map[string]int{"added": res.Added, "updated": res.Updated})
+	}
+	return ok(w, res)
+}
+
+// --- blocked clients (dns.blockedClients) ---
+
+// blockClientResult is the response of POST /dns/blocked-clients.
+type blockClientResult struct {
+	Entry          string   `json:"entry"`
+	Added          bool     `json:"added"`
+	BlockedClients []string `json:"blockedClients"`
+}
+
+// blockedClientsResult is the response of DELETE /dns/blocked-clients.
+type blockedClientsResult struct {
+	BlockedClients []string `json:"blockedClients"`
+}
+
+// errBlockedUnchanged ends a settings update that has nothing to change.
+var errBlockedUnchanged = errors.New("unchanged")
+
+// dnsBlockClient adds a client (an IP address, a CIDR or a MAC) to
+// dns.blockedClients. With device and an IP address whose neighbour-table
+// MAC is known (and is not protected: the router's, this machine's or a
+// trusted EDNS forwarder's) the MAC is stored, blocking every address of
+// the device; the address itself is checked first. An entry that already
+// matches is reported with added false.
+func (s *Server) dnsBlockClient(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		Client string `json:"client"`
+		Device bool   `json:"device"`
+	}
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	entry, valid := settings.ParseBlockedClient(in.Client)
+	if !valid {
+		return apperr.Invalid("client", "must be an IP address, a CIDR (at least /8 for IPv4, /32 for IPv6) or a MAC address")
+	}
+	cur := s.d.Settings.Get()
+	protected := s.d.DNS.ProtectedClients(cur.DNS.EDNSClientTrusted, s.neighbourMAC)
+	// The address itself must be blockable too: the MAC of a protected
+	// address (e.g. a trusted forwarder) would drop it just the same.
+	if why := dnsserver.BlockedClientLockout(entry, protected); why != "" {
+		return apperr.Invalid("client", "%s", why)
+	}
+	ip, _ := netip.ParseAddr(entry)
+	if in.Device && ip.IsValid() {
+		if mac, found := s.neighbourMAC(ip); found {
+			if m, ok := settings.NormalizeMAC(mac); ok && dnsserver.BlockedClientLockout(m, protected) == "" {
+				entry = m
+			}
+		}
+	}
+	res := blockClientResult{Entry: entry, Added: true}
+	next, err := s.d.Settings.Update(r.Context(), func(a *settings.All) error {
+		list := settings.NormalizeBlockedClients(a.DNS.BlockedClients)
+		if existing, found := matchingBlockedClient(list, entry, ip); found {
+			res.Entry, res.Added, res.BlockedClients = existing, false, list
+			return errBlockedUnchanged
+		}
+		if len(list) >= settings.MaxBlockedClients {
+			return apperr.Conflict("at most %d blocked clients are allowed", settings.MaxBlockedClients)
+		}
+		a.DNS.BlockedClients = append(list, entry)
+		return nil
+	})
+	switch {
+	case errors.Is(err, errBlockedUnchanged):
+		return ok(w, res)
+	case err != nil:
+		return err
+	}
+	res.BlockedClients = next.DNS.BlockedClients
+	s.audit(r, "dns.client.block", entry, nil)
+	return ok(w, res)
+}
+
+// matchingBlockedClient returns the entry of list that already covers the
+// new entry: an equal entry, a CIDR containing it (or containing ip, the
+// address a device entry was derived from) or the same MAC.
+func matchingBlockedClient(list []string, entry string, ip netip.Addr) (string, bool) {
+	cl := netutil.NewClientList(list)
+	if p, err := settings.ParsePrefix(entry); err == nil {
+		for _, e := range list {
+			if q, err := settings.ParsePrefix(e); err == nil && q.Bits() <= p.Bits() && q.Contains(p.Addr()) {
+				return e, true
+			}
+		}
+		return "", false
+	}
+	if e, found := cl.MatchMAC(entry); found {
+		return e, true
+	}
+	if ip.IsValid() {
+		return cl.MatchAddr(ip)
+	}
+	return "", false
+}
+
+// dnsUnblockClient removes an entry (?entry=, normalised) from
+// dns.blockedClients.
+func (s *Server) dnsUnblockClient(w http.ResponseWriter, r *http.Request) error {
+	entry, valid := settings.ParseBlockedClient(r.URL.Query().Get("entry"))
+	if !valid {
+		return apperr.Invalid("entry", "must be an IP address, a CIDR or a MAC address")
+	}
+	next, err := s.d.Settings.Update(r.Context(), func(a *settings.All) error {
+		list := settings.NormalizeBlockedClients(a.DNS.BlockedClients)
+		i := slices.Index(list, entry)
+		if i < 0 {
+			return apperr.NotFound("blocked client", entry)
+		}
+		a.DNS.BlockedClients = slices.Delete(list, i, i+1)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	s.audit(r, "dns.client.unblock", entry, nil)
+	return ok(w, blockedClientsResult{BlockedClients: next.DNS.BlockedClients})
+}
+
 // --- clients ---
 
 func (s *Server) clientsList(w http.ResponseWriter, r *http.Request) error {
@@ -265,7 +410,24 @@ func (s *Server) clientsKnown(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return ok(w, known)
+	blocked := netutil.NewClientList(s.d.Settings.Get().DNS.BlockedClients)
+	out := make([]knownView, len(known))
+	for i, k := range known {
+		out[i].Known = k
+		if blocked.Len() == 0 {
+			continue
+		}
+		ip, _ := netip.ParseAddr(k.IP)
+		out[i].BlockedBy, _ = blocked.Match(ip, k.MAC)
+	}
+	return ok(w, out)
+}
+
+// knownView is a row of GET /clients/known: BlockedBy is the first
+// dns.blockedClients entry that matches its address or MAC.
+type knownView struct {
+	clients.Known
+	BlockedBy string `json:"blockedBy,omitempty"`
 }
 
 // --- groups ---
@@ -318,4 +480,15 @@ func (s *Server) groupDelete(w http.ResponseWriter, r *http.Request) error {
 	}
 	s.audit(r, "group.delete", strconv.FormatInt(id, 10), nil)
 	return noContent(w)
+}
+
+// neighbourMAC returns the neighbour-table MAC of ip (false if unknown).
+func (s *Server) neighbourMAC(ip netip.Addr) (string, bool) {
+	if s.macOf != nil {
+		return s.macOf(ip)
+	}
+	if s.d.Clients == nil {
+		return "", false
+	}
+	return s.d.Clients.NeighbourMAC(ip)
 }
