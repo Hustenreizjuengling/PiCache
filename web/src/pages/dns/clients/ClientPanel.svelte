@@ -1,13 +1,19 @@
 <!--
   @component
-  Adds or edits a client: name, identifiers (IP, CIDR, MAC or
-  clientid:<ClientID>, one per line), groups, download cache bypass, "don't log" (raw data) and "don't count"
-  (statistics). In edit mode it also shows the client's statistics with the
-  addresses they came from (IPv6 addresses the server recognised through the
-  device's MAC address included), its activity over the range and links to
-  its queries (all those addresses) and downloads. Below the groups it
-  names the DNS resolver in effect and warns when the groups name
-  different resolvers.
+  Adds or edits a client: name, identifiers (IP, CIDR, MAC,
+  clientid:<ClientID>, iface:<interface> or host:<name>, one per line),
+  groups, download cache bypass, "don't log" (raw data) and "don't count"
+  (statistics). An iface: identifier explains when to use it (networks
+  whose devices are all one client), lists this machine's interfaces and
+  warns in a container bridge network; a host: identifier shows the
+  spoofing warning, and saving a new one asks to confirm it. In edit mode
+  it also shows the client's statistics with the addresses they came from
+  (IPv6 addresses the server recognised through the device's MAC address
+  included), the manufacturers of its devices, its activity over the range
+  and links to its queries (all those addresses) and downloads. Below the
+  groups it names the DNS resolver in effect and warns when the groups
+  name different resolvers. Read-only while clients and groups are synced
+  from a primary.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -20,6 +26,7 @@
     type Client,
     type ClientGroup,
     type ClientInput,
+    type NetworkInterfaces,
     type RangePreset,
     type UpstreamPreset,
   } from '$lib/api'
@@ -31,7 +38,7 @@
   import { clientValues } from '../querylog/filters'
   import AddressList from '../shared/AddressList.svelte'
   import ActivityChart from './ActivityChart.svelte'
-  import { identifierText } from '../shared/clientid'
+  import { hostOf, identifierText, ifaceOf } from '../shared/clientid'
   import { lineError } from '../shared/errors'
   import { isIP } from '../shared/input'
   import FormPanel from '../shared/FormPanel.svelte'
@@ -51,12 +58,14 @@
     presets?: readonly UpstreamPreset[]
     /** Statistics of the edited client over `range`. */
     totals?: Totals
+    /** Manufacturers of the client's devices (or "Private address (randomised)"), from the seen addresses. */
+    vendors?: readonly string[]
     range: RangePreset
     onsaved?: (c: Client) => void
     ondeleted?: (id: number) => void
   }
 
-  let { open = $bindable(false), client, preset, groups, presets, totals, range, onsaved, ondeleted }: Props = $props()
+  let { open = $bindable(false), client, preset, groups, presets, totals, vendors, range, onsaved, ondeleted }: Props = $props()
 
   function blank(): ClientInput {
     return {
@@ -115,10 +124,47 @@
   /** Downloads are filtered by one address (they come over IPv4 almost always). */
   const downloadsFor = $derived(firstIp ?? totals?.addresses.find(isV4) ?? totals?.addresses[0])
 
+  // ---- interface and host-name identifiers
+
+  const ifaces = $derived(draft.identifiers.map(ifaceOf).filter((x): x is string => x !== undefined))
+  const hosts = $derived(draft.identifiers.map(hostOf).filter((x): x is string => x !== undefined))
+
+  // This machine's interfaces (names for the help, and whether PiCache runs in
+  // a container bridge network), loaded once the form has an iface: identifier.
+  let interfaces = $state.raw<NetworkInterfaces | undefined>(undefined)
+  let interfacesAsked = false
+  $effect(() => {
+    if (!open || ifaces.length === 0 || interfacesAsked) return
+    interfacesAsked = true
+    api.network.interfaces().then(
+      (r) => (interfaces = r),
+      () => {
+        /* the help works without the list */
+      },
+    )
+  })
+
+  /** Host names the save would add (the stored ones were confirmed before). */
+  function newHosts(): string[] {
+    const before = new Set((client?.identifiers ?? []).map(hostOf).filter((x) => x !== undefined))
+    return hosts.filter((h) => !before.has(h))
+  }
+
   async function save() {
     submitted = true
     err = undefined
     if (!draft.name.trim() || draft.identifiers.length === 0) return
+    const added = newHosts()
+    if (
+      added.length > 0 &&
+      !(await confirm({
+        title: t('dns.clients.hostConfirmTitle'),
+        message: t('dns.clients.hostConfirmText', { names: added.join(', ') }),
+        confirmLabel: t('dns.clients.hostConfirm'),
+      }))
+    ) {
+      return
+    }
     saving = true
     try {
       const input = { ...draft, name: draft.name.trim(), comment: draft.comment.trim() }
@@ -159,6 +205,7 @@
   onsubmit={save}
   ondelete={client ? remove : undefined}
   deleteLabel={t('dns.clients.delete')}
+  section="clients-and-groups"
 >
   {#snippet header()}
     {#if client && totals}
@@ -179,6 +226,7 @@
               value: totals.cacheBytes ? formatPercent(totals.cacheHitBytes / totals.cacheBytes) : undefined,
             },
             { label: t('common.label.lastSeen'), value: totals.lastSeen ? formatRelative(totals.lastSeen) : t('common.state.never') },
+            ...(vendors?.length ? [{ label: t('dns.vendor.label'), value: vendors.join(', ') }] : []),
             { label: t('common.label.created'), value: formatDateTime(client.createdAt) },
           ]}
         >
@@ -210,6 +258,20 @@
   <Field label={t('dns.clients.identifiers')} required help={t('dns.clients.identifiersHelp')} error={idError}>
     <LinesInput bind:value={draft.identifiers} rows={idRows} placeholder={'192.168.1.20\naa:bb:cc:dd:ee:ff\nclientid:tims-ipad'} />
   </Field>
+  {#if ifaces.length > 0}
+    <Notice tone="info" title={t('dns.clients.ifaceTitle')}>
+      <p>{t('dns.clients.ifaceHelp')}</p>
+      {#if interfaces && interfaces.interfaces.length > 0}
+        <p class="mono-list">{t('dns.clients.ifaceList', { names: interfaces.interfaces.map((i) => i.name).join(', ') })}</p>
+      {/if}
+    </Notice>
+    {#if interfaces?.mode === 'bridge'}
+      <Notice tone="warn">{t('dns.clients.ifaceBridge')}</Notice>
+    {/if}
+  {/if}
+  {#if hosts.length > 0}
+    <Notice tone="warn" title={t('dns.clients.hostTitle')}>{t('dns.clients.hostWarn')}</Notice>
+  {/if}
   <GroupPicker
     {groups}
     bind:value={draft.groupIds}
@@ -243,5 +305,9 @@
 <style>
   h3 {
     font-size: var(--fs-md);
+  }
+  .mono-list {
+    margin-top: var(--sp-1);
+    overflow-wrap: anywhere;
   }
 </style>

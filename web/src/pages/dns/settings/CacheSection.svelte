@@ -48,7 +48,7 @@
   {#snippet actions()}
     <Button size="sm" icon="refresh" loading={flushing} disabled={!session.canOperate} onclick={flush}>{t('dns.settings.cache.flush')}</Button>
   {/snippet}
-  <fieldset class="stack" disabled={!session.isAdmin}>
+  <fieldset class="stack" disabled={!session.canEditSection('dns-settings')}>
     {#if cache}
       <div class="stack-sm">
         <p class="small muted">

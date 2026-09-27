@@ -134,6 +134,8 @@ type netSources struct {
 	// own router advertisements are off; nil: never).
 	routerRDNSS func() (map[netip.Addr][]string, bool)
 	send        func(ctx context.Context, addrs []netip.Addr) // sends the scan's datagrams
+	// interfaces returns the interfaces panel (nil: none).
+	interfaces func(ctx context.Context) api.NetworkInterfaces
 }
 
 // netInputs are the facts one check is computed from.
@@ -242,7 +244,17 @@ func (a *App) netSources() netSources {
 			}
 			return a.dhcp.RouterRDNSS()
 		},
+		interfaces: a.networkInterfaces,
 	}
+}
+
+// Interfaces returns the interfaces of this machine (GET
+// /network/interfaces).
+func (n *netChecker) Interfaces(ctx context.Context) api.NetworkInterfaces {
+	if n.src.interfaces == nil {
+		return api.NetworkInterfaces{Mode: "host", Interfaces: []api.NetworkInterface{}}
+	}
+	return n.src.interfaces(ctx)
 }
 
 // hostIgnoresRA reports whether this machine ignores IPv6 router
@@ -769,6 +781,7 @@ func (in *netInputs) devices(exclude func(netip.Addr, string) bool, act map[neti
 		sortAddrs(ips)
 		first[mac] = ips[0]
 		d := api.NetworkDevice{MAC: mac, IPs: addrStrings(ips)}
+		d.Vendor, d.MACRandomized = clients.VendorOf(mac)
 		hostname, last := "", lastByMAC[mac]
 		for _, ip := range ips {
 			if in.describe != nil {

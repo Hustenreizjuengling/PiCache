@@ -48,12 +48,13 @@ func TestRolesOverRoutes(t *testing.T) {
 	_, viewer := e.withViewer(t, admin)
 	for _, r := range e.srv.routes {
 		if strings.Contains(r.Pattern, "/stream/") || r.Perm == permPublic ||
-			r.Pattern == "POST /api/v1/auth/logout" { // would end the session used for the next routes
+			r.Pattern == "POST /api/v1/auth/logout" || // would end the session used for the next routes
+			strings.HasPrefix(r.Pattern, "GET /debug/") { // 404 while PICACHE_PPROF is off (pprof_routes_test)
 			continue
 		}
 		method, path := concretePath(r.Pattern)
 		w := e.do(method, path, "", viewer)
-		admins := r.Perm == permAdmin || r.Perm == permSession
+		admins := r.Perm == permAdmin || r.Perm == permSession || r.Perm == permExport
 		switch {
 		case admins && (w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "this action requires admin rights")):
 			t.Errorf("viewer on %s: %d %s", r.Pattern, w.Code, w.Body)

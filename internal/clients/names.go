@@ -45,24 +45,93 @@ func (r *Registry) LeaseNamesChanged(ips []netip.Addr) {
 	}
 }
 
-// lease returns the lease name of ip ("" if none or no source is set).
+// lease returns the lease name of ip ("" if none, no source is set or the
+// name source dhcp is off).
 func (r *Registry) lease(ip netip.Addr) string {
+	if !r.config().Sources.DHCP {
+		return ""
+	}
 	if fn := r.leaseName.Load(); fn != nil {
 		return sanitizeHostname((*fn)(ip))
 	}
 	return ""
 }
 
-// hostname returns the lease name of ip, else its cached PTR name ("" if
-// unknown).
-func (r *Registry) hostname(ip netip.Addr) string {
-	if n := r.lease(ip); n != "" {
-		return n
+// ptrName returns the cached PTR name of ip ("" if unknown or the name
+// source ptr is off).
+func (r *Registry) ptrName(ip netip.Addr) string {
+	if !r.config().Sources.PTR {
+		return ""
 	}
 	r.namesMu.Lock()
 	h, _ := r.names.peek(ip)
 	r.namesMu.Unlock()
 	return h.name
+}
+
+// hostname returns the own name of ip from the enabled sources: its lease
+// name, else its cached PTR name, else its name in /etc/hosts ("" if
+// unknown).
+func (r *Registry) hostname(ip netip.Addr) string {
+	if n := r.lease(ip); n != "" {
+		return n
+	}
+	if n := r.ptrName(ip); n != "" {
+		return n
+	}
+	return r.hostsName(ip)
+}
+
+// ownNames returns every own name of ip from the enabled sources that
+// host: identifiers match (lease, PTR, hosts file), never the name of
+// another address. The PTR name counts only for a LAN address (lanSource):
+// the reverse zone of a public address belongs to whoever holds that
+// address on the internet, who could otherwise claim any host: identity
+// from afar (e.g. over DoT from a server whose PTR record they set).
+func (r *Registry) ownNames(ip netip.Addr) []string {
+	ptr := ""
+	if r.lanSource(ip) {
+		ptr = r.ptrName(ip)
+	}
+	var out []string
+	for _, n := range []string{r.lease(ip), ptr, r.hostsName(ip)} {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// lanSource reports whether ip is a LAN address: not public unicast
+// (private, ULA, link-local, CGNAT, loopback), or inside a network this
+// machine is connected to (a public IPv6 prefix of the LAN).
+func (r *Registry) lanSource(ip netip.Addr) bool {
+	return !netutil.IsPublicUnicast(ip) || (r.onLink != nil && r.onLink(ip))
+}
+
+// matchHost finds the client of a host: identifier that names ip: one of
+// the address's own cached names equals the identifier's name or, for a
+// single-label name, <name>.<dns.localDomain>. The query path never looks
+// a name up: an address without a cached name matches nothing.
+func (r *Registry) matchHost(snap *snapshot, ip netip.Addr) *clientEntry {
+	if len(snap.byHost) == 0 {
+		return nil
+	}
+	domain := r.config().LocalDomain
+	for _, n := range r.ownNames(ip) {
+		if c, ok := snap.byHost[n]; ok {
+			return c
+		}
+		if domain == "" {
+			continue
+		}
+		if base, ok := strings.CutSuffix(n, "."+domain); ok && base != "" && !strings.Contains(base, ".") {
+			if c, ok := snap.byHost[base]; ok {
+				return c
+			}
+		}
+	}
+	return nil
 }
 
 // name returns the PTR name of ip, else the name of another neighbour
@@ -91,14 +160,22 @@ func (r *Registry) macName(addrs []netip.Addr, except netip.Addr) string {
 	}
 	var best hostName
 	bestV4 := false
+	sources := r.config().Sources
+	hosts := r.hosts.Load()
 	r.namesMu.Lock()
 	defer r.namesMu.Unlock()
 	for _, a := range addrs {
 		if a == except {
 			continue
 		}
-		h, ok := r.names.peek(a)
-		if !ok || h.name == "" {
+		var h hostName
+		if sources.PTR {
+			h, _ = r.names.peek(a)
+		}
+		if h.name == "" && sources.HostsFile && hosts != nil {
+			h = hostName{name: hosts.names[a]} // no time: after resolved names of its family
+		}
+		if h.name == "" {
 			continue
 		}
 		if v4 := a.Is4(); best.name == "" || (v4 && !bestV4) || (v4 == bestV4 && h.at.After(best.at)) {
@@ -111,7 +188,7 @@ func (r *Registry) macName(addrs []netip.Addr, except netip.Addr) string {
 // enqueueName schedules a PTR lookup for ip (de-duplicated; dropped when
 // the queue is full).
 func (r *Registry) enqueueName(ip netip.Addr) {
-	if !ip.IsValid() || ip.IsLoopback() || ip.IsUnspecified() {
+	if !ip.IsValid() || ip.IsLoopback() || ip.IsUnspecified() || !r.config().Sources.PTR {
 		return
 	}
 	r.namesMu.Lock()
@@ -131,6 +208,9 @@ func (r *Registry) enqueueName(ip netip.Addr) {
 // never asked PiCache. Link-local addresses are skipped; the bounded queue
 // limits the work.
 func (r *Registry) LookupNames(ips []netip.Addr) {
+	if !r.config().Sources.PTR {
+		return
+	}
 	cutoff := time.Now().Add(-nameRefreshEvery)
 	for _, ip := range ips {
 		ip = netutil.Canon(ip)
@@ -165,7 +245,7 @@ func (r *Registry) ptrWorker(ctx context.Context) {
 // name is kept.
 func (r *Registry) lookupName(ctx context.Context, ip netip.Addr) {
 	fn := r.ptr.Load()
-	if fn == nil {
+	if fn == nil || !r.config().Sources.PTR {
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, ptrTimeout)
@@ -176,6 +256,10 @@ func (r *Registry) lookupName(ctx context.Context, ip netip.Addr) {
 	}
 	name = sanitizeHostname(name)
 	r.namesMu.Lock()
+	if !r.config().Sources.PTR {
+		r.namesMu.Unlock()
+		return // switched off during the lookup: its names were dropped
+	}
 	old, _ := r.names.peek(ip)
 	if err != nil {
 		r.log.Debug("client name lookup failed", slog.String("ip", ip.String()), slog.Any("err", err))
@@ -194,6 +278,9 @@ func (r *Registry) lookupName(ctx context.Context, ip netip.Addr) {
 // refreshNames re-resolves the names of addresses active within the last
 // refresh interval whose name is older than that interval.
 func (r *Registry) refreshNames() {
+	if !r.config().Sources.PTR {
+		return
+	}
 	cutoff := time.Now().Add(-nameRefreshEvery)
 	var ips []netip.Addr
 	r.seenMu.Lock()
@@ -234,11 +321,12 @@ func sanitizeHostname(s string) string {
 	return s
 }
 
-// invalidateIP drops the cached identity of ip.
+// invalidateIP drops the cached identities of ip.
 func (r *Registry) invalidateIP(ip netip.Addr) {
 	r.cacheMu.Lock()
 	r.cacheGen++
-	r.cache.delete(ip)
+	r.cache.delete(cacheKey{ip: ip, iface: true})
+	r.cache.delete(cacheKey{ip: ip, iface: false})
 	r.cacheMu.Unlock()
 }
 
@@ -252,7 +340,8 @@ func (r *Registry) invalidateMAC(mac string) {
 	r.cacheMu.Lock()
 	r.cacheGen++
 	for _, ip := range l.addrs[mac] {
-		r.cache.delete(ip)
+		r.cache.delete(cacheKey{ip: ip, iface: true})
+		r.cache.delete(cacheKey{ip: ip, iface: false})
 	}
 	r.cacheMu.Unlock()
 }

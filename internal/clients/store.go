@@ -416,7 +416,8 @@ func validateClient(in ClientInput) (ClientInput, []identifier, error) {
 	for i, raw := range in.Identifiers {
 		id, ok := parseIdentifier(raw)
 		if !ok {
-			return in, nil, apperr.Invalid(fmt.Sprintf("identifiers[%d]", i), "must be an IP address, a CIDR (e.g. 192.168.1.0/24), a MAC address or clientid:<ClientID>")
+			return in, nil, apperr.Invalid(fmt.Sprintf("identifiers[%d]", i),
+				"must be an IP address, a CIDR (e.g. 192.168.1.0/24), a MAC address, clientid:<ClientID>, iface:<interface> or host:<name>")
 		}
 		if seen[id.value] {
 			continue
@@ -449,6 +450,12 @@ func saveClientLinks(ctx context.Context, tx *sql.Tx, id int64, in ClientInput, 
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
 			return err
+		case owner != id && (ident.kind == kindIface || ident.kind == kindHost):
+			var name string
+			if err := tx.QueryRowContext(ctx, `SELECT name FROM client_clients WHERE id = ?`, owner).Scan(&name); err != nil {
+				return err
+			}
+			return apperr.Conflict("%s belongs to client %s", ident.value, name)
 		case owner != id:
 			return apperr.Conflict("identifier %s is already used by another client", ident.value)
 		}

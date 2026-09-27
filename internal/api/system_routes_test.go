@@ -289,7 +289,7 @@ func TestSystemUpdateOverviewAndCheck(t *testing.T) {
 	session := e.provisionAndLogin(t)
 	readTok := e.createToken(t, session, "read")
 	adminTok := e.createToken(t, session, "admin")
-	e.upd.overview = update.NewOverview("v0.9.0", update.ModeHelper, true, false,
+	e.upd.overview = update.NewOverview("v0.9.0", update.ModeHelper, true, update.ChannelStable,
 		update.CheckResult{Latest: &update.Release{Version: "v0.9.1", URL: "https://github.com/x", Notes: "n"}}, nil)
 
 	w := e.do("GET", "/api/v1/system/update", "", readTok)

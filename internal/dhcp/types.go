@@ -242,6 +242,10 @@ type Lease struct {
 	// NameGenerated: DNSName is the generated <a>-<b>-<c>-<d>.<domain>.
 	NameGenerated bool `json:"nameGenerated,omitzero"`
 	NameConflict  bool `json:"nameConflict,omitzero"` // another client holds the host name
+	// Vendor of the MAC (IEEE registries) and whether the MAC is locally
+	// administered ("private", randomised); both omitted when empty.
+	Vendor        string `json:"vendor,omitempty"`
+	MACRandomized bool   `json:"macRandomized,omitzero"`
 }
 
 // StaticLease is an entry of GET /dhcp/static (a reservation).
@@ -255,6 +259,9 @@ type StaticLease struct {
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 	Active       bool      `json:"active"` // the client holds an active lease on the address
+	// Vendor of the MAC and whether it is locally administered (as Lease).
+	Vendor        string `json:"vendor,omitempty"`
+	MACRandomized bool   `json:"macRandomized,omitzero"`
 }
 
 // StaticInput creates a static lease (POST /dhcp/static).

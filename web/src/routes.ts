@@ -48,12 +48,14 @@ export const routes: RouteDef[] = [
 
   { path: '/system/account', section: 'system', title: 'common.nav.account', icon: 'user', load: () => import('./pages/system/Account.svelte') },
   { path: '/system/https', section: 'system', title: 'common.nav.https', icon: 'lock', load: () => import('./pages/system/Https.svelte') },
+  { path: '/system/network', section: 'system', title: 'common.nav.systemNetwork', icon: 'plug', load: () => import('./pages/system/Network.svelte') },
   { path: '/system/tokens', section: 'system', title: 'common.nav.tokens', icon: 'key', load: () => import('./pages/system/Tokens.svelte') },
   { path: '/system/audit', section: 'system', title: 'common.nav.audit', icon: 'document', load: () => import('./pages/system/Audit.svelte') },
   { path: '/system/app-log', section: 'system', title: 'common.nav.appLog', icon: 'terminal', load: () => import('./pages/system/AppLog.svelte') },
   { path: '/system/notifications', section: 'system', title: 'common.nav.notifications', icon: 'bell', load: () => import('./pages/system/Notifications.svelte') },
   { path: '/system/logs', section: 'system', title: 'common.nav.logs', icon: 'eye-off', load: () => import('./pages/system/LogsPrivacy.svelte') },
   { path: '/system/backup', section: 'system', title: 'common.nav.backup', icon: 'archive', load: () => import('./pages/system/Backup.svelte') },
+  { path: '/system/sync', section: 'system', title: 'common.nav.sync', icon: 'sync', load: () => import('./pages/system/Sync.svelte') },
   { path: '/system/health', section: 'system', title: 'common.nav.health', icon: 'activity', load: () => import('./pages/system/Health.svelte') },
   { path: '/system/updates', section: 'system', title: 'common.nav.updates', icon: 'update', load: () => import('./pages/system/Updates.svelte') },
 ]

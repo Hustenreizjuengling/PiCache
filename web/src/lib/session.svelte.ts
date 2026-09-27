@@ -3,7 +3,7 @@
 // screen without losing the current URL, so the user returns to the same page.
 
 import { applyServerLocale } from '../i18n/index.svelte'
-import { api, toApiError, type ApiError, type AuthStatus, type User } from './api'
+import { api, toApiError, type ApiError, type AuthStatus, type SyncSection, type User } from './api'
 
 export type Phase = 'loading' | 'error' | 'misdirected' | 'setup' | 'login' | 'ready'
 
@@ -59,6 +59,25 @@ class Session {
   /** The signed-in account has the viewer role (reads everything, changes only its own account and read tokens). */
   get isViewer(): boolean {
     return this.user?.role === 'viewer'
+  }
+
+  /** Sections this PiCache syncs from its primary as a follower ([] otherwise): read-only here for everyone. */
+  get syncedSections(): readonly SyncSection[] {
+    return this.status?.syncedSections ?? []
+  }
+
+  /** Whether a section is synced from the primary. */
+  isSynced(section: SyncSection): boolean {
+    return this.syncedSections.includes(section)
+  }
+
+  /**
+   * May change a section that a follower can sync: admin rights (isAdmin)
+   * while the section is not synced from a primary. Pages of a synced
+   * section hide their write actions as they do for viewers.
+   */
+  canEditSection(section: SyncSection): boolean {
+    return this.isAdmin && !this.isSynced(section)
   }
 
   /** Loads /auth/status and selects the screen. */

@@ -101,6 +101,7 @@
   onsubmit={save}
   ondelete={rule ? remove : undefined}
   deleteLabel={t('dns.ipRules.delete')}
+  section="lists-and-rules"
 >
   {#snippet header()}
     {#if rule}

@@ -52,8 +52,13 @@ func (a *Service) authToken(ctx context.Context, tok string) (*Principal, error)
 	// An admin token acts with admin rights only while its owner is an
 	// admin (read on every request, like the role of a session).
 	p.Scope = ScopeRead
-	if Scope(scope) == ScopeAdmin && p.Role == RoleAdmin {
+	switch {
+	case Scope(scope) == ScopeAdmin && p.Role == RoleAdmin:
 		p.Scope = ScopeAdmin
+	case Scope(scope) == ScopeSync:
+		// Never read scope: a sync token reaches only the export, which
+		// also checks the owner's role (Principal.CanExport).
+		p.Scope = ScopeSync
 	}
 	if now.Sub(db.Time(lastUsed)) >= lastSeenGranularity {
 		if _, err := a.db.W.ExecContext(ctx, `UPDATE auth_tokens SET last_used = ? WHERE id = ?`, now.UnixMilli(), p.TokenID); err != nil {
@@ -106,10 +111,10 @@ func (a *Service) CreateToken(ctx context.Context, p *Principal, currentPassword
 	if err := validateTokenName(name); err != nil {
 		return "", TokenInfo{}, err
 	}
-	if scope != ScopeRead && scope != ScopeAdmin {
-		return "", TokenInfo{}, apperr.Invalid("scope", "must be read or admin")
+	if scope != ScopeRead && scope != ScopeAdmin && scope != ScopeSync {
+		return "", TokenInfo{}, apperr.Invalid("scope", "must be read, admin or sync")
 	}
-	if scope == ScopeAdmin {
+	if scope == ScopeAdmin || scope == ScopeSync {
 		u, err := a.userByID(ctx, p.UserID)
 		if err != nil {
 			return "", TokenInfo{}, err
@@ -142,7 +147,7 @@ func (a *Service) CreateToken(ctx context.Context, p *Principal, currentPassword
 		if err != nil {
 			return err
 		}
-		if scope == ScopeAdmin && role != RoleAdmin {
+		if (scope == ScopeAdmin || scope == ScopeSync) && role != RoleAdmin {
 			return apperr.Invalid("scope", "viewers can create read tokens only")
 		}
 		var mine, n int

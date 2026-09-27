@@ -309,6 +309,39 @@ func AddrFromRemote(remoteAddr string) netip.Addr {
 	return netip.Addr{}
 }
 
+// LinkLocalZone returns the zone of an IPv6 link-local unicast address ("" for
+// every other address). For a transport peer it is the interface the kernel
+// received the packet or connection on (sin6_scope_id), which a reply to the
+// peer must leave by: the only way to tell the interface of a link-local
+// source, since every interface has fe80::/64 (identifiers iface:).
+func LinkLocalZone(ip netip.Addr) string {
+	if ip.Is6() && !ip.Is4In6() && ip.IsLinkLocalUnicast() {
+		return ip.Zone()
+	}
+	return ""
+}
+
+// PeerZone returns the LinkLocalZone of a UDP or TCP peer address.
+func PeerZone(a net.Addr) string {
+	switch v := a.(type) {
+	case *net.UDPAddr:
+		return LinkLocalZone(v.AddrPort().Addr())
+	case *net.TCPAddr:
+		return LinkLocalZone(v.AddrPort().Addr())
+	}
+	return ""
+}
+
+// PeerFromRemote is AddrFromRemote keeping the LinkLocalZone of the peer of
+// http.Request.RemoteAddr (as net/http set it from the connection).
+func PeerFromRemote(remoteAddr string) netip.Addr {
+	ip := AddrFromRemote(remoteAddr)
+	if ap, err := netip.ParseAddrPort(remoteAddr); err == nil {
+		ip = ip.WithZone(LinkLocalZone(ap.Addr()))
+	}
+	return ip
+}
+
 // LocalAddrs returns all addresses of this machine's interfaces.
 func LocalAddrs() []netip.Addr {
 	ifaddrs, err := interfaceAddrs()

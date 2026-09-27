@@ -21,6 +21,46 @@ type Network interface {
 	// apperr.Unavailable in a container bridge network, on systems other
 	// than Linux or without a private IPv4 network.
 	Scan() (int, error)
+	// Interfaces returns the interfaces of this machine (GET
+	// /network/interfaces).
+	Interfaces(ctx context.Context) NetworkInterfaces
+}
+
+// NetworkInterfaces is GET /network/interfaces: this machine's interfaces
+// without loopback (at most 64, sorted by name; none outside Linux), in a
+// container bridge network the container's own (Mode "bridge").
+type NetworkInterfaces struct {
+	Mode       string             `json:"mode"` // host | bridge
+	Interfaces []NetworkInterface `json:"interfaces"`
+}
+
+// NetworkInterface is one interface (sysfs, the route snapshot and the
+// default routes). Lists are never null.
+type NetworkInterface struct {
+	Name      string `json:"name"`
+	Index     int    `json:"index"`
+	MAC       string `json:"mac,omitempty"`
+	Up        bool   `json:"up"`
+	OperState string `json:"operState"` // up | down | dormant | lowerlayerdown | notpresent | testing | unknown
+	MTU       int    `json:"mtu"`
+	SpeedMbps int    `json:"speedMbps,omitzero"` // omitted when unknown
+	Duplex    string `json:"duplex,omitempty"`   // full | half; omitted when unknown
+	// Addresses are the interface's addresses with their prefix lengths;
+	// Networks the non-default routes through it (at most 64).
+	Addresses       []string               `json:"addresses"`
+	Networks        []string               `json:"networks"`
+	Virtual         bool                   `json:"virtual"` // the sysfs node is below /sys/devices/virtual
+	RxBytes         int64                  `json:"rxBytes"`
+	TxBytes         int64                  `json:"txBytes"`
+	RxErrors        int64                  `json:"rxErrors"`
+	TxErrors        int64                  `json:"txErrors"`
+	DefaultGateways []NetworkInterfaceGate `json:"defaultGateways"`
+}
+
+// NetworkInterfaceGate is a default gateway that uses an interface.
+type NetworkInterfaceGate struct {
+	Family  string `json:"family"` // ipv4 | ipv6
+	Gateway string `json:"gateway"`
 }
 
 // NetworkCheck is GET /network/check.
@@ -153,6 +193,10 @@ type NetworkDevice struct {
 	LastQuery  time.Time `json:"lastQuery,omitzero"`
 	Queries24h int64     `json:"queries24h"`
 	Status     string    `json:"status"` // active | inactive | never
+	// Vendor of the MAC (IEEE registries) and whether the MAC is locally
+	// administered ("private", randomised); both omitted when empty.
+	Vendor        string `json:"vendor,omitempty"`
+	MACRandomized bool   `json:"macRandomized,omitzero"`
 }
 
 // NetworkScan is the state of the discovery scan.
@@ -167,6 +211,14 @@ type NetworkScan struct {
 func (s *Server) registerNetworkRoutes() {
 	s.route("GET /api/v1/network/check", permRead, s.networkCheck)
 	s.route("POST /api/v1/network/scan", permAdmin, s.networkScan, routeExempt)
+	s.route("GET /api/v1/network/interfaces", permRead, s.networkInterfaces)
+}
+
+func (s *Server) networkInterfaces(w http.ResponseWriter, r *http.Request) error {
+	if s.d.Network == nil {
+		return errNoNetwork
+	}
+	return ok(w, s.d.Network.Interfaces(r.Context()))
 }
 
 var errNoNetwork = apperr.Unavailable("the network check is not available")

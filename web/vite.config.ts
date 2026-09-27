@@ -30,9 +30,9 @@ export default defineConfig({
     sourcemap: false,
     target: 'es2022',
     modulePreload: { polyfill: false }, // modern browsers only; never an inline script
-    // The main chunk carries every translation (en and de, about 595 kB of
-    // source in v0.14.0); pages are split off by route.
-    chunkSizeWarningLimit: 800,
+    // The main chunk carries every translation (en and de, about 635 kB of
+    // source in v0.15.0); pages are split off by route.
+    chunkSizeWarningLimit: 900,
   },
   server: {
     proxy: { '/api': 'http://127.0.0.1:8080' }, // Go backend during `npm run dev`

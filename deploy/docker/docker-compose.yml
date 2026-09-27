@@ -95,6 +95,17 @@ services:
     #   # Remove the variable and the secret again after the first start.
     #   PICACHE_ADMIN_PASSWORD_FILE: /run/secrets/picache_admin_password
     #   PICACHE_LOG_FORMAT: json
+    #   # The log also as a file in the data volume (rotated at 10 MiB, 5
+    #   # compressed generations) or to a syslog server (plain text).
+    #   PICACHE_LOG_FILE: /data/picache.log
+    #   PICACHE_LOG_SYSLOG: "udp://192.168.1.10:514"
+    #   # NTP server (switched on under System -> Network; the clock state
+    #   # usually cannot be read in a container: answers then say
+    #   # unsynchronised).
+    #   PICACHE_NTP_LISTEN: ":123"
+    #   # A settings document applied on the first start (readable by
+    #   # 65532), e.g. from a Docker config or secret.
+    #   PICACHE_INITIAL_CONFIG: /run/secrets/picache_initial_config
     #   # Prevent the DHCP server (it can then not be switched on in the web
     #   # UI), for hosts that run another DHCP server.
     #   PICACHE_DHCP: "off"

@@ -157,9 +157,23 @@ unprivileged Proxmox LXC container.
 - Several accounts with the roles admin and viewer (viewers see the pages
   read-only, except the audit log, the application log, notification
   channels and backup downloads, and change nothing but their own account), optional TOTP
-  two-factor authentication, API tokens (`read`/`admin`) for automation, an audit
-  log, backup and restore (also scheduled, for example to your NAS), and
-  optional Prometheus metrics.
+  two-factor authentication, API tokens (`read`/`admin`/`sync`) for automation, an audit
+  log, backup and restore (also scheduled, for example to your NAS, and of
+  selected sections only), and optional Prometheus metrics.
+- A command line for daily tasks and automation: `picache status [--watch]`,
+  `pause`, `resume`, `explain`, `query`, `allow`, `deny`, `lists update`,
+  `config get|set|apply` (settings as JSON, with a dry run) and
+  `PICACHE_INITIAL_CONFIG` for a pre-configured first start.
+- A second PiCache can follow a primary (clients and groups, lists and
+  rules, local DNS, parental controls, DNS settings), pulled over HTTPS with
+  a sync token that can read nothing else.
+- Devices with the vendor of their MAC address (or "private address"),
+  their interface and optionally the owner of a public network; clients
+  identified by interface (guest VLANs, VPNs) or host name; names from DHCP,
+  PTR and the hosts file, each switchable; seen devices can be forgotten.
+- Listeners, an outbound proxy (for list downloads, the release check and
+  notifications) and an optional NTP server set in the web UI; the log also
+  to a file or a syslog server; update channels stable, beta and nightly.
 - Web access limited to your own networks by default, trusted reverse
   proxies (their `X-Forwarded-For` is read only when you list them), and an
   optional configuration lock for infrastructure as code.
@@ -606,7 +620,11 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
   und `picache db salvage` für eine beschädigte Konfigurationsdatenbank –
   alle Daten bleiben auf dem Gerät.
 - **Betrieb** auf Debian 12/13 (auch Raspberry Pi 4/5), in einem Proxmox-LXC
-  oder mit Docker.
+  oder mit Docker; Kommandozeile (`picache status`, `pause`, `allow`,
+  `config` …), Einstellungen als JSON, Protokoll auch in eine Datei oder an
+  einen Syslog-Server, optionaler NTP-Server und Proxy für ausgehende
+  Downloads, ein zweites PiCache als Folgesystem (Sync) und Geräte mit
+  Hersteller, Schnittstelle und Namensquellen.
 - **Updates:** Die Oberfläche zeigt neue Versionen an und installiert sie auf
   Wunsch, nur mit gültiger Signatur und mit automatischer Rückkehr zur alten
   Version, falls die neue nicht startet (`sudo picache update` auf der

@@ -5,7 +5,9 @@
   prefixes too, followed when the provider changes them), the dangerous
   "answer everyone" switch (behind a confirmation), refusing ANY queries,
   blocked clients (DNS only; also ClientIDs of DoT and DoH) and trusted forwarders whose EDNS options
-  identify the devices behind them.
+  identify the devices behind them. On a follower that syncs the DNS
+  settings, refusing ANY, the blocked clients and the trusted forwarders are
+  read-only (the networks stay this PiCache's own).
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
@@ -16,7 +18,14 @@
   import { lineError } from '../shared/errors'
   import LinesInput from '../shared/LinesInput.svelte'
 
-  let { form, stats }: { form: SettingsForm<'dns'>; stats: DnsStats | undefined } = $props()
+  interface Props {
+    form: SettingsForm<'dns'>
+    stats: DnsStats | undefined
+    /** The members a follower syncs from its primary are read-only. */
+    synced?: boolean
+  }
+
+  let { form, stats, synced = false }: Props = $props()
 
   const d = $derived(form.draft as DnsSettings)
 
@@ -66,41 +75,49 @@
     {#if d.allowAllNetworks}
       <Notice tone="fail" title={t('dns.settings.access.openTitle')}>{t('dns.settings.access.openText')}</Notice>
     {/if}
-    <Toggle bind:checked={d.refuseAny} label={t('dns.settings.access.refuseAny')} description={t('dns.settings.access.refuseAnyHelp')} />
+    <fieldset class="stack plain" disabled={synced}>
+      <Toggle bind:checked={d.refuseAny} label={t('dns.settings.access.refuseAny')} description={t('dns.settings.access.refuseAnyHelp')} />
 
-    <div class="grid">
-      <div class="stack-sm">
+      <div class="grid">
+        <div class="stack-sm">
+          <Field
+            label={t('dns.settings.access.blocked')}
+            optional
+            help={t('dns.settings.access.blockedHelp')}
+            error={lineError(form.saveError, 'dns.blockedClients')}
+          >
+            <LinesInput bind:value={d.blockedClients} rows={4} placeholder={'192.168.1.66\naa:bb:cc:dd:ee:ff\nclientid:old-tablet'} />
+          </Field>
+          {#if stats && stats.blockedClients > 0}
+            <p class="small muted">{tn('dns.settings.access.blockedCount', stats.blockedClients, { count: formatNumber(stats.blockedClients) })}</p>
+          {/if}
+        </div>
         <Field
-          label={t('dns.settings.access.blocked')}
+          label={t('dns.settings.access.trusted')}
           optional
-          help={t('dns.settings.access.blockedHelp')}
-          error={lineError(form.saveError, 'dns.blockedClients')}
+          help={t('dns.settings.access.trustedHelp')}
+          error={lineError(form.saveError, 'dns.ednsClientTrusted')}
         >
-          <LinesInput bind:value={d.blockedClients} rows={4} placeholder={'192.168.1.66\naa:bb:cc:dd:ee:ff\nclientid:old-tablet'} />
+          <LinesInput bind:value={d.ednsClientTrusted} rows={4} placeholder="192.168.1.1" />
         </Field>
-        {#if stats && stats.blockedClients > 0}
-          <p class="small muted">{tn('dns.settings.access.blockedCount', stats.blockedClients, { count: formatNumber(stats.blockedClients) })}</p>
-        {/if}
       </div>
-      <Field
-        label={t('dns.settings.access.trusted')}
-        optional
-        help={t('dns.settings.access.trustedHelp')}
-        error={lineError(form.saveError, 'dns.ednsClientTrusted')}
-      >
-        <LinesInput bind:value={d.ednsClientTrusted} rows={4} placeholder="192.168.1.1" />
-      </Field>
-    </div>
-    {#if d.ednsClientTrusted.length > 0}
-      <Notice tone="warn" title={t('dns.settings.access.trustedWarnTitle')}>
-        <p>{t('dns.settings.access.trustedWarn')}</p>
-        <p class="flags"><code class="mono">{STRIP_FLAGS}</code></p>
-      </Notice>
-    {/if}
+      {#if d.ednsClientTrusted.length > 0}
+        <Notice tone="warn" title={t('dns.settings.access.trustedWarnTitle')}>
+          <p>{t('dns.settings.access.trustedWarn')}</p>
+          <p class="flags"><code class="mono">{STRIP_FLAGS}</code></p>
+        </Notice>
+      {/if}
+    </fieldset>
   </div>
 </Panel>
 
 <style>
+  .plain {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
   .danger {
     padding: var(--sp-3);
     border: 1px solid var(--line);

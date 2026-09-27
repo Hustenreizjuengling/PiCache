@@ -1,8 +1,9 @@
 #!/bin/sh
 # Smoke test for deploy/install.sh. It installs, re-installs, enables
 # host-apply, checks the update helper (default, custom data directory,
-# --without-updater), the unit files (CAP_NET_RAW, capset, the helper's
-# writable paths), the DHCP settings (PICACHE_DHCP spellings, the removal of
+# --without-updater), the nightly marker (--nightly), the unit files
+# (CAP_NET_RAW, capset, adjtimex, no ProtectClock, the log directory, the
+# helper's writable paths), the DHCP settings (PICACHE_DHCP spellings, the removal of
 # the pre-0.8.0 drop-in and marker, the markers that replace the old opt-in,
 # the 0.7.0 env comment, --with-dhcp, --without-dhcp), hits a port-53
 # conflict and uninstalls PiCache in a throwaway Debian container. systemd
@@ -76,6 +77,14 @@ grep -qx "SystemCallFilter=capset" "$unit" || fail "unit lacks capset"
 [ "$(grep -n 'SystemCallFilter=~@privileged' "$unit" | cut -d: -f1)" -lt "$(grep -n '^SystemCallFilter=capset' "$unit" | cut -d: -f1)" ] ||
 	fail "capset is not allowed after ~@privileged"
 grep -qx "CPUWeight=200" "$unit" && grep -qx "IOWeight=200" "$unit" || fail "unit lacks the weights"
+grep -qx "SystemCallFilter=adjtimex" "$unit" || fail "unit lacks adjtimex"
+[ "$(grep -n 'SystemCallFilter=~@privileged' "$unit" | cut -d: -f1)" -lt "$(grep -n '^SystemCallFilter=adjtimex' "$unit" | cut -d: -f1)" ] ||
+	fail "adjtimex is not allowed after ~@privileged"
+if grep -q '^ProtectClock=' "$unit"; then fail "ProtectClock would refuse adjtimex"; fi
+grep -qx "LogsDirectory=picache" "$unit" && grep -qx "LogsDirectoryMode=0750" "$unit" || fail "unit lacks the log directory"
+grep -q '^#PICACHE_NTP_LISTEN=:123' /etc/picache/picache.env || fail "env template lacks the NTP example"
+grep -q '^#PICACHE_LOG_FILE=/var/log/picache/picache.log' /etc/picache/picache.env || fail "env template lacks the log file example"
+[ ! -e /etc/picache/nightly.enabled ] || fail "nightly marker written without --nightly"
 grep -qx "ReadWritePaths=/usr/local/bin -/var/lib/picache -/usr/local/lib/systemd/system" \
 	/usr/local/lib/systemd/system/picache-update.service || fail "update helper cannot write the unit directory"
 grep -q '^#PICACHE_DHCP=off' /etc/picache/picache.env || fail "env template lacks the DHCP opt-out example"
@@ -93,6 +102,18 @@ echo "== re-install keeps the configuration"
 echo 'PICACHE_LOG_LEVEL=debug' >>/etc/picache/picache.env
 sh /src/deploy/install.sh --binary /tmp/picache
 grep -q '^PICACHE_LOG_LEVEL=debug' /etc/picache/picache.env || fail "env file overwritten"
+
+echo "== nightly marker"
+sh /src/deploy/install.sh --binary /tmp/picache --nightly >/dev/null
+check_mode /etc/picache/nightly.enabled 644 root:root
+[ -f /etc/picache/nightly.enabled ] && [ ! -L /etc/picache/nightly.enabled ] || fail "nightly marker is not a regular file"
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+[ -e /etc/picache/nightly.enabled ] || fail "a re-run without --nightly removed the nightly marker"
+# A symbolic link in the marker's place is replaced by a root-owned file.
+rm -f /etc/picache/nightly.enabled
+ln -s /etc/hostname /etc/picache/nightly.enabled
+sh /src/deploy/install.sh --binary /tmp/picache --nightly >/dev/null
+[ -f /etc/picache/nightly.enabled ] && [ ! -L /etc/picache/nightly.enabled ] || fail "the link in the marker's place was kept"
 
 echo "== host-apply"
 sh /src/deploy/install.sh --binary /tmp/picache --with-host-apply
@@ -246,6 +267,7 @@ for u in picache.service picache-storage.service picache-storage.path picache-up
 done
 [ ! -e /etc/picache/host-apply.enabled ] || fail "host-apply marker left behind"
 [ ! -e /etc/picache/updater.enabled ] || fail "update helper marker left behind"
+[ ! -e /etc/picache/nightly.enabled ] || fail "nightly marker left behind"
 [ ! -e /etc/picache/dhcp.enabled ] || fail "DHCP marker left behind"
 [ ! -e /etc/systemd/system/picache.service.d/60-dhcp.conf ] || fail "DHCP drop-in left behind"
 if grep -q '^PICACHE_DHCP=' /etc/picache/picache.env; then fail "PICACHE_DHCP=on left in the configuration"; fi

@@ -3,10 +3,11 @@
   Addresses the DHCP server handed out (active and ended within 24 h,
   newest first): host name with its DNS name (a "generated" badge when it is
   built from the address; why it has none), address with a "reserved"
-  badge, MAC address, when the lease ends, the configured client. Admin
-  actions per row: reserve the address (opens the reservation panel
-  prefilled, client ID included), add the device as a client (MAC and
-  address filled in) and end the lease.
+  badge, MAC address with its manufacturer, when the lease ends, the
+  configured client. Admin actions per row: reserve the address (opens the
+  reservation panel prefilled, client ID included), add the device as a
+  client (MAC and address filled in; not while clients are synced from a
+  primary) and end the lease.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -18,6 +19,8 @@
   import { session } from '$lib/session.svelte'
   import { Badge, confirm, EmptyState, Field, Input, Menu, Panel, Table, toast, type Column, type MenuItem } from '$lib/ui'
   import ClientPanel from '../clients/ClientPanel.svelte'
+  import MacVendor from '../shared/MacVendor.svelte'
+  import { vendorText } from '../shared/vendor'
   import { ipSortKey } from './net'
 
   interface Props {
@@ -36,7 +39,7 @@
   const rows = $derived(
     needle
       ? leases.data?.filter((l) =>
-          [l.hostname, l.dnsName, l.ip, l.mac, l.clientName].some((v) => (v ?? '').toLowerCase().includes(needle)),
+          [l.hostname, l.dnsName, l.ip, l.mac, l.clientName, l.vendor].some((v) => (v ?? '').toLowerCase().includes(needle)),
         )
       : leases.data,
   )
@@ -74,7 +77,9 @@
   function menu(l: DhcpLease): MenuItem[] {
     const items: MenuItem[] = []
     if (!l.static) items.push({ label: t('dns.dhcp.leases.reserve'), icon: 'pin', onselect: () => onreserve(l) })
-    if (!l.clientName) items.push({ label: t('dns.seen.addAsClient'), icon: 'users', onselect: () => addAsClient(l) })
+    if (!l.clientName && session.canEditSection('clients-and-groups')) {
+      items.push({ label: t('dns.seen.addAsClient'), icon: 'users', onselect: () => addAsClient(l) })
+    }
     if (l.active && !l.static) {
       if (items.length > 0) items.push({ separator: true })
       items.push({ label: t('dns.dhcp.leases.end'), icon: 'trash', danger: true, onselect: () => end(l) })
@@ -85,7 +90,7 @@
   const columns = $derived<Column<DhcpLease>[]>([
     { key: 'name', label: t('dns.dhcp.leases.device'), sortable: true, value: (l) => l.hostname ?? '', cell: nameCell },
     { key: 'ip', label: t('dns.dhcp.leases.address'), sortable: true, value: (l) => ipSortKey(l.ip), cell: ipCell },
-    { key: 'mac', label: t('dns.dhcp.leases.mac'), mono: true, value: (l) => l.mac },
+    { key: 'mac', label: t('dns.dhcp.leases.mac'), sortable: true, value: (l) => vendorText(l) ?? '', cell: macCell },
     { key: 'expires', label: t('dns.dhcp.leases.lease'), sortable: true, value: (l) => l.expires, cell: expiresCell },
     { key: 'client', label: t('dns.dhcp.leases.client'), sortable: true, value: (l) => l.clientName ?? '', cell: clientCell },
     ...(session.isAdmin ? [{ key: 'actions', label: t('common.label.actions'), align: 'right' as const, width: '1%', cell: actionCell }] : []),
@@ -118,6 +123,10 @@
     <span class="mono">{l.ip}</span>
     {#if l.static}<Badge tone="info">{t('dns.dhcp.leases.reserved')}</Badge>{/if}
   </span>
+{/snippet}
+
+{#snippet macCell(l: DhcpLease)}
+  <MacVendor mac={l.mac} vendor={l.vendor} macRandomized={l.macRandomized} />
 {/snippet}
 
 {#snippet expiresCell(l: DhcpLease)}

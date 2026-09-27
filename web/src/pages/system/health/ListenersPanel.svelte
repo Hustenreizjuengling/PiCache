@@ -1,9 +1,10 @@
 <!--
   @component
   The network listeners (bootstrap configuration, restart required to
-  change): bound addresses, bind failures and listeners that are off. A
-  failed DoT or DoH listener shows as not in use while its protocol is
-  switched off (the listeners health check ignores it then).
+  change; saved under System › Network): bound addresses, bind failures and
+  listeners that are off. A failed DoT, DoH or NTP listener shows as not in
+  use while its protocol is switched off (the listeners health check
+  ignores it then).
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -15,9 +16,11 @@
     listeners?: ListenerInfo
     /** dns.encrypted.dot/doh (GET /dns/encrypted); undefined: unknown, failures show as failed. */
     encrypted?: { dot: boolean; doh: boolean }
+    /** ntp.enabled; undefined: unknown. */
+    ntp?: boolean
   }
 
-  let { listeners, encrypted }: Props = $props()
+  let { listeners, encrypted, ntp }: Props = $props()
 
   interface Row {
     role: string
@@ -29,10 +32,11 @@
     unused?: string
   }
 
-  /** The note for a failed dot/doh listener while its protocol is off. */
+  /** The note for a failed dot/doh/ntp listener while its protocol is off. */
   function unusedNote(role: string): string | undefined {
     if (role === 'dot' && encrypted && !encrypted.dot) return t('system.health.listeners.unusedDot')
     if (role === 'doh' && encrypted && !encrypted.doh) return t('system.health.listeners.unusedDoh')
+    if (role === 'ntp' && ntp === false) return t('system.health.listeners.unusedNtp')
     return undefined
   }
 

@@ -1,7 +1,8 @@
 <!--
   @component
   Local DNS: records PiCache answers itself, conditional forwarders and the
-  router resolver status.
+  router resolver status. On a follower that syncs local DNS a banner says so
+  and the records and forwarders are read-only.
   Query: ?tab=records|forwarders&sel=<id>&search=…
 -->
 <script lang="ts">
@@ -11,6 +12,7 @@
   import ForwardersTab from './localdns/ForwardersTab.svelte'
   import RecordsTab from './localdns/RecordsTab.svelte'
   import RouterStatus from './localdns/RouterStatus.svelte'
+  import SyncedNotice from './shared/SyncedNotice.svelte'
 
   const tab = $derived(router.param('tab') === 'forwarders' ? 'forwarders' : 'records')
 
@@ -25,6 +27,7 @@
 </script>
 
 <div class="page">
+  <SyncedNotice section="local-dns" />
   <Tabs {tabs} active={tab} label={t('common.nav.localDns')} onchange={selectTab}>
     {#snippet children(active)}
       <div class="tab">

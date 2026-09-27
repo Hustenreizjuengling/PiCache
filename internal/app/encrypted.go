@@ -144,7 +144,7 @@ func (a *App) dohHandler() http.Handler {
 			http.Error(w, "DoH through a proxy is served on the web listener only", http.StatusForbidden)
 			return
 		}
-		a.dns.ServeDoH(w, r, netutil.AddrFromRemote(r.RemoteAddr))
+		a.dns.ServeDoH(w, r, netutil.PeerFromRemote(r.RemoteAddr))
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(dnsserver.DoHPath, doh)

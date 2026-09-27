@@ -7,8 +7,9 @@
   own upstreams names them and links to Clients & groups), and a badge
   while its filtering is paused. Admins get the quick
   actions (block internet now, lift restrictions, end an override, pause
-  filtering, resume) and Edit; read-only principals see the same without
-  actions.
+  filtering, resume) and Edit (not while parental controls are synced from
+  a primary; the quick actions stay); read-only principals see the same
+  without actions.
 -->
 <script lang="ts">
   import { t, tn, type MessageKey } from '$i18n/index.svelte'
@@ -125,7 +126,7 @@
             {onpaused}
           />
         {/if}
-        {#if session.isAdmin}
+        {#if session.canEditSection('parental')}
           <Button size="sm" icon="edit" onclick={() => onedit(group)}>{t('dns.parental.edit')}</Button>
         {/if}
       </div>

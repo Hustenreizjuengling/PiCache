@@ -1,10 +1,12 @@
 <!--
   @component
   Devices of the neighbour table (router and PiCache left out): name,
-  addresses, MAC, last query, queries in 24 h and whether they use PiCache,
-  filterable to the ones that do not. Admins can scan the network so idle
-  devices show up, and add a device as a client (MAC and addresses filled
-  in). The limits of what PiCache can see are explained below the table.
+  addresses, MAC, manufacturer (or "Private address (randomised)"), last
+  query, queries in 24 h and whether they use PiCache, filterable to the
+  ones that do not. Admins can scan the network so idle devices show up,
+  and add a device as a client (MAC and addresses filled in; not while
+  clients are synced from a primary). The limits of what PiCache can see
+  are explained below the table.
   Query: ?show=unused
 -->
 <script lang="ts">
@@ -15,6 +17,8 @@
   import { session } from '$lib/session.svelte'
   import { Button, Chip, EmptyState, Notice, Panel, Spinner, Table, type Column, type Tone } from '$lib/ui'
   import ClientPanel from '../clients/ClientPanel.svelte'
+  import MacVendor from '../shared/MacVendor.svelte'
+  import { vendorText } from '../shared/vendor'
   import { isUla, isV4 } from './checks'
 
   interface Props {
@@ -61,6 +65,9 @@
     addOpen = true
   }
 
+  // Adding a client writes clients and groups (read-only while synced from a primary).
+  const canAdd = $derived(session.canEditSection('clients-and-groups'))
+
   const scan = $derived(net?.scan)
   const running = $derived(scanning || !!scan?.running)
   const runningCount = $derived(scan?.addresses ?? scanAddresses)
@@ -68,7 +75,7 @@
   const columns = $derived<Column<NetworkDevice>[]>([
     { key: 'name', label: t('dns.network.devices.name'), sortable: true, value: (d) => d.name ?? '', cell: nameCell },
     { key: 'ips', label: t('dns.network.devices.addresses'), cell: ipsCell },
-    { key: 'mac', label: t('dns.network.devices.mac'), mono: true, value: (d) => d.mac },
+    { key: 'mac', label: t('dns.network.devices.mac'), sortable: true, value: (d) => vendorText(d) ?? '', cell: macCell },
     { key: 'last', label: t('dns.network.devices.lastQuery'), sortable: true, value: (d) => d.lastQuery ?? '', cell: lastCell },
     {
       key: 'queries',
@@ -79,7 +86,7 @@
       format: (d) => formatNumber(d.queries24h),
     },
     { key: 'status', label: t('common.label.status'), sortable: true, value: (d) => STATUS[d.status]?.rank ?? 9, cell: statusCell },
-    ...(session.isAdmin ? [{ key: 'actions', label: t('common.label.actions'), align: 'right' as const, width: '1%', cell: actionCell }] : []),
+    ...(canAdd ? [{ key: 'actions', label: t('common.label.actions'), align: 'right' as const, width: '1%', cell: actionCell }] : []),
   ])
 </script>
 
@@ -100,6 +107,11 @@
     {#each d.ips.slice(0, 2) as ip (ip)}<span>{ip}</span>{/each}
     {#if d.ips.length > 2}<span class="more">{tn('dns.network.devices.moreAddresses', d.ips.length - 2)}</span>{/if}
   </span>
+{/snippet}
+
+<!-- The manufacturer under the MAC address (as in the other device tables): the table is wide already. -->
+{#snippet macCell(d: NetworkDevice)}
+  <MacVendor mac={d.mac} vendor={d.vendor} macRandomized={d.macRandomized} />
 {/snippet}
 
 {#snippet lastCell(d: NetworkDevice)}
@@ -195,7 +207,7 @@
   {/if}
 </Panel>
 
-{#if session.isAdmin}
+{#if canAdd}
   <ClientPanel bind:open={addOpen} {preset} {groups} range="24h" onsaved={onchanged} />
 {/if}
 

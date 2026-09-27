@@ -6,11 +6,15 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/api"
+	"github.com/hustenreizjuengling/picache/internal/applog"
+	"github.com/hustenreizjuengling/picache/internal/dhcp"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
+	"github.com/hustenreizjuengling/picache/internal/ntp"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -124,13 +128,19 @@ func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, l
 	return "ok", "", ""
 }
 
-// listenersHealth evaluates the check "listeners": a listener that could
-// not be bound warns; a failed DoT or DoH listener counts only while the
-// protocol is switched on.
-func listenersHealth(li api.ListenerInfo, e settings.EncryptedDNS) (status, msg, hint string) {
+// listenersHealth evaluates the check "listeners": a role of the saved
+// listeners that could not be bound and fell back to its environment or
+// default value fails (until a start binds everything); another listener
+// that could not be bound warns; a failed DoT, DoH or NTP listener counts
+// only while the protocol is switched on.
+func listenersHealth(li api.ListenerInfo, e settings.EncryptedDNS, ntpOn bool, saved []string) (status, msg, hint string) {
+	if len(saved) > 0 {
+		return "fail", strings.Join(saved, "; "),
+			"change the listeners under System → Network (applied at the next start) or run picache listeners --reset on the host"
+	}
 	var roles []string
 	for r, err := range li.Failed {
-		if (r == "dot" && !e.DoT) || (r == "doh" && !e.DoH) {
+		if (r == "dot" && !e.DoT) || (r == "doh" && !e.DoH) || (r == "ntp" && !ntpOn) {
 			continue
 		}
 		roles = append(roles, r+": "+err)
@@ -163,7 +173,7 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 
 	// Listeners
 	li := a.Listeners()
-	st, msg, hint := listenersHealth(li, set.DNS.Encrypted)
+	st, msg, hint := listenersHealth(li, set.DNS.Encrypted, set.NTP.Enabled, a.ln.savedFailures())
 	add("listeners", st, msg, hint)
 
 	// Upstreams (+ clock guard, fallbacks)
@@ -263,5 +273,114 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 		st, msg, hint := networkHealth(a.network.Check(ctx))
 		add("network", st, msg, hint)
 	}
+
+	// Log file and syslog (while one is configured)
+	if a.appLog != nil {
+		if st, msg, hint, show := loggingHealth(a.appLog.Sinks(), &a.logDrops, time.Now()); show {
+			add("logging", st, msg, hint)
+		}
+	}
+
+	// NTP server (while ntp.enabled)
+	if set.NTP.Enabled && a.ntp != nil {
+		st, msg, hint := ntpHealth(a.ntp.ClockState(), a.deployment() == dhcp.DeploymentDocker)
+		add("ntp", st, msg, hint)
+	}
+
+	// Follower sync (while the mode is follower)
+	if a.sync != nil {
+		if st, msg, hint, show := a.sync.health(); show {
+			add("sync", st, msg, hint)
+		}
+	}
 	return h
+}
+
+// loggingHealth evaluates the check "logging" (present while a log file or
+// syslog is configured): a sink that cannot write warns, as do records
+// dropped within the last dropWindow (drops; the cumulative count stays in
+// GET /system/log).
+func loggingHealth(sinks []applog.SinkState, drops *dropTracker, now time.Time) (status, msg, hint string, show bool) {
+	if len(sinks) == 0 {
+		return "", "", "", false
+	}
+	var msgs []string
+	for _, s := range sinks {
+		recent := drops.recent(s, now)
+		switch {
+		case !s.OK && s.Kind == applog.SinkFile:
+			msgs = append(msgs, fmt.Sprintf("the log file %s cannot be written: %s", s.Target, s.Error))
+		case !s.OK:
+			msgs = append(msgs, fmt.Sprintf("syslog %s is not reachable: %s", s.Target, s.Error))
+		case recent > 0:
+			msgs = append(msgs, fmt.Sprintf("%d log records were dropped", recent))
+		}
+	}
+	if len(msgs) == 0 {
+		return "ok", "", "", true
+	}
+	return "warn", strings.Join(msgs, "; "),
+		"check PICACHE_LOG_FILE and PICACHE_LOG_SYSLOG; the log on stderr (journal, docker logs) continues", true
+}
+
+// dropWindow is how long the check "logging" warns after a sink dropped
+// records.
+const dropWindow = 10 * time.Minute
+
+// dropTracker turns the cumulative dropped counts of the log sinks into
+// recent drops: one transient loss (a syslog server rebooting) must not
+// keep the check in warn until PiCache restarts.
+type dropTracker struct {
+	mu   sync.Mutex
+	seen map[string]dropMark // kind + target
+}
+
+// dropMark is the drop state of one sink: count the last dropped count
+// seen, base the count before the current episode of drops, grew when
+// count last grew (zero: never).
+type dropMark struct {
+	count, base int64
+	grew        time.Time
+}
+
+// recent returns the records s dropped in the current episode: since its
+// count started to grow after a quiet dropWindow, while the last growth is
+// at most dropWindow old (0 otherwise).
+func (d *dropTracker) recent(s applog.SinkState, now time.Time) int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen == nil {
+		d.seen = map[string]dropMark{}
+	}
+	key := s.Kind + " " + s.Target
+	m := d.seen[key]
+	if s.Dropped > m.count {
+		if m.grew.IsZero() || now.Sub(m.grew) > dropWindow {
+			m.base = m.count // a new episode
+		}
+		m.count, m.grew = s.Dropped, now
+		d.seen[key] = m
+	}
+	if m.grew.IsZero() || now.Sub(m.grew) > dropWindow {
+		return 0
+	}
+	return m.count - m.base
+}
+
+// ntpHealth evaluates the check "ntp" (present while ntp.enabled): the
+// host clock is not synchronised, or its state cannot be read (a unit
+// without SystemCallFilter=adjtimex, a container).
+func ntpHealth(c ntp.ClockState, docker bool) (status, msg, hint string) {
+	switch {
+	case c.Err != nil && docker:
+		return "warn", fmt.Sprintf("the clock state cannot be read (%v): NTP clients get unsynchronised answers", c.Err),
+			"the container may not read the clock state; the NTP server of the host is the better choice here"
+	case c.Err != nil:
+		return "warn", fmt.Sprintf("the clock state cannot be read (%v): update the unit files (run the one-line installer once)", c.Err),
+			"the units of 0.15 allow reading the clock state (SystemCallFilter=adjtimex)"
+	case !c.Synced:
+		return "warn", "the host clock is not synchronised: NTP clients get unsynchronised answers",
+			"check the time synchronisation of the host (timedatectl)"
+	}
+	return "ok", "", ""
 }

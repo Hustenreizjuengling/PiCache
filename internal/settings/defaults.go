@@ -84,6 +84,7 @@ func Defaults() All {
 			IgnoredDomains:         []string{},
 			FlushSeconds:           5,
 			PrivacyLevel:           PrivacyFull,
+			SeenRetentionDays:      30,
 		},
 		Web: Web{
 			SessionIdleMinutes: 60,
@@ -98,6 +99,7 @@ func Defaults() All {
 		},
 		Updates: Updates{
 			CheckEnabled: true,
+			Channel:      ChannelStable,
 		},
 		Backups: Backups{
 			Schedule:    "daily",
@@ -116,5 +118,8 @@ func Defaults() All {
 			LoadPerCPUMax:             2,
 			TemperatureMaxCelsius:     80,
 		},
+		Clients: Clients{NameSources: NameSources{PTR: true, DHCP: true}},
+		Sync:    Sync{Mode: SyncOff, IntervalMinutes: 15, Sections: []string{}},
+		NTP:     NTP{Stratum: 3},
 	}
 }

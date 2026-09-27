@@ -243,7 +243,7 @@
                             size="sm"
                             icon="plus"
                             loading={adding === entry.key}
-                            disabled={!session.isAdmin || (adding !== '' && adding !== entry.key)}
+                            disabled={!session.canEditSection('lists-and-rules') || (adding !== '' && adding !== entry.key)}
                             onclick={() => add(entry)}
                           >
                             {t('common.action.add')}
@@ -267,7 +267,7 @@
                               variant="primary"
                               icon="plus"
                               loading={adding === entry.key}
-                              disabled={pickGroups.length === 0 || !session.isAdmin}
+                              disabled={pickGroups.length === 0 || !session.canEditSection('lists-and-rules')}
                               onclick={() => create(entry, pickGroups)}
                             >
                               {t('dns.lists.addAllow')}
@@ -287,7 +287,7 @@
       {:else}
         <form id={formId} class="stack url-form" onsubmit={submit} novalidate>
           {#if err && !err.field}<Notice tone="fail">{errorText(err)}</Notice>{/if}
-          <fieldset disabled={!session.isAdmin} class="stack">
+          <fieldset disabled={!session.canEditSection('lists-and-rules')} class="stack">
             <ListFields bind:draft {err} {groups} {submitted} fresh />
           </fieldset>
         </form>
@@ -300,7 +300,7 @@
       {tab === 'url' ? t('common.action.cancel') : t('common.action.close')}
     </Button>
     {#if tab === 'url'}
-      <Button type="submit" form={formId} variant="primary" icon="plus" loading={saving} disabled={!session.isAdmin || urlBlocked}>
+      <Button type="submit" form={formId} variant="primary" icon="plus" loading={saving} disabled={!session.canEditSection('lists-and-rules') || urlBlocked}>
         {draft.kind === 'allow' ? t('dns.lists.addAllow') : t('dns.lists.add')}
       </Button>
     {/if}

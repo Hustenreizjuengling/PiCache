@@ -547,9 +547,24 @@ const de: Messages<typeof en> = {
   'clients.batchDeleteText': 'Ihre Geräte gelten wieder als unbekannte Clients in der Gruppe Default.',
   'clients.identifiers': 'Erkennungsmerkmale',
   'clients.identifiersHelp':
-    'Eins pro Zeile: eine IP-Adresse, ein Netz wie 192.168.1.0/24, eine MAC-Adresse (nur für Geräte im selben Netz wie PiCache) oder clientid:<ClientID> (die Geräte-ID von DoT und DoH). Eine IP-Adresse oder ein Netz erfasst auch die anderen Adressen des Geräts im selben Netz, etwa seine wechselnden IPv6-Adressen. Am zuverlässigsten erkennt PiCache ein Gerät an seiner MAC-Adresse.',
-  'clients.identifiersRequired': 'Gib mindestens eine IP-Adresse, ein Netz, eine MAC-Adresse oder eine ClientID ein.',
+    'Eins pro Zeile: eine IP-Adresse, ein Netz wie 192.168.1.0/24, eine MAC-Adresse (nur für Geräte im selben Netz wie PiCache), clientid:<ClientID> (die Geräte-ID von DoT und DoH), iface:<Schnittstelle> (jedes Gerät, das PiCache über eine Schnittstelle dieses Rechners erreicht) oder host:<Name> (der Hostname, den sich ein Gerät selbst gibt). Eine IP-Adresse oder ein Netz erfasst auch die anderen Adressen des Geräts im selben Netz, etwa seine wechselnden IPv6-Adressen. Am zuverlässigsten erkennt PiCache ein Gerät an seiner MAC-Adresse.',
+  'clients.identifiersRequired': 'Gib mindestens eine IP-Adresse, ein Netz, eine MAC-Adresse, eine ClientID, eine Schnittstelle oder einen Hostnamen ein.',
   'clients.clientIdIdentifier': 'ClientID {id}',
+  'clients.ifaceIdentifier': 'Schnittstelle {name}',
+  'clients.hostIdentifier': 'Hostname {name}',
+  'clients.ifaceTitle': 'An der Schnittstelle erkannt',
+  'clients.ifaceHelp':
+    'Jedes Gerät, dessen Adresse zu den Netzen dieser Schnittstelle gehört, ist dieser Client, egal mit welcher MAC-Adresse. Nutze iface: für Netze, deren Geräte alle ein Client sind, etwa ein Gäste-VLAN oder ein VPN (wg0); für das Hauptnetz nimm Netze oder MAC-Adressen.',
+  'clients.ifaceList': 'Schnittstellen dieses Rechners: {names}',
+  'clients.ifaceBridge':
+    'PiCache läuft in einem Container-Bridge-Netz: Jedes Gerät erreicht es über die Bridge, eine Schnittstelle kann Geräte hier daher nicht unterscheiden.',
+  'clients.hostTitle': 'Einen Hostnamen kann jedes Gerät beanspruchen',
+  'clients.hostWarn':
+    'Ein Gerät wählt seinen Namen selbst: Jedes Gerät in deinen Netzen kann diese Identität beanspruchen (mit seinem DHCP-Namen oder seinem Namen in der Rückwärtsauflösung, wo Geräte ihn selbst eintragen). PiCache vergleicht den Namen, den es für eine Adresse aus DHCP, Rückwärtsauflösung oder der Hosts-Datei kennt (Gerätenamen unter „Kürzlich gesehen“); Namen aus der Rückwärtsauflösung zählen nur für Adressen deiner Netze, nie für Internetadressen, deren Inhaber sie festlegen. Solange PiCache den Namen nicht kennt, bekommen die Abfragen des Geräts die Gruppe Default. Nutze es nur, wo eine falsche Zuordnung nicht schadet.',
+  'clients.hostConfirmTitle': 'Geräte an ihrem Hostnamen erkennen?',
+  'clients.hostConfirmText':
+    'Ein Gerät wählt seinen Namen selbst: Jedes Gerät kann diese Identität beanspruchen. Jedes Gerät, das sich {names} nennt, wird zu diesem Client und bekommt seine Gruppen.',
+  'clients.hostConfirm': 'Hostnamen verwenden',
   'clients.groupsHelp': 'Listen und Regeln dieser Gruppen gelten für den Client.',
   'clients.noGroupWarning': 'Ohne Gruppe kommt der Client in die Gruppe Default.',
   'clients.bypass': 'Download-Cache umgehen',
@@ -594,6 +609,7 @@ const de: Messages<typeof en> = {
   'seen.description.7d': 'Geräte, die Abfragen geschickt haben, ihre Adressen nach MAC-Adresse zusammengefasst. Die Verkehrsspalten beziehen sich auf die letzten 7 Tage.',
   'seen.description.30d': 'Geräte, die Abfragen geschickt haben, ihre Adressen nach MAC-Adresse zusammengefasst. Die Verkehrsspalten beziehen sich auf die letzten 30 Tage.',
   'seen.within': 'Gesehen innerhalb',
+  'seen.withinDays': 'Letzte {days} Tage (alles Gespeicherte)',
   'seen.addresses': 'Adressen',
   'seen.hostname': 'Hostname',
   'seen.mac': 'MAC-Adresse',
@@ -619,6 +635,49 @@ const de: Messages<typeof en> = {
   'seen.clientIds.empty': 'Seit dem Start von PiCache hat kein Gerät eine ClientID gesendet.',
   'seen.clientIds.emptyText':
     'Geräte senden eine, wenn ihr DoT-Host oder ihre DoH-Adresse sie enthält (DNS-Einstellungen › Geräte einrichten).',
+  'seen.interface': 'Schnittstelle',
+  'seen.interfaceHelp': 'Die Schnittstelle dieses Rechners, über die Antworten an diese Adresse hinausgehen',
+  'seen.networkOwner': 'Netzbetreiber',
+  'seen.forget': 'Vergessen',
+  'seen.forgetDevice': 'Gerät vergessen',
+  'seen.forgetAddress': '{ip} vergessen',
+  'seen.forgetTitle': '{name} vergessen?',
+  'seen.forgetDeviceText':
+    'PiCache vergisst jede Adresse dieser MAC-Adresse mit Namen und Zählern. Mit seiner nächsten Abfrage erscheint das Gerät hier wieder. Eingerichtete Clients, das Abfrageprotokoll und die Statistiken bleiben.',
+  'seen.forgetAddressText':
+    'PiCache vergisst diese Adresse mit Namen und Zählern. Mit ihrer nächsten Abfrage erscheint sie hier wieder. Eingerichtete Clients, das Abfrageprotokoll und die Statistiken bleiben.',
+  'seen.forgetAll': 'Alle vergessen',
+  'seen.forgetAllTitle': 'Alle gesehenen Geräte vergessen?',
+  'seen.forgetAllText':
+    'PiCache vergisst jede gesehene Adresse mit Namen und Zählern. Mit ihrer nächsten Abfrage erscheinen die Geräte hier wieder. Eingerichtete Clients, das Abfrageprotokoll und die Statistiken bleiben.',
+  'seen.forgotten.one': '{count} Adresse vergessen',
+  'seen.forgotten.other': '{count} Adressen vergessen',
+  'seen.reappear': 'Vergessene Geräte erscheinen wieder, sobald sie ihre nächste Abfrage schicken.',
+
+  // Hersteller einer MAC-Adresse
+  'vendor.label': 'Hersteller',
+  'vendor.private': 'Private Adresse (zufällig)',
+  'vendor.privateHelp':
+    'Das Gerät nutzt eine zufällige MAC-Adresse, eine Datenschutzfunktion von Smartphones und Computern, daher ist sein Hersteller unbekannt. Es kann je Netz oder nach einer Weile eine andere verwenden.',
+
+  // Gerätenamen
+  'names.title': 'Gerätenamen',
+  'names.description':
+    'Woher PiCache die Namen der Geräte nimmt, nach dem Namen eines eingerichteten Clients; die erste Quelle, die eine Adresse kennt, gewinnt. Die Namen erscheinen im Abfrageprotokoll, in den Statistiken, in der Netzwerkprüfung und hier.',
+  'names.loadError': 'Die Einstellungen der Gerätenamen konnten nicht geladen werden',
+  'names.saved': 'Gerätenamen aktualisiert',
+  'names.dhcp': 'Namen vom DHCP-Server von PiCache',
+  'names.dhcpHelp': 'Der Hostname, den ein Gerät gesendet hat, als es seine Adresse vom DHCP-Server von PiCache bekam.',
+  'names.ptr': 'Rückwärtsauflösung (PTR)',
+  'names.ptrHelp':
+    'PiCache fragt deinen Router (oder die lokalen PTR-Upstreams) nach dem Namen jeder Adresse. Aus: Es werden keine solchen Abfragen gesendet und gefundene Namen verworfen.',
+  'names.hostsFile': 'Hosts-Datei dieses Rechners',
+  'names.hostsFileHelp':
+    'Namen aus /etc/hosts des Rechners, auf dem PiCache läuft, alle 5 Minuten neu gelesen, wenn sie sich geändert hat. Sie benennen nur Geräte und beantworten nie DNS-Abfragen (dafür gibt es lokale Einträge).',
+  'names.hostsFileContainer': 'PiCache läuft in einem Container: Das ist die eigene /etc/hosts des Containers, der Schalter ist hier daher nicht sinnvoll.',
+  'names.whois': 'Netzbetreiber öffentlicher Adressen (WHOIS)',
+  'names.whoisHelp':
+    'Für Geräte, die von einer öffentlichen Adresse außerhalb deiner Netze abfragen, etwa ein Smartphone im Mobilfunk, fragt PiCache die Internet-Registrierungsstellen (RDAP), wem dieses Netz gehört, und zeigt es als „Netzbetreiber“. Dabei geht das Netz der Adresse (ein /24 oder /48, nie die Adresse selbst) per HTTPS an die Registrierungsstellen. Solange Client-Adressen anonymisiert werden, wird nichts nachgeschlagen.',
 
   // Gruppen
   'groups.title': 'Gruppen',
@@ -791,6 +850,7 @@ const de: Messages<typeof en> = {
   'parental.resolver.replaceConfirm': '{resolver} verwenden',
   'parental.resolver.removeConfirm': 'Eigene Upstreams entfernen',
   'parental.switch.editHelp': 'Nutzt Blocklisten, die PiCache herunterlädt. Gilt immer, auch während das Blockieren pausiert ist. Nicht per Zeitplan steuerbar. Eine Erlaubnisregel gibt eine fälschlich gesperrte Seite frei.',
+  'parental.switch.synced': 'Listen und Regeln werden vom Primärsystem synchronisiert: Ändere die Kategorie-Schalter dort.',
   'parental.switch.enableNote': 'Einschalten wendet die Liste auf diese Gruppe an. Hattest du die Liste deaktiviert, wird sie wieder aktiviert, auch für ihre anderen Gruppen.',
   'parental.switch.adult': 'Inhalte für Erwachsene',
   'parental.switch.adultHelp': 'Pornografie und andere Seiten für Erwachsene.',
@@ -1024,6 +1084,39 @@ const de: Messages<typeof en> = {
   'network.devices.empty': 'Keine Geräte gefunden',
   'network.devices.emptyText': 'Geräte erscheinen, wenn sie in letzter Zeit im Netzwerk aktiv waren. Durchsuche das Netzwerk, um ruhende Geräte zu finden.',
   'network.devices.emptyUnused': 'Jedes Gerät, das PiCache sieht, nutzt PiCache.',
+  'network.ifaces.title': 'Schnittstellen dieses Rechners',
+  'network.ifaces.description':
+    'Adressen, Netze und Gateways der Netzwerkschnittstellen von PiCache (ohne Loopback). Ein Client mit dem Erkennungsmerkmal iface:<Name> erfasst die Geräte in den Netzen dieser Schnittstelle.',
+  'network.ifaces.bridge': 'PiCache läuft in einem Container-Bridge-Netz: Das sind die eigenen Schnittstellen des Containers, nicht die des Hosts.',
+  'network.ifaces.unavailable': 'Die Schnittstellen konnten nicht gelesen werden: {reason}',
+  'network.ifaces.empty': 'Keine Schnittstellendetails',
+  'network.ifaces.emptyText': 'Schnittstellendetails gibt es, wenn PiCache unter Linux läuft.',
+  'network.ifaces.name': 'Schnittstelle',
+  'network.ifaces.addresses': 'Adressen',
+  'network.ifaces.networks': 'Netze',
+  'network.ifaces.networksHelp': 'Die über diese Schnittstelle gerouteten Netze: Geräte dort erreichen PiCache über sie',
+  'network.ifaces.gateway': 'Standard-Gateway',
+  'network.ifaces.link': 'Verbindung',
+  'network.ifaces.traffic': 'Datenverkehr',
+  'network.ifaces.virtual': 'virtuell',
+  'network.ifaces.virtualHelp': 'Eine Bridge-, Tunnel-, VPN- oder Container-Schnittstelle',
+  'network.ifaces.state.up': 'Aktiv',
+  'network.ifaces.state.disabled': 'Ausgeschaltet',
+  'network.ifaces.state.down': 'Getrennt',
+  'network.ifaces.state.dormant': 'Ruhend',
+  'network.ifaces.state.lowerlayerdown': 'Keine Verbindung',
+  'network.ifaces.state.notpresent': 'Nicht vorhanden',
+  'network.ifaces.state.testing': 'Im Test',
+  'network.ifaces.state.unknown': 'Unbekannt',
+  'network.ifaces.mbits': '{n} Mbit/s',
+  'network.ifaces.gbits': '{n} Gbit/s',
+  'network.ifaces.full': 'Vollduplex',
+  'network.ifaces.half': 'Halbduplex',
+  'network.ifaces.mtu': 'MTU {mtu}',
+  'network.ifaces.received': 'Empfangen {bytes}',
+  'network.ifaces.sent': 'Gesendet {bytes}',
+  'network.ifaces.errors.one': '{count} Fehler',
+  'network.ifaces.errors.other': '{count} Fehler',
   'network.limits': 'Geräte erscheinen erst, wenn sie in letzter Zeit im Netzwerk aktiv waren. Geräte mit fest eingetragenen DNS-Servern oder verschlüsseltem DNS fragen PiCache nie, auch wenn alles oben richtig eingerichtet ist.',
   'network.scan.button': 'Netzwerk durchsuchen',
   'network.scan.explain': 'Schickt ein kleines Paket an jede Adresse in deinem lokalen Netzwerk, damit sich die Geräte zeigen.',
@@ -1629,6 +1722,8 @@ const de: Messages<typeof en> = {
   'settings.bootstrapHelp': 'Einfache DNS-Server (IP-Adressen), die nur die Namen verschlüsselter Upstreams, des Ausweich-DNS und einfacher Upstreams mit Hostnamen auflösen. IPv4-Server werden zuerst versucht; IPv6-Server helfen in reinen IPv6-Netzen.',
   'settings.preferIpv6': 'Upstreams zuerst über IPv6 erreichen',
   'settings.preferIpv6Help': 'Für verschlüsselte Upstreams und einfache Upstreams mit Hostnamen: Ihre IPv6-Adressen werden vor den IPv4-Adressen versucht. Upstreams mit IP-Adresse betrifft das nicht.',
+  'settings.syncedNote':
+    'Die synchronisierten Einstellungen sind hier schreibgeschützt. Servernamen, verschlüsseltes DNS, einfaches DNS, die erlaubten Netze und der Router-Resolver bleiben die dieses PiCache.',
   'settings.localPtr': 'Private Rückwärtsabfragen',
   'settings.localPtrHelp': 'DNS-Server (IP-Adressen), die die Namen der Geräte in deinem Netz kennen, meist dein Router. Sie beantworten Rückwärtsabfragen privater Adressen.',
 

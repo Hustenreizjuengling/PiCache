@@ -6,6 +6,8 @@
 #                   web UI + the release assets in dist/ (what the release
 #                   workflow publishes; needs git and GNU tar)
 #   make docker     container image (deploy/docker/Dockerfile)
+#   make oui        refresh the MAC vendor table internal/oui/oui.bin from the
+#                   IEEE registries (network; run before a release)
 #
 # Override the version information with e.g. `make VERSION=v0.1.0`.
 
@@ -44,12 +46,12 @@ SEMVER_RE   := v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-$(SEMVER_ID)(
 # commit, Go version and web dependencies give the same files.
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null)
 
-.PHONY: all web build build-all dist test vet lint docker clean help
+.PHONY: all web build build-all dist test vet lint docker oui clean help
 
 all: web build
 
 help:
-	@echo "targets: all (default) web build build-all dist test vet lint docker clean"
+	@echo "targets: all (default) web build build-all dist test vet lint docker oui clean"
 
 ## web: build the Svelte UI into internal/webui/dist (embedded by the binary)
 web:
@@ -116,6 +118,11 @@ docker:
 	docker build -f deploy/docker/Dockerfile \
 		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) \
 		-t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
+
+## oui: download the IEEE MA-L, MA-M and MA-S exports and rewrite
+## internal/oui/oui.bin (never part of a normal build)
+oui:
+	sh scripts/oui-update.sh
 
 ## clean: remove binaries, release assets and the built UI (keeps the .gitkeep go:embed needs)
 clean:

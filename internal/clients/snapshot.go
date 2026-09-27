@@ -17,6 +17,8 @@ type snapshot struct {
 	cidrs         []cidrEntry // longest prefix first, then highest client ID
 	byMAC         map[string]*clientEntry
 	byClientID    map[string]*clientEntry // ClientID (without the prefix) → client
+	byIface       map[string]*clientEntry // interface name → client (iface:)
+	byHost        map[string]*clientEntry // host name → client (host:)
 }
 
 type clientEntry struct {
@@ -39,6 +41,8 @@ func newSnapshot(groups []Group, clients []Client) *snapshot {
 		byIP:         map[netip.Addr]*clientEntry{},
 		byMAC:        map[string]*clientEntry{},
 		byClientID:   map[string]*clientEntry{},
+		byIface:      map[string]*clientEntry{},
+		byHost:       map[string]*clientEntry{},
 	}
 	for _, g := range groups {
 		s.groupEnabled[g.ID] = g.Enabled
@@ -64,6 +68,10 @@ func newSnapshot(groups []Group, clients []Client) *snapshot {
 				s.byMAC[id.value] = e
 			case kindClientID:
 				s.byClientID[strings.TrimPrefix(id.value, settings.ClientIDPrefix)] = e
+			case kindIface:
+				s.byIface[strings.TrimPrefix(id.value, IfacePrefix)] = e
+			case kindHost:
+				s.byHost[strings.TrimPrefix(id.value, HostPrefix)] = e
 			}
 		}
 	}
@@ -77,11 +85,17 @@ func newSnapshot(groups []Group, clients []Client) *snapshot {
 }
 
 // match finds the configured client for ip: exact IP, then the longest
-// matching CIDR (ties: highest client ID), then the MAC address (learned
-// MACs: Registry.match).
-func (s *snapshot) match(ip netip.Addr, mac string) *clientEntry {
+// matching CIDR (ties: highest client ID), then the interface of the
+// address (iface: "" = none or not applicable), then the MAC address
+// (learned MACs: Registry.match).
+func (s *snapshot) match(ip netip.Addr, iface, mac string) *clientEntry {
 	if c := s.matchIP(ip); c != nil {
 		return c
+	}
+	if iface != "" {
+		if c, ok := s.byIface[iface]; ok {
+			return c
+		}
 	}
 	if mac != "" {
 		if c, ok := s.byMAC[mac]; ok {

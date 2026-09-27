@@ -53,15 +53,28 @@ var errForbiddenAddr = errors.New("link-local, multicast and unspecified address
 // Gotify) run on the LAN or on this host. Link-local addresses (cloud
 // metadata), multicast and unspecified addresses are refused after name
 // resolution, also when a NAT64/6to4 address embeds one. Names are resolved
-// by the host's resolver, so LAN names work. No redirects are followed, no
-// proxy is used and TLS certificates are verified.
-func newClient() *http.Client {
+// by the host's resolver, so LAN names work. No redirects are followed and
+// TLS certificates are verified. No proxy is used unless proxy returns one
+// (network.proxyFor.notifications): then the checked address is reached
+// through a tunnel of the proxy (netutil.Tunnel), never by a name the proxy
+// resolves.
+func newClient(proxy func(context.Context) *netutil.Tunnel) *http.Client {
 	d := &net.Dialer{Timeout: requestTimeout, KeepAlive: 30 * time.Second, Control: dialControl}
+	dial := d.DialContext
+	if proxy != nil {
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			t := proxy(ctx)
+			if t == nil {
+				return d.DialContext(ctx, network, address)
+			}
+			return dialTunnel(ctx, t, address)
+		}
+	}
 	return &http.Client{
 		Timeout: requestTimeout,
 		Transport: &http.Transport{
 			Proxy:                 nil,
-			DialContext:           d.DialContext,
+			DialContext:           dial,
 			ForceAttemptHTTP2:     true,
 			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 			TLSHandshakeTimeout:   requestTimeout,
@@ -71,6 +84,39 @@ func newClient() *http.Client {
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+// dialTunnel resolves address with the host's resolver, refuses the
+// forbidden destinations and connects through the proxy's tunnel to the
+// first address that works.
+func dialTunnel(ctx context.Context, t *netutil.Tunnel, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	p, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return nil, err
+	}
+	var ips []netip.Addr
+	if ip, err := netip.ParseAddr(host); err == nil {
+		ips = []netip.Addr{ip}
+	} else if ips, err = net.DefaultResolver.LookupNetIP(ctx, "ip", host); err != nil {
+		return nil, err
+	}
+	lastErr := errForbiddenAddr
+	for _, ip := range ips {
+		ip = netutil.Canon(ip)
+		if forbiddenAddr(ip) {
+			continue
+		}
+		conn, err := t.Dial(ctx, netip.AddrPortFrom(ip, uint16(p)))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // dialControl refuses forbidden destinations right before connecting.

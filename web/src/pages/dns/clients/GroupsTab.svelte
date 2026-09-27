@@ -36,6 +36,8 @@
   const selId = $derived(Number(router.param('sel')) || 0)
   const selected = $derived(groups.data?.find((g) => g.id === selId))
   const defaultChecked = $derived(checked.includes(DEFAULT_GROUP_ID))
+  // Read-only while clients and groups are synced from a primary.
+  const canEdit = $derived(session.canEditSection('clients-and-groups'))
 
   async function setEnabled(g: ClientGroup, enabled: boolean) {
     toggling = [...toggling, g.id]
@@ -98,7 +100,7 @@
   <Toggle
     bind:checked={() => g.enabled, (on) => setEnabled(g, on)}
     ariaLabel={t('dns.groups.enableNamed', { name: g.name })}
-    disabled={!session.isAdmin || toggling.includes(g.id)}
+    disabled={!canEdit || toggling.includes(g.id)}
   />
 {/snippet}
 
@@ -123,7 +125,7 @@
 
 <Panel flush title={t('dns.groups.title')} description={t('dns.groups.description')}>
   {#snippet actions()}
-    <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.groups.add')}</Button>
+    <Button variant="primary" icon="plus" disabled={!canEdit} onclick={() => (addOpen = true)}>{t('dns.groups.add')}</Button>
   {/snippet}
   <Table
     {columns}
@@ -135,11 +137,11 @@
     onrowclick={(g) => router.setQuery({ sel: g.id })}
     selected={selected?.id}
     caption={t('dns.groups.title')}
-    selectable={session.isAdmin}
+    selectable={canEdit}
     bind:checked
     checkLabel={(g) => t('dns.groups.selectNamed', { name: g.name })}
   />
-  {#if session.isAdmin}
+  {#if canEdit}
     <BulkBar
       count={checked.length}
       {busy}

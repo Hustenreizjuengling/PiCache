@@ -40,6 +40,12 @@ func (f *fakeNetwork) Check(context.Context) NetworkCheck {
 	}
 }
 
+func (f *fakeNetwork) Interfaces(context.Context) NetworkInterfaces {
+	return NetworkInterfaces{Mode: "host", Interfaces: []NetworkInterface{{Name: "eth0", Index: 2, MAC: "dc:a6:32:00:00:01", Up: true,
+		OperState: "up", MTU: 1500, SpeedMbps: 1000, Duplex: "full", Addresses: []string{"192.168.178.10/24"},
+		Networks: []string{"192.168.178.0/24"}, DefaultGateways: []NetworkInterfaceGate{{Family: "ipv4", Gateway: "192.168.178.1"}}}}}
+}
+
 func (f *fakeNetwork) Scan() (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

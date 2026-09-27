@@ -19,6 +19,9 @@ type clientInfo struct {
 	peer   netip.Addr // the TCP peer (canonical)
 	client netip.Addr // the effective client: the peer, or the address a trusted proxy forwarded
 	https  bool       // the effective scheme is https
+	// zone is the zone of an IPv6 link-local peer: the interface it
+	// connected through (netutil.LinkLocalZone; DoH identifiers iface:).
+	zone string
 }
 
 // requestClient returns the client information of a request (derived from
@@ -28,7 +31,7 @@ func requestClient(r *http.Request) clientInfo {
 		return ci
 	}
 	ip := netutil.AddrFromRemote(r.RemoteAddr)
-	return clientInfo{peer: ip, client: ip, https: r.TLS != nil}
+	return clientInfo{peer: ip, client: ip, https: r.TLS != nil, zone: netutil.PeerFromRemote(r.RemoteAddr).Zone()}
 }
 
 // isHTTPS reports the effective scheme of a request: https when it arrived
@@ -66,7 +69,8 @@ func (s *Server) clientAccess(next http.Handler) http.Handler {
 			s.refuseAccess(w, r, refused)
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), clientKey, clientInfo{peer: peer, client: client, https: https}))
+		zone := netutil.PeerFromRemote(r.RemoteAddr).Zone()
+		r = r.WithContext(context.WithValue(r.Context(), clientKey, clientInfo{peer: peer, client: client, https: https, zone: zone}))
 		if client.IsValid() {
 			r.RemoteAddr = netip.AddrPortFrom(client, 0).String()
 		}

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,7 +112,10 @@ type Runtime interface {
 	// restore keeps the live accounts, API tokens and audit log and ends all
 	// sessions. It returns the staged settings as the next start will load
 	// them (settings.DecodeStored; nil when they cannot be decoded).
-	StageRestore(ctx context.Context, r io.Reader) (*settings.All, error)
+	// sections selects a partial restore (settings.RestoreSections; nil:
+	// everything); the section rules and the merge into the live database
+	// are checked as a dry run.
+	StageRestore(ctx context.Context, r io.Reader, sections []string) (*settings.All, error)
 	Restart()                          // exit with code 75 after the response (systemd/Docker restart)
 	Health(ctx context.Context) Health // last evaluated health (refreshed every 60 s)
 }
@@ -166,6 +170,12 @@ type Deps struct {
 	// Diag provides host resources, database sizes and the support bundle
 	// (nil: those endpoints answer 503).
 	Diag Diagnostics
+	// Listeners manages the listeners files (nil: GET and PUT
+	// /system/listeners answer 503).
+	Listeners ListenerManager
+	// Sync is the follower sync (nil: GET /system/sync and POST
+	// /system/sync/run answer 503).
+	Sync SyncManager
 	UI   http.Handler // embedded web UI
 	Log  *slog.Logger
 }
@@ -199,6 +209,14 @@ type Server struct {
 	// searchDomains reads the resolv.conf search domains (nil:
 	// netutil.ResolvConfSearch; replaced in tests).
 	searchDomains func() []string
+
+	// export is the state of GET /system/export; profiling is set while a
+	// profile of /debug/pprof runs (one at a time).
+	export    exportState
+	profiling atomic.Bool
+	// localAddrs returns this machine's addresses (nil:
+	// netutil.LocalAddrs; replaced in tests).
+	localAddrs func() []netip.Addr
 }
 
 // New builds the handler with all routes and middleware.
@@ -238,6 +256,9 @@ func New(d Deps) *Server {
 	s.registerDHCPRoutes()
 	s.registerDiagRoutes()
 	s.registerEncryptedRoutes()
+	s.registerSyncRoutes()
+	s.registerListenerRoutes()
+	s.registerPProfRoutes()
 
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, s.log, errNotFoundRoute)
@@ -247,6 +268,11 @@ func New(d Deps) *Server {
 		// in the ServeMux (neither pattern is more specific) and panic.
 		ui := d.UI
 		s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/debug/") {
+				// Never the UI's index.html for the profiles (PICACHE_PPROF).
+				http.NotFound(w, r)
+				return
+			}
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
 				w.Header().Set("Allow", "GET, HEAD")
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

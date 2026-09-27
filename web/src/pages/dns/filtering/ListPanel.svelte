@@ -126,6 +126,7 @@
   onsubmit={save}
   ondelete={remove}
   deleteLabel={t('dns.lists.delete')}
+  section="lists-and-rules"
 >
   {#snippet header()}
     {#if list && status}

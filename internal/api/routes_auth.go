@@ -55,6 +55,10 @@ type authStatusResponse struct {
 	// false unless authenticated.
 	ConfigLocked   bool `json:"configLocked"`
 	DestructiveAPI bool `json:"destructiveApi"`
+	// SyncedSections are the sections this follower syncs from its
+	// primary ([] unless authenticated and a follower): their pages are
+	// read-only.
+	SyncedSections []string `json:"syncedSections"`
 }
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) error {
@@ -63,12 +67,17 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	out := authStatusResponse{SetupRequired: required, Language: s.d.Settings.Get().Web.Language, HTTPSPort: s.httpsPort()}
+	out := authStatusResponse{SetupRequired: required, Language: s.d.Settings.Get().Web.Language, HTTPSPort: s.httpsPort(),
+		SyncedSections: []string{}}
 	if required {
 		out.SetupHints = setupHints
 	}
 	p, err := s.d.Auth.Authenticate(r)
 	var u auth.User
+	if err == nil && p.Scope == auth.ScopeSync {
+		// A sync token reaches only the export: it is no sign-in.
+		return ok(w, out)
+	}
 	if err == nil {
 		u, err = s.d.Auth.Me(ctx, p)
 	}
@@ -76,6 +85,7 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) error {
 	case err == nil:
 		out.Authenticated, out.User, out.Scope, out.TokenAuth = true, &u, p.Scope, p.TokenID != 0
 		out.ConfigLocked, out.DestructiveAPI = s.configLocked(), s.destructiveAllowed()
+		out.SyncedSections, _ = s.syncedSections()
 	case apperr.KindOf(err) != apperr.KindUnauthorized:
 		s.log.Warn("auth status: authenticate", slog.Any("err", err))
 	}

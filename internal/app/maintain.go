@@ -41,7 +41,8 @@ func (a *App) maintenanceLoop(ctx context.Context) {
 	}
 }
 
-// maintain is one tick: the web ACL follows interface changes, a pending
+// maintain is one tick: the web ACL and the route snapshot (iface:
+// identifiers) follow interface changes, a pending
 // web access reset is applied, the certificate of the TLS listeners is
 // checked and the state of encrypted DNS is rebuilt (a certificate can
 // expire without a change).
@@ -49,6 +50,7 @@ func (a *App) maintain(ctx context.Context) {
 	if a.web != nil {
 		a.web.Refresh()
 	}
+	a.refreshRoutes()
 	a.applyWebAccessReset(ctx)
 	if a.webTLS != nil {
 		a.webTLS.tick()

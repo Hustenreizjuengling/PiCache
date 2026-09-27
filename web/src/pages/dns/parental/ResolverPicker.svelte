@@ -1,7 +1,8 @@
 <!--
   @component
   The family-safe resolver of a group on its parental controls card: off or
-  one of the presets (admins choose, others read it). A group with its own
+  one of the presets (admins choose, others read it; read-only while
+  clients and groups are synced from a primary). A group with its own
   upstreams lists them read-only with a link to Clients & groups; choosing
   a preset then asks before replacing them (the page does that).
 -->
@@ -53,7 +54,7 @@
 
 <section class="stack-sm" aria-labelledby="pc-{auto}-resolver">
   <h3 id="pc-{auto}-resolver">{t('dns.parental.resolver.title')}</h3>
-  {#if session.isAdmin}
+  {#if session.canEditSection('clients-and-groups')}
     <div class="select">
       <Select
         size="sm"

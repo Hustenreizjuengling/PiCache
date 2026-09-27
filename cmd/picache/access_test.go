@@ -169,7 +169,7 @@ func TestResetPasswordKeepsPreUpgradeCopy(t *testing.T) {
 	if authV, hasRole, bin := state(copies[0]); authV != 1 || hasRole || bin != "v0.10.0" {
 		t.Fatalf("the copy has auth v%d, role column %v, version %s", authV, hasRole, bin)
 	}
-	if authV, hasRole, bin := state(path); authV != 2 || !hasRole || bin != "v0.11.0" {
+	if authV, hasRole, bin := state(path); authV != 3 || !hasRole || bin != "v0.11.0" {
 		t.Fatalf("live: auth v%d, role column %v, version %s", authV, hasRole, bin)
 	}
 }

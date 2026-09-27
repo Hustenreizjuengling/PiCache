@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"runtime"
 	"runtime/metrics"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -22,6 +24,7 @@ import (
 	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/listing"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
 
@@ -268,6 +271,20 @@ func (s *Server) systemRestore(w http.ResponseWriter, r *http.Request) error {
 		return apperr.Invalid("body", "Content-Type must be application/octet-stream")
 	}
 	body := http.MaxBytesReader(w, r.Body, maxRestoreBodyBytes)
+	// ?sections=a,b: a partial restore (absent: everything).
+	var sections []string
+	if v, ok := r.URL.Query()["sections"]; ok {
+		var names []string
+		for _, x := range v {
+			names = append(names, strings.Split(x, ",")...)
+		}
+		sel, err := settings.CheckSections("sections", names, settings.RestoreSections, "restore")
+		if err != nil {
+			_, _ = io.Copy(io.Discard, body)
+			return err
+		}
+		sections = sel
+	}
 	pw, err := url.PathUnescape(r.Header.Get(restorePasswordHeader))
 	if err != nil {
 		pw = "\x00" // malformed encoding: never a valid password, counted as a wrong one
@@ -279,22 +296,28 @@ func (s *Server) systemRestore(w http.ResponseWriter, r *http.Request) error {
 		_, _ = io.Copy(io.Discard, body)
 		return err
 	}
-	staged, err := s.d.Runtime.StageRestore(r.Context(), body)
+	staged, err := s.d.Runtime.StageRestore(r.Context(), body, sections)
 	if err != nil {
 		if _, tooBig := errors.AsType[*http.MaxBytesError](err); tooBig {
 			return apperr.Invalid("body", "the backup is larger than 512 MiB")
 		}
 		return err
 	}
-	s.audit(r, "system.restore", "", nil)
-	out := map[string]any{"staged": true, "message": "Restart PiCache to apply"}
-	// Nothing is refused, but a requester the restored settings would lock
-	// out is told how to get back in.
-	if warn := restoreWarning(r, staged); warn != "" {
-		out["webAccessWarning"] = warn
+	selected := sections
+	if selected == nil {
+		selected = slices.Clone(settings.RestoreSections)
 	}
-	if warn := s.restoreDNSWarning(staged); warn != "" {
-		out["dnsWarning"] = warn
+	s.audit(r, "system.restore", "", map[string]any{"sections": selected})
+	out := map[string]any{"staged": true, "message": "Restart PiCache to apply", "sections": selected}
+	// Nothing is refused, but a requester the restored settings would lock
+	// out is told how to get back in (only when the settings are restored).
+	if slices.Contains(selected, settings.SectionSettings) {
+		if warn := restoreWarning(r, staged); warn != "" {
+			out["webAccessWarning"] = warn
+		}
+		if warn := s.restoreDNSWarning(staged); warn != "" {
+			out["dnsWarning"] = warn
+		}
 	}
 	return writeJSON(w, http.StatusAccepted, out)
 }

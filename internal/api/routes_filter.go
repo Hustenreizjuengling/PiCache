@@ -19,26 +19,26 @@ import (
 // registerFilterRoutes registers the filter endpoints (docs/API.md).
 func (s *Server) registerFilterRoutes() {
 	s.route("GET /api/v1/filter/lists", permRead, s.filterLists)
-	s.route("POST /api/v1/filter/lists", permAdmin, s.filterCreateList)
-	s.route("POST /api/v1/filter/lists/batch", permAdmin, s.filterBatchLists)
-	s.route("PUT /api/v1/filter/lists/{id}", permAdmin, s.filterUpdateList)
-	s.route("DELETE /api/v1/filter/lists/{id}", permAdmin, s.filterDeleteList)
+	s.route("POST /api/v1/filter/lists", permAdmin, s.filterCreateList, routeSyncSection(settings.SectionListsRules))
+	s.route("POST /api/v1/filter/lists/batch", permAdmin, s.filterBatchLists, routeSyncSection(settings.SectionListsRules))
+	s.route("PUT /api/v1/filter/lists/{id}", permAdmin, s.filterUpdateList, routeSyncSection(settings.SectionListsRules))
+	s.route("DELETE /api/v1/filter/lists/{id}", permAdmin, s.filterDeleteList, routeSyncSection(settings.SectionListsRules))
 	s.route("POST /api/v1/filter/lists/{id}/refresh", permAdmin, s.filterRefreshList, routeExempt)
 	s.route("POST /api/v1/filter/lists/refresh", permAdmin, s.filterRefreshAll, routeExempt)
 	s.route("GET /api/v1/filter/catalog", permRead, s.filterCatalog)
 	s.route("GET /api/v1/filter/rules", permRead, s.filterRules)
-	s.route("POST /api/v1/filter/rules", permAdmin, s.filterCreateRule)
+	s.route("POST /api/v1/filter/rules", permAdmin, s.filterCreateRule, routeSyncSection(settings.SectionListsRules))
 	s.route("GET /api/v1/filter/rules/export", permRead, s.filterExportRules)
-	s.route("POST /api/v1/filter/rules/import", permAdmin, s.filterImportRules)
-	s.route("POST /api/v1/filter/rules/batch", permAdmin, s.filterBatchRules)
-	s.route("POST /api/v1/filter/rules/device", permAdmin, s.filterDeviceRule)
-	s.route("PUT /api/v1/filter/rules/{id}", permAdmin, s.filterUpdateRule)
-	s.route("DELETE /api/v1/filter/rules/{id}", permAdmin, s.filterDeleteRule)
+	s.route("POST /api/v1/filter/rules/import", permAdmin, s.filterImportRules, routeSyncSection(settings.SectionListsRules))
+	s.route("POST /api/v1/filter/rules/batch", permAdmin, s.filterBatchRules, routeSyncSection(settings.SectionListsRules))
+	s.route("POST /api/v1/filter/rules/device", permAdmin, s.filterDeviceRule, routeSyncSection(settings.SectionClientsGroups))
+	s.route("PUT /api/v1/filter/rules/{id}", permAdmin, s.filterUpdateRule, routeSyncSection(settings.SectionListsRules))
+	s.route("DELETE /api/v1/filter/rules/{id}", permAdmin, s.filterDeleteRule, routeSyncSection(settings.SectionListsRules))
 	s.route("GET /api/v1/filter/ip-rules", permRead, s.filterIPRules)
-	s.route("POST /api/v1/filter/ip-rules", permAdmin, s.filterCreateIPRule)
-	s.route("POST /api/v1/filter/ip-rules/batch", permAdmin, s.filterBatchIPRules)
-	s.route("PUT /api/v1/filter/ip-rules/{id}", permAdmin, s.filterUpdateIPRule)
-	s.route("DELETE /api/v1/filter/ip-rules/{id}", permAdmin, s.filterDeleteIPRule)
+	s.route("POST /api/v1/filter/ip-rules", permAdmin, s.filterCreateIPRule, routeSyncSection(settings.SectionListsRules))
+	s.route("POST /api/v1/filter/ip-rules/batch", permAdmin, s.filterBatchIPRules, routeSyncSection(settings.SectionListsRules))
+	s.route("PUT /api/v1/filter/ip-rules/{id}", permAdmin, s.filterUpdateIPRule, routeSyncSection(settings.SectionListsRules))
+	s.route("DELETE /api/v1/filter/ip-rules/{id}", permAdmin, s.filterDeleteIPRule, routeSyncSection(settings.SectionListsRules))
 	s.route("GET /api/v1/filter/stats", permRead, s.filterStats)
 	s.route("POST /api/v1/filter/explain", permRead, s.filterExplain)
 	s.route("GET /api/v1/filter/search", permRead, s.filterSearch)
@@ -433,6 +433,11 @@ type deviceRuleResponse struct {
 // undone. Requests are serialised (deviceMu), so an undo never removes a
 // client or group another request reused.
 func (s *Server) filterDeviceRule(w http.ResponseWriter, r *http.Request) error {
+	// The route is tagged with clients-and-groups; it writes a rule as well,
+	// so a follower that syncs only lists and rules refuses it too.
+	if err := s.syncedSection(settings.SectionListsRules, ""); err != nil {
+		return err
+	}
 	var in deviceRuleRequest
 	if err := decode(w, r, &in); err != nil {
 		return err

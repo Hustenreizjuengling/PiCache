@@ -88,6 +88,7 @@
       <legend class="visually-hidden">{t('dns.settings.upstreams.title')}</legend>
       <UpstreamList
         bind:value={d.upstreams}
+        editable={session.canEditSection('dns-settings')}
         error={form.saveError}
         field="dns.upstreams"
         max={MAX}
@@ -99,7 +100,7 @@
         {#snippet extra()}
           {#if !defaultServers}
             <span class="long">
-              <Button size="sm" variant="ghost" disabled={!session.isAdmin} onclick={useDefaults}>{t('dns.settings.upstreams.useDefaults')}</Button>
+              <Button size="sm" variant="ghost" disabled={!session.canEditSection('dns-settings')} onclick={useDefaults}>{t('dns.settings.upstreams.useDefaults')}</Button>
             </span>
           {/if}
         {/snippet}
@@ -123,6 +124,7 @@
       {/if}
       <UpstreamList
         bind:value={d.fallbackUpstreams}
+        editable={session.canEditSection('dns-settings')}
         error={form.saveError}
         field="dns.fallbackUpstreams"
         max={MAX_FALLBACKS}
@@ -138,7 +140,7 @@
     {/if}
 
     <!-- The upstream lists disable their entries themselves (their Test buttons stay usable). -->
-    <fieldset class="stack" disabled={!session.isAdmin}>
+    <fieldset class="stack" disabled={!session.canEditSection('dns-settings')}>
       <div class="grid">
         <Field label={t('dns.settings.mode')} help={modeHelp} error={form.error('upstreamMode')}>
           <Select

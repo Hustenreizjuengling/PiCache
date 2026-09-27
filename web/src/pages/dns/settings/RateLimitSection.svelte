@@ -76,7 +76,7 @@
   {#if isExempt(r.client)}
     <span class="small muted nowrap">{t('dns.settings.rate.isExempt')}</span>
   {:else}
-    <Button size="sm" loading={exempting === r.client} disabled={!session.isAdmin || !!exempting} onclick={() => exempt(r.client)}>
+    <Button size="sm" loading={exempting === r.client} disabled={!session.canEditSection('dns-settings') || !!exempting} onclick={() => exempt(r.client)}>
       {t('dns.settings.rate.exempt')}
     </Button>
   {/if}

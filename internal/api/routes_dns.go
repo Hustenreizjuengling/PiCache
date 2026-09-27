@@ -27,36 +27,39 @@ func (s *Server) registerDNSRoutes() {
 	s.route("GET /api/v1/dns/router", permRead, s.dnsRouter)
 
 	s.route("GET /api/v1/dns/records", permRead, s.dnsRecordsList)
-	s.route("POST /api/v1/dns/records", permAdmin, s.dnsRecordCreate)
-	s.route("POST /api/v1/dns/records/import", permAdmin, s.dnsRecordsImport)
-	s.route("POST /api/v1/dns/records/batch", permAdmin, s.dnsRecordsBatch)
-	s.route("PUT /api/v1/dns/records/{id}", permAdmin, s.dnsRecordUpdate)
-	s.route("DELETE /api/v1/dns/records/{id}", permAdmin, s.dnsRecordDelete)
+	s.route("POST /api/v1/dns/records", permAdmin, s.dnsRecordCreate, routeSyncSection(settings.SectionLocalDNS))
+	s.route("POST /api/v1/dns/records/import", permAdmin, s.dnsRecordsImport, routeSyncSection(settings.SectionLocalDNS))
+	s.route("POST /api/v1/dns/records/batch", permAdmin, s.dnsRecordsBatch, routeSyncSection(settings.SectionLocalDNS))
+	s.route("PUT /api/v1/dns/records/{id}", permAdmin, s.dnsRecordUpdate, routeSyncSection(settings.SectionLocalDNS))
+	s.route("DELETE /api/v1/dns/records/{id}", permAdmin, s.dnsRecordDelete, routeSyncSection(settings.SectionLocalDNS))
 
 	s.route("GET /api/v1/dns/forwarders", permRead, s.dnsForwardersList)
-	s.route("POST /api/v1/dns/forwarders", permAdmin, s.dnsForwarderCreate)
-	s.route("POST /api/v1/dns/forwarders/import", permAdmin, s.dnsForwardersImport)
-	s.route("POST /api/v1/dns/forwarders/batch", permAdmin, s.dnsForwardersBatch)
-	s.route("PUT /api/v1/dns/forwarders/{id}", permAdmin, s.dnsForwarderUpdate)
-	s.route("DELETE /api/v1/dns/forwarders/{id}", permAdmin, s.dnsForwarderDelete)
+	s.route("POST /api/v1/dns/forwarders", permAdmin, s.dnsForwarderCreate, routeSyncSection(settings.SectionLocalDNS))
+	s.route("POST /api/v1/dns/forwarders/import", permAdmin, s.dnsForwardersImport, routeSyncSection(settings.SectionLocalDNS))
+	s.route("POST /api/v1/dns/forwarders/batch", permAdmin, s.dnsForwardersBatch, routeSyncSection(settings.SectionLocalDNS))
+	s.route("PUT /api/v1/dns/forwarders/{id}", permAdmin, s.dnsForwarderUpdate, routeSyncSection(settings.SectionLocalDNS))
+	s.route("DELETE /api/v1/dns/forwarders/{id}", permAdmin, s.dnsForwarderDelete, routeSyncSection(settings.SectionLocalDNS))
 
-	s.route("POST /api/v1/dns/blocked-clients", permAdmin, s.dnsBlockClient)
-	s.route("DELETE /api/v1/dns/blocked-clients", permAdmin, s.dnsUnblockClient)
+	s.route("POST /api/v1/dns/blocked-clients", permAdmin, s.dnsBlockClient, routeSyncSection(settings.SectionDNSSettings))
+	s.route("DELETE /api/v1/dns/blocked-clients", permAdmin, s.dnsUnblockClient, routeSyncSection(settings.SectionDNSSettings))
 
 	s.route("GET /api/v1/clients", permRead, s.clientsList)
-	s.route("POST /api/v1/clients", permAdmin, s.clientCreate)
-	s.route("POST /api/v1/clients/batch", permAdmin, s.clientsBatch)
+	s.route("POST /api/v1/clients", permAdmin, s.clientCreate, routeSyncSection(settings.SectionClientsGroups))
+	s.route("POST /api/v1/clients/batch", permAdmin, s.clientsBatch, routeSyncSection(settings.SectionClientsGroups))
 	s.route("GET /api/v1/clients/known", permRead, s.clientsKnown)
-	s.route("PUT /api/v1/clients/{id}", permAdmin, s.clientUpdate)
-	s.route("DELETE /api/v1/clients/{id}", permAdmin, s.clientDelete)
+	// Seen data is no synced section: allowed on a follower.
+	s.route("DELETE /api/v1/clients/known", permAdmin, s.clientsKnownForget)
+	s.route("POST /api/v1/clients/known/flush", permAdmin, s.clientsKnownFlush, routeDestructive)
+	s.route("PUT /api/v1/clients/{id}", permAdmin, s.clientUpdate, routeSyncSection(settings.SectionClientsGroups))
+	s.route("DELETE /api/v1/clients/{id}", permAdmin, s.clientDelete, routeSyncSection(settings.SectionClientsGroups))
 
 	s.route("GET /api/v1/groups", permRead, s.groupsList)
-	s.route("POST /api/v1/groups", permAdmin, s.groupCreate)
-	s.route("POST /api/v1/groups/batch", permAdmin, s.groupsBatch)
+	s.route("POST /api/v1/groups", permAdmin, s.groupCreate, routeSyncSection(settings.SectionClientsGroups))
+	s.route("POST /api/v1/groups/batch", permAdmin, s.groupsBatch, routeSyncSection(settings.SectionClientsGroups))
 	s.route("GET /api/v1/groups/upstream-presets", permRead, s.groupUpstreamPresets)
-	s.route("PUT /api/v1/groups/{id}", permAdmin, s.groupUpdate)
-	s.route("PUT /api/v1/groups/{id}/upstreams", permAdmin, s.groupSetUpstreams)
-	s.route("DELETE /api/v1/groups/{id}", permAdmin, s.groupDelete)
+	s.route("PUT /api/v1/groups/{id}", permAdmin, s.groupUpdate, routeSyncSection(settings.SectionClientsGroups))
+	s.route("PUT /api/v1/groups/{id}/upstreams", permAdmin, s.groupSetUpstreams, routeSyncSection(settings.SectionClientsGroups))
+	s.route("DELETE /api/v1/groups/{id}", permAdmin, s.groupDelete, routeSyncSection(settings.SectionClientsGroups))
 }
 
 // --- blocking, lookup, status ---
@@ -478,8 +481,8 @@ func (s *Server) clientDelete(w http.ResponseWriter, r *http.Request) error {
 	return noContent(w)
 }
 
-// clientsKnown lists recently seen addresses; ?within=30d|24h|… (default and
-// maximum 30 days).
+// clientsKnown lists recently seen addresses; ?within=30d|24h|… (default 30
+// days, capped at logs.seenRetentionDays).
 func (s *Server) clientsKnown(w http.ResponseWriter, r *http.Request) error {
 	var within time.Duration
 	if v := qString(r, "within"); v != "" {
@@ -507,6 +510,54 @@ func (s *Server) clientsKnown(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	return ok(w, out)
+}
+
+// clientsKnownForget forgets the seen data of one address (?ip=) or of
+// every address of a device (?mac=): {deleted:n}, 0 is no error. The
+// device reappears with its next query; the neighbour table is not
+// touched.
+func (s *Server) clientsKnownForget(w http.ResponseWriter, r *http.Request) error {
+	q := r.URL.Query()
+	ipS, macS := strings.TrimSpace(q.Get("ip")), strings.TrimSpace(q.Get("mac"))
+	if (ipS == "") == (macS == "") {
+		return apperr.Invalid("ip", "give exactly one of ip and mac")
+	}
+	var ip netip.Addr
+	mac, target := "", ipS
+	if ipS != "" {
+		a, err := netip.ParseAddr(ipS)
+		if err != nil || a.Zone() != "" {
+			return apperr.Invalid("ip", "must be an IP address")
+		}
+		ip = netutil.Canon(a)
+		target = ip.String()
+	} else {
+		m, ok := settings.NormalizeMAC(macS)
+		if !ok {
+			return apperr.Invalid("mac", "must be a MAC address")
+		}
+		mac, target = m, m
+	}
+	n, err := s.d.Clients.ForgetKnown(r.Context(), ip, mac)
+	if err != nil {
+		return err
+	}
+	s.audit(r, "clients.known.forget", target, map[string]int{"deleted": n})
+	return ok(w, struct {
+		Deleted int `json:"deleted"`
+	}{n})
+}
+
+// clientsKnownFlush forgets all seen data.
+func (s *Server) clientsKnownFlush(w http.ResponseWriter, r *http.Request) error {
+	n, err := s.d.Clients.FlushKnown(r.Context())
+	if err != nil {
+		return err
+	}
+	s.audit(r, "clients.known.flush", "", map[string]int{"deleted": n})
+	return ok(w, struct {
+		Deleted int `json:"deleted"`
+	}{n})
 }
 
 // knownView is a row of GET /clients/known: BlockedBy is the first

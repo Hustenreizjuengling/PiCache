@@ -67,6 +67,14 @@ func NewRateLimiter(qps, burst int, exempt []netip.Prefix) *RateLimiter {
 	return r
 }
 
+// NewRateLimiterMax is NewRateLimiter with a bucket table of at most max
+// keys (the least recently seen evicted beyond it).
+func NewRateLimiterMax(qps, burst, max int) *RateLimiter {
+	r := NewRateLimiter(qps, burst, nil)
+	r.max = min(max, maxBuckets)
+	return r
+}
+
 func newRateConfig(qps, burst int, exempt []netip.Prefix, v4Bits, v6Bits int) *rateConfig {
 	if burst < 1 {
 		burst = 1

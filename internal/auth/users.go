@@ -162,10 +162,10 @@ type UserChange struct {
 // password (ending all its sessions and deleting all its API tokens; TOTP
 // stays) or turns another account's TOTP off (ending all its sessions;
 // tokens stay). A role change ends the account's sessions; a demotion also
-// deletes its admin tokens (read tokens stay). The admins are counted in
-// the same BEGIN IMMEDIATE transaction, so the last admin can never be
-// demoted, not even by two admins demoting each other at once. On the
-// caller's own account only the role may be given.
+// deletes its admin and sync tokens (read tokens stay). The admins are
+// counted in the same BEGIN IMMEDIATE transaction, so the last admin can
+// never be demoted, not even by two admins demoting each other at once. On
+// the caller's own account only the role may be given.
 func (a *Service) UpdateUser(ctx context.Context, p *Principal, id int64, in UserUpdate, currentPassword string) (User, UserChange, error) {
 	var ch UserChange
 	if p == nil {
@@ -244,7 +244,7 @@ func (a *Service) UpdateUser(ctx context.Context, p *Principal, id int64, in Use
 				return err
 			}
 			if *in.Role != RoleAdmin {
-				n, err := deleteVerified(ctx, tx, "auth_tokens", "user_id = ? AND scope = 'admin'", id)
+				n, err := deleteVerified(ctx, tx, "auth_tokens", "user_id = ? AND scope IN ('admin', 'sync')", id)
 				ch.TokensRevoked += n
 				if err != nil {
 					return err

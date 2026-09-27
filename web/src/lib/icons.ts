@@ -84,6 +84,8 @@ export const icons = {
   cart: `M2.5 3.5h2l1.8 9h9l1.7-6.5H5.3${circle(7.5, 16, 1)}${circle(14, 16, 1)}`,
   cloud: 'M6 15.5a3.5 3.5 0 0 1-.4-7A4.5 4.5 0 0 1 14.3 7a3.8 3.8 0 0 1 .2 8.5z',
   newspaper: 'M3.5 4h10v11.5H5a1.5 1.5 0 0 1-1.5-1.5zM13.5 7.5h3v6.5a1.5 1.5 0 0 1-3 0M6 7h5M6 10h5M6 13h3',
+  sync: 'M4 9a6 6 0 0 1 10.6-3.2M15 3v3.5h-3.5M16 11a6 6 0 0 1-10.6 3.2M5 17v-3.5h3.5',
+  plug: 'M7 2.5V6M13 2.5V6M5 6h10v3a5 5 0 0 1-10 0zM10 14v3.5',
 } as const
 
 export type IconName = keyof typeof icons

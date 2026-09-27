@@ -10,6 +10,7 @@
 package update
 
 import (
+	"errors"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/version"
@@ -22,6 +23,17 @@ const Repository = "Hustenreizjuengling/PiCache"
 // HelperMarker exists when install.sh installed the root update helper
 // (picache-update.path and picache-update.service).
 const HelperMarker = "/etc/picache/updater.enabled"
+
+// NightlyMarker exists when install.sh --nightly allowed nightly builds on
+// this host: the root helper installs a nightly build only while it is a
+// regular file owned by root (not a link), so a compromised service cannot
+// move a stable host onto unreviewed builds. `sudo picache update` (the
+// admin at the console) needs no marker.
+const NightlyMarker = "/etc/picache/nightly.enabled"
+
+// ErrNightlyNotEnabled is the helper's answer to a nightly build without
+// the marker.
+var ErrNightlyNotEnabled = errors.New("nightly builds are not enabled on this host (install.sh --nightly)")
 
 // Service is the systemd unit that runs PiCache.
 const Service = "picache.service"
@@ -109,32 +121,39 @@ type Overview struct {
 	Mode               string       `json:"mode"`
 	CheckEnabled       bool         `json:"checkEnabled"`
 	IncludePrereleases bool         `json:"includePrereleases"`
-	Latest             *Release     `json:"latest,omitempty"`
-	UpdateAvailable    bool         `json:"updateAvailable"`
-	CheckedAt          time.Time    `json:"checkedAt,omitzero"`
-	CheckError         string       `json:"checkError,omitempty"`
-	Status             *Status      `json:"status,omitempty"`
-	Commands           Commands     `json:"commands"`
+	Channel            string       `json:"channel"`        // stable | beta | nightly
+	NightlyAllowed     bool         `json:"nightlyAllowed"` // NightlyMarker exists
+	// InstallProxy is the proxy installs use (PICACHE_UPDATE_PROXY,
+	// scheme://host:port; absent: none).
+	InstallProxy    string    `json:"installProxy,omitempty"`
+	Latest          *Release  `json:"latest,omitempty"`
+	UpdateAvailable bool      `json:"updateAvailable"`
+	CheckedAt       time.Time `json:"checkedAt,omitzero"`
+	CheckError      string    `json:"checkError,omitempty"`
+	Status          *Status   `json:"status,omitempty"`
+	Commands        Commands  `json:"commands"`
 }
 
 // NewOverview combines the running version, the last check and the state
-// of the update queue. A pre-release found while pre-releases were allowed
-// is not offered once they are no longer.
-func NewOverview(current, mode string, checkEnabled, includePre bool, last CheckResult, st *Status) Overview {
+// of the update queue. A release found for another channel is not offered
+// once the channel changed.
+func NewOverview(current, mode string, checkEnabled bool, channel string, last CheckResult, st *Status) Overview {
 	info := version.Get()
 	info.Version = current
 	run := ParseRunning(current)
 	o := Overview{
 		Current: info, CurrentIsDevBuild: run.Dev, Mode: mode,
-		CheckEnabled: checkEnabled, IncludePrereleases: includePre,
+		CheckEnabled: checkEnabled, IncludePrereleases: channel != ChannelStable, Channel: channel,
 		CheckedAt: last.CheckedAt, CheckError: last.Error, Status: st,
 		Commands: Commands{CLI: CLICommand},
 	}
-	if l := last.Latest; l != nil && (includePre || !l.Prerelease) {
-		o.Latest = l
-		if v, err := ParseVersion(l.Version); err == nil && run.Accepts(v) {
-			o.UpdateAvailable = true
-			o.Commands.CLI = CLICommand + " --version " + l.Version
+	if l := last.Latest; l != nil {
+		if v, err := ParseVersion(l.Version); err == nil && Offered(channel, v) {
+			o.Latest = l
+			if run.Accepts(v) {
+				o.UpdateAvailable = true
+				o.Commands.CLI = CLICommand + " --version " + l.Version
+			}
 		}
 	}
 	if mode == ModeDocker {

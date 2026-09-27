@@ -73,10 +73,14 @@ type Scope string
 
 // Scopes. A session has the scope of its account's role (admin: ScopeAdmin,
 // viewer: ScopeRead); an API token has ScopeAdmin only when it was created
-// with it and its owner is an admin (read on every request).
+// with it and its owner is an admin (read on every request). A sync token
+// (ScopeSync, a follower's credential) can only read the configuration
+// export, and only while its owner is an admin; the API refuses it
+// everything else.
 const (
 	ScopeAdmin Scope = "admin"
 	ScopeRead  Scope = "read"
+	ScopeSync  Scope = "sync"
 )
 
 // Roles of accounts (auth_users.role).

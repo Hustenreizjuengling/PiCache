@@ -2,8 +2,12 @@
 // querying IP (docs/ARCHITECTURE.md 7.1 step 5 and 7.2 "Groups").
 //
 // Identification order: exact IP → CIDR (longest prefix; ties → highest ID)
-// → MAC identifier (from the ARP/neighbour table) → learned MAC → default
-// group. Learned MACs carry a client configured by IP or CIDR over to the
+// → interface (iface:, only for a transport source: never an address a
+// trusted forwarder named or a client a trusted proxy forwarded; for an
+// IPv6 link-local source the zone the kernel reported with it) → MAC
+// identifier (from the ARP/neighbour table) → learned MAC → (a ClientID,
+// decided by the DNS server) → host name (host:, the address's own cached
+// name; Identity.ByHost) → default group. Learned MACs carry a client configured by IP or CIDR over to the
 // other addresses of the same device: after every neighbour-table read and
 // configuration change, every MAC whose neighbour addresses identify
 // exactly one configured client by IP or CIDR maps to that client (never
@@ -21,11 +25,12 @@
 // is cached for at most 2 s and asks for an early neighbour-table read (at
 // most one extra read per second).
 //
-// Names: the name of PiCache's DHCP lease of the address (SetLeaseNames),
-// else its PTR name, else the name of another address with the same MAC (a
-// lease name first, then an IPv4 address's name, then the most recently
-// resolved one), e.g. the router's DHCPv4 name for a device's IPv6
-// addresses.
+// Names (each source only while its switch in clients.nameSources is on):
+// the name of PiCache's DHCP lease of the address (SetLeaseNames), else its
+// PTR name, else its name in /etc/hosts, else the name of another address
+// with the same MAC from these sources (a lease name first, then an IPv4
+// address's name, then the most recently resolved one), e.g. the router's
+// DHCPv4 name for a device's IPv6 addresses.
 //
 // Schema (picache.db, component "clients"): table
 // client_groups(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, comment,
@@ -33,7 +38,8 @@
 // reference client_groups(id) ON DELETE CASCADE. Clients: client_clients,
 // client_identifiers, client_memberships.
 // Seen/known addresses are runtime data and live in logs.db (component
-// "clients-seen", table clients_seen), pruned after 30 days. Entries are
+// "clients-seen", table clients_seen), pruned after logs.seenRetentionDays
+// (default 30); they can be forgotten (ForgetKnown, FlushKnown). Entries are
 // keyed by IP address; the MAC column is filled from the neighbour table
 // (IPv4 ARP and IPv6 NDP). SeenTransient keeps activity in memory only
 // (used while client addresses are anonymised).
@@ -50,14 +56,17 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"net"
 	"net/netip"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/oui"
 )
 
 // DefaultGroupID is the ID of the built-in "Default" group.
@@ -76,7 +85,7 @@ const (
 	primePerSecond   = 20              // neighbour resolutions started per second (spoofed sources)
 	shortIdentityTTL = 2 * time.Second // identities of on-link sources without a MAC yet
 	seenFlushEvery   = time.Minute
-	seenRetention    = 30 * 24 * time.Hour
+	seenRetention    = 30 * 24 * time.Hour // the default of logs.seenRetentionDays
 	nameRefreshEvery = time.Hour
 	ptrTimeout       = 3 * time.Second
 )
@@ -157,22 +166,40 @@ type Identity struct {
 	DownloadCacheBypass bool
 	IgnoreLogs          bool // no raw data (query log, cache requests, SNI events, sessions, seen)
 	IgnoreStats         bool // not counted in the statistics
+	// ByHost: the client was found by a host: identifier (the last rule of
+	// identification): a known ClientID wins over it.
+	ByHost bool
 }
 
 // Known is a client address that has been seen recently. DNSClientID is
 // the last ClientID the address sent since the start (DoT, DoH); for an
 // address that identifies no configured client by itself, ClientID and
-// Name come from the client that has that ClientID.
+// Name come from the client that has that ClientID. Interface, Vendor,
+// MACRandomized and WHOIS are computed when the row is read (never
+// stored).
 type Known struct {
-	IP          string    `json:"ip"`
-	MAC         string    `json:"mac,omitempty"`
-	Hostname    string    `json:"hostname,omitempty"` // from PTR (of this address, else of another one with the same MAC)
-	ClientID    int64     `json:"clientId,omitempty"`
-	Name        string    `json:"name,omitempty"`
-	DNSClientID string    `json:"dnsClientId,omitempty"`
-	FirstSeen   time.Time `json:"firstSeen"`
-	LastSeen    time.Time `json:"lastSeen"`
-	Queries     int64     `json:"queries"`
+	IP            string     `json:"ip"`
+	MAC           string     `json:"mac,omitempty"`
+	Hostname      string     `json:"hostname,omitempty"` // from the enabled name sources (of this address, else of another one with the same MAC)
+	ClientID      int64      `json:"clientId,omitempty"`
+	Name          string     `json:"name,omitempty"`
+	DNSClientID   string     `json:"dnsClientId,omitempty"`
+	Interface     string     `json:"interface,omitempty"`    // the interface a reply to the address leaves by
+	Vendor        string     `json:"vendor,omitempty"`       // of the MAC (IEEE registries)
+	MACRandomized bool       `json:"macRandomized,omitzero"` // a locally administered ("private") MAC
+	WHOIS         *WhoisInfo `json:"whois,omitempty"`        // the owner of a public source's network (RDAP)
+	FirstSeen     time.Time  `json:"firstSeen"`
+	LastSeen      time.Time  `json:"lastSeen"`
+	Queries       int64      `json:"queries"`
+}
+
+// VendorOf returns the vendor of a MAC and whether it is locally
+// administered (package oui).
+func VendorOf(mac string) (vendor string, randomized bool) {
+	if mac == "" {
+		return "", false
+	}
+	return oui.Lookup(mac)
 }
 
 // PTRResolver resolves the hostname of a client address (router / local PTR upstreams).
@@ -212,7 +239,35 @@ type Registry struct {
 
 	cacheMu  sync.Mutex
 	cacheGen uint64
-	cache    *lru[netip.Addr, cachedIdentity]
+	cache    *lru[cacheKey, cachedIdentity]
+
+	// ifaceOf returns the interface a reply to an address leaves by
+	// (netutil.InterfaceOf; replaced in tests).
+	ifaceOf func(netip.Addr) string
+	// zoneIface returns the interface name of the zone of an IPv6
+	// link-local source ("" if unknown; nil: iface: never applies to
+	// link-local sources, as on systems other than Linux).
+	zoneIface func(zone string) string
+	// cfg is what the registry reads from the settings (ApplyConfig).
+	cfg atomic.Pointer[Config]
+	// hosts are the names of /etc/hosts (clients.nameSources.hostsFile).
+	hosts     atomic.Pointer[hostsTable]
+	hostsPath string
+	hostsKick chan struct{}
+	// whois annotates public sources with their network's owner (RDAP).
+	whois *whoisLookup
+	// flushMu is held by flush from copying the pending counts until its
+	// write returned, and by the forgetting of seen data, so a pending
+	// flush never re-creates a forgotten row.
+	flushMu   sync.Mutex
+	pruneKick chan struct{}
+	// namesKick asks seenLoop to drop the host names stored with the seen
+	// data after a name source was switched off (clearStoredNames);
+	// configured is set by the first ApplyConfig (the start), which never
+	// asks for it.
+	namesKick  chan struct{}
+	configured atomic.Bool
+	flushHook  func() // called by flush between copying and writing (tests)
 
 	seenMu    sync.Mutex
 	seen      *lru[netip.Addr, *seenEntry]
@@ -231,12 +286,22 @@ type Registry struct {
 	onChange []func()
 }
 
+// cacheKey is an identity cache key: the address and whether iface:
+// identifiers apply (a transport source) or not (a client a trusted proxy
+// forwarded).
+type cacheKey struct {
+	ip    netip.Addr
+	iface bool
+}
+
 // cachedIdentity is an identity cache entry. expires (unix nanoseconds) is
 // set for on-link sources whose MAC is not known yet; 0 = until
-// invalidated.
+// invalidated. zone is the zone of the IPv6 link-local source it was
+// computed for: the same address on another interface is another device.
 type cachedIdentity struct {
 	id      *Identity
 	expires int64
+	zone    string
 }
 
 // learnedState is derived from one snapshot and one neighbour table: the
@@ -257,7 +322,7 @@ func New(ctx context.Context, cdb, ldb *db.DB, log *slog.Logger) (*Registry, err
 		db:       cdb,
 		ldb:      ldb,
 		log:      log.With(slog.String("component", "clients")),
-		cache:    newLRU[netip.Addr, cachedIdentity](maxCacheEntries),
+		cache:    newLRU[cacheKey, cachedIdentity](maxCacheEntries),
 		seen:     newLRU[netip.Addr, *seenEntry](maxSeenEntries),
 		dnsIDs:   newLRU[string, *seenClientID](maxSeenClientIDs),
 		names:    newLRU[netip.Addr, hostName](maxNameEntries),
@@ -269,10 +334,20 @@ func New(ctx context.Context, cdb, ldb *db.DB, log *slog.Logger) (*Registry, err
 		primeSem: make(chan struct{}, primeParallel),
 
 		readNeighbours: readNeighbourTable,
+		ifaceOf:        netutil.InterfaceOf,
+		hostsPath:      "/etc/hosts",
+		hostsKick:      make(chan struct{}, 1),
+		pruneKick:      make(chan struct{}, 1),
+		namesKick:      make(chan struct{}, 1),
 	}
+	cfg := DefaultConfig()
+	r.cfg.Store(&cfg)
+	r.hosts.Store(&hostsTable{})
+	r.whois = newWhoisLookup(r)
 	if runtime.GOOS == "linux" {
 		r.onLink = netutil.OnLink
 		r.probe = probeNeighbour
+		r.zoneIface = zoneInterface
 	}
 	empty := map[netip.Addr]string{}
 	r.arp.Store(&empty)
@@ -311,6 +386,8 @@ func (r *Registry) Start(ctx context.Context) {
 	wg.Go(func() { r.arpLoop(ctx) })
 	wg.Go(func() { r.ptrWorker(ctx) })
 	wg.Go(func() { r.seenLoop(ctx) })
+	wg.Go(func() { r.hostsLoop(ctx) })
+	wg.Go(func() { r.whois.run(ctx) })
 	wg.Wait()
 }
 
@@ -332,25 +409,39 @@ func (r *Registry) OnChange(fn func()) {
 	r.onChange = append(r.onChange, fn)
 }
 
-// Identify returns the identity of ip. Hot path: cached; only the first
-// query of a new on-link address may wait (about 30 ms at most) for its MAC
-// (prime).
-func (r *Registry) Identify(ip netip.Addr) *Identity {
+// Identify returns the identity of a transport source ip (iface:
+// identifiers apply). An IPv6 link-local ip carries the zone the kernel
+// reported with it (UDPAddr/TCPAddr.Zone: the interface it arrived on),
+// which names its interface. Hot path: cached; only the first query of a
+// new on-link address may wait (about 30 ms at most) for its MAC (prime).
+func (r *Registry) Identify(ip netip.Addr) *Identity { return r.identify(ip, true) }
+
+// IdentifyForwarded returns the identity of a client a trusted reverse
+// proxy forwarded (DoH on the web listeners): like Identify, but iface:
+// identifiers never apply (the address did not arrive by its interface).
+func (r *Registry) IdentifyForwarded(ip netip.Addr) *Identity { return r.identify(ip, false) }
+
+func (r *Registry) identify(ip netip.Addr, iface bool) *Identity {
+	zone := ""
+	if iface {
+		zone = netutil.LinkLocalZone(ip)
+	}
 	ip = netutil.Canon(ip)
+	key := cacheKey{ip: ip, iface: iface}
 	r.cacheMu.Lock()
-	if e, ok := r.cache.get(ip); ok && (e.expires == 0 || time.Now().UnixNano() < e.expires) {
+	if e, ok := r.cache.get(key); ok && e.zone == zone && (e.expires == 0 || time.Now().UnixNano() < e.expires) {
 		r.cacheMu.Unlock()
 		return e.id
 	}
 	gen := r.cacheGen
 	r.cacheMu.Unlock()
 
-	id := r.resolve(ip)
-	e := cachedIdentity{id: id}
+	id := r.resolve(ip, iface, zone)
+	e := cachedIdentity{id: id, zone: zone}
 	if id.MAC == "" && r.onLink != nil && r.onLink(ip) {
 		if r.prime(ip) {
-			id = r.resolve(ip)
-			e = cachedIdentity{id: id}
+			id = r.resolve(ip, iface, zone)
+			e = cachedIdentity{id: id, zone: zone}
 		}
 		if id.MAC == "" {
 			// Its MAC (and with it a MAC or learned-MAC client) appears
@@ -362,11 +453,15 @@ func (r *Registry) Identify(ip netip.Addr) *Identity {
 
 	r.cacheMu.Lock()
 	if r.cacheGen == gen {
-		r.cache.put(ip, e)
+		r.cache.put(key, e)
 	}
 	r.cacheMu.Unlock()
 	return id
 }
+
+// InterfacesChanged drops the cached identities after the route snapshot
+// changed (the interfaces of the addresses may have).
+func (r *Registry) InterfacesChanged() { r.invalidate() }
 
 // IdentifyDerived returns the identity of a client behind a trusted
 // forwarder (dns.ednsClientTrusted) whose address (ip; invalid if none)
@@ -376,8 +471,9 @@ func (r *Registry) Identify(ip netip.Addr) *Identity {
 // neighbour table's MAC of the address (read only: no probe, no early
 // read). With only a MAC the address steps are skipped (the source is the
 // forwarder, not the client): MAC identifier → learned MAC → Default, and
-// the identity has no address. Nothing is cached or learned: EDNS MACs
-// never enter the neighbour table, the learned MACs or the device data.
+// the identity has no address. iface: never applies (the address did not
+// arrive by its interface). Nothing is cached or learned: EDNS MACs never
+// enter the neighbour table, the learned MACs or the device data.
 func (r *Registry) IdentifyDerived(ip netip.Addr, mac string) *Identity {
 	snap := r.snap.Load()
 	id := &Identity{}
@@ -388,7 +484,7 @@ func (r *Registry) IdentifyDerived(ip netip.Addr, mac string) *Identity {
 			mac = (*r.arp.Load())[ip]
 		}
 		id.IP, id.MAC = ip, mac
-		c = r.match(snap, ip, mac)
+		c = r.matchWith(snap, ip, mac, false)
 	} else if mac != "" {
 		id.MAC = mac
 		if c = snap.byMAC[mac]; c == nil {
@@ -431,12 +527,24 @@ func (r *Registry) Describe(ip netip.Addr, mac string) (clientID int64, name, ho
 }
 
 // resolve computes an identity from the current snapshot, ARP table and
-// hostname cache.
-func (r *Registry) resolve(ip netip.Addr) *Identity {
+// hostname cache (iface: whether iface: identifiers apply; zone: the zone
+// of an IPv6 link-local transport source). host: identifiers come last
+// (ByHost).
+func (r *Registry) resolve(ip netip.Addr, iface bool, zone string) *Identity {
 	snap := r.snap.Load()
 	mac := (*r.arp.Load())[ip]
 	id := &Identity{IP: ip, MAC: mac}
-	c := r.match(snap, ip, mac)
+	var c *clientEntry
+	if iface && len(snap.byIface) > 0 && ip.Is6() && ip.IsLinkLocalUnicast() {
+		c = r.matchLinkLocal(snap, ip, mac, zone)
+	} else {
+		c = r.matchWith(snap, ip, mac, iface)
+	}
+	if c == nil {
+		if c = r.matchHost(snap, ip); c != nil {
+			id.ByHost = true
+		}
+	}
 	if c != nil {
 		id.ClientID = c.id
 		id.Name = c.name
@@ -453,16 +561,66 @@ func (r *Registry) resolve(ip netip.Addr) *Identity {
 	return id
 }
 
-// match finds the configured client of ip: exact IP, CIDR, MAC identifier,
-// then learned MAC.
+// match finds the configured client of a source address ip: exact IP,
+// CIDR, interface, MAC identifier, then learned MAC.
 func (r *Registry) match(snap *snapshot, ip netip.Addr, mac string) *clientEntry {
-	if c := snap.match(ip, mac); c != nil || mac == "" {
+	return r.matchWith(snap, ip, mac, true)
+}
+
+// matchWith is match with the interface rule only when iface is true.
+func (r *Registry) matchWith(snap *snapshot, ip netip.Addr, mac string, iface bool) *clientEntry {
+	name := ""
+	if iface && len(snap.byIface) > 0 && r.ifaceOf != nil {
+		name = r.ifaceOf(ip)
+	}
+	return r.matchOn(snap, ip, name, mac)
+}
+
+// matchOn finds the client of ip on the interface name ("" = none or not
+// applicable) with the MAC mac: exact IP, CIDR, interface, MAC identifier,
+// then learned MAC.
+func (r *Registry) matchOn(snap *snapshot, ip netip.Addr, name, mac string) *clientEntry {
+	if c := snap.match(ip, name, mac); c != nil || mac == "" {
 		return c
 	}
 	if l := r.learned.Load(); l != nil && l.snap == snap {
 		return l.byMAC[mac]
 	}
 	return nil
+}
+
+// matchLinkLocal is match for an IPv6 link-local transport source while
+// iface: identifiers exist. Every interface has fe80::/64, so the routes
+// cannot tell its interface; the zone the kernel reported with the source
+// can (the interface it arrived on; a reply can only leave by it). A
+// link-local source of unknown interface may be on an iface: network,
+// e.g. a guest device that copied a trusted device's MAC: only its address
+// identifies it, never its MAC.
+func (r *Registry) matchLinkLocal(snap *snapshot, ip netip.Addr, mac, zone string) *clientEntry {
+	name := ""
+	if r.zoneIface != nil {
+		name = r.zoneIface(zone)
+	}
+	if name == "" {
+		return snap.matchIP(ip)
+	}
+	return r.matchOn(snap, ip, name, mac)
+}
+
+// zoneInterface returns the interface name of an IPv6 zone: Go reports the
+// name, or the index when its interface list was not current yet ("" if
+// unknown).
+func zoneInterface(zone string) string {
+	if zone == "" {
+		return ""
+	}
+	if n, err := strconv.Atoi(zone); err == nil {
+		if ifc, err := net.InterfaceByIndex(n); err == nil {
+			return ifc.Name
+		}
+		return ""
+	}
+	return zone
 }
 
 // rebuildLearned derives the learned MACs and the addresses per MAC from

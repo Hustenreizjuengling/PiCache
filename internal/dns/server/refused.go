@@ -78,3 +78,10 @@ func (t *refusedTable) list() []RefusedSource {
 // dropped since the start (at most 256, most recently refused first;
 // loopback is never listed).
 func (s *Server) RefusedSources() []RefusedSource { return s.refusedSrc.list() }
+
+// CountRefused counts a datagram of another service behind the DNS ACL
+// (the NTP server) that the ACL dropped, like a refused DNS query.
+func (s *Server) CountRefused(ip netip.Addr) {
+	s.refused.Add(1)
+	s.refusedSrc.add(ip, time.Now())
+}

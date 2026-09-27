@@ -140,7 +140,11 @@ type Services interface {
 
 // Clients is the part of *clients.Registry the server uses.
 type Clients interface {
+	// Identify identifies a transport source (iface: identifiers apply).
 	Identify(ip netip.Addr) *clients.Identity
+	// IdentifyForwarded identifies the client a trusted reverse proxy
+	// forwarded (DoH on the web listeners): never by iface:.
+	IdentifyForwarded(ip netip.Addr) *clients.Identity
 	// IdentifyDerived identifies a client behind a trusted forwarder by
 	// the address and/or MAC of its EDNS options (step 4a).
 	IdentifyDerived(ip netip.Addr, mac string) *clients.Identity

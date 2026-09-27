@@ -34,7 +34,13 @@ type SystemLog struct {
 	Components []string         `json:"components"`
 	Capacity   int              `json:"capacity"`
 	Dropped    uint64           `json:"dropped"` // records not delivered to slow streams
+	// Sinks are the log file and the syslog server (PICACHE_LOG_FILE,
+	// PICACHE_LOG_SYSLOG; [] when neither is configured).
+	Sinks []LogSink `json:"sinks"`
 }
+
+// LogSink is the state of an extra sink of the application log.
+type LogSink = applog.SinkState
 
 // DatabaseInfo is GET /system/databases: file sizes of the databases.
 type DatabaseInfo struct {
@@ -138,7 +144,7 @@ func (s *Server) systemLog(w http.ResponseWriter, r *http.Request) error {
 	}
 	l := s.d.AppLog
 	return ok(w, SystemLog{Records: l.Records(lv, component, limit), BaseLevel: l.BaseLevel(), Override: l.CurrentOverride(),
-		Components: applog.Components, Capacity: applog.Capacity, Dropped: l.Dropped()})
+		Components: applog.Components, Capacity: applog.Capacity, Dropped: l.Dropped(), Sinks: l.Sinks()})
 }
 
 func (s *Server) streamSystemLog(w http.ResponseWriter, r *http.Request) error {

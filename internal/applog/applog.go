@@ -24,6 +24,9 @@
 //     guards only the slot write and the sequence number. The fan-out to
 //     at most 4 stream subscribers never blocks (256 records buffered per
 //     subscriber, a drop counter).
+//   - Extra sinks (sinks.go): an optional log file and syslog server get
+//     the records stderr gets, redacted like stderr and masked like the
+//     ring, through bounded queues that never block a slog call.
 //   - Level: the stderr handler is created at debug level; this handler
 //     decides Enabled: the base level (PICACHE_LOG_LEVEL), or a temporary
 //     override (debug or info, for all components or one, 1–240 minutes;
@@ -66,7 +69,8 @@ const AppComponent = "app"
 // "component" of a logger's With), AppComponent for records without one.
 var Components = []string{
 	"api", AppComponent, "auth", "backup", "cachestore", "clients", "dhcp", "dns", "filter", "logs", "network",
-	"notify", "parental", "proxy", "services", "settings", "sni", "storage", "update", "upstream", "web-access", "web-tls",
+	"notify", "ntp", "parental", "proxy", "services", "settings", "sni", "storage", "sync", "update", "upstream", "web-access",
+	"web-tls",
 }
 
 // Attr is an attribute of a ring record.
@@ -123,6 +127,11 @@ type Log struct {
 	timerMu sync.Mutex
 	timer   *time.Timer
 	log     *slog.Logger // the log itself (the override's start and end lines)
+
+	// The extra sinks (log file, syslog; sinks.go): sinkList is read on
+	// every record, sinks guards adding and starting them.
+	sinks    sinks
+	sinkList atomic.Pointer[[]*sink]
 }
 
 type subscriber struct {
@@ -237,6 +246,7 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		return true
 	})
 	h.l.add(h.ringRecord(r.Time, r.Level, r.Message, own))
+	h.toSinks(r, own)
 	return h.next.Handle(ctx, red)
 }
 

@@ -27,15 +27,16 @@ import (
 
 // coreRuntime is a fake Runtime for the auth/system/settings route tests.
 type coreRuntime struct {
-	mu         sync.Mutex
-	backup     []byte
-	backupErr  error
-	restored   []byte
-	restoreErr error
-	staged     *settings.All // what StageRestore returns as the staged settings
-	restarted  bool
-	tlsAddr    string              // bound web-tls listener ("" = none)
-	bound      map[string][]string // further bound roles (dot, doh)
+	mu              sync.Mutex
+	backup          []byte
+	backupErr       error
+	restored        []byte
+	restoreSections []string
+	restoreErr      error
+	staged          *settings.All // what StageRestore returns as the staged settings
+	restarted       bool
+	tlsAddr         string              // bound web-tls listener ("" = none)
+	bound           map[string][]string // further bound roles (dot, doh)
 }
 
 func (f *coreRuntime) StartedAt() time.Time    { return time.Now().Add(-time.Hour) }
@@ -71,7 +72,7 @@ func (f *coreRuntime) Backup(_ context.Context, w io.Writer, _ bool) error {
 	_, err := w.Write(f.backup)
 	return err
 }
-func (f *coreRuntime) StageRestore(_ context.Context, r io.Reader) (*settings.All, error) {
+func (f *coreRuntime) StageRestore(_ context.Context, r io.Reader, sections []string) (*settings.All, error) {
 	b, err := io.ReadAll(r)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -79,6 +80,7 @@ func (f *coreRuntime) StageRestore(_ context.Context, r io.Reader) (*settings.Al
 		return nil, err
 	}
 	f.restored = b
+	f.restoreSections = sections
 	if f.restoreErr != nil {
 		return nil, f.restoreErr
 	}

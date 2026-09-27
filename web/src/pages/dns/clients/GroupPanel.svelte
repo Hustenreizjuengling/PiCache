@@ -25,6 +25,7 @@
   import { errorText, fieldError } from '$lib/errors'
   import { formatDateTime, formatNumber } from '$lib/format'
   import { href } from '$lib/router.svelte'
+  import { session } from '$lib/session.svelte'
   import { Checkbox, confirm, Field, Input, KeyValue, Notice, Select, toast } from '$lib/ui'
   import UpstreamList from '../settings/UpstreamList.svelte'
   import FormPanel from '../shared/FormPanel.svelte'
@@ -185,6 +186,7 @@
   onsubmit={save}
   ondelete={group && !isDefault ? remove : undefined}
   deleteLabel={t('dns.groups.delete')}
+  section="clients-and-groups"
 >
   {#snippet header()}
     {#if group}
@@ -239,6 +241,7 @@
       {:else if draft.resolver === OWN}
         <UpstreamList
           bind:value={draft.upstreams}
+          editable={session.canEditSection('clients-and-groups')}
           error={upstreamsError}
           field="upstreams"
           max={MAX_UPSTREAMS}

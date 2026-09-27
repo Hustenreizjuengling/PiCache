@@ -110,10 +110,10 @@ type ghRelease struct {
 	} `json:"assets"`
 }
 
-// Latest returns the newest eligible release: not a draft, a pre-release
-// only with includePre, a valid version, and the binary for this
-// architecture, SHA256SUMS and SHA256SUMS.sig attached. nil if there is none.
-func (c *Client) Latest(ctx context.Context, includePre bool) (*Release, error) {
+// Latest returns the newest eligible release of a channel (Offered): not
+// a draft, a valid version, and the binary for this architecture,
+// SHA256SUMS and SHA256SUMS.sig attached. nil if there is none.
+func (c *Client) Latest(ctx context.Context, channel string) (*Release, error) {
 	asset, ok := AssetName(c.arch())
 	if !ok {
 		return nil, fmt.Errorf("no release binaries are built for linux/%s", c.arch())
@@ -127,7 +127,7 @@ func (c *Client) Latest(ctx context.Context, includePre bool) (*Release, error) 
 	var bestV Version
 	for _, gr := range list {
 		rel, v, err := c.eligible(gr, asset)
-		if err != nil || (rel.Prerelease && !includePre) {
+		if err != nil || !Offered(channel, v) {
 			continue
 		}
 		if best == nil || Compare(v, bestV) > 0 {

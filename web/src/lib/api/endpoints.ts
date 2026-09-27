@@ -52,11 +52,15 @@ const system = {
   /**
    * Needs the current password (header X-PiCache-Password, percent-encoded
    * because header values cannot carry arbitrary Unicode); 401 with field
-   * "password" when it is missing or wrong.
+   * "password" when it is missing or wrong. `sections` restores only those
+   * (absent: everything); 400 with field "sections" for a selection the
+   * dependency rule refuses or a group the backup refers to that does not
+   * exist here.
    */
-  restore: (file: Blob, password: string, o?: ReqOpts) =>
+  restore: (file: Blob, password: string, sections?: readonly T.RestoreSection[], o?: ReqOpts) =>
     http.post<T.RestoreResult>('/system/restore', undefined, {
       ...o,
+      query: { sections: sections?.join(',') },
       raw: file,
       timeoutMs: 600_000,
       headers: { 'X-PiCache-Password': encodeURIComponent(password) },
@@ -99,6 +103,20 @@ const system = {
    */
   supportBundle: (body: T.SupportBundleInput, o?: ReqOpts) =>
     http.postFile('/system/support-bundle', body, { ...o, timeoutMs: 90_000 }),
+  /** The listeners by role: bound now, saved for the next start, defaults and what the environment sets. */
+  listeners: (o?: ReqOpts) => http.get<T.ListenersConfig>('/system/listeners', o),
+  /**
+   * Saves the listeners for the next start (the whole set). 400 with field
+   * listeners.<role>[i], listeners.<role> or currentPassword; 409 in Docker.
+   */
+  saveListeners: (body: T.ListenersInput, o?: ReqOpts) => http.put<T.ListenersConfig>('/system/listeners', body, o),
+  /** The configuration of syncable sections (admins and sync tokens; 429 while another export runs). */
+  export: (sections: readonly T.SyncSection[], o?: ReqOpts) =>
+    http.get<T.ConfigExport>('/system/export', { ...o, query: { sections: sections.join(',') }, timeoutMs: 60_000 }),
+  /** The follower's sync state. */
+  sync: (o?: ReqOpts) => http.get<T.SyncStatus>('/system/sync', o),
+  /** 202; 409 while sync is off or a run is going, 429 within 30 s of the previous start. */
+  runSync: (o?: ReqOpts) => http.post<{ started: boolean }>('/system/sync/run', undefined, o),
 }
 
 /** Scheduled backups (settings: PATCH /settings/backups). */
@@ -170,16 +188,23 @@ const notifications = {
 
 // ---------------------------------------------------------------- settings
 
+/** Options of the settings writes: `dryRun` runs every check and stores nothing (the answer is the candidate). */
+export interface SettingsWriteOpts extends ReqOpts {
+  dryRun?: boolean
+}
+
 const settings = {
   get: (o?: ReqOpts) => http.get<T.Settings>('/settings', o),
-  put: (all: T.Settings, o?: ReqOpts) => http.put<T.Settings>('/settings', all, o),
+  put: (all: T.Settings, { dryRun, ...o }: SettingsWriteOpts = {}) =>
+    http.put<T.Settings>('/settings', all, { ...o, query: { dryRun: dryRun || undefined } }),
   /**
    * Updates one section: members sent replace the current ones (arrays are
    * replaced), omitted members keep their values. Returns the complete settings;
    * validation errors name the member in `field` (e.g. "dns.upstreams[1]").
+   * 409 for a member a follower syncs from its primary.
    */
-  patch: <S extends T.SettingsSection>(section: S, value: Partial<T.Settings[S]>, o?: ReqOpts) =>
-    http.patch<T.Settings>(`/settings/${seg(section)}`, value, o),
+  patch: <S extends T.SettingsSection>(section: S, value: Partial<T.Settings[S]>, { dryRun, ...o }: SettingsWriteOpts = {}) =>
+    http.patch<T.Settings>(`/settings/${seg(section)}`, value, { ...o, query: { dryRun: dryRun || undefined } }),
   defaults: (o?: ReqOpts) => http.get<T.Settings>('/settings/defaults', o),
 }
 
@@ -262,8 +287,16 @@ const clients = {
   create: (c: T.ClientInput, o?: ReqOpts) => http.post<T.Client>('/clients', c, o),
   update: (id: number, c: T.ClientInput, o?: ReqOpts) => http.put<T.Client>(`/clients/${seg(id)}`, c, o),
   remove: (id: number, o?: ReqOpts) => http.del(`/clients/${seg(id)}`, o),
-  /** Addresses seen within `within` (e.g. "30d"). */
+  /** Addresses seen within `within` (e.g. "30d", at most the seen retention). */
   known: (within?: string, o?: ReqOpts) => http.get<T.KnownClient[]>('/clients/known', { ...o, query: { within } }),
+  /**
+   * Forgets one seen address, or every address of a MAC address (their seen
+   * data, names and last ClientIDs); a device reappears with its next query.
+   */
+  forget: (which: { ip: string } | { mac: string }, o?: ReqOpts) =>
+    http.del<{ deleted: number }>('/clients/known', { ...o, query: { ...which } }),
+  /** Forgets every seen address. */
+  forgetAll: (o?: ReqOpts) => http.post<{ deleted: number }>('/clients/known/flush', undefined, o),
   /** ClientIDs sent over DoT and DoH since the start, newest first. */
   dnsClientIds: (o?: ReqOpts) => http.get<T.SeenDnsClientId[]>('/clients/dns-client-ids', o),
   /** Deletes the clients (action "delete" only; all or nothing). */
@@ -318,6 +351,8 @@ const network = {
   check: (o?: ReqOpts) => http.get<T.NetworkCheck>('/network/check', o),
   /** 202; 409 while a scan runs, 429 within 60 s of the last one, 503 where scanning is not possible. */
   scan: (o?: ReqOpts) => http.post<T.NetworkScanStarted>('/network/scan', undefined, o),
+  /** This machine's interfaces with addresses, routes, gateways and counters (503 without the network check). */
+  interfaces: (o?: ReqOpts) => http.get<T.NetworkInterfaces>('/network/interfaces', o),
 }
 
 // ---------------------------------------------------------------- dhcp server

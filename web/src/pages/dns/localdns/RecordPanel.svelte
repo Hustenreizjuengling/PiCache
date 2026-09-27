@@ -168,6 +168,7 @@
   onsubmit={save}
   ondelete={record ? remove : undefined}
   deleteLabel={t('dns.records.delete')}
+  section="local-dns"
 >
   {#snippet header()}
     {#if record}

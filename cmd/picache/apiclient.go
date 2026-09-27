@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -138,18 +139,88 @@ func newAPIClient(flagURL, tokenFile string) (c *apiClient, usage bool, err erro
 
 // get sends GET <base><path>?<query> with the token.
 func (c *apiClient) get(ctx context.Context, path string, q neturl.Values, accept string) (*http.Response, error) {
+	return c.send(ctx, http.MethodGet, path, q, nil, accept)
+}
+
+// post, put and patch send a JSON body (nil: none) with the token.
+func (c *apiClient) post(ctx context.Context, path string, q neturl.Values, body []byte) (*http.Response, error) {
+	return c.send(ctx, http.MethodPost, path, q, body, "")
+}
+
+func (c *apiClient) put(ctx context.Context, path string, q neturl.Values, body []byte) (*http.Response, error) {
+	return c.send(ctx, http.MethodPut, path, q, body, "")
+}
+
+func (c *apiClient) patch(ctx context.Context, path string, q neturl.Values, body []byte) (*http.Response, error) {
+	return c.send(ctx, http.MethodPatch, path, q, body, "")
+}
+
+// send sends a request under the token rules of newAPIClient.
+func (c *apiClient) send(ctx context.Context, method, path string, q neturl.Values, body []byte, accept string) (*http.Response, error) {
 	u := *c.base
 	u.Path += path
 	u.RawQuery = q.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), rd)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if accept != "" {
 		req.Header.Set("Accept", accept)
 	}
 	return c.http.Do(req)
+}
+
+// statusError is an error answer of the API (callers look at the status,
+// e.g. 409 of an existing rule).
+type statusError struct {
+	status int
+	err    error
+}
+
+func (e *statusError) Error() string { return e.err.Error() }
+
+// call sends a request and decodes a 2xx JSON answer into out (nil: the
+// body is discarded). 401 and a 403 of an admin command get the CLI's
+// messages; other errors carry the API's message (apiError).
+func (c *apiClient) call(ctx context.Context, method, path string, q neturl.Values, body []byte, admin bool, out any) error {
+	resp, err := c.send(ctx, method, path, q, body, "application/json")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return &statusError{resp.StatusCode, errors.New("the API token is missing or invalid (PICACHE_TOKEN or --token-file)")}
+	case resp.StatusCode == http.StatusForbidden && admin:
+		return &statusError{resp.StatusCode, errors.New("this command needs an admin token")}
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
+		return &statusError{resp.StatusCode, apiError(resp)}
+	}
+	if out == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return nil
+	}
+	if err := json.UnmarshalRead(io.LimitReader(resp.Body, 64<<20), out); err != nil {
+		return fmt.Errorf("unexpected answer: %w", err)
+	}
+	return nil
+}
+
+// callRaw is call for a JSON answer kept as it is (--json).
+func (c *apiClient) callRaw(ctx context.Context, method, path string, q neturl.Values, body []byte, admin bool) ([]byte, error) {
+	var raw jsontext.Value
+	if err := c.call(ctx, method, path, q, body, admin, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 // apiError returns the message of an API error answer. A redirect (never

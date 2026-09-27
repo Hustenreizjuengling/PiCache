@@ -33,6 +33,10 @@ type All struct {
 	Backups       Backups       `json:"backups"`
 	DHCP          DHCP          `json:"dhcp"`
 	Health        Health        `json:"health"`
+	Clients       Clients       `json:"clients"`
+	Sync          Sync          `json:"sync"`
+	Network       Network       `json:"network"`
+	NTP           NTP           `json:"ntp"`
 }
 
 // DNS configures the resolver side.
@@ -303,6 +307,9 @@ type Logs struct {
 	// hide-domains, anonymous, off or custom); a value sent by a client is
 	// ignored.
 	PrivacyLevel string `json:"privacyLevel"`
+	// SeenRetentionDays is how long the seen data of client addresses
+	// (clients_seen in logs.db and its memory) is kept (7..365).
+	SeenRetentionDays int `json:"seenRetentionDays"`
 }
 
 // Privacy levels (Logs.PrivacyLevel): presets of the four privacy switches
@@ -317,9 +324,11 @@ const (
 
 // Limits of the log settings.
 const (
-	MaxIgnoredDomains = 256
-	MinFlushSeconds   = 5
-	MaxFlushSeconds   = 300
+	MaxIgnoredDomains    = 256
+	MinFlushSeconds      = 5
+	MaxFlushSeconds      = 300
+	MinSeenRetentionDays = 7
+	MaxSeenRetentionDays = 365
 )
 
 // privacyLevel derives the preset of the four privacy switches.
@@ -381,9 +390,22 @@ const (
 // Updates configures the release check (docs/ARCHITECTURE.md 14.3). Installing
 // an update always needs an admin action.
 type Updates struct {
-	CheckEnabled       bool `json:"checkEnabled"`       // check GitHub for a new release every day
-	IncludePrereleases bool `json:"includePrereleases"` // offer pre-releases (vX.Y.Z-rc.N) too
+	CheckEnabled bool `json:"checkEnabled"` // check GitHub for a new release every day
+	// IncludePrereleases is the alias of Channel of versions before 0.15.0:
+	// every save writes Channel != "stable" (reconcileChannel).
+	IncludePrereleases bool `json:"includePrereleases"`
+	// Channel is the update channel: stable (releases), beta (releases and
+	// release candidates) or nightly (all of them and the nightly builds of
+	// main).
+	Channel string `json:"channel"`
 }
+
+// Update channels (updates.channel).
+const (
+	ChannelStable  = "stable"
+	ChannelBeta    = "beta"
+	ChannelNightly = "nightly"
+)
 
 // Backups configures scheduled backups of picache.db (docs/ARCHITECTURE.md
 // 15.2). The files hold the same content as a backup downloaded in the UI.
@@ -528,6 +550,10 @@ type Store struct {
 	listeners map[int]Listener
 	nextID    int
 	created   bool
+	// sealer seals and opens the secrets (SetSealer); bound holds the
+	// stored secrets and their origins (settings_secrets), under mu.
+	sealer *Sealer
+	bound  map[string]string
 }
 
 // migrations of component "settings". Append only.
@@ -587,6 +613,25 @@ var migrations = []string{
 		THEN json_set(doc, '$.web', json('{"restrictToNetworks":false}'))
 		ELSE json_set(doc, '$.web.restrictToNetworks', json('false')) END
 	WHERE CASE WHEN json_valid(doc) THEN json_type(doc, '$.web.restrictToNetworks') IS NULL ELSE 0 END;`,
+	// v6 (0.15.0): the secrets of the settings (sync.token,
+	// network.proxy.password) live sealed in their own table, never in the
+	// document; bound is the origin a secret belongs to. A document
+	// without updates.channel gets the channel of its includePrereleases
+	// (true: beta, else stable); like v5 it also converts a document
+	// restored from an older backup, and a document that is not valid JSON
+	// is left alone.
+	`CREATE TABLE settings_secrets (
+		name       TEXT    PRIMARY KEY,
+		sealed     BLOB    NOT NULL,
+		bound      TEXT    NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	UPDATE settings SET doc = CASE
+		WHEN COALESCE(json_type(doc, '$.updates'), 'null') != 'object'
+		THEN json_set(doc, '$.updates', json('{"channel":"stable"}'))
+		ELSE json_set(doc, '$.updates.channel',
+			CASE WHEN json_type(doc, '$.updates.includePrereleases') = 'true' THEN 'beta' ELSE 'stable' END) END
+	WHERE CASE WHEN json_valid(doc) THEN json_type(doc, '$.updates.channel') IS NULL ELSE 0 END;`,
 }
 
 // Default bootstrap lists: bootstrapV2 until 0.5.x, bootstrapV3 since 0.6.0
@@ -608,13 +653,19 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{db: d, log: log.With(slog.String("component", "settings")), listeners: map[int]Listener{}}
+	bound, err := loadSecretBounds(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	s.bound = bound
 
 	cur := Defaults()
 	var doc string
-	err := d.R.QueryRowContext(ctx, `SELECT doc FROM settings WHERE id = 1`).Scan(&doc)
+	err = d.R.QueryRowContext(ctx, `SELECT doc FROM settings WHERE id = 1`).Scan(&doc)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if err := s.persist(ctx, &cur); err != nil {
+		applySecretFlags(&cur, s.bound)
+		if err := s.persist(ctx, &cur, nil); err != nil {
 			return nil, err
 		}
 		s.created = true
@@ -627,8 +678,12 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 			return nil, fmt.Errorf("settings: decode stored document: %w", err)
 		}
 		cur.normalize()
+		applySecretFlags(&cur, s.bound)
 		if err := cur.Validate(); err != nil {
 			s.log.Warn("stored settings are invalid; keeping them but fix them in the UI", slog.Any("err", err))
+		}
+		if cur.Sync.Mode == SyncFollower && !cur.Sync.TokenSet {
+			s.log.Warn("the follower sync has no sync token (a backup restored without secrets?): enter a sync token of the primary under System → Sync")
 		}
 	}
 	s.cur.Store(&cur)
@@ -642,10 +697,19 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 func DecodeStored(doc []byte) (*All, error) {
 	cur := Defaults()
 	cur.Web.RestrictToNetworks = false
+	cur.Updates.Channel = ""
 	if err := json.Unmarshal(doc, &cur); err != nil {
 		return nil, fmt.Errorf("settings: decode stored document: %w", err)
 	}
+	if cur.Updates.Channel == "" {
+		// Migration v6: the channel of includePrereleases.
+		cur.Updates.Channel = ChannelStable
+		if cur.Updates.IncludePrereleases {
+			cur.Updates.Channel = ChannelBeta
+		}
+	}
 	cur.normalize()
+	cur.Sync.Token, cur.Network.Proxy.Password = nil, nil
 	return &cur, nil
 }
 
@@ -665,7 +729,14 @@ func (s *Store) Get() *All { return s.cur.Load() }
 // result, persists it and notifies listeners. If fn or validation fails,
 // nothing changes.
 func (s *Store) Update(ctx context.Context, fn func(*All) error) (*All, error) {
-	return s.update(ctx, fn, false)
+	return s.update(ctx, fn, false, false)
+}
+
+// DryRun runs every step of Update (fn, normalisation, the secrets, the
+// validation) and returns the candidate document without storing or
+// notifying anything (?dryRun=true of the settings routes).
+func (s *Store) DryRun(ctx context.Context, fn func(*All) error) (*All, error) {
+	return s.update(ctx, fn, false, true)
 }
 
 // Recover is Update for a host recovery (the web access reset): fn only
@@ -676,10 +747,10 @@ func (s *Store) Update(ctx context.Context, fn func(*All) error) (*All, error) {
 // member would be fixed is out of reach. A valid document is validated as
 // by Update.
 func (s *Store) Recover(ctx context.Context, fn func(*All) error) (*All, error) {
-	return s.update(ctx, fn, true)
+	return s.update(ctx, fn, true, false)
 }
 
-func (s *Store) update(ctx context.Context, fn func(*All) error, recovery bool) (*All, error) {
+func (s *Store) update(ctx context.Context, fn func(*All) error, recovery, dry bool) (*All, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old := s.cur.Load()
@@ -688,11 +759,21 @@ func (s *Store) update(ctx context.Context, fn func(*All) error, recovery bool) 
 		return nil, err
 	}
 	next.normalize()
+	if err := next.Updates.reconcileChannel(old.Updates); err != nil {
+		return nil, err
+	}
+	secrets, bound, err := s.resolveSecrets(next)
+	if err != nil {
+		return nil, err
+	}
 	if err := next.Validate(); err != nil {
 		if !recovery || old.Validate() == nil {
 			return nil, err
 		}
 		s.log.Warn("stored settings are invalid; saving the recovery change anyway, fix them in the UI", slog.Any("err", err))
+	}
+	if err := next.Sync.checkToken(&old.Sync); err != nil {
+		return nil, err
 	}
 	// The search list depends on dns.localDomain when dhcp.domain is empty;
 	// it is checked only when its own inputs (dhcp.domain, the extra
@@ -706,9 +787,13 @@ func (s *Store) update(ctx context.Context, fn func(*All) error, recovery bool) 
 			return nil, err
 		}
 	}
-	if err := s.persist(ctx, next); err != nil {
+	if dry {
+		return next, nil
+	}
+	if err := s.persist(ctx, next, secrets); err != nil {
 		return nil, err
 	}
+	s.bound = bound
 	s.cur.Store(next)
 	for _, l := range s.listeners {
 		l(old, next)
@@ -730,19 +815,25 @@ func (s *Store) Subscribe(l Listener) (unsubscribe func()) {
 	}
 }
 
-func (s *Store) persist(ctx context.Context, a *All) error {
+// persist writes the document and the pending secret writes in one
+// transaction. The document never holds a secret.
+func (s *Store) persist(ctx context.Context, a *All, secrets []secretChange) error {
+	if a.Sync.Token != nil || a.Network.Proxy.Password != nil {
+		return errors.New("settings: a secret must not be stored in the document")
+	}
 	b, err := json.Marshal(a, json.Deterministic(true))
 	if err != nil {
 		return fmt.Errorf("settings: encode: %w", err)
 	}
-	_, err = s.db.W.ExecContext(ctx,
-		`INSERT INTO settings (id, doc, updated_at) VALUES (1, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET doc = excluded.doc, updated_at = excluded.updated_at`,
-		string(b), db.NowMs())
-	if err != nil {
-		return fmt.Errorf("settings: save: %w", err)
-	}
-	return nil
+	return s.db.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO settings (id, doc, updated_at) VALUES (1, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET doc = excluded.doc, updated_at = excluded.updated_at`,
+			string(b), db.NowMs()); err != nil {
+			return fmt.Errorf("settings: save: %w", err)
+		}
+		return writeSecrets(ctx, tx, secrets)
+	})
 }
 
 // Migrations returns the schema steps of component "settings" in picache.db

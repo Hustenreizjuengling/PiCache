@@ -118,6 +118,14 @@ export interface SeenDevice {
   blockedBy: string[]
   /** The ClientID its most recent address sent over DoT or DoH since the start. */
   dnsClientId?: string
+  /** Manufacturer of its MAC address. */
+  vendor?: string
+  /** Its MAC address is a private (randomised) one. */
+  macRandomized?: boolean
+  /** The interface of its most recent address (replies leave by it). */
+  interface?: string
+  /** The network owner of its most recent public address (WHOIS). */
+  whois?: KnownClient['whois']
 }
 
 /**
@@ -158,6 +166,10 @@ export function seenDevices(known: readonly KnownClient[]): SeenDevice[] {
       queries: list.reduce((n, k) => n + k.queries, 0),
       blockedBy: [...new Set(list.flatMap((k) => (k.blockedBy ? [k.blockedBy] : [])))],
       dnsClientId: list.find((k) => k.dnsClientId)?.dnsClientId,
+      vendor: list.find((k) => k.vendor)?.vendor,
+      macRandomized: list.some((k) => k.macRandomized),
+      interface: list.find((k) => k.interface)?.interface,
+      whois: list.find((k) => k.whois)?.whois,
     })
   }
   return out.sort((a, b) => time(b.lastSeen) - time(a.lastSeen))

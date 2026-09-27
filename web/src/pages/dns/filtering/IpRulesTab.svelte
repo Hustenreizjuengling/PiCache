@@ -118,7 +118,7 @@
   <Toggle
     bind:checked={() => r.enabled, (on) => setEnabled(r, on)}
     ariaLabel={t('dns.ipRules.enableNamed', { pattern: r.pattern })}
-    disabled={!session.isAdmin || toggling.includes(r.id)}
+    disabled={!session.canEditSection('lists-and-rules') || toggling.includes(r.id)}
   />
 {/snippet}
 
@@ -136,7 +136,7 @@
 
 <Panel flush title={t('dns.ipRules.title')} description={t('dns.ipRules.description')}>
   {#snippet actions()}
-    <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.ipRules.add')}</Button>
+    <Button variant="primary" icon="plus" disabled={!session.canEditSection('lists-and-rules')} onclick={() => (addOpen = true)}>{t('dns.ipRules.add')}</Button>
   {/snippet}
 
   <div class="toolbar filters">
@@ -171,7 +171,7 @@
     onrowclick={(r) => router.setQuery({ sel: r.id })}
     selected={selected?.id}
     caption={t('dns.ipRules.title')}
-    selectable={session.isAdmin}
+    selectable={session.canEditSection('lists-and-rules')}
     bind:checked
     checkLabel={(r) => t('dns.ipRules.selectNamed', { pattern: r.pattern })}
   >
@@ -180,14 +180,14 @@
         <EmptyState compact title={t('dns.rules.emptyFiltered')} />
       {:else}
         <EmptyState compact icon="shield" title={t('dns.ipRules.empty')} text={t('dns.ipRules.emptyText')}>
-          <Button size="sm" variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>
+          <Button size="sm" variant="primary" icon="plus" disabled={!session.canEditSection('lists-and-rules')} onclick={() => (addOpen = true)}>
             {t('dns.ipRules.add')}
           </Button>
         </EmptyState>
       {/if}
     {/snippet}
   </Table>
-  {#if session.isAdmin}
+  {#if session.canEditSection('lists-and-rules')}
     <BulkBar
       count={checked.length}
       {busy}

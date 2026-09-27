@@ -20,8 +20,8 @@ import (
 // registerSettingsRoutes registers the settings endpoints (docs/API.md).
 func (s *Server) registerSettingsRoutes() {
 	s.route("GET /api/v1/settings", permRead, s.settingsGet)
-	s.route("PUT /api/v1/settings", permAdmin, s.settingsPut)
-	s.route("PATCH /api/v1/settings/{section}", permAdmin, s.settingsPatch)
+	s.route("PUT /api/v1/settings", permAdmin, s.settingsPut, routeSyncChecked)
+	s.route("PATCH /api/v1/settings/{section}", permAdmin, s.settingsPatch, routeSyncChecked)
 	s.route("GET /api/v1/settings/defaults", permRead, s.settingsDefaults)
 }
 
@@ -88,8 +88,17 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 		dst, apply = &cur.DHCP, func(a *settings.All) error { a.DHCP = cur.DHCP; return nil }
 	case "health":
 		dst, apply = &cur.Health, func(a *settings.All) error { a.Health = cur.Health; return nil }
+	case "clients":
+		dst, apply = &cur.Clients, func(a *settings.All) error { a.Clients = cur.Clients; return nil }
+	case "sync":
+		dst, apply = &cur.Sync, func(a *settings.All) error { a.Sync = cur.Sync; return nil }
+	case "network":
+		dst, apply = &cur.Network, func(a *settings.All) error { a.Network = cur.Network; return nil }
+	case "ntp":
+		dst, apply = &cur.NTP, func(a *settings.All) error { a.NTP = cur.NTP; return nil }
 	default:
-		return apperr.Invalid("section", "unknown settings section (dns, filter, downloadCache, cache, logs, web, updates, backups, dhcp, health)")
+		return apperr.Invalid("section", "unknown settings section (dns, filter, downloadCache, cache, logs, web, updates, "+
+			"backups, dhcp, health, clients, sync, network, ntp)")
 	}
 	if err := decode(w, r, dst); err != nil {
 		return err
@@ -101,12 +110,34 @@ func (s *Server) settingsPatch(w http.ResponseWriter, r *http.Request) error {
 // member paths) and responds with the new document. For every principal it
 // refuses a change of the web access that would lock the requester out
 // (checkWebLockout), a TLS minimum the requester's own connection does
-// not meet (checkTLSMinVersion) and the encrypted-DNS rules that need the
-// running system (checkEncryptedDNS).
+// not meet (checkTLSMinVersion), the encrypted-DNS rules that need the
+// running system (checkEncryptedDNS), a change of a member a follower
+// syncs (409), a sync source or proxy that is this PiCache and the
+// nightly channel in Docker. With ?dryRun=true every check runs and the
+// candidate document is returned; nothing is stored, notified or audited.
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(*settings.All) error) error {
+	dry := false
+	if v, ok := r.URL.Query()["dryRun"]; ok {
+		if len(v) != 1 || (v[0] != "true" && v[0] != "false") {
+			return apperr.Invalid("dryRun", "must be true or false")
+		}
+		dry = v[0] == "true"
+	}
 	old := s.d.Settings.Get()
-	next, err := s.d.Settings.Update(r.Context(), func(a *settings.All) error {
+	var tokenGiven, passwordGiven bool
+	update := s.d.Settings.Update
+	if dry {
+		update = s.d.Settings.DryRun
+	}
+	next, err := update(r.Context(), func(a *settings.All) error {
 		if err := fn(a); err != nil {
+			return err
+		}
+		tokenGiven, passwordGiven = a.Sync.Token != nil, a.Network.Proxy.Password != nil
+		if err := s.checkSynced(old, a); err != nil {
+			return err
+		}
+		if err := s.checkK1Settings(r, old, a); err != nil {
 			return err
 		}
 		if err := s.checkBackupDestination(r, old.Backups.Destination, a.Backups.Destination); err != nil {
@@ -135,7 +166,19 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, fn func(
 	if err != nil {
 		return err
 	}
-	if changed := changedSettings(old, next); len(changed) > 0 {
+	if dry {
+		return ok(w, next)
+	}
+	changed := changedSettings(old, next)
+	if tokenGiven {
+		changed = append(changed, "sync.token")
+	}
+	if passwordGiven {
+		changed = append(changed, "network.proxy.password")
+	}
+	slices.Sort(changed)
+	changed = slices.Compact(changed)
+	if len(changed) > 0 {
 		details := map[string][]string{"changed": changed}
 		if w := next.DHCP.Options.WPADURL; w != old.DHCP.Options.WPADURL {
 			// Every DHCP client uses this proxy configuration: record where

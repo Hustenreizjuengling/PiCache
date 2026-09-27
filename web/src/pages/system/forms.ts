@@ -26,6 +26,9 @@ export const RANGES = {
   loadPerCpuMax: { min: 1, max: 16 },
   temperatureMaxCelsius: { min: 50, max: 110 },
   logLevelMinutes: { min: 1, max: 240 },
+  seenRetentionDays: { min: 7, max: 365 },
+  ntpStratum: { min: 2, max: 15 },
+  syncIntervalMinutes: { min: 5, max: 1_440 },
 } satisfies Record<string, Range>
 
 /** The number fields of the logs settings (checked before saving). */
@@ -34,6 +37,7 @@ export const LOG_NUMBERS = [
   'cacheLogRetentionHours',
   'sessionRetentionDays',
   'statsRetentionDays',
+  'seenRetentionDays',
   'maxDbSizeMiB',
   'flushSeconds',
 ] as const

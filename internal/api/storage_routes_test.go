@@ -54,7 +54,7 @@ func (f *storageTestRuntime) EvictNow(context.Context) (cachestore.EvictResult, 
 func (f *storageTestRuntime) StartVerify(bool) error                        { return nil }
 func (f *storageTestRuntime) VerifyState() VerifyState                      { return VerifyState{} }
 func (f *storageTestRuntime) Backup(context.Context, io.Writer, bool) error { return nil }
-func (f *storageTestRuntime) StageRestore(context.Context, io.Reader) (*settings.All, error) {
+func (f *storageTestRuntime) StageRestore(context.Context, io.Reader, []string) (*settings.All, error) {
 	return nil, nil
 }
 func (f *storageTestRuntime) Restart()                      {}

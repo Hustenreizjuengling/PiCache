@@ -167,6 +167,7 @@
   onsubmit={save}
   ondelete={forwarder ? remove : undefined}
   deleteLabel={t('dns.forwarders.delete')}
+  section="local-dns"
 >
   {#snippet header()}
     {#if forwarder}

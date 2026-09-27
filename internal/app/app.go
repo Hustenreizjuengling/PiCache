@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/notify"
+	"github.com/hustenreizjuengling/picache/internal/ntp"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
@@ -82,7 +84,13 @@ type App struct {
 	dhcp     *dhcp.Service   // nil in tests that build parts of the App
 	backups  *backupScheduler
 	network  *netChecker
+	sync     *syncer     // the follower sync
+	ntp      *ntp.Server // the NTP server (answers on PICACHE_NTP_LISTEN while ntp.enabled)
 	api      *api.Server
+
+	outbound outboundProxy // the tunnel of network.proxy (proxyFor)
+	// routesTruncWarned: a route table beyond 4096 routes was logged once.
+	routesTruncWarned bool
 
 	ln listeners
 
@@ -106,10 +114,16 @@ type App struct {
 	verify   api.VerifyState
 
 	health     atomic.Pointer[api.Health]
-	restoredAt time.Time // set when a staged restore was applied at this start
-	restart    chan struct{}
+	restoredAt time.Time // set when a staged full restore was applied at this start
+	// restoreSections are the sections a staged restore applied at this
+	// start (nil: none); restoreBy is "cli" for `picache restore` (the
+	// audit row system.restore is written after the start).
+	restoreSections []string
+	restoreBy       string
+	restart         chan struct{}
 
 	appLog      *applog.Log                   // the application log of the logger (nil: another handler)
+	logDrops    dropTracker                   // recent drops of the log sinks (health check "logging")
 	hostSampler *hostinfo.Sampler             // host resources (built with the storage manager)
 	host        atomic.Pointer[hostinfo.Info] // the last sample
 
@@ -165,12 +179,21 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger, hup <-chan o
 	if err := a.dropRawCapability(); err != nil {
 		return err
 	}
+	// The log file and syslog sinks start writing now: a log file is never
+	// created as root.
+	if a.appLog != nil {
+		a.prepareLogDir()
+		a.appLog.StartSinks()
+	}
 	if os.Geteuid() == 0 {
 		log.Warn("running as root; use the provided systemd unit or set PICACHE_RUN_AS (Docker)")
 	}
 	if err := a.prepareDirs(); err != nil {
 		return err
 	}
+	// The saved listeners of this start: listeners.json follows what was
+	// bound, listeners.failed.json keeps a set that fell back.
+	a.finishListenerFiles()
 
 	// 3. Open state (with restore rollback) and build components.
 	restored, err := a.applyStagedRestore()
@@ -260,6 +283,19 @@ func (a *App) prepareDirs() error {
 	return nil
 }
 
+// prepareLogDir creates the directory of a PICACHE_LOG_FILE below
+// <data dir>/logs (0750). The unit's LogsDirectory creates
+// /var/log/picache, and a file directly in the data directory needs none.
+// A failure is left to the file sink, which reports it (health check
+// logging).
+func (a *App) prepareLogDir() {
+	logs := filepath.Join(filepath.Clean(a.cfg.DataDir), "logs")
+	if a.cfg.LogFile == "" || !strings.HasPrefix(filepath.Clean(a.cfg.LogFile), logs+string(filepath.Separator)) {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(filepath.Clean(a.cfg.LogFile)), 0o750)
+}
+
 func (a *App) build(ctx context.Context) error {
 	var err error
 	log := a.log
@@ -290,6 +326,15 @@ func (a *App) build(ctx context.Context) error {
 	if a.box, err = secrets.Open(a.paths.MasterKeyFile); err != nil {
 		return err
 	}
+	// The sync token and the proxy password are sealed with the master
+	// key (settings_secrets).
+	a.set.SetSealer(a.box.Seal, a.box.Open)
+	a.outbound.a = a
+	// PICACHE_INITIAL_CONFIG: once, on the first start, before any
+	// listener serves and before the admin password is provisioned.
+	if err := a.applyInitialConfig(ctx); err != nil {
+		return err
+	}
 	if a.instanceID, err = loadInstanceID(filepath.Join(a.cfg.DataDir, "instance-id")); err != nil {
 		return err
 	}
@@ -301,7 +346,8 @@ func (a *App) build(ctx context.Context) error {
 	a.set.Subscribe(func(_, _ *settings.All) { a.refreshEncrypted() })
 	host, _ := os.Hostname()
 	if a.notify, err = notify.New(ctx, a.cdb, a.box,
-		notify.Options{InstanceID: a.instanceID, Hostname: host, Version: version.Version}, log); err != nil {
+		notify.Options{InstanceID: a.instanceID, Hostname: host, Version: version.Version, Proxy: a.proxyFor(proxyNotifications)},
+		log); err != nil {
 		return fmt.Errorf("notify: %w", err)
 	}
 
@@ -312,12 +358,18 @@ func (a *App) build(ctx context.Context) error {
 	}
 	lookup46 := func(ctx context.Context, host string) ([]netip.Addr, error) { return a.up.LookupIP(ctx, host, true) }
 	lookup4 := func(ctx context.Context, host string) ([]netip.Addr, error) { return a.up.LookupIP(ctx, host, false) }
-	fetch := newFetchClient(lookup46)
+	fetch := newFetchClient(lookup46, a.proxyFor(proxyLists))
 
 	if a.clients, err = clients.New(ctx, a.cdb, a.ldb, log); err != nil {
 		return fmt.Errorf("clients: %w", err)
 	}
 	a.clients.SetPTRResolver(a.lookupClientName)
+	// The name sources, the seen retention and the WHOIS inputs follow the
+	// settings; RDAP lookups go out directly (never through the proxy).
+	a.clients.ApplyConfig(clients.ConfigFrom(a.set.Get()))
+	a.set.Subscribe(func(_, n *settings.All) { a.clients.ApplyConfig(clients.ConfigFrom(n)) })
+	a.clients.SetWhoisClient(newWhoisClient(lookup46), "PiCache/"+version.Version)
+	a.refreshRoutes()
 	a.clients.SetFlushInterval(func() time.Duration { return time.Duration(a.set.Get().Logs.FlushSeconds) * time.Second })
 	if a.filter, err = filter.New(ctx, a.cdb, a.set, fetch, a.paths.ListsDir, log); err != nil {
 		return fmt.Errorf("filter: %w", err)
@@ -364,6 +416,16 @@ func (a *App) build(ctx context.Context) error {
 		}
 		log.Warn("configuration restored from backup: accounts, API tokens and the audit log were kept; everyone has to sign in again")
 	}
+	if a.restoreSections != nil {
+		// The selection of the staged file is no longer needed; a restore
+		// staged by `picache restore` is audited now (username cli).
+		if _, err := a.cdb.W.ExecContext(ctx, `DELETE FROM app_meta WHERE key IN (?, ?)`, metaRestoreSections, metaRestoreBy); err != nil {
+			log.Warn("restore: could not remove the selection from app_meta", slog.Any("err", err))
+		}
+		if a.restoreBy == "cli" {
+			a.auth.Audit(ctx, &auth.Principal{Username: "cli"}, "", "system.restore", "", map[string]any{"sections": a.restoreSections})
+		}
+	}
 	if pw := a.cfg.AdminPassword; pw != "" {
 		err := a.auth.Provision(ctx, a.cfg.AdminUser, pw)
 		a.cfg.AdminPassword = ""
@@ -381,7 +443,17 @@ func (a *App) build(ctx context.Context) error {
 	service := runsAsSystemdService(caps.Systemd)
 	a.hostSampler = a.newHostSampler()
 	a.sampleHost()
-	releases := &update.Client{HTTP: newFetchClient(lookup46)}
+	releases := &update.Client{HTTP: newFetchClient(lookup46, a.proxyFor(proxyUpdateCheck))}
+	// A changed outbound proxy applies to the next connection: idle
+	// connections made with the previous setting are closed (list
+	// downloads, the release check, notifications).
+	a.set.Subscribe(func(o, n *settings.All) {
+		if proxyChanged(o, n) {
+			fetch.CloseIdleConnections()
+			releases.HTTP.CloseIdleConnections()
+			a.notify.CloseIdleConnections()
+		}
+	})
 	a.updates = newUpdater(a.cfg.DataDir, version.Version, a.cdb, a.set, func() string {
 		_, err := os.Stat(update.HelperMarker)
 		return updateMode(caps.Container, service, err == nil)
@@ -432,13 +504,27 @@ func (a *App) build(ctx context.Context) error {
 	a.sni = sni.New(sni.Deps{Settings: a.set, Services: a.services, Lookup: lookup4, Clients: a.clients,
 		Logs: a.logs, ACL: a.acl, Log: log})
 	a.network = newNetChecker(a.netSources(), log)
+	a.ntp = ntp.New(ntp.Deps{
+		Settings: func() (bool, int, int, int) {
+			s := a.set.Get()
+			return s.NTP.Enabled, s.NTP.Stratum, s.DNS.RateLimitIPv4Prefix, s.DNS.RateLimitIPv6Prefix
+		},
+		Allowed: func(ip netip.Addr) bool { return a.acl.Get().Allowed(ip) },
+		Refused: a.dns.CountRefused, Clock: ntp.ReadClock, Log: log.With(slog.String("component", "ntp")),
+	})
+	a.sync = newSyncer(a)
+	a.sync.load(ctx)
+	if !a.restoredAt.IsZero() || a.restoreSections != nil {
+		a.sync.forget(ctx) // the next sync applies the primary's configuration again
+	}
+	a.set.Subscribe(a.sync.settingsChanged)
 	a.api = api.New(api.Deps{
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
 		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
 		Parental: a.parental, Network: a.network, DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, AppLog: a.appLog, Diag: a,
-		Encrypted: a,
-		UI:        webui.Handler(), Log: log,
+		Encrypted: a, Listeners: a, Sync: a.sync,
+		UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	return nil
@@ -561,7 +647,7 @@ func (a *App) serve(ctx context.Context) error {
 	for _, fn := range []func(context.Context){
 		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
 		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop, a.updates.run,
-		a.notify.Start, a.backups.Start, a.network.Start, a.dhcp.Start,
+		a.notify.Start, a.backups.Start, a.network.Start, a.dhcp.Start, a.sync.Start,
 		func(ctx context.Context) { a.acl.Run(ctx.Done(), time.Minute) }, // follows prefix changes within a minute
 		a.maintenanceLoop, // web ACL, web access reset, web certificate: every minute and on SIGHUP
 	} {
@@ -577,6 +663,9 @@ func (a *App) serve(ctx context.Context) error {
 	a.refreshEncrypted()
 	dot, dohServers := a.serveEncrypted(goRun)
 	goRun("dns", func() error { return a.dns.Serve(ctx, a.ln.dnsUDP, dnsTCP, dot) })
+	if len(a.ln.ntp) > 0 {
+		goRun("ntp", func() error { return a.ntp.Serve(ctx, a.ln.ntp) })
+	}
 	for _, ln := range a.ln.sni {
 		limited := netutil.LimitListener(ln, aclFn, 256, 4096)
 		goRun("sni", func() error { return a.sni.Serve(ctx, limited) })
@@ -728,12 +817,14 @@ func (a *App) closeState() {
 	}
 }
 
-// newFetchClient is the HTTP client for list and cache-domains downloads:
-// resolution via the bypass resolver, SSRF guard (private destinations only
-// with netutil.WithAllowPrivate), no redirects (callers follow them
-// manually), no environment proxy.
-func newFetchClient(lookup netutil.Resolver) *http.Client {
-	d := &netutil.SafeDialer{Resolve: lookup, Timeout: 15 * time.Second}
+// newFetchClient is the HTTP client for list and cache-domains downloads
+// and the release check: resolution via the bypass resolver, SSRF guard
+// (private destinations only with netutil.WithAllowPrivate), no redirects
+// (callers follow them manually), no environment proxy; through the
+// outbound proxy while proxy returns a tunnel (network.proxyFor), which is
+// asked for a tunnel to the checked address.
+func newFetchClient(lookup netutil.Resolver, proxy func(context.Context) *netutil.Tunnel) *http.Client {
+	d := &netutil.SafeDialer{Resolve: lookup, Timeout: 15 * time.Second, Proxy: proxy}
 	return &http.Client{
 		Timeout: 5 * time.Minute,
 		Transport: &http.Transport{
@@ -746,6 +837,41 @@ func newFetchClient(lookup netutil.Resolver) *http.Client {
 			IdleConnTimeout:       60 * time.Second,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// newWhoisClient is the HTTP client of the RDAP lookups (clients package):
+// resolution via the bypass resolver, public destinations only (no private
+// exception), TLS 1.2+ against the system roots, never a proxy; the
+// clients package bounds the redirects (https only) and the time.
+func newWhoisClient(lookup netutil.Resolver) *http.Client {
+	d := &netutil.SafeDialer{Resolve: lookup, Timeout: 10 * time.Second,
+		AllowPrivate: func(context.Context) bool { return false }}
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			Proxy:               nil,
+			DialContext:         d.DialContext,
+			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+			ForceAttemptHTTP2:   true,
+			TLSHandshakeTimeout: 10 * time.Second,
+			MaxIdleConnsPerHost: 1,
+			IdleConnTimeout:     60 * time.Second,
+		},
+	}
+}
+
+// refreshRoutes reads the route table (the snapshot of iface: identifiers
+// and GET /network/interfaces) at the start, every maintenance tick and on
+// SIGHUP; a change drops the cached identities.
+func (a *App) refreshRoutes() {
+	changed, truncated := netutil.RefreshRoutes()
+	if truncated && !a.routesTruncWarned {
+		a.routesTruncWarned = true
+		a.log.Warn("the route table has more than 4096 routes: iface: identifiers use the first 4096")
+	}
+	if changed && a.clients != nil {
+		a.clients.InterfacesChanged()
 	}
 }
 

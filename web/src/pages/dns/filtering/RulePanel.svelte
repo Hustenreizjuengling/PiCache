@@ -168,6 +168,7 @@
   onsubmit={save}
   ondelete={rule && !device ? remove : undefined}
   deleteLabel={t('dns.rules.delete')}
+  section="lists-and-rules"
 >
   {#snippet header()}
     {#if rule && !device}

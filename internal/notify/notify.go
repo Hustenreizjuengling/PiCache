@@ -43,6 +43,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 )
 
@@ -184,6 +185,9 @@ type Options struct {
 	InstanceID string
 	Hostname   string
 	Version    string
+	// Proxy returns the outbound proxy the channels use
+	// (network.proxyFor.notifications; nil or a nil result: none).
+	Proxy func(ctx context.Context) *netutil.Tunnel
 }
 
 // Bounds and timings.
@@ -246,7 +250,7 @@ func New(ctx context.Context, d *db.DB, box *secrets.Box, opt Options, log *slog
 	}
 	s := &Service{
 		db: d, box: box, log: log.With(slog.String("component", "notify")), opt: opt,
-		client: newClient(), now: time.Now, workers: map[string]*worker{},
+		client: newClient(opt.Proxy), now: time.Now, workers: map[string]*worker{},
 		tests: make(chan struct{}, maxConcurrent),
 	}
 	s.sendCtx, s.cancelSend = context.WithCancel(context.Background())
@@ -258,6 +262,16 @@ func New(ctx context.Context, d *db.DB, box *secrets.Box, opt Options, log *slog
 		s.workers[c.ID] = newWorker(c.Channel, c.sealed)
 	}
 	return s, nil
+}
+
+// CloseIdleConnections closes the idle connections of the delivery client,
+// so the next message dials again: after the outbound proxy
+// (network.proxyFor.notifications) changed, no message reuses a
+// connection made with the previous setting.
+func (s *Service) CloseIdleConnections() {
+	if s != nil {
+		s.client.CloseIdleConnections()
+	}
 }
 
 // Start runs the delivery workers until ctx ends (blocks until done).

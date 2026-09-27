@@ -136,14 +136,14 @@ func TestShortIdentityWithoutMAC(t *testing.T) {
 	if len(r.arpKick) != 1 {
 		t.Fatal("an early neighbour read must be requested")
 	}
-	e, _ := r.cache.peek(ip("fd00::5"))
+	e, _ := r.cache.peek(cacheKey{ip: ip("fd00::5"), iface: true})
 	if e.expires == 0 || e.expires > before.Add(shortIdentityTTL+time.Second).UnixNano() {
 		t.Fatalf("expiry %d: want at most 2 s", e.expires)
 	}
 	// Expired entries are resolved again.
 	r.cacheMu.Lock()
 	e.expires = time.Now().Add(-time.Millisecond).UnixNano()
-	r.cache.put(ip("fd00::5"), e)
+	r.cache.put(cacheKey{ip: ip("fd00::5"), iface: true}, e)
 	r.cacheMu.Unlock()
 	next := map[netip.Addr]string{ip("192.168.1.5"): "aa:00:00:00:00:05", ip("fd00::5"): "aa:00:00:00:00:05"}
 	table.Store(&next)
@@ -152,7 +152,7 @@ func TestShortIdentityWithoutMAC(t *testing.T) {
 	if id.Name != "laptop" || id.MAC != "aa:00:00:00:00:05" {
 		t.Fatalf("after the read: %+v", id)
 	}
-	if e, _ := r.cache.peek(ip("fd00::5")); e.expires != 0 {
+	if e, _ := r.cache.peek(cacheKey{ip: ip("fd00::5"), iface: true}); e.expires != 0 {
 		t.Errorf("an identity with MAC is cached until invalidated, expiry %d", e.expires)
 	}
 	// Off-link sources (routed) never ask for a read.
@@ -172,7 +172,7 @@ func TestEarlyNeighbourReadsCoalesced(t *testing.T) {
 			readARP:  func() map[netip.Addr]string { reads.Add(1); return map[netip.Addr]string{} },
 			gateways: func() []netip.Addr { return nil },
 			arpKick:  make(chan struct{}, 1),
-			cache:    newLRU[netip.Addr, cachedIdentity](8),
+			cache:    newLRU[cacheKey, cachedIdentity](8),
 		}
 		empty := map[netip.Addr]string{}
 		r.arp.Store(&empty)
@@ -370,7 +370,7 @@ func TestPrimeNewAddress(t *testing.T) {
 	if id := r.Identify(ip("fd00::7a")); id.ClientID != 0 {
 		t.Errorf("unanswered probe: %+v", id)
 	}
-	if e, _ := r.cache.peek(ip("fd00::7a")); e.expires == 0 {
+	if e, _ := r.cache.peek(cacheKey{ip: ip("fd00::7a"), iface: true}); e.expires == 0 {
 		t.Error("an unresolved address must be cached briefly")
 	}
 

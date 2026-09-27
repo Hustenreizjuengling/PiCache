@@ -8,6 +8,8 @@
   controls, safe search and protection lists apply even while blocking is
   paused. Each group but Default can use a family-safe resolver (a preset
   of upstreams that filter adult content themselves).
+  On a follower that syncs parental controls a banner says so and Edit is
+  left out (overrides and pauses stay this PiCache's own).
   Query: ?edit=<group id> opens the edit panel of a group.
 -->
 <script lang="ts">
@@ -24,6 +26,7 @@
   import { ordered, whenText } from './parental/plan'
   import { presetName } from './shared/resolver'
   import TestBox from './parental/TestBox.svelte'
+  import SyncedNotice from './shared/SyncedNotice.svelte'
   import UntilDialog from './parental/UntilDialog.svelte'
 
   // Faster while a category switch waits for its list's first download.
@@ -64,7 +67,7 @@
   const onlyDefault = $derived(!!list && list.every((g) => g.groupId === DEFAULT_GROUP_ID))
 
   const editId = $derived(Number(router.param('edit')) || 0)
-  const editing = $derived(session.isAdmin ? list?.find((g) => g.groupId === editId) : undefined)
+  const editing = $derived(session.canEditSection('parental') ? list?.find((g) => g.groupId === editId) : undefined)
 
   function replace(g: GroupControls) {
     groups.set((groups.data ?? []).map((x) => (x.groupId === g.groupId ? g : x)))
@@ -173,6 +176,7 @@
 </script>
 
 <div class="page">
+  <SyncedNotice section="parental" />
   <p class="intro muted">{t('dns.parental.intro')}</p>
   {#if hostDiffers()}
     <Notice tone="info" icon="clock">
@@ -220,7 +224,7 @@
   <Hints />
 </div>
 
-{#if session.isAdmin}
+{#if session.canEditSection('parental')}
   <ControlsPanel
     bind:open={() => !!editing, (v) => !v && router.setQuery({ edit: null })}
     group={editing}

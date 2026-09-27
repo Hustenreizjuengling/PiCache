@@ -2,7 +2,7 @@
 # PiCache installer for Debian 12/13 (bare metal, VM, Proxmox LXC).
 #
 #   sudo sh deploy/install.sh --binary ./picache-linux-amd64 [--with-host-apply] [--without-updater]
-#                             [--with-dhcp | --without-dhcp]
+#                             [--with-dhcp | --without-dhcp] [--nightly]
 #   sudo sh deploy/install.sh --uninstall [--purge [--yes]]
 #
 # Idempotent: run it again with a newer binary to upgrade. It installs only
@@ -18,6 +18,9 @@ ENV_FILE=$CONF_DIR/picache.env
 CRED_DIR=$CONF_DIR/credentials
 HOST_APPLY_MARKER=$CONF_DIR/host-apply.enabled
 UPDATER_MARKER=$CONF_DIR/updater.enabled
+# The update helper installs nightly builds only while this root-owned file
+# exists (--nightly; removed by --uninstall).
+NIGHTLY_MARKER=$CONF_DIR/nightly.enabled
 # Marker and unit drop-in of --with-dhcp before 0.8.0 (the base unit carries
 # the drop-in's content now); every run removes them.
 OLD_DHCP_MARKER=$CONF_DIR/dhcp.enabled
@@ -49,7 +52,7 @@ die() {
 usage() {
 	cat <<'EOF'
 usage: install.sh --binary PATH [--with-host-apply] [--without-updater]
-                  [--with-dhcp | --without-dhcp]
+                  [--with-dhcp | --without-dhcp] [--nightly]
        install.sh --uninstall [--purge [--yes]]
 
   --binary PATH       the picache binary to install (for example the
@@ -65,6 +68,10 @@ usage: install.sh --binary PATH [--with-host-apply] [--without-updater]
   --without-dhcp      prevent it (PICACHE_DHCP=off): the DHCP server can then
                       not be switched on in the web UI (hosts that run another
                       DHCP server)
+  --nightly           allow the update helper to install nightly builds (the
+                      update channel "nightly" in the web UI; untested builds
+                      of main). Stays until --uninstall or
+                      rm /etc/picache/nightly.enabled
   --uninstall         stop and remove PiCache; configuration and data are kept
   --purge             with --uninstall: also unmount the NAS shares of the
                       web UI and delete the configuration, the data, the
@@ -234,9 +241,26 @@ env_template() {
 # Extra host names for the web UI (IP addresses and localhost always work).
 #PICACHE_WEB_HOSTS=picache.lan
 
+# NTP server for the network (answers while it is switched on in the web UI).
+#PICACHE_NTP_LISTEN=:123
+
 # Logging: debug | info | warn | error, and text | json.
 #PICACHE_LOG_LEVEL=info
 #PICACHE_LOG_FORMAT=text
+# Also write the log to a file (rotated at 10 MiB, 5 compressed generations;
+# on an SD card this adds writes) or send it to a syslog server (plain text).
+#PICACHE_LOG_FILE=/var/log/picache/picache.log
+#PICACHE_LOG_SYSLOG=udp://192.168.1.10:514
+# Go profiles on /debug/pprof/ for admins on this machine (on | off).
+#PICACHE_PPROF=off
+
+# Optional: a settings document (JSON, like `picache config get`) applied
+# once on the first start. Readable by the picache group only (0640).
+#PICACHE_INITIAL_CONFIG=/etc/picache/initial-config.json
+
+# Optional: the proxy the update helper and `sudo picache update` download
+# releases through (http://host:port or socks5://host:port, no user name).
+#PICACHE_UPDATE_PROXY=http://192.168.1.10:3128
 
 # Optional: create the first admin at start instead of using the setup token.
 # The file (at least 10 characters) must be readable by the picache group.
@@ -694,7 +718,7 @@ do_uninstall() {
 	done
 	# picache.prev, a staged download and the <unit>.prev copies are left by
 	# `picache update`.
-	rm -f "$HOST_APPLY_MARKER" "$BIN" "$BIN.prev" "$(dirname "$BIN")/.picache.update" "$UNIT_DIR"/picache*.prev
+	rm -f "$HOST_APPLY_MARKER" "$NIGHTLY_MARKER" "$BIN" "$BIN.prev" "$(dirname "$BIN")/.picache.update" "$UNIT_DIR"/picache*.prev
 	for f in $DOC_FILES; do
 		rm -f "$DOC_DIR/$f"
 	done
@@ -820,6 +844,7 @@ with_host_apply=0
 without_updater=0
 with_dhcp=0
 without_dhcp=0
+nightly=0
 uninstall=0
 purge=0
 assume_yes=0
@@ -848,6 +873,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--without-dhcp)
 		without_dhcp=1
+		shift
+		;;
+	--nightly)
+		nightly=1
 		shift
 		;;
 	--uninstall)
@@ -942,6 +971,13 @@ elif [ "$without_dhcp" -eq 1 ]; then
 fi
 if [ "$legacy_dhcp_on" -eq 1 ] && [ "$without_dhcp" -eq 0 ]; then
 	seed_dhcp_markers
+fi
+if [ "$nightly" -eq 1 ]; then
+	# A regular file owned by root: the service cannot create it, so it
+	# cannot move this host onto nightly builds by itself.
+	rm -f "$NIGHTLY_MARKER"
+	install -m 0644 -o root -g root /dev/null "$NIGHTLY_MARKER"
+	say "nightly builds allowed (--nightly): choose the update channel \"nightly\" in the web UI (System -> Updates)"
 fi
 
 systemctl daemon-reload

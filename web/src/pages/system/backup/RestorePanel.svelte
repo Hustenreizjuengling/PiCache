@@ -5,18 +5,22 @@
   verifies the password and the file and stages it for the next start;
   "Restart now" applies it. The password is dropped when the dialog closes.
   A restore is destructive: without that right (or where the host turns
-  destructive actions off) only the explanation is shown. When the restored
+  destructive actions off) only the explanation is shown. The dialog
+  restores everything (the default) or only the chosen sections, with the
+  dependency rule (clients and groups need the sections that refer to the
+  groups); the answer names what the restart restores. When the restored
   settings would keep this browser out of the web UI, or turn plain DNS off
   without an encrypted DNS listener on this host, the server says so.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
-  import { api, toApiError, type ApiError, type RestoreResult } from '$lib/api'
-  import { errorText } from '$lib/errors'
+  import { api, RESTORE_SECTIONS, toApiError, type ApiError, type RestoreResult, type RestoreSection } from '$lib/api'
+  import { errorText, fieldError } from '$lib/errors'
   import { formatBytes } from '$lib/format'
   import { session } from '$lib/session.svelte'
-  import { Button, Dialog, Field, Input, Notice, Panel, toast } from '$lib/ui'
+  import { Button, Dialog, Field, Input, Notice, Panel, Segmented, toast } from '$lib/ui'
   import RestartButton from '../RestartButton.svelte'
+  import SectionPicker from '../SectionPicker.svelte'
   import { checkBackupFile } from './file'
 
   let input = $state<HTMLInputElement>()
@@ -51,11 +55,28 @@
   )
   const passwordGeneral = $derived(passwordErr && !passwordErr.field ? errorText(passwordErr) : '')
 
+  /**
+   * The staged restore was asked for chosen sections (?sections=): the
+   * server merges them at the next start and keeps the sessions, even when
+   * every section was ticked. Only a restore of everything signs everyone out.
+   */
+  let partial = $state(false)
+
+  // ---- what to restore: everything (the default) or chosen sections
+  let scope = $state<'all' | 'some'>('all')
+  let sections = $state<RestoreSection[]>([])
+  const sectionsError = $derived(
+    fieldError(passwordErr, 'sections') ??
+      (passwordSubmitted && scope === 'some' && sections.length === 0 ? t('system.backup.restore.sectionsRequired') : undefined),
+  )
+
   function restore() {
     if (!file || fileError) return
     password = ''
     passwordSubmitted = false
     passwordErr = null
+    scope = 'all'
+    sections = []
     confirmOpen = true
   }
 
@@ -64,18 +85,19 @@
     const f = file
     passwordSubmitted = true
     passwordErr = null
-    if (!f || !password) return
+    if (!f || !password || (scope === 'some' && sections.length === 0)) return
     uploading = true
     uploadErr = undefined
     try {
-      result = await api.system.restore(f, password)
+      result = await api.system.restore(f, password, scope === 'some' ? sections : undefined)
+      partial = scope === 'some'
       confirmOpen = false
       file = undefined
       toast.success(t('system.backup.restore.staged'))
     } catch (err) {
       const ae = toApiError(err)
-      if (ae.field === 'password' || ae.code === 'too_many_requests') {
-        passwordErr = ae // stays in the dialog: try again
+      if (ae.field === 'password' || ae.field === 'sections' || ae.code === 'too_many_requests') {
+        passwordErr = ae // stays in the dialog: try again (another password or selection)
       } else {
         confirmOpen = false
         uploadErr = ae
@@ -100,11 +122,16 @@
     {#if result}
       <Notice tone="ok" title={t('system.backup.restore.stagedTitle')}>
         <p>{t('system.backup.restore.stagedText')}</p>
+        {#if partial}
+          <p>{t('system.backup.restore.stagedSections', { sections: result.sections.map((s) => t(`system.section.${s}`)).join(', ') })}</p>
+        {:else}
+          <p>{t('system.backup.restore.stagedAll')}</p>
+        {/if}
         {#snippet actions()}
           <RestartButton
             variant="primary"
             label={t('system.backup.restore.restartNow')}
-            message={t('system.backup.restore.restartText')}
+            message={partial ? t('system.backup.restore.restartTextSome') : t('system.backup.restore.restartText')}
           />
         {/snippet}
       </Notice>
@@ -175,13 +202,31 @@
 <Dialog
   bind:open={confirmOpen}
   title={t('system.backup.restore.confirmTitle', { name: file?.name ?? '' })}
-  size="sm"
+  size={scope === 'some' ? 'md' : 'sm'}
   dismissible={!uploading}
   onclose={confirmClosed}
 >
   <form id="restore-{formId}" class="stack" onsubmit={upload} novalidate>
-    <p class="small muted">{t('system.backup.restore.confirmText')}</p>
+    <p class="small muted">{scope === 'some' ? t('system.backup.restore.confirmTextSome') : t('system.backup.restore.confirmText')}</p>
     {#if passwordGeneral}<Notice tone="fail">{passwordGeneral}</Notice>{/if}
+    <div class="stack-sm">
+      <Segmented
+        label={t('system.backup.restore.scope')}
+        value={scope}
+        options={[
+          { value: 'all', label: t('system.backup.restore.scopeAll') },
+          { value: 'some', label: t('system.backup.restore.scopeSome') },
+        ]}
+        onchange={(v) => (scope = v === 'some' ? 'some' : 'all')}
+      />
+      {#if scope === 'all'}
+        <p class="small muted">{t('system.backup.restore.scopeAllHelp')}</p>
+      {/if}
+    </div>
+    {#if scope === 'some'}
+      <SectionPicker all={RESTORE_SECTIONS} bind:value={sections} legend={t('system.backup.restore.sections')} error={sectionsError} />
+      <p class="small muted">{t('system.backup.restore.sectionsNote')}</p>
+    {/if}
     <!-- Lets password managers offer the right account's password. -->
     <input
       class="visually-hidden"
@@ -196,7 +241,7 @@
     <Field
       label={t('system.backup.restore.password')}
       error={passwordError}
-      help={t('system.backup.restore.passwordHelp')}
+      help={scope === 'some' ? t('system.backup.restore.passwordHelpSome') : t('system.backup.restore.passwordHelp')}
     >
       <Input type="password" bind:value={password} autocomplete="current-password" maxlength={1024} required />
     </Field>

@@ -299,6 +299,8 @@ func (a *All) normalize() {
 	}
 	o.ExtraSearchDomains = search
 	o.WPADURL = strings.TrimSpace(o.WPADURL)
+	a.Sync.normalize()
+	a.Network.normalize()
 }
 
 // Validate checks all sections and returns an apperr.Invalid error naming
@@ -553,6 +555,9 @@ func (a *All) Validate() error {
 	if g.FlushSeconds < MinFlushSeconds || g.FlushSeconds > MaxFlushSeconds {
 		return apperr.Invalid("logs.flushSeconds", "must be between %d and %d", MinFlushSeconds, MaxFlushSeconds)
 	}
+	if g.SeenRetentionDays < MinSeenRetentionDays || g.SeenRetentionDays > MaxSeenRetentionDays {
+		return apperr.Invalid("logs.seenRetentionDays", "must be between %d and %d", MinSeenRetentionDays, MaxSeenRetentionDays)
+	}
 
 	hl := a.Health
 	if hl.MemoryAvailableMinPercent < 1 || hl.MemoryAvailableMinPercent > 50 {
@@ -587,7 +592,9 @@ func (a *All) Validate() error {
 	if err := w.validateAccess(); err != nil {
 		return err
 	}
-	// updates: two switches, any combination is valid.
+	if err := a.Updates.validate(); err != nil {
+		return err
+	}
 
 	b := a.Backups
 	switch b.Schedule {
@@ -607,7 +614,16 @@ func (a *All) Validate() error {
 	if b.Destination != BackupsLocal && !targetIDRE.MatchString(b.Destination) {
 		return apperr.Invalid("backups.destination", "must be local or the id of a storage target")
 	}
-	return a.DHCP.validate()
+	if err := a.DHCP.validate(); err != nil {
+		return err
+	}
+	if err := a.Sync.validate(); err != nil {
+		return err
+	}
+	if err := a.Network.validate(); err != nil {
+		return err
+	}
+	return a.NTP.validate()
 }
 
 // validate checks the form of the DHCP settings. The interface, the range,

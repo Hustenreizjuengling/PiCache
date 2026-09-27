@@ -72,7 +72,7 @@ func TestRestore012Database(t *testing.T) {
 		`INSERT INTO dns_records (id, name, type, value, ttl, enabled, comment, created_at, updated_at)
 			VALUES (3, 'nas.lan', 'A', '192.168.1.5', 300, 1, 'nas', 1, 1), (7, 'www.lan', 'CNAME', 'nas.lan', 60, 0, '', 1, 1)`)
 
-	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)), nil); err != nil {
 		t.Fatalf("a backup of 0.12 must be accepted: %v", err)
 	}
 	closeLive(a)

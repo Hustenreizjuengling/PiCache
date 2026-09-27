@@ -125,11 +125,20 @@
 
   // Anonymised addresses (logs.anonymizeClientIps, also of entries logged while it was on) name a
   // whole network, not the device.
-  const canBlockDevice = $derived(
+  const deviceKnown = $derived(
     session.isAdmin && !!settings && !settings.logs.anonymizeClientIps && !!event && !looksAnonymised(event.clientIp),
   )
+  // Blocking writes the DNS settings, a device rule a client, a group and a
+  // rule: each may be synced from a primary (read-only here).
+  const canBlockDevice = $derived(deviceKnown && !session.isSynced('dns-settings'))
   /** "Only for this device": next to the rule action, for an entry with a client address. */
-  const canDeviceRule = $derived(!!ruleAction && canBlockDevice && !!event?.clientIp)
+  const canDeviceRule = $derived(
+    !!ruleAction &&
+      deviceKnown &&
+      !!event?.clientIp &&
+      !session.isSynced('clients-and-groups') &&
+      !session.isSynced('lists-and-rules'),
+  )
   /** The IP rule that blocked an answer (ruleId of blocked-ip entries names an IP rule). */
   const ipRuleId = $derived(event?.status === 'blocked-ip' ? event.ruleId : undefined)
 
@@ -137,7 +146,7 @@
   // group and that is not Default (which covers every unknown device).
   const pauseGroup = $derived.by(() => {
     const ids = explain?.groupIds ?? []
-    if (!canBlockDevice || ids.length !== 1 || ids[0] === DEFAULT_GROUP_ID) return undefined
+    if (!deviceKnown || ids.length !== 1 || ids[0] === DEFAULT_GROUP_ID) return undefined
     return groups?.find((g) => g.id === ids[0])
   })
 
@@ -294,7 +303,7 @@
             <p class="small">{t('dns.queryLog.rebindAllowedBy', { entry: rebindAllowedBy })}</p>
           {/if}
           {#snippet actions()}
-            {#if session.isAdmin && settings && !rebindAllowedBy && !hidden}
+            {#if session.canEditSection('dns-settings') && settings && !rebindAllowedBy && !hidden}
               <span class="long">
                 <Button size="sm" variant="primary" icon="shield-off" loading={allowing} onclick={allowRebinding}>
                   {t('dns.queryLog.allowRebinding', { name: rebindName })}
@@ -327,7 +336,7 @@
           <Button
             variant={ruleAction === 'allow' && event.status !== 'blocked-rebind' ? 'primary' : 'secondary'}
             icon={ruleAction === 'allow' ? 'shield-off' : 'shield'}
-            disabled={!session.isAdmin}
+            disabled={!session.canEditSection('lists-and-rules')}
             onclick={() => createRule()}
           >
             {ruleAction === 'allow' ? t('dns.queryLog.allowDomain') : t('dns.queryLog.blockDomain')}

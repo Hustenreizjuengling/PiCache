@@ -52,6 +52,27 @@ var migrations = []string{
 	`ALTER TABLE auth_users ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer'
 		CHECK (role IN ('admin', 'viewer'));
 	UPDATE auth_users SET role = 'admin';`,
+	// v3 (0.15.0): the token scope "sync" (a follower's credential, the
+	// configuration export only). SQLite cannot change a CHECK constraint:
+	// the table is rebuilt (copy, drop, rename; it has no indexes of its
+	// own besides the automatic one of hash). Nothing references
+	// auth_tokens, so nothing cascades; a fresh database runs the same
+	// steps, so both have the same schema.
+	`CREATE TABLE auth_tokens_v3 (
+		id         INTEGER PRIMARY KEY,
+		hash       BLOB    NOT NULL UNIQUE,
+		user_id    INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+		name       TEXT    NOT NULL,
+		scope      TEXT    NOT NULL CHECK (scope IN ('read', 'admin', 'sync')),
+		prefix     TEXT    NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL DEFAULT 0,
+		last_used  INTEGER NOT NULL DEFAULT 0
+	);
+	INSERT INTO auth_tokens_v3 (id, hash, user_id, name, scope, prefix, created_at, expires_at, last_used)
+		SELECT id, hash, user_id, name, scope, prefix, created_at, expires_at, last_used FROM auth_tokens;
+	DROP TABLE auth_tokens;
+	ALTER TABLE auth_tokens_v3 RENAME TO auth_tokens;`,
 }
 
 // Migrations returns the schema steps of component "auth" in picache.db

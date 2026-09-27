@@ -22,8 +22,9 @@ node_modules/
 *.db-shm
 *.key
 *.pem
-# The public release signing key is meant to be published.
+# The public release and nightly signing keys are meant to be published.
 !/docs/release-key.pem
+!/docs/nightly-key.pem
 .env
 .env.*
 *.env

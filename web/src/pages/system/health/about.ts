@@ -17,7 +17,7 @@ export interface CheckInfo {
 }
 
 export const CHECKS: Record<string, CheckInfo> = {
-  listeners: { label: 'system.health.check.listeners' },
+  listeners: { label: 'system.health.check.listeners', path: '/system/network', page: 'common.nav.systemNetwork' },
   upstreams: { label: 'system.health.check.upstreams', path: '/dns/settings', page: 'common.nav.dnsSettings' },
   blocklists: { label: 'system.health.check.blocklists', path: '/dns/filtering', page: 'common.nav.filtering' },
   'dns-rate-limit': {
@@ -41,6 +41,9 @@ export const CHECKS: Record<string, CheckInfo> = {
     page: 'common.nav.dnsSettings',
     query: { section: 'encrypted' },
   },
+  logging: { label: 'system.health.check.logging', path: '/system/app-log', page: 'common.nav.appLog' },
+  ntp: { label: 'system.health.check.ntp', path: '/system/network', page: 'common.nav.systemNetwork', query: { section: 'ntp' } },
+  sync: { label: 'system.health.check.sync', path: '/system/sync', page: 'common.nav.sync' },
 }
 
 const ORDER: Record<HealthStatus, number> = { fail: 0, warn: 1, ok: 2 }
@@ -63,6 +66,7 @@ export const LISTENER_ROLES: { role: string; label: MessageKey; env: string }[] 
   { role: 'web-tls', label: 'system.health.listener.web-tls', env: 'PICACHE_WEB_TLS_LISTEN' },
   { role: 'dot', label: 'system.health.listener.dot', env: 'PICACHE_DOT_LISTEN' },
   { role: 'doh', label: 'system.health.listener.doh', env: 'PICACHE_DOH_LISTEN' },
+  { role: 'ntp', label: 'system.health.listener.ntp', env: 'PICACHE_NTP_LISTEN' },
 ]
 
 export type KeyKind = 'systemd' | 'docker' | 'file' | 'memory'

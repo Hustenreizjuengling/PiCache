@@ -97,7 +97,7 @@
         </Field>
         {#if id}
           <p class="small muted">{t('dns.settings.encrypted.clientIdHint')}</p>
-          {#if session.isAdmin}
+          {#if session.canEditSection('clients-and-groups')}
             <div>
               <Button size="sm" icon="plus" onclick={() => (addOpen = true)}>{t('dns.settings.encrypted.addClient')}</Button>
             </div>
@@ -158,7 +158,7 @@
   </div>
 </Panel>
 
-{#if session.isAdmin && id}
+{#if session.canEditSection('clients-and-groups') && id}
   <ClientPanel bind:open={addOpen} preset={{ name: id, identifiers: [CLIENT_ID_PREFIX + id] }} {groups} range="24h" />
 {/if}
 

@@ -10,3 +10,21 @@ package update
 var trustedKeys = []string{
 	"ZyR3aUYRK9l9vOA0WP7bTmE1C7LT3nI6IsFYEnqWHj0=", // docs/release-key.pem (September 2026)
 }
+
+// nightlyKeys are the keys of the nightly builds of main (published as
+// docs/nightly-key.pem; the workflow's environment "nightly" holds the
+// private key). A version containing "-nightly." verifies only against
+// them, every other version only against trustedKeys: the release list
+// never contains a nightly key, so a nightly build can never pass as a
+// release. Tests replace the list.
+var nightlyKeys = []string{
+	"1xtjAY+2P3KLJMjcb0P57Ni03SPOPaaRGhKv5RD+ToI=", // docs/nightly-key.pem (September 2026)
+}
+
+// keysFor returns the keys a version is verified against.
+func keysFor(version string) []string {
+	if IsNightly(version) {
+		return nightlyKeys
+	}
+	return trustedKeys
+}

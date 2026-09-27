@@ -458,7 +458,7 @@ password, two-factor authentication, sessions and read-only API tokens; an API t
 is always read-only. Admins manage accounts under **System → Users &
 security** (with their own password); an API token can never create
 accounts or change roles. A role change signs the account out everywhere; a
-demotion also deletes its admin API tokens. At least one admin always
+demotion also deletes its admin and sync API tokens. At least one admin always
 remains. Every account existing before 0.11.0 is an admin. When no admin is
 left (for example after editing the database), PiCache logs `no account is
 an admin: run `picache reset-password --admin <user>` on the host`.
@@ -1581,6 +1581,39 @@ practice, because game clients always connect to 80 and 443.
 
 ---
 
+## Saved listeners
+
+The addresses PiCache listens on are bootstrap configuration: they apply at
+the next start. They come, per role, from a `picache serve` flag, else the
+`PICACHE_*_LISTEN` variable, else the listeners saved under **System →
+Network**, else the default. The page shows for each role (DNS, download
+cache, SNI pass-through, web UI, web UI over HTTPS, DoT, DoH, NTP) what is
+bound now, what is saved and the default; a role set by a variable or a
+flag is locked there. Saving (with your password) writes
+`<data>/listeners.next.json`; **Restart PiCache** applies it.
+
+The page refuses sets that cannot work: an address that is not one of this
+machine's, two roles on the same port and protocol, no DNS or cache address,
+no web listener on all addresses or on loopback (the command line tools and
+the health check use it), and a change that removes the address your browser
+is connected through. If a saved role still cannot be bound at the start
+(the port was taken meanwhile), PiCache uses the variable or the default for
+it, keeps running, shows the saved set as failed and the health check
+`listeners` fails until a start binds everything.
+
+Recovery from the host, e.g. when a saved web address no longer exists:
+
+```sh
+sudo picache listeners --reset     # removes listeners.json and listeners.next.json
+sudo systemctl restart picache
+```
+
+In Docker the listeners are set in the compose file (the page is read-only;
+in a bridge network the published ports must change with them), and the
+files in the data directory are ignored.
+
+---
+
 ## Persistent data
 
 Everything persistent lives in exactly two places plus optional NAS mounts.
@@ -1636,6 +1669,35 @@ it, re-enter the NAS passwords and, after a file restore, sign in with
   `picache.db.before-restore`. If PiCache cannot start with the restored
   database, it puts the previous one back automatically (the failed file is
   kept as `picache.db.failed-restore-<timestamp>`).
+- **Restore** can also restore **selected sections** instead of
+  everything: settings, clients and groups, lists and rules, local DNS,
+  parental controls, DHCP, the download cache's services, notifications and
+  storage (ARCHITECTURE 15.3 lists the tables and settings of each). The
+  other sections keep their live data, and the sessions stay. Clients and
+  groups can only be restored together with lists and rules, local DNS and
+  parental controls (they refer to the groups); those sections without the
+  groups are matched to the live groups **by name** (the Default group
+  always), and a group name the backup refers to that does not exist here
+  refuses the restore (create the group first, or restore clients and groups
+  too). The selection is checked at once and again at the restart.
+
+### From the host (`picache restore`)
+
+```sh
+sudo picache restore /tmp/picache-backup-2026-09-01.db                        # everything
+sudo picache restore /tmp/picache-backup-2026-09-01.db --sections lists-and-rules,local-dns
+sudo systemctl restart picache
+```
+
+It runs the checks of the web UI (integrity, schema version, the sections)
+against the live database opened read-only and stages the file as
+`picache.db.restore`; the restart applies it. A restore that is staged
+already is refused unless `--force`. It needs no password (whoever runs it
+has the host), ignores `PICACHE_DESTRUCTIVE_API`, and is audited at the next
+start as `system.restore` by `cli`. As root it switches to the owner of the
+data directory first, so the backup file must be readable by that user (not
+in `/root`; Docker: `docker exec -u 65532:65532 picache /picache restore
+/data/<file>`).
 
 ### Scheduled backups
 
@@ -1656,7 +1718,8 @@ it, re-enter the NAS passwords and, after a file restore, sign in with
   `picache-backup-<instance>-<time>.db` of this instance are ever deleted.
 
 Like downloads, scheduled backups never contain accounts, and sealed secrets
-(NAS passwords, notification tokens) only if you opt in. Keep
+(NAS passwords, notification tokens, the sync token and the proxy password)
+only if you opt in. Keep
 `keys/master.key` separately if restored secrets should work on another
 machine. A failed run is reported as a notification (`backup.failed`, see
 [Notifications](#notifications)).
@@ -1815,12 +1878,15 @@ picache logs export --format ndjson --from 2026-09-01T00:00:00Z --to 2026-09-02T
   a loopback `https` URL without a readable CA is not verified (like
   `healthcheck`). Any other URL is refused ("refusing to send the API token
   to …"). No proxy is used and redirects are not followed.
-- The local listener is taken from `PICACHE_WEB_LISTEN` only when
-  `picache.env` is readable (it is not for other users than root and the
-  `picache` group: then `http://127.0.0.1:8080` is used). With another web
-  listener, or with **Redirect HTTP to HTTPS** on (the commands then stop
-  with "PiCache redirects to …"), pass the address: `--url
-  https://127.0.0.1:8443` or `PICACHE_URL`.
+- The local listener is the effective web listener: `PICACHE_WEB_LISTEN`
+  when `picache.env` is readable, else the one saved under **System →
+  Network** (`<data>/listeners.json`, readable by root and the `picache`
+  group), else `http://127.0.0.1:8080` ([Listeners](#saved-listeners));
+  of several addresses the first on all addresses or on loopback is used
+  (the web listener before the HTTPS one), reached on `127.0.0.1`. With
+  **Redirect HTTP to HTTPS** on (the commands then stop with "PiCache
+  redirects to …"), or when these files are not readable, pass the address:
+  `--url https://127.0.0.1:8443` or `PICACHE_URL`.
 - `tail` prints one line per query (local time, client, type, name, status,
   response code, duration) with control characters escaped, reconnects after
   1, 2, 4 … 30 seconds when the stream ends or PiCache is busy or
@@ -1848,6 +1914,124 @@ zip for a bug report: version, settings, health, listeners, the network
 check, the DHCP state, database sizes, host resources and the application
 log, with names, addresses and secrets replaced (SECURITY "Support
 bundle"). Review the files before sharing them.
+
+### Log file and syslog
+
+The log always goes to stderr (the journal, `docker logs`). Two optional
+sinks receive exactly the same records, after the same redaction and the
+privacy masking of **System → Logs & privacy**:
+
+- `PICACHE_LOG_FILE=/var/log/picache/picache.log` (bare metal; the unit's
+  `LogsDirectory` creates `/var/log/picache` with mode 0750), or a file
+  directly in the data directory or below its `logs/` (PiCache creates the
+  directory at the start; Docker: `/data/picache.log`). The name must end in `.log`; any other path, one of
+  PiCache's own files in the data directory included, refuses to start. The file (mode 0640, never through a symbolic link) is rotated at
+  10 MiB into `picache.log.1`, compressed to `picache.log.2.gz` … and at
+  most 5 generations are kept. `PICACHE_LOG_FORMAT` applies. **On an SD
+  card** this adds writes: prefer the journal, or a USB SSD for the data
+  directory.
+- `PICACHE_LOG_SYSLOG=udp://192.168.1.10:514` or `tcp://…:514`: RFC 5424
+  messages (facility daemon, app name `picache`, the component as MSGID,
+  control characters escaped); UDP sends one record per datagram (at most
+  2048 bytes), TCP uses octet counting and reconnects with a backoff. **Plain
+  text on the network**: every log line crosses it unencrypted.
+
+A file that cannot be written or an unreachable syslog server never stops
+PiCache: the sink retries every minute and the health check `logging` warns
+(also for 10 minutes after records were dropped because the queue of 1024 was
+full; the total stays on **System → Application log**).
+**System → Application log** shows the state of each sink. Units of 0.14 have
+no `LogsDirectory`: run the one-line installer once (or use a path below the
+data directory).
+
+### Profiling (pprof)
+
+For a performance problem the developers may ask for Go profiles.
+`PICACHE_PPROF=on` (then restart) serves `/debug/pprof/` on the web
+listeners, but only to an admin (session or admin API token) whose address is
+loopback or one of this machine's; everyone else gets 404. From another
+machine use an SSH tunnel:
+
+```sh
+ssh -L 8080:127.0.0.1:8080 admin@picache-host
+curl -fsS -H "Authorization: Bearer $PICACHE_TOKEN" -o heap.pb.gz http://127.0.0.1:8080/debug/pprof/heap
+curl -fsS -H "Authorization: Bearer $PICACHE_TOKEN" -o cpu.pb.gz 'http://127.0.0.1:8080/debug/pprof/profile?seconds=20'
+go tool pprof -http=:0 cpu.pb.gz
+```
+
+Available: the index, `heap`, `allocs`, `goroutine` and `profile` (CPU, 1–30
+seconds); one profile at a time. Every profile is audited
+(`system.pprof`). Switch it off again afterwards.
+
+---
+
+## Command line and automation
+
+The API commands work like `picache logs` ([From the command
+line](#from-the-command-line)): the token comes from `PICACHE_TOKEN` or
+`--token-file`, the URL from `--url`, `PICACHE_URL` or the local web
+listener. `status`, `explain`, `query` and `config get` need a read token,
+the others an admin token. Every text from PiCache is printed with control
+characters escaped; `--json` prints the answer of the API.
+
+```sh
+picache status                            # queries, blocked share, cache hits, health, top clients
+picache status --watch --interval 10s     # redraws until Ctrl-C (about 40 × 12 characters)
+picache pause 30m                         # also 2h, 1d (at most 7 days)
+picache resume
+picache explain ads.example.com --client 192.168.1.20
+picache query www.example.com AAAA --client 192.168.1.20
+picache lists update
+picache deny games.example --group Kids --comment "school days"
+picache allow cdn.example                 # an existing rule prints "this rule already exists" (exit 0)
+```
+
+**Declarative configuration.** `picache config get [section]` prints the
+settings as JSON (without `cache.activeStoreId` and the read-only members
+`logs.privacyLevel`, `sync.tokenSet`, `network.proxy.passwordSet`), so the
+output can be kept in version control and applied again:
+
+```sh
+picache config get > picache-settings.json
+picache config apply picache-settings.json --dry-run   # every check, nothing stored
+picache config apply picache-settings.json             # PUT /settings: all or nothing
+picache config get dns > dns.json && picache config set dns dns.json
+echo '{"enabled":true}' | picache config set ntp -
+```
+
+`apply` sends the file as one `PUT /settings`, which PiCache decodes on top
+of the current document (members the file leaves out keep their values) and
+applies completely or not at all; `set` changes one section. The JSON comes
+from a file (a regular file, not a link, at most 1 MiB) or stdin, never from
+an argument, so no secret (a sync token, a proxy password) ends up in the
+shell history or `ps`. `?dryRun=true` is also available to other API
+clients.
+
+**`PICACHE_INITIAL_CONFIG`** applies such a document once, at the first start
+of a new installation (no account yet): for example in a compose file or a
+provisioning script, together with `PICACHE_ADMIN_PASSWORD_FILE`. The file is
+read like a token file (a regular file, not a link, at most 1 MiB; a warning
+when others can read it and it holds a secret), decoded strictly on top of
+the defaults and applied with the normal validation before any listener
+serves; an invalid file stops the start with the member it names. PiCache
+records that it was applied (`config.initial_applied`) and ignores the
+variable on every later start (with a warning). `cache.activeStoreId` in the
+file is ignored. There is no web lock-out check (nobody is signed in yet): if
+the file restricts the web access too much, run `picache web-access
+--reset`. In Docker the file is read after the switch to `PICACHE_RUN_AS` and
+must be readable by 65532.
+
+**A status display** (a small screen, a Home Assistant sensor) can poll
+`GET /api/v1/system/overview` with a dedicated **read** token:
+
+```sh
+curl -fsS -H "Authorization: Bearer $PICACHE_READ_TOKEN" \
+  http://192.168.1.5:8080/api/v1/system/overview | jq '{blocking: .blocking.enabled, health: .health}'
+```
+
+A read token can also read the query log and the statistics: trust the
+display device accordingly, and give it its own token so it can be revoked
+alone.
 
 ---
 
@@ -1888,6 +2072,92 @@ The webhook body is:
 
 ---
 
+## Follower sync
+
+A second PiCache (a *follower*, e.g. a backup DNS server) can take clients
+and groups, lists and rules, local DNS, parental controls and the DNS
+settings from a *primary*. The follower pulls; the primary never pushes and
+needs no change beyond a token.
+
+1. On the primary, under **System → API tokens**, create a token with the
+   scope **Sync (configuration export only)**. It can read the configuration
+   export and nothing else.
+2. Download the primary's CA certificate: **System → HTTPS certificate**
+   (`https://<primary>:8443/api/v1/system/tls/ca.crt`),
+   or its own certificate when it has one from a public CA (then leave the
+   field empty).
+3. On the follower, under **System → Sync**: mode *Follower*, the address
+   `https://<primary>:8443`, the token, the CA certificate (PEM), the
+   interval (5 minutes to a day) and the sections. Clients and groups can
+   only be synced together with lists and rules, local DNS and parental
+   controls (they refer to the groups); those sections without the groups
+   are matched to the follower's groups by name.
+
+The follower syncs a minute after the start and a minute after a change of
+the mode, the address, the token, the CA certificate or the sections (a
+shorter interval also brings the next run forward), then every interval
+(**Sync now** at once); it applies a changed
+configuration live, all or nothing, and keeps the parental overrides and
+pauses of its groups. Synced sections are read-only on the follower (the
+pages say "Synced from <primary>"); change them on the primary. Web access,
+the DNS access settings, the server names and encrypted DNS are never
+synced, so a sync cannot lock you out of the follower. The token is sent
+only after the primary's certificate was verified, never through a proxy or
+a redirect, and never to this machine's own addresses. The health check
+`sync` warns when a sync fails or none succeeded for three intervals. A
+primary with a newer database schema is refused until the follower is
+updated too.
+
+---
+
+## NTP server
+
+PiCache can answer NTP time requests for the network (useful for devices
+that should not reach the Internet's time servers):
+
+1. Set `PICACHE_NTP_LISTEN=:123` in `/etc/picache/picache.env` (Docker: in
+   the compose file, and publish `123:123/udp` in a bridge network) and
+   restart.
+2. Switch it on under **System → Network → NTP server**; the stratum
+   announced while the host clock is synchronised is 3 unless you change it.
+3. Point the devices (or the router's or DHCP server's NTP option) at
+   PiCache.
+
+PiCache serves the host's clock; it never sets it. The host must keep its
+clock synchronised (`timedatectl`, systemd-timesyncd or chrony): while it is
+not, the answers say so (stratum 16) and the health check `ntp` warns. The
+units of 0.15.0 allow reading the clock state (`SystemCallFilter=adjtimex`);
+with older units, or in a container, the state cannot be read and the
+answers are marked unsynchronised until the one-line installer has run once.
+Only clients in the DNS allowed networks get answers, at most 4 requests per
+second each; with **Allow all networks** (`dns.allowAllNetworks`) the NTP
+server is open to the Internet too, which the page warns about.
+
+---
+
+## Outbound proxy
+
+When the network reaches the Internet only through a proxy, **System →
+Network → Outbound proxy** sets one (`http://host:port` or
+`socks5://host:port`, optionally a user name and password) and chooses what
+uses it: *Lists* (blocklist and cache-domains downloads), *Release check*,
+*Notifications*. DNS upstreams, the download cache, the SNI pass-through,
+WHOIS lookups and the follower sync never use it.
+
+PiCache still resolves every target itself and refuses the same addresses as
+without a proxy (no private address unless you gave one explicitly), then
+asks the proxy for a tunnel **to that address** (HTTP `CONNECT` or SOCKS5
+with an IP address), so the proxy cannot be used to reach addresses PiCache
+would refuse. HTTPS runs through the tunnel end to end; the proxy sees every
+target address and host name, and the content of plain `http` downloads. The
+user name and password of an HTTP proxy (Basic) or a SOCKS5 proxy cross the
+network **unencrypted**. The password is stored sealed and must be entered
+again when the proxy's address or user name changes. Updates installed by
+the root helper use `PICACHE_UPDATE_PROXY` instead ([Updates through a
+proxy](#updates-through-a-proxy)).
+
+---
+
 ## Updates
 
 PiCache looks for new releases by itself, but it installs one only when an
@@ -1903,6 +2173,45 @@ signature it cannot verify with the keys built into the running binary
 | Docker | `docker compose pull && docker compose up -d` |
 | Bare metal, VM, LXC, by hand | the installer of the new release ([below](#manual-upgrade-with-the-installer)), or `get-picache.sh` again ([One-line install](#one-line-install)) |
 
+### Nightly builds
+
+A nightly build of `main` is published every day that `main` changed, as a
+GitHub pre-release named `v<next patch>-nightly.<date>.<n>`; the newest 7
+are kept. Nightlies are **untested** and have no container image. They are
+signed with a separate nightly key (`docs/nightly-key.pem`), never with the
+release key, and the update helper installs one only on hosts that allow it:
+
+```sh
+sudo sh deploy/install.sh --binary ./picache-linux-arm64 --nightly   # creates /etc/picache/nightly.enabled
+```
+
+Then choose the channel *Nightly* under **System → Health & about**. The
+marker is a root-owned file, so a compromised service cannot move a host onto
+nightlies by itself; `install.sh --uninstall` removes it (or `sudo rm
+/etc/picache/nightly.enabled`). `sudo picache update --channel nightly` and
+`sudo picache update --version <nightly>` need no marker. Going back to
+stable means waiting for the next stable release (newer than the nightly) or
+`sudo picache update --version vX.Y.Z --allow-downgrade` with the database
+copy made before the upgrade ([Going back to an earlier
+version](#going-back-to-an-earlier-version)): a nightly may have migrated the
+database already.
+
+### Updates through a proxy
+
+The update helper and `sudo picache update` run as root and never read the
+settings of the web UI. When the host reaches GitHub only through a proxy,
+set it in `/etc/picache/picache.env`:
+
+```sh
+PICACHE_UPDATE_PROXY=http://192.168.1.10:3128     # or socks5://192.168.1.10:1080; no user name
+```
+
+The downloads are tunnelled through it to the checked addresses (like the
+outbound proxy of the web UI, [Outbound proxy](#outbound-proxy)); an invalid
+value stops the update naming the variable. **System → Health & about** shows
+which proxy installs use. The service's own release check uses the outbound
+proxy of **System → Network** when *Release check* is switched on there.
+
 ### Checking for updates
 
 - **System → Updates** shows the installed version, the newest release with
@@ -1913,9 +2222,10 @@ signature it cannot verify with the keys built into the running binary
   check runs about 5 minutes after the start. **Check now** checks at once.
   Checking never downloads or installs anything. Turn the setting off if
   PiCache must not contact GitHub; the CLI and **Check now** still work.
-- Only stable releases are offered, unless **Include pre-releases** is on.
-  Pre-releases are the tags with a hyphen, such as `v1.4.0-rc.1`; they are
-  tested less.
+- The **update channel** decides what is offered: *Stable* (default) only
+  releases, *Beta* also release candidates (`v1.4.0-rc.1`), *Nightly* also
+  the nightly builds of `main` (`v1.4.1-nightly.20261001.1`, [Nightly
+  builds](#nightly-builds)). Pre-releases are tested less.
 - Only a release newer than the running version is offered; the web UI never
   offers a downgrade. A development build counts as newer than the release
   it is based on (`v1.2.3-4-gabc1234` is newer than `v1.2.3`); a build
@@ -2098,6 +2408,21 @@ use DoT (the bridge compose file does); an installation with
 DoT listener is a TLS listener). The settings keep their version (plain DNS
 on, DoT and DoH off, no server name); `picache.db` has no schema step, and
 `logs.db` gets one column for the ClientID of a query (no table rewrite).
+
+### Upgrading to 0.15.0
+
+The first start of 0.15.0 migrates `picache.db` (the API tokens table gets
+the scope `sync`, the settings the update channel and the table of sealed
+settings secrets); a copy is made before, as for every upgrade. Going back to
+0.14 needs that copy ([below](#going-back-to-an-earlier-version)): 0.14
+refuses the migrated database. Everything new is off until switched on. The
+units change (`LogsDirectory=picache`, `SystemCallFilter=adjtimex`, no
+`ProtectClock=yes`): the one-line installer or an update from the web UI
+installs them; until then a log file below `/var/log/picache` cannot be
+opened and the NTP server answers unsynchronised. Listeners saved in the web
+UI are ignored by 0.14 after a rollback: it binds the variables and defaults
+again (if another service took such a port meanwhile, free it or set
+`PICACHE_DNS_LISTEN`).
 
 ### Going back to an earlier version
 
@@ -2373,6 +2698,7 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_WEB_TLS_LISTEN` | `:8443` | Web UI and API over HTTPS, and DNS over HTTPS at `/dns-query` while DoH is on. At least one web listener is required. |
 | `PICACHE_DOT_LISTEN` | `:853` | DNS over TLS while `dns.encrypted.dot` is on ([Encrypted DNS](#encrypted-dns)); bound either way, a clash is reported only while DoT is on. |
 | `PICACHE_DOH_LISTEN` | `off` | A listener for DNS over HTTPS only (`/dns-query`), e.g. `:4443`; `:443` clashes with the SNI pass-through. |
+| `PICACHE_NTP_LISTEN` | `off` | The NTP server (UDP), e.g. `:123`; answers while it is switched on under **System → Network** ([NTP server](#ntp-server)). |
 | `PICACHE_WEB_TLS_CERT` | – | PEM certificate (with its intermediates) for every TLS listener (the HTTPS web listener, DoT and DoH). PiCache reloads it within a minute when the files change (at once on SIGHUP), keeps the previous certificate while a pair cannot be loaded, and serves its local CA's certificate while none could be loaded yet ([HTTPS certificates](#https-certificates)). Without it, PiCache serves an uploaded certificate or one of its local CA in `<data>/tls/`. |
 | `PICACHE_WEB_TLS_KEY` | – | PEM private key; set together with the certificate. Both files must be readable by the service user. |
 | `PICACHE_WEB_HOSTS` | – | Comma-separated extra host names allowed for the web UI (DNS-rebinding protection), e.g. a reverse-proxy name. Can also be set in the web settings. |
@@ -2382,21 +2708,29 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_DHCP` | – | Unset: the DHCP server is switched on under DNS → DHCP ([DHCP server](#dhcp-server)); PiCache holds no DHCP port while it is off. `off` (`no`, `0`, `false`): prevents it; the server cannot be switched on (for hosts that run another DHCP server; `install.sh --without-dhcp` sets it). `on` (`yes`, `1`, `true`) is the opt-in of versions before 0.8.0: still accepted (every DHCP socket opens at start and PiCache closes what the settings do not need), and removed by the installer. Anything else: PiCache refuses to start. |
 | `PICACHE_RUN_AS` | – · `65532:65532` | Numeric non-root `uid:gid`. When PiCache starts as root it binds the listeners and then switches to this user before touching files. Linux only. Not needed with the systemd unit. |
 | `PICACHE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
-| `PICACHE_LOG_FORMAT` | `text` | `text` or `json` (logs go to stderr / the journal). |
+| `PICACHE_LOG_FORMAT` | `text` | `text` or `json` (logs go to stderr / the journal; also the format of `PICACHE_LOG_FILE`). |
+| `PICACHE_LOG_FILE` | – | Also write the log to this file: a `<name>.log` file below `/var/log/picache`, directly in the data directory or below its `logs/`; rotated at 10 MiB, 5 compressed generations ([Log file and syslog](#log-file-and-syslog)). |
+| `PICACHE_LOG_SYSLOG` | – | Also send the log to a syslog server: `udp://host:port` or `tcp://host:port` (RFC 5424, plain text). |
+| `PICACHE_PPROF` | `off` | `on`: Go profiles on `/debug/pprof/` for admins on this machine ([Profiling](#profiling-pprof)). |
+| `PICACHE_INITIAL_CONFIG` | – | A settings document (JSON) applied once at the first start ([Command line and automation](#command-line-and-automation)). |
+| `PICACHE_UPDATE_PROXY` | – | Root update helper and `sudo picache update` only: `http://host:port` or `socks5://host:port` for the downloads ([Updates through a proxy](#updates-through-a-proxy)). |
 | `PICACHE_ADMIN_USER` | `admin` | User name for password provisioning. |
 | `PICACHE_ADMIN_PASSWORD_FILE` | – | File with the password (at least 10 characters; a trailing newline is ignored) for the first admin. Used only while no user exists. |
 | `PICACHE_ADMIN_PASSWORD` | – | Same as a plain variable (discouraged, logged as a warning: visible to other processes and in `docker inspect`). The `_FILE` variant wins. |
 | `PICACHE_MASTER_KEY_FILE` | `<data>/keys/master.key` | Master key for stored secrets: 32 raw bytes or 64 hex characters. Created with mode 0600 if missing. A systemd credential `picache-master-key` (`$CREDENTIALS_DIRECTORY`) or the Docker secret `/run/secrets/picache_master_key` takes precedence. A systemd credential must also be given to `picache-storage.service` when host-apply mounts SMB shares with a stored password ([Host-apply](#host-apply-root-helper)). The Docker secret is read after the privilege drop, so it must be readable by 65532. |
 | `PICACHE_DEV` | `false` | Development mode (relaxed platform checks, verbose errors). Never in production. |
 | `PICACHE_ENV_FILE` | `/etc/picache/picache.env` | Env file to read instead of the default. Unlike the default file, it must exist. |
-| `PICACHE_TOKEN` | – | CLI only (`picache logs tail`, `picache logs export`): the API token. Read from the environment only, never from the env file ([From the command line](#from-the-command-line)). |
-| `PICACHE_URL` | the local web listener | CLI only: the PiCache URL for `picache logs tail` and `picache logs export`. |
+| `PICACHE_TOKEN` | – | CLI only (`picache logs`, `status`, `pause`, `resume`, `explain`, `lists`, `allow`, `deny`, `query`, `config`): the API token. Read from the environment only, never from the env file ([From the command line](#from-the-command-line)). |
+| `PICACHE_URL` | the local web listener | CLI only: the PiCache URL of the API commands. |
 | `GOMEMLIMIT` | 60 % of the memory limit | Go's soft memory limit. By default PiCache sets 60 % of the cgroup memory limit, or of the RAM. |
 
 `picache serve` also accepts flags that override the environment:
 `--data-dir`, `--cache-dir`, `--dns-listen`, `--cache-listen`,
 `--sni-listen`, `--web-listen`, `--web-tls-listen`, `--dot-listen`,
-`--doh-listen`, `--log-level`, `--dev`.
+`--doh-listen`, `--ntp-listen`, `--log-level`, `--dev`.
+
+The listeners can also be saved in the web UI ([Listeners](#saved-listeners)); a
+flag or a `PICACHE_*_LISTEN` variable wins over them.
 
 ---
 
@@ -2415,11 +2749,20 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `picache storage remove <id>` | Root only. Disable, stop and delete the `.mount` unit of `/srv/picache/<id>`, delete its credentials file and remove the empty mountpoint. Works without the database, for example after the target was deleted. |
 | `picache storage apply-pending` | Root only. Process the requests the web UI queued in `<data>/storage-requests/`: mount host-apply targets, remove the mounts of deleted targets and of targets switched to another mode. Run by `picache-storage.service`. |
 | `picache update --check` | Print the installed and the newest release and its URL. Exit code `0` up to date, `10` update available, `1` error. Needs no root. |
-| `picache update [--version vX.Y.Z] [--prerelease] [--allow-downgrade] [--yes]` | Root only. Show the start of the release notes, ask (unless `--yes`), then download, verify and install the newest release (or the given one) and restart PiCache; roll back if the new version fails its health check ([Updates](#updates)). `--prerelease` also considers pre-releases; `--allow-downgrade` allows an older release. |
+| `picache update [--version vX.Y.Z] [--channel stable\|beta\|nightly] [--prerelease] [--allow-downgrade] [--yes]` | Root only. Show the start of the release notes, ask (unless `--yes`), then download, verify and install the newest release (or the given one) and restart PiCache; roll back if the new version fails its health check ([Updates](#updates)). `--prerelease` also considers pre-releases; `--allow-downgrade` allows an older release. |
 | `picache update --from <dir> [--yes]` | Root only. The same from a directory with the release files (`SHA256SUMS`, `SHA256SUMS.sig`, the binary), without network access. |
 | `picache update apply-pending` | Root only. Install the version the web UI queued in `<data>/update-requests/`. Run by `picache-update.service`. |
 | `picache logs tail [--client ADDR]... [--status S]... [--json] [--url URL] [--token-file FILE]` | Follow the query log through the API ([From the command line](#from-the-command-line)). Needs an API token (read is enough). |
 | `picache logs export --format ndjson\|csv [--range R \| --from T --to T] [--client ADDR]... [--status S]... [--domain D] [--qtype T] [--rcode R]... [--dnssec true\|false] [--upstream U] --out FILE\|- [--url URL] [--token-file FILE]` | Export the query log through the API to a new file (0600) or stdout. |
+| `picache status [--watch] [--interval 5s] [--json]` | Queries and blocked share (24 h), cache hit rate, health and the top 5 clients; `--watch` redraws every 2–60 s until Ctrl-C. Read token. |
+| `picache pause <duration>` / `picache resume` | Pause blocking for `30m`, `2h`, `1d` … (1 s to 7 days) / resume it. Admin token. |
+| `picache explain <domain> [--client IP] [--type QTYPE] [--json]` | Which lists and rules match a domain for a client. Read token. |
+| `picache query <name> [type] [--client IP] [--json]` | How PiCache answers a query: status, response code, answers and the steps of the pipeline. Read token. |
+| `picache lists update` | Refresh every list now. Admin token. |
+| `picache allow\|deny <domain> [--group NAME\|ID]... [--comment TEXT]` | Add an allow or block rule for the domain and its subdomains (for the named groups, else the default). An existing rule is not an error. Admin token. |
+| `picache config get [section]` / `config set <section> <file\|->` / `config apply <file\|->` `[--dry-run]` | Print, change one section of, or apply the settings as JSON ([Command line and automation](#command-line-and-automation)). Read token for `get`, admin token otherwise. |
+| `picache restore <file> [--sections a,b] [--force]` | Stage a backup (or selected sections of it) for the next start ([From the host](#from-the-host-picache-restore)). Root or the service user. |
+| `picache listeners --reset` | Forget the listeners saved in the web UI; the next start uses the `PICACHE_*_LISTEN` variables and the defaults ([Listeners](#saved-listeners)). Root or the service user. |
 | `picache db check` | Check `picache.db` read-only (also while PiCache runs): integrity, foreign keys, schema versions. Exit code `3` when problems are found ([Recovering a damaged picache.db](#recovering-a-damaged-picachedb)). Root or the service user. |
 | `picache db salvage --out FILE [--force]` | Copy every readable row of a damaged `picache.db` into the new file `FILE` (PiCache stopped; the source is never modified). Exit code `3` when rows were lost or skipped. Root or the service user. |
 | `picache help` | Print the usage. |
@@ -2450,6 +2793,10 @@ restart requested from the web UI (systemd and Docker restart the process).
   → Web access**. The HTTPS redirect, the sessions and the allowed hosts are
   not changed. A browser that stored HSTS for a name whose certificate it no
   longer trusts refuses that name: open PiCache by its IP address.
+- **Web UI unreachable after changing the listeners** (System → Network):
+  `sudo picache listeners --reset` and `sudo systemctl restart picache`
+  bring back the `PICACHE_*_LISTEN` variables and the defaults
+  ([Saved listeners](#saved-listeners)).
 - **Logs:** **System → Application log** shows the last 2000 lines and
   switches on debug logging for a while; `journalctl -u picache -f` (bare
   metal/LXC), `docker compose logs -f picache` (Docker). Set

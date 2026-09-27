@@ -164,7 +164,7 @@
   <Toggle
     bind:checked={() => l.enabled, (on) => setEnabled(l, on)}
     ariaLabel={t('dns.lists.enableNamed', { name: l.name })}
-    disabled={!session.isAdmin || toggling.includes(l.id)}
+    disabled={!session.canEditSection('lists-and-rules') || toggling.includes(l.id)}
   />
 {/snippet}
 
@@ -226,7 +226,7 @@
     <Button icon="refresh" loading={refreshingAll || updating} disabled={!session.canOperate || !lists.data?.length} onclick={refreshAll}>
       {updating ? t('dns.lists.updatingShort') : t('dns.lists.updateAll')}
     </Button>
-    <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.lists.add')}</Button>
+    <Button variant="primary" icon="plus" disabled={!session.canEditSection('lists-and-rules')} onclick={() => (addOpen = true)}>{t('dns.lists.add')}</Button>
   {/snippet}
 
   <Table
@@ -239,19 +239,19 @@
     onrowclick={(l) => router.setQuery({ sel: l.id })}
     selected={selected?.id}
     caption={t('dns.lists.title')}
-    selectable={session.isAdmin}
+    selectable={session.canEditSection('lists-and-rules')}
     bind:checked
     checkLabel={(l) => t('dns.lists.selectNamed', { name: l.name })}
   >
     {#snippet empty()}
       <EmptyState compact icon="shield" title={t('dns.lists.empty')} text={t('dns.lists.emptyText')}>
-        <Button size="sm" variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>
+        <Button size="sm" variant="primary" icon="plus" disabled={!session.canEditSection('lists-and-rules')} onclick={() => (addOpen = true)}>
           {t('dns.lists.add')}
         </Button>
       </EmptyState>
     {/snippet}
   </Table>
-  {#if session.isAdmin}
+  {#if session.canEditSection('lists-and-rules')}
     <BulkBar
       count={checked.length}
       {busy}

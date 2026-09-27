@@ -64,6 +64,8 @@ interface Hooks {
   misdirected?: (message: string) => void
   /** A 403: the rights shown may be out of date (a changed role, the host's configuration lock). */
   forbidden?: () => void
+  /** A 409 for a section synced from a primary: the synced sections shown may be out of date. */
+  synced?: () => void
 }
 
 const hooks: Hooks = {}
@@ -173,6 +175,7 @@ async function send(method: string, path: string, opts: RequestOptions, accept: 
     if (res.status === 401 && !opts.allowUnauthorized && err.field !== 'password') hooks.unauthorized?.()
     if (res.status === 421) hooks.misdirected?.(err.message)
     if (res.status === 403) hooks.forbidden?.()
+    if (res.status === 409 && err.message.startsWith('this is synced from')) hooks.synced?.()
     throw err
   }
   return res

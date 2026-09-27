@@ -158,7 +158,7 @@
   <Toggle
     bind:checked={() => r.enabled, (on) => setEnabled(r, on)}
     ariaLabel={t('dns.records.enableNamed', { name: r.name, type: r.type })}
-    disabled={!session.isAdmin || toggling.includes(r.id)}
+    disabled={!session.canEditSection('local-dns') || toggling.includes(r.id)}
   />
 {/snippet}
 
@@ -179,10 +179,10 @@
 
 <Panel flush title={t('dns.records.title')} description={t('dns.records.description')}>
   {#snippet actions()}
-    {#if session.isAdmin}
+    {#if session.canEditSection('local-dns')}
       <Button icon="upload" onclick={() => (importOpen = true)}>{t('dns.records.import')}</Button>
     {/if}
-    <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.records.add')}</Button>
+    <Button variant="primary" icon="plus" disabled={!session.canEditSection('local-dns')} onclick={() => (addOpen = true)}>{t('dns.records.add')}</Button>
   {/snippet}
 
   {#if dns}
@@ -195,7 +195,7 @@
           }
           label={t('dns.records.enabledAll')}
           description={t('dns.records.enabledAllHelp')}
-          disabled={!session.isAdmin || savingSetting}
+          disabled={!session.canEditSection('dns-settings') || savingSetting}
         />
       </div>
       <div class="order">
@@ -204,7 +204,7 @@
             size="sm"
             value={dns.localizeRecords}
             options={localizeOptions}
-            disabled={!session.isAdmin || savingSetting}
+            disabled={!session.canEditSection('dns-settings') || savingSetting}
             onchange={(e) => patchDns({ localizeRecords: e.currentTarget.value as LocalizeRecords }, t('common.state.saved'))}
           />
         </Field>
@@ -243,7 +243,7 @@
     onrowclick={(r) => router.setQuery({ sel: r.id })}
     selected={selected?.id}
     caption={t('dns.records.title')}
-    selectable={session.isAdmin}
+    selectable={session.canEditSection('local-dns')}
     bind:checked
     checkLabel={(r) => t('dns.records.selectNamed', { name: r.name, type: r.type })}
   >
@@ -252,14 +252,14 @@
         <EmptyState compact title={t('dns.records.emptySearch')} />
       {:else}
         <EmptyState compact icon="home" title={t('dns.records.empty')} text={t('dns.records.emptyText')}>
-          <Button size="sm" variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>
+          <Button size="sm" variant="primary" icon="plus" disabled={!session.canEditSection('local-dns')} onclick={() => (addOpen = true)}>
             {t('dns.records.add')}
           </Button>
         </EmptyState>
       {/if}
     {/snippet}
   </Table>
-  {#if session.isAdmin}
+  {#if session.canEditSection('local-dns')}
     <BulkBar
       count={checked.length}
       {busy}
@@ -282,7 +282,7 @@
   onsaved={() => records.refresh()}
   ondeleted={() => records.refresh()}
 />
-{#if session.isAdmin}
+{#if session.canEditSection('local-dns')}
   <RecordImportDialog bind:open={importOpen} groups={groups.data} onimported={() => records.refresh()} />
 {/if}
 

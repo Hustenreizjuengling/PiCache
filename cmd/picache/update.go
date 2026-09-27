@@ -20,8 +20,8 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
 
-const updateUsage = `usage: picache update --check [--prerelease]
-       sudo picache update [--version vX.Y.Z] [--prerelease] [--allow-downgrade] [--yes]
+const updateUsage = `usage: picache update --check [--channel stable|beta|nightly] [--prerelease]
+       sudo picache update [--version vX.Y.Z] [--channel stable|beta|nightly] [--prerelease] [--allow-downgrade] [--yes]
        sudo picache update --from DIR [--version vX.Y.Z] [--allow-downgrade] [--yes]
        picache update apply-pending   (the root helper started by picache-update.path)`
 
@@ -38,7 +38,17 @@ const maxNoteLines = 20
 var errDeclined = errors.New("aborted: nothing was changed")
 
 // newReleaseClient returns the GitHub client (tests point it elsewhere).
-var newReleaseClient = func() *update.Client { return &update.Client{} }
+// With PICACHE_UPDATE_PROXY (from /etc/picache/picache.env) the downloads
+// go through that proxy, tunnelled to the checked addresses like the
+// service's own proxy (netutil.Tunnel); an invalid value fails the run
+// with the variable named.
+var newReleaseClient = func() *update.Client {
+	c, err := updateHTTPClient(os.Getenv("PICACHE_UPDATE_PROXY"))
+	if err != nil {
+		return &update.Client{HTTP: failingHTTPClient(err)}
+	}
+	return &update.Client{HTTP: c}
+}
 
 func updateCmd(args []string) int {
 	if len(args) > 0 && args[0] == "apply-pending" {
@@ -53,6 +63,7 @@ func updateCmd(args []string) int {
 	check := fs.Bool("check", false, "")
 	ver := fs.String("version", "", "")
 	pre := fs.Bool("prerelease", false, "")
+	channel := fs.String("channel", "", "")
 	downgrade := fs.Bool("allow-downgrade", false, "")
 	yes := fs.Bool("yes", false, "")
 	from := fs.String("from", "", "")
@@ -67,9 +78,18 @@ func updateCmd(args []string) int {
 	switch {
 	case fs.NArg() > 0,
 		*check && (*ver != "" || *downgrade || *yes || *from != ""),
-		*from != "" && *pre:
+		*from != "" && (*pre || *channel != ""),
+		*channel != "" && (*pre || !update.ValidChannel(*channel)),
+		*ver != "" && *channel != "":
 		fmt.Fprintln(os.Stderr, updateUsage)
 		return 2
+	}
+	ch := update.ChannelStable
+	switch {
+	case *channel != "":
+		ch = *channel
+	case *pre:
+		ch = update.ChannelBeta
 	}
 	if *ver != "" {
 		if _, err := update.ParseVersion(*ver); err != nil {
@@ -78,16 +98,16 @@ func updateCmd(args []string) int {
 		}
 	}
 	if *check {
-		return updateCheck(*pre)
+		return updateCheck(ch)
 	}
-	return updateInstall(*ver, *pre, *downgrade, *yes, *from)
+	return updateInstall(*ver, ch, *downgrade, *yes, *from)
 }
 
 // updateCheck prints the running and the latest version (no root needed).
-func updateCheck(pre bool) int {
+func updateCheck(channel string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), update.CheckTimeout)
 	defer cancel()
-	rel, err := newReleaseClient().Latest(ctx, pre)
+	rel, err := newReleaseClient().Latest(ctx, channel)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "picache update:", err)
 		return 1
@@ -117,7 +137,7 @@ func published(rel *update.Release) string {
 
 // updateInstall runs the install procedure (root): from GitHub after
 // showing the release notes, or from a directory of release files.
-func updateInstall(ver string, pre, downgrade, yes bool, from string) int {
+func updateInstall(ver, channel string, downgrade, yes bool, from string) int {
 	cfg, err := config.LoadWithoutSecrets(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
@@ -150,7 +170,7 @@ func updateInstall(ver string, pre, downgrade, yes bool, from string) int {
 		if ver != "" {
 			rel, err = c.Release(ctx, ver)
 		} else {
-			rel, err = c.Latest(ctx, pre)
+			rel, err = c.Latest(ctx, channel)
 		}
 		switch {
 		case err != nil:

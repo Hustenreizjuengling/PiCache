@@ -5,7 +5,8 @@
   it is open ({#if}), so every opening starts with an empty form and the
   secret and the password are dropped from memory when it closes. The token
   belongs to the signed-in account; viewers create read tokens only (no
-  choice of access).
+  choice of access). Admins may also create a sync token: it reads only the
+  configuration export (a follower's credential, System › Sync there).
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -61,6 +62,7 @@
   const scopeOptions = $derived([
     { value: 'read', label: t('system.tokens.scope.read') },
     { value: 'admin', label: t('system.tokens.scope.admin') },
+    { value: 'sync', label: t('system.tokens.scope.sync') },
   ])
   const expiryOptions = $derived([
     { value: '30', label: t('system.tokens.expiry.days', { days: 30 }) },
@@ -109,7 +111,7 @@
         <CopyButton text={created.token} showLabel size="md" label={t('system.tokens.copy')} />
       </div>
       <p class="small muted">
-        {created.info.scope === 'admin' ? t('system.tokens.scopeHelp.admin') : t('system.tokens.scopeHelp.read')}
+        {t(`system.tokens.scopeHelp.${created.info.scope}`)}
         {created.info.expiresAt
           ? t('system.tokens.expiresOn', { date: formatDate(created.info.expiresAt) })
           : t('system.tokens.neverExpires')}
@@ -138,9 +140,9 @@
         <Field
           label={t('system.tokens.scopeLabel')}
           error={errors.scope}
-          help={scope === 'admin' ? t('system.tokens.scopeHelp.admin') : t('system.tokens.scopeHelp.read')}
+          help={t(`system.tokens.scopeHelp.${scope}`)}
         >
-          <Select options={scopeOptions} bind:value={() => scope, (v) => (scope = v === 'admin' ? 'admin' : 'read')} />
+          <Select options={scopeOptions} bind:value={() => scope, (v) => (scope = v === 'admin' || v === 'sync' ? v : 'read')} />
         </Field>
       {/if}
       <Field label={t('system.tokens.expiryLabel')} error={expiry === 'custom' ? undefined : errors.days}>

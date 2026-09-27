@@ -4,9 +4,11 @@
   clients) and groups, with per-client and per-device traffic over a time
   range.
   Query: ?tab=clients|seen|groups&range=24h|7d|30d&within=…&sel=<id>&ip=<address>&group=<id>
+  (?within= up to logs.seenRetentionDays: the seen data is kept that long)
   (without ?range= the range shown last in this browser). Incoming
   ?ip=<address> (global search, query log) opens the client that address
-  belongs to, or the address on the "Seen recently" tab.
+  belongs to, or the address on the "Seen recently" tab. On a follower that
+  syncs clients and groups a banner says so and their edits are disabled.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -19,12 +21,24 @@
   import { asTrafficRange, seenDevices, TRAFFIC_RANGES, type TrafficRange } from './clients/clientStats'
   import GroupsTab from './clients/GroupsTab.svelte'
   import SeenTab from './clients/SeenTab.svelte'
+  import SyncedNotice from './shared/SyncedNotice.svelte'
 
   const TABS = ['clients', 'seen', 'groups'] as const
   type Tab = (typeof TABS)[number]
   const DEFAULT_RANGE: TrafficRange = '24h'
   const RANGE_PREF = 'dns.clients.range'
   const WITHIN = ['24h', '7d', '30d']
+
+  /**
+   * The "Seen within" choices for a retention of days (logs.seenRetentionDays,
+   * 7–365; the server caps ?within= at it): the usual ones up to the
+   * retention, and the whole retention.
+   */
+  function withinChoices(days: number): string[] {
+    const out = WITHIN.filter((w) => w === '24h' || Number.parseInt(w) <= days)
+    if (!out.includes(`${days}d`)) out.push(`${days}d`)
+    return out
+  }
 
   const tab = $derived.by((): Tab => {
     const v = router.param('tab') as Tab
@@ -51,7 +65,12 @@
     router.setQuery({ range: r === DEFAULT_RANGE ? null : r })
   }
 
-  const within = $derived(WITHIN.includes(router.param('within')) ? router.param('within') : '30d')
+  // How long seen data is kept (logs.seenRetentionDays): the choices end there.
+  const retention = resource((signal) => api.settings.get({ signal }).then((s) => s.logs.seenRetentionDays))
+  const withinOptions = $derived(withinChoices(retention.data ?? 30))
+  /** Without ?within=: 30 days, or the whole retention when it is shorter. */
+  const defaultWithin = $derived(withinOptions.includes('30d') ? '30d' : withinOptions[withinOptions.length - 1])
+  const within = $derived(withinOptions.includes(router.param('within')) ? router.param('within') : defaultWithin)
 
   const clients = resource((signal) => api.clients.list({ signal }))
   const groups = resource((signal) => api.groups.list({ signal }))
@@ -111,6 +130,7 @@
 {/snippet}
 
 <div class="page">
+  <SyncedNotice section="clients-and-groups" />
   <Tabs {tabs} active={tab} label={t('common.nav.clients')} onchange={selectTab}>
     {#snippet children(active)}
       <div class="tab">
@@ -123,7 +143,8 @@
             {range}
             {rangePicker}
             {within}
-            onwithin={(w) => router.setQuery({ within: w === '30d' ? null : w })}
+            {withinOptions}
+            onwithin={(w) => router.setQuery({ within: w === defaultWithin ? null : w })}
             onchanged={changed}
           />
         {:else if active === 'groups'}

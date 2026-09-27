@@ -117,8 +117,21 @@ func DoHClientID(path string) (id string, found, valid bool) {
 // doh. A dropped query resets the stream (panic http.ErrAbortHandler);
 // more than 64 requests of the source's client key in flight → 429,
 // overload → 503. The reply keeps the query's ID and question case and
-// is cached privately for its smallest TTL.
+// is cached privately for its smallest TTL. An IPv6 link-local source
+// carries the zone of its connection (netutil.PeerFromRemote), which names
+// its interface for iface: identifiers.
 func (s *Server) ServeDoH(w http.ResponseWriter, r *http.Request, source netip.Addr) {
+	s.serveDoH(w, r, source, false)
+}
+
+// ServeDoHForwarded is ServeDoH for the effective client a trusted reverse
+// proxy forwarded: its identity never comes from iface: identifiers (the
+// address did not arrive by its interface).
+func (s *Server) ServeDoHForwarded(w http.ResponseWriter, r *http.Request, source netip.Addr) {
+	s.serveDoH(w, r, source, true)
+}
+
+func (s *Server) serveDoH(w http.ResponseWriter, r *http.Request, source netip.Addr, forwarded bool) {
 	set := s.d.Settings.Get()
 	id, found, valid := DoHClientID(r.URL.Path)
 	if !found || !set.DNS.Encrypted.DoH {
@@ -143,6 +156,10 @@ func (s *Server) ServeDoH(w http.ResponseWriter, r *http.Request, source netip.A
 		dohError(w, status, msg)
 		return
 	}
+	zone := "" // of a link-local transport peer (iface:), never of a forwarded client
+	if !forwarded {
+		zone = netutil.LinkLocalZone(source)
+	}
 	source = netutil.Canon(source)
 	if !s.allowed(source) {
 		s.refused.Add(1)
@@ -161,7 +178,8 @@ func (s *Server) ServeDoH(w http.ResponseWriter, r *http.Request, source netip.A
 	defer release()
 	dw := &dohWriter{source: source}
 	overloaded := false
-	s.serve(r.Context(), dw, req, queryConn{proto: ProtoDoH, source: source, clientID: id, overload: func() { overloaded = true }})
+	s.serve(r.Context(), dw, req, queryConn{proto: ProtoDoH, source: source, clientID: id, forwarded: forwarded,
+		zone: zone, overload: func() { overloaded = true }})
 	switch {
 	case dw.closed:
 		panic(http.ErrAbortHandler) // a drop: reset only this stream

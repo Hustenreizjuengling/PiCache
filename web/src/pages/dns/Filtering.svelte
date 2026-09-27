@@ -17,6 +17,7 @@
   import ListsTab from './filtering/ListsTab.svelte'
   import RulesTab from './filtering/RulesTab.svelte'
   import TesterTab from './filtering/TesterTab.svelte'
+  import SyncedNotice from './shared/SyncedNotice.svelte'
 
   const TABS = ['lists', 'rules', 'test'] as const
   type Tab = (typeof TABS)[number]
@@ -69,6 +70,7 @@
 </script>
 
 <div class="page">
+  <SyncedNotice section="lists-and-rules" />
   {#if stats.data}
     {@const s = stats.data}
     <p class="summary small muted">

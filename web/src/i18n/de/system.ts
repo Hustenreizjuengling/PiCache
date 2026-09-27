@@ -240,6 +240,10 @@ const de: Messages<typeof en> = {
   'tokens.scope.admin': 'Admin',
   'tokens.scopeHelp.read': 'Darf Status, Statistiken und Logs lesen. Darf nichts ändern.',
   'tokens.scopeHelp.admin': 'Darf außerdem Einstellungen ändern, Sicherungen herunterladen und /metrics lesen.',
+  'tokens.scope.sync': 'Sync (nur der Konfigurationsexport)',
+  'tokens.scope.syncShort': 'Sync',
+  'tokens.scopeHelp.sync':
+    'Darf nur den Konfigurationsexport lesen, für ein PiCache, das diesem folgt (dort System › Synchronisierung). Gib es nur Folgesystemen.',
   'tokens.expiryLabel': 'Läuft ab',
   'tokens.expiry.days': 'Nach {days} Tagen',
   'tokens.expiry.year': 'Nach 1 Jahr',
@@ -456,9 +460,9 @@ const de: Messages<typeof en> = {
   'backup.download.title': 'Sicherung herunterladen',
   'backup.download.description':
     'Eine konsistente Kopie der Konfigurationsdatenbank (picache.db): Einstellungen, Blocklisten, Regeln, Clients, lokales DNS, Dienste, Speicherziele und das Audit-Log. Konten (Benutzer, Passwort-Hashes, Zwei-Faktor-Geheimnisse), Sitzungen und API-Tokens sind nie enthalten, Query-Log und Statistiken (logs.db) ebenfalls nicht.',
-  'backup.download.secrets': 'Gespeicherte NAS-Passwörter und Benachrichtigungs-Tokens einschließen',
+  'backup.download.secrets': 'Gespeicherte Passwörter und Tokens einschließen',
   'backup.download.secretsHelp':
-    'Sie bleiben mit dem Hauptschlüssel verschlüsselt und funktionieren nur bei einem PiCache mit demselben Schlüssel.',
+    'NAS-Passwörter, Benachrichtigungs-Tokens, das Sync-Token und das Proxy-Passwort. Sie bleiben mit dem Hauptschlüssel verschlüsselt und funktionieren nur bei einem PiCache mit demselben Schlüssel.',
   'backup.download.keyTitle': 'Der Hauptschlüssel ist nicht in der Sicherung',
   'backup.download.keyText':
     'Gespeicherte NAS-Passwörter und Benachrichtigungs-Tokens sind damit verschlüsselt. Bewahre eine Kopie des Schlüssels sicher auf, wenn sie auf einem anderen Rechner weiter funktionieren sollen. Ohne ihn gibst du sie nach einer Wiederherstellung neu ein.',
@@ -469,14 +473,14 @@ const de: Messages<typeof en> = {
 
   'backup.restore.title': 'Sicherung wiederherstellen',
   'backup.restore.description':
-    'Ersetzt die gesamte Konfiguration durch eine hier heruntergeladene Sicherung (höchstens 512 MiB).',
+    'Ersetzt die gesamte Konfiguration oder gewählte Teile davon durch eine hier heruntergeladene Sicherung (höchstens 512 MiB).',
   'backup.restore.choose': 'Sicherungsdatei auswählen',
   'backup.restore.chooseOther': 'Andere Datei auswählen',
   'backup.restore.button': 'Sicherung wiederherstellen',
   'backup.restore.uploading': 'Wird hochgeladen und geprüft …',
   'backup.restore.factReplace': 'PiCache prüft die Datei und übernimmt sie beim nächsten Neustart.',
   'backup.restore.factSessions':
-    'Die Konten mit ihren Rollen, Passwörtern und der Zwei-Faktor-Authentifizierung, die API-Tokens und das Audit-Log bleiben, wie sie sind; alle müssen sich neu anmelden.',
+    'Die Konten mit ihren Rollen, Passwörtern und der Zwei-Faktor-Authentifizierung, die API-Tokens und das Audit-Log bleiben, wie sie sind; nach einer vollständigen Wiederherstellung müssen sich alle neu anmelden, eine teilweise behält die Sitzungen.',
   'backup.restore.factKeep':
     'Die aktuelle Datenbank bleibt als picache.db.before-restore erhalten; startet PiCache mit der Sicherung nicht, kehrt es zu ihr zurück.',
   'backup.restore.checkFailed': 'Diese Datei kann nicht wiederhergestellt werden',
@@ -487,9 +491,23 @@ const de: Messages<typeof en> = {
   'backup.restore.confirmTitle': '{name} wiederherstellen?',
   'backup.restore.confirmText':
     'Die Sicherung ersetzt beim nächsten Neustart die gesamte Konfiguration, und alle werden abgemeldet. Die Konten und die API-Tokens bleiben. Die aktuelle Konfiguration bleibt als picache.db.before-restore erhalten.',
+  'backup.restore.confirmTextSome':
+    'Die gewählten Teile ersetzen beim nächsten Neustart die aktuellen; alles andere bleibt. Die Sitzungen, Konten und API-Tokens bleiben. Die aktuelle Konfiguration bleibt als picache.db.before-restore erhalten.',
+  'backup.restore.scope': 'Was wiederhergestellt wird',
+  'backup.restore.scopeAll': 'Alles',
+  'backup.restore.scopeSome': 'Gewählte Teile',
+  'backup.restore.scopeAllHelp': 'Die gesamte Konfiguration der Sicherung.',
+  'backup.restore.sections': 'Diese Teile wiederherstellen',
+  'backup.restore.sectionsRequired': 'Wähle mindestens einen Teil.',
+  'backup.restore.sectionsNote': 'Fehlt hier eine Gruppe, auf die sich die Sicherung bezieht, wird die Wiederherstellung abgelehnt.',
+  'backup.restore.stagedAll': 'Sie stellt die gesamte Konfiguration wieder her.',
+  'backup.restore.stagedSections': 'Sie stellt wieder her: {sections}.',
+  'backup.restore.restartTextSome': 'PiCache startet neu und übernimmt die wiederhergestellten Teile. Du bleibst angemeldet.',
   'backup.restore.password': 'Dein Passwort',
   'backup.restore.passwordHelp':
     'Eine Wiederherstellung ersetzt die gesamte Konfiguration, deshalb fragt PiCache noch einmal nach deinem Passwort.',
+  'backup.restore.passwordHelpSome':
+    'Eine Wiederherstellung ersetzt die gewählten Teile der Konfiguration, deshalb fragt PiCache noch einmal nach deinem Passwort.',
   'backup.restore.passwordRequired': 'Gib dein Passwort ein.',
   'backup.restore.passwordWrong': 'Das Passwort ist falsch.',
   'backup.restore.confirm': 'Hochladen und prüfen',
@@ -503,7 +521,7 @@ const de: Messages<typeof en> = {
   'backup.restore.restartNow': 'Jetzt neu starten',
   'backup.restore.restartText':
     'PiCache startet neu und übernimmt die wiederhergestellte Sicherung. Alle werden abgemeldet; melde dich danach wieder mit deinem Konto an.',
-  'backup.restore.restartHint': 'Ein Neustart übernimmt auch geänderte Listener-Einstellungen (PICACHE_*_LISTEN).',
+  'backup.restore.restartHint': 'Ein Neustart übernimmt auch gespeicherte Listener (System › Netzwerk).',
 
   'backup.scheduled.title': 'Geplante Sicherungen',
   'backup.scheduled.description':
@@ -544,7 +562,7 @@ const de: Messages<typeof en> = {
   'backup.scheduled.destOthers': 'Speicherorte, die offline sind, können nicht gewählt werden.',
   'backup.scheduled.secrets': 'Versiegelte Geheimnisse einschließen',
   'backup.scheduled.secretsHelp':
-    'Gespeicherte NAS-Passwörter und Benachrichtigungs-Tokens, weiterhin mit dem Hauptschlüssel verschlüsselt. Der Schlüssel ist nie Teil einer Sicherung, ohne ihn sind sie also nutzlos: Nach einer Wiederherstellung auf einem Rechner mit anderem Schlüssel gibst du sie neu ein. Ist die Option aus, werden sie weggelassen.',
+    'Gespeicherte NAS-Passwörter, Benachrichtigungs-Tokens, das Sync-Token und das Proxy-Passwort, weiterhin mit dem Hauptschlüssel verschlüsselt. Der Schlüssel ist nie Teil einer Sicherung, ohne ihn sind sie also nutzlos: Nach einer Wiederherstellung auf einem Rechner mit anderem Schlüssel gibst du sie neu ein. Ist die Option aus, werden sie weggelassen.',
   'backup.scheduled.secretsNoteTitle': 'Bewahre den Hauptschlüssel getrennt von diesen Sicherungen auf',
   'backup.scheduled.secretsNoteText':
     'Wer eine dieser Sicherungen und den Hauptschlüssel hat, kann die Geheimnisse entschlüsseln. Bewahre eine Kopie des Schlüssels sicher auf, aber nicht neben den Sicherungen (zum Beispiel nicht auf demselben NAS).',
@@ -660,6 +678,8 @@ const de: Messages<typeof en> = {
   'logs.downloadRetentionHelp': 'Bewahrt {value} auf (Standard: {def}).',
   'logs.statsRetention': 'Statistiken (Tage)',
   'logs.statsRetentionHelp': 'Stündliche Statistiken für {value} (Standard: {def}).',
+  'logs.seenRetention': 'Gesehene Geräte (Tage)',
+  'logs.seenRetentionHelp': 'Adressen unter „Kürzlich gesehen“ für {value} (Standard: {def}).',
   'logs.maxDbSize': 'Grenze der Log-Datenbank (MiB)',
   'logs.maxDbSizeHelp': 'Bis zu {value}; die ältesten Einträge werden zuerst entfernt (Standard: {def}).',
   'logs.clear.title': 'Daten löschen',
@@ -719,6 +739,14 @@ const de: Messages<typeof en> = {
   'applog.dropped':
     'Seit dem Start von PiCache wurden {count} Einträge nicht an eine zu langsame Live-Ansicht geliefert, einer Live-Liste können also welche fehlen. Neu laden holt die Einträge, die noch im Speicher sind.',
   'applog.capped': 'Es werden nur die neuesten {count} Einträge angezeigt.',
+  'applog.sinks.title': 'Logdatei und Syslog',
+  'applog.sinks.description':
+    'Auf dem Host festgelegt (PICACHE_LOG_FILE, PICACHE_LOG_SYSLOG). Sie bekommen dieselben Einträge wie das Systemjournal, genauso maskiert; Syslog sendet sie unverschlüsselt.',
+  'applog.sinks.file': 'Logdatei',
+  'applog.sinks.syslog': 'Syslog',
+  'applog.sinks.ok': 'Schreibt',
+  'applog.sinks.failing': 'Fehlerhaft',
+  'applog.sinks.dropped': '{count} Einträge verworfen',
   'applog.older': 'Ältere Einträge anzeigen',
   'applog.empty': 'Keine Einträge',
   'applog.emptyText': 'Noch passt nichts zu den Filtern. Senke die Mindeststufe oder wähle alle Komponenten.',
@@ -761,6 +789,9 @@ const de: Messages<typeof en> = {
   'health.check.dhcp': 'DHCP-Server',
   'health.check.tls': 'HTTPS-Zertifikat',
   'health.check.encrypted-dns': 'Verschlüsseltes DNS',
+  'health.check.logging': 'Logdatei und Syslog',
+  'health.check.ntp': 'NTP-Server',
+  'health.check.sync': 'Synchronisierung vom Primärsystem',
   'health.check.host': 'Ressourcen des Hosts',
   'health.check.network': 'Netzwerk-Einrichtung',
 
@@ -774,8 +805,9 @@ const de: Messages<typeof en> = {
   'health.about.started': 'Gestartet',
   'health.about.uptime': 'Laufzeit',
   'health.about.instance': 'Instanz-ID',
-  'health.about.restartHint': 'Änderungen an Listenern (PICACHE_*_LISTEN) brauchen einen Neustart.',
+  'health.about.restartHint': 'Änderungen an Listenern (System › Netzwerk oder PICACHE_*_LISTEN) brauchen einen Neustart.',
   'health.about.update': 'Update',
+  'health.about.channel': 'Update-Kanal',
   'health.about.updateAvailable': '{version} verfügbar',
 
   'health.paths.title': 'Daten und Schlüssel',
@@ -799,7 +831,7 @@ const de: Messages<typeof en> = {
 
   'health.listeners.title': 'Listener',
   'health.listeners.description':
-    'Werden beim Start von PiCache festgelegt. Ändere sie in der Umgebung und starte dann neu.',
+    'Werden beim Start von PiCache festgelegt. Ändere sie unter System › Netzwerk (oder in der Umgebung) und starte dann neu.',
   'health.listeners.role': 'Dienst',
   'health.listeners.addresses': 'Adressen',
   'health.listeners.setting': 'Einstellung',
@@ -809,6 +841,7 @@ const de: Messages<typeof en> = {
   'health.listeners.unused': 'Nicht in Gebrauch',
   'health.listeners.unusedDot': 'Wird nicht genutzt, solange DNS over TLS aus ist.',
   'health.listeners.unusedDoh': 'Wird nicht genutzt, solange DNS over HTTPS aus ist.',
+  'health.listeners.unusedNtp': 'Wird nicht genutzt, solange der NTP-Server aus ist.',
   'health.listener.dns-udp': 'DNS (UDP)',
   'health.listener.dns-tcp': 'DNS (TCP)',
   'health.listener.cache': 'Download-Cache (HTTP)',
@@ -817,6 +850,8 @@ const de: Messages<typeof en> = {
   'health.listener.web-tls': 'Weboberfläche (HTTPS)',
   'health.listener.dot': 'DNS over TLS',
   'health.listener.doh': 'DNS over HTTPS (eigener Port)',
+  'health.listener.dns': 'DNS (UDP und TCP)',
+  'health.listener.ntp': 'NTP-Server (UDP)',
 
   'health.warnings.title': 'Warnverlauf',
   'health.warnings.description':
@@ -1119,6 +1154,7 @@ const de: Messages<typeof en> = {
   'updates.current.auto': 'Update-Prüfung',
   'updates.current.autoOn': 'Täglich, stabile Versionen',
   'updates.current.autoOnPre': 'Täglich, auch Vorabversionen',
+  'updates.current.autoOnNightly': 'Täglich, auch Nightly-Builds',
   'updates.current.autoOff': 'Aus',
   'updates.current.lastRun': 'Letztes Update',
   'updates.mode.helper': 'Auf dieser Seite (Update-Helfer)',
@@ -1234,11 +1270,202 @@ const de: Messages<typeof en> = {
     'Fragt einmal am Tag bei GitHub nach einer neuen Version und markiert dann „Updates“ in der Navigation.',
   'updates.settings.checkOn': 'Tägliche Update-Prüfung eingeschaltet',
   'updates.settings.checkOff': 'Tägliche Update-Prüfung ausgeschaltet',
-  'updates.settings.pre': 'Vorabversionen einbeziehen',
-  'updates.settings.preHelp':
-    'Bietet auch Release Candidates an (zum Beispiel v1.4.0-rc.1), die weniger getestet sind. Gilt ab der nächsten Prüfung.',
-  'updates.settings.preOn': 'Ab der nächsten Prüfung werden auch Vorabversionen angeboten',
-  'updates.settings.preOff': 'Ab der nächsten Prüfung werden nur stabile Versionen angeboten',
+  'updates.settings.channel': 'Update-Kanal',
+  'updates.settings.channel.stable': 'Stabile Versionen',
+  'updates.settings.channel.beta': 'Beta: auch Release Candidates',
+  'updates.settings.channel.nightly': 'Nightly: auch tägliche Builds',
+  'updates.settings.channelHelp.stable': 'Es werden nur getestete Versionen angeboten.',
+  'updates.settings.channelHelp.beta':
+    'Auch Release Candidates (zum Beispiel v1.4.0-rc.1), die weniger getestet sind. Gilt ab der nächsten Prüfung.',
+  'updates.settings.channelHelp.nightly': 'Auch die täglichen Builds des Entwicklungszweigs. Gilt ab der nächsten Prüfung.',
+  'updates.settings.channelSaved': 'Update-Kanal: {channel}',
+  'updates.settings.nightlyTitle': 'Nightly-Builds sind ungetestet',
+  'updates.settings.nightlyText':
+    'Sie entstehen jeden Tag aus dem Entwicklungszweig ohne Release-Test und sind mit einem eigenen Schlüssel signiert. Zurück zu stabil geht es mit der nächsten stabilen Version, die neuer als der Nightly-Build ist, oder mit „sudo picache update --version vX.Y.Z --allow-downgrade“ und der Kopie der Datenbank von vor dem Upgrade.',
+  'updates.settings.nightlyConfirm': 'Nightly-Builds verwenden',
+  'updates.settings.nightlyHostTitle': 'Dieser Host installiert noch keine Nightly-Builds',
+  'updates.settings.nightlyHostText':
+    'Das Installieren über diese Seite braucht die Erlaubnis des Hosts: Führe einmal install.sh --nightly auf dem Host aus. „sudo picache update“ installiert sie auch ohne.',
+  'updates.settings.nightlyDocker': 'Nightly-Builds haben kein Container-Image: Docker bietet nur stabile Versionen und Release Candidates.',
+  'updates.settings.installProxy': 'Installationen laden über den Proxy {proxy} (PICACHE_UPDATE_PROXY auf dem Host).',
+  'updates.settings.installDirect': 'Installationen laden direkt von GitHub (PICACHE_UPDATE_PROXY auf dem Host legt einen Proxy fest).',
+
+  // Konfigurationsteile (teilweise Wiederherstellung, Synchronisierung)
+  'section.settings': 'Einstellungen',
+  'section.settingsHelp': 'Alle Einstellungen außer DHCP und Speicher.',
+  'section.clients-and-groups': 'Clients und Gruppen',
+  'section.clients-and-groupsHelp': 'Die Clients mit ihren Erkennungsmerkmalen und die Gruppen.',
+  'section.lists-and-rules': 'Listen und Regeln',
+  'section.lists-and-rulesHelp': 'Blocklisten, Allowlisten, deine Regeln und IP-Regeln.',
+  'section.local-dns': 'Lokales DNS',
+  'section.local-dnsHelp': 'Lokale Einträge und bedingte Weiterleitungen.',
+  'section.parental': 'Jugendschutz',
+  'section.parentalHelp': 'Gesperrte Dienste, Zeitpläne, sichere Suche und Kategorien jeder Gruppe.',
+  'section.dhcp': 'DHCP',
+  'section.dhcpHelp': 'Die DHCP-Einstellungen, Reservierungen und Leases.',
+  'section.download-cache': 'Dienste des Download-Caches',
+  'section.download-cacheHelp': 'Deine eigenen Dienste, zusätzliche Domains und Bezeichnungen.',
+  'section.notifications': 'Benachrichtigungen',
+  'section.notificationsHelp': 'Die Benachrichtigungskanäle.',
+  'section.storage': 'Speicher',
+  'section.storageHelp': 'Die Speicherziele, der aktive Speicher und das Ziel der Sicherungen.',
+  'section.dns-settings': 'DNS-Einstellungen',
+  'section.dns-settingsHelp':
+    'Upstreams, Cache, Blockantworten, Schutz und die übrigen DNS- und Filtereinstellungen; Servernamen, verschlüsseltes DNS, einfaches DNS, die erlaubten Netze und der Router-Resolver bleiben die dieses PiCache.',
+  'section.rule':
+    'Clients und Gruppen ersetzen die Gruppen, auf die sich Listen und Regeln, lokales DNS und Jugendschutz beziehen: Wer sie wählt, wählt diese mit. Ohne sie behalten diese Teile die Gruppen dieses PiCache, über den Namen zugeordnet.',
+
+  // System › Netzwerk
+  'network.listeners.title': 'Listener',
+  'network.listeners.description':
+    'Die Adressen, auf denen PiCache lauscht, je Dienst. Sie werden beim Start gelesen: Eine Änderung gilt nach einem Neustart. Lässt sich eine gespeicherte Adresse dann nicht binden, nimmt PiCache für diesen Dienst den Wert aus der Umgebung oder den Standard und meldet es hier.',
+  'network.listeners.now': 'Jetzt',
+  'network.listeners.next': 'Nächster Start',
+  'network.listeners.default': 'Standard',
+  'network.listeners.isDefault': '(Standard)',
+  'network.listeners.afterRestart': 'nach einem Neustart',
+  'network.listeners.lockedBy': 'Gesetzt durch {env}',
+  'network.listeners.lockedFlag': 'Gesetzt durch einen Kommandozeilenschalter',
+  'network.listeners.lockedHelp':
+    'Die Umgebung oder die Kommandozeile des Dienstes legt ihn fest: Ändere ihn dort (z. B. /etc/picache/picache.env) und starte neu.',
+  'network.listeners.edit': 'Listener ändern',
+  'network.listeners.dockerTitle': 'In der Compose-Datei festgelegt',
+  'network.listeners.dockerText':
+    'Unter Docker legen die PICACHE_*_LISTEN-Variablen der Compose-Datei die Listener fest. In einem Bridge-Netz ändere die veröffentlichten Ports mit.',
+  'network.listeners.failedTitle': 'Gespeicherte Listener ließen sich beim Start am {time} nicht binden',
+  'network.listeners.failedText':
+    'PiCache hat für diese Dienste den Wert aus der Umgebung oder den Standard genommen. Speichere korrigierte Adressen oder setze sie auf den Standard zurück und starte neu.',
+  'network.listeners.restartTitle': 'Gespeicherte Listener warten auf einen Neustart',
+  'network.listeners.restartText': 'PiCache nutzt sie ab seinem nächsten Start. Starte es neu, wenn es gerade niemand braucht.',
+  'network.listeners.editTitle': 'Listener ändern',
+  'network.listeners.editHelp':
+    'Je Dienst: sein Standard, aus oder eigene Adressen. Sie gelten ab dem nächsten Start. Behalte einen Web-Listener auf allen Adressen oder auf Loopback und auf der Adresse, über die dieser Browser verbunden ist.',
+  'network.listeners.mode': 'Listener für {service}',
+  'network.listeners.modeDefault': 'Standard ({addresses})',
+  'network.listeners.modeOff': 'Aus',
+  'network.listeners.modeCustom': 'Diese Adressen',
+  'network.listeners.addresses': 'Adressen',
+  'network.listeners.addressesHelp': 'Eine pro Zeile: ip:port oder :port für alle Adressen dieses Rechners; IPv6 in eckigen Klammern, z. B. [fd00::10]:53.',
+  'network.listeners.addressesRequired': 'Gib mindestens eine Adresse ein oder wähle Aus.',
+  'network.listeners.lockedEdit': 'Durch {env} auf dem Host gesetzt: Ändere es dort.',
+  'network.listeners.lockedFlagEdit': 'Durch einen Kommandozeilenschalter gesetzt: Ändere es dort.',
+  'network.listeners.confirmTitle': 'Listener speichern?',
+  'network.listeners.confirmText': 'Sie gelten ab dem nächsten Start von PiCache. Bestätige mit deinem Passwort.',
+  'network.listeners.password': 'Dein Passwort',
+  'network.listeners.passwordRequired': 'Gib dein Passwort ein.',
+  'network.listeners.confirm': 'Listener speichern',
+  'network.listeners.saved': 'Listener gespeichert: Sie gelten nach dem nächsten Neustart',
+  'network.listeners.movedTitle': 'Diese Seite zieht an eine andere Adresse um',
+  'network.listeners.movedText': 'Ab dem nächsten Start antwortet PiCache nicht mehr unter {current}. Öffne es nach dem Neustart unter {urls}.',
+  'network.listeners.movedTextNoUrl': 'Ab dem nächsten Start antwortet PiCache nicht mehr unter {current}.',
+  'network.listeners.restartTimeout':
+    'Unter dieser Adresse kommt seit 3 Minuten keine Antwort. Die Weboberfläche nutzt seit dem Neustart {urls}: Öffne eine davon. Antwortet keine, prüfe den Dienst (journalctl -u picache oder docker compose logs picache).',
+  'network.proxy.title': 'Ausgehender Proxy',
+  'network.proxy.description':
+    'Ein HTTP- oder SOCKS5-Proxy für die Downloads, die du wählst, für Netze, in denen PiCache das Internet nicht direkt erreicht.',
+  'network.proxy.loadError': 'Die Proxy-Einstellungen konnten nicht geladen werden',
+  'network.proxy.url': 'Proxy',
+  'network.proxy.urlHelp': 'http://host:port oder socks5://host:port. Leer: kein Proxy.',
+  'network.proxy.username': 'Benutzername',
+  'network.proxy.password': 'Passwort',
+  'network.proxy.passwordHelp': 'Wird mit dem Hauptschlüssel verschlüsselt gespeichert und nie wieder angezeigt.',
+  'network.proxy.passwordAgain': 'Gib das Passwort erneut ein: Das gespeicherte gehört zum bisherigen Proxy oder Benutzernamen.',
+  'network.proxy.removePassword': 'Gespeichertes Passwort entfernen',
+  'network.proxy.useFor': 'Proxy verwenden für',
+  'network.proxy.for.lists': 'Blocklisten und Cache-Domains',
+  'network.proxy.for.listsHelp': 'Downloads der Filterlisten und der Quelle der Cache-Domains.',
+  'network.proxy.for.updateCheck': 'Update-Prüfung',
+  'network.proxy.for.updateCheckHelp':
+    'Die tägliche Suche nach einer neuen PiCache-Version. Die Installation eines Updates nutzt stattdessen PICACHE_UPDATE_PROXY des Hosts.',
+  'network.proxy.for.notifications': 'Benachrichtigungen',
+  'network.proxy.for.notificationsHelp': 'Nachrichten an Webhooks, ntfy und Gotify und ihre Tests.',
+  'network.proxy.seesTitle': 'Der Proxy sieht, wohin PiCache sich verbindet',
+  'network.proxy.seesText': 'Er sieht jede Adresse und jeden Hostnamen, die PiCache über ihn erreicht, und den Inhalt einfacher http-Downloads.',
+  'network.proxy.cleartext': 'Benutzername und Passwort gehen unverschlüsselt durchs Netz (HTTP-Proxy-Anmeldung und SOCKS5).',
+  'network.proxy.never': 'Nie über den Proxy: DNS-Upstreams, der Download-Cache, die Synchronisierung und WHOIS-Abfragen.',
+  'network.ntp.title': 'NTP-Server',
+  'network.ntp.description':
+    'Geräte können die Uhrzeit von PiCache holen (NTP über UDP, meist Port 123), für Netze ohne Internetzugang oder Geräte, die keine Zeitserver draußen fragen sollen.',
+  'network.ntp.loadError': 'Die NTP-Einstellungen konnten nicht geladen werden',
+  'network.ntp.enabled': 'NTP-Clients antworten',
+  'network.ntp.enabledHelp':
+    'Geräte, die den DNS-Server von PiCache nutzen dürfen, bekommen die Uhrzeit dieses Rechners. Aus: Anfragen werden ohne Antwort verworfen.',
+  'network.ntp.stratum': 'Stratum',
+  'network.ntp.stratumHelp':
+    'Wird gemeldet, solange die Uhr dieses Rechners synchronisiert ist (2–15, Standard {def}). Sonst antwortet PiCache mit Stratum 16, das Clients ignorieren.',
+  'network.ntp.listener': 'Listener:',
+  'network.ntp.noListener': 'keiner (PICACHE_NTP_LISTEN ist aus)',
+  'network.ntp.none': 'keiner',
+  'network.ntp.bindFailed': 'keiner: ließ sich nicht binden ({error})',
+  'network.ntp.bindTitle': 'Der NTP-Listener ließ sich nicht binden',
+  'network.ntp.bindText':
+    'Es wird nichts beantwortet. Vermutlich bedient ein anderes Programm UDP-Port 123 (ntpd oder chrony): Beende dessen Server oder gib dem NTP-Listener unter Listener eine andere Adresse und starte PiCache neu.',
+  'network.ntp.nextListener': 'ab dem nächsten Start: {addresses}',
+  'network.ntp.nextOff': 'ab dem nächsten Start aus',
+  'network.ntp.offTitle': 'Kein NTP-Listener',
+  'network.ntp.offText':
+    'Es wird nichts beantwortet, bis der NTP-Listener eine Adresse hat (zum Beispiel :123 unter Listener oder PICACHE_NTP_LISTEN) und PiCache neu gestartet ist.',
+  'network.ntp.toListeners': 'Listener',
+  'network.ntp.clockTitle': 'Uhr dieses Rechners',
+  'network.ntp.openTitle': 'Offener NTP-Server',
+  'network.ntp.openText':
+    'Der DNS-Server antwortet jedem Netz (DNS-Einstellungen › Zugriff), daher antwortet auch der NTP-Server dem ganzen Internet und lässt sich gegen andere missbrauchen. Beschränke die Netze, die PiCache nutzen dürfen.',
+  'network.ntp.toAccess': 'Zugriffseinstellungen',
+
+  // System › Synchronisierung
+  'sync.viewerNote': 'Du siehst den Status der Synchronisierung. Admins richten das Folgesystem ein.',
+  'sync.status.title': 'Status der Synchronisierung',
+  'sync.status.loadError': 'Der Status der Synchronisierung konnte nicht geladen werden',
+  'sync.status.off': 'Die Synchronisierung ist aus: Dieses PiCache behält seine eigene Konfiguration.',
+  'sync.status.source': 'Primärsystem',
+  'sync.status.sections': 'Synchronisiert',
+  'sync.status.interval': 'Intervall',
+  'sync.status.every': 'alle {minutes} Minuten',
+  'sync.status.lastRun': 'Letzter Lauf',
+  'sync.status.lastSuccess': 'Letzter Erfolg',
+  'sync.status.nextRun': 'Nächster Lauf',
+  'sync.status.runningNow': 'läuft gerade',
+  'sync.status.primaryVersion': 'Version des Primärsystems',
+  'sync.status.applied': 'Übernommene Konfiguration',
+  'sync.status.running': 'Synchronisiert',
+  'sync.status.runningText': 'Die Konfiguration wird vom Primärsystem geholt…',
+  'sync.status.failed': 'Fehlgeschlagen',
+  'sync.status.ok': 'Aktuell',
+  'sync.status.waiting': 'Wartet',
+  'sync.status.errorTitle': 'Die letzte Synchronisierung ist fehlgeschlagen',
+  'sync.status.footer': 'Solange sich die Konfiguration des Primärsystems nicht ändert, übernimmt eine Synchronisierung nichts.',
+  'sync.status.run': 'Jetzt synchronisieren',
+  'sync.status.started': 'Synchronisierung gestartet',
+  'sync.form.title': 'Einem anderen PiCache folgen',
+  'sync.form.description':
+    'Ein Folgesystem übernimmt die gewählten Teile der Konfiguration von einem anderen PiCache (dem Primärsystem) und hält sie hier schreibgeschützt. Es liest nur vom Primärsystem und schickt nie etwas zurück.',
+  'sync.form.loadError': 'Die Einstellungen der Synchronisierung konnten nicht geladen werden',
+  'sync.form.mode': 'Synchronisierung',
+  'sync.form.modeOff': 'Aus',
+  'sync.form.modeFollower': 'Einem Primärsystem folgen',
+  'sync.form.offText': 'Dieses PiCache behält seine eigene Konfiguration.',
+  'sync.form.source': 'Primärsystem',
+  'sync.form.sourceHelp': 'Die HTTPS-Adresse der Weboberfläche des Primärsystems, z. B. https://picache.fritz.box:8443.',
+  'sync.form.token': 'Sync-Token',
+  'sync.form.tokenHelp':
+    'Erstelle es auf dem Primärsystem unter System › API-Tokens mit dem Zugriff „Sync“: Es darf nur die Konfiguration lesen. Wird mit dem Hauptschlüssel verschlüsselt gespeichert.',
+  'sync.form.tokenAgain': 'Gib das Token erneut ein: Das gespeicherte gehört zur bisherigen Adresse.',
+  'sync.form.ca': 'CA-Zertifikat des Primärsystems',
+  'sync.form.caHelp':
+    'Lade es auf dem Primärsystem unter System › HTTPS-Zertifikat herunter (die lokale CA) oder füge das eigene Zertifikat des Primärsystems ein. Leer: Nur Zertifikate öffentlicher CAs werden akzeptiert.',
+  'sync.form.caLoad': 'Aus Datei laden',
+  'sync.form.caClear': 'Leeren',
+  'sync.form.caTooLarge': 'Die Datei ist größer als 16 KiB: Das ist kein Zertifikat.',
+  'sync.form.caNotPem': 'Die Datei enthält kein PEM-Zertifikat (-----BEGIN CERTIFICATE-----).',
+  'sync.form.interval': 'Intervall',
+  'sync.form.intervalHelp': 'Wie oft das Folgesystem beim Primärsystem nachfragt (5–1440 Minuten).',
+  'sync.form.minutes': 'Minuten',
+  'sync.form.sections': 'Diese Teile synchronisieren',
+  'sync.form.replaceTitle': 'Diese Teile werden hier schreibgeschützt',
+  'sync.form.replaceText':
+    'Jede Synchronisierung ersetzt sie durch die des Primärsystems: Ändere sie dort. Ausnahmen und Pausen des Jugendschutzes bleiben die dieses PiCache.',
+  'sync.form.savedFollower': 'Gespeichert: Dieses PiCache folgt dem Primärsystem',
+  'sync.form.savedOff': 'Gespeichert: Die Synchronisierung ist aus',
 }
 
 export default de

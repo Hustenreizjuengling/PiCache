@@ -37,6 +37,8 @@ const de: Messages<typeof en> = {
   'nav.health': 'Zustand & Info',
   'nav.notifications': 'Benachrichtigungen',
   'nav.updates': 'Updates',
+  'nav.systemNetwork': 'Netzwerk',
+  'nav.sync': 'Synchronisierung',
   'nav.updateAvailable': 'Update verfügbar',
 
   // Aktionen
@@ -78,6 +80,9 @@ const de: Messages<typeof en> = {
   'state.never': 'Nie',
   'state.unknown': 'Unbekannt',
   'state.readOnly': 'Du bist nur mit Leserechten angemeldet. Änderungen sind deaktiviert.',
+  'synced.title': 'Synchronisiert von {origin}: Ändere es auf dem Primärsystem',
+  'synced.titleNoOrigin': 'Vom Primärsystem synchronisiert: Ändere es dort',
+  'synced.status': 'Status der Synchronisierung',
   'label.name': 'Name',
   'label.comment': 'Kommentar',
   'label.groups': 'Gruppen',

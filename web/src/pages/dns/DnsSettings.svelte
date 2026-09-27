@@ -7,7 +7,8 @@
   device set-up and Apple profiles), local names, IPv6 answers (no AAAA,
   DNS64) and DNSSEC. Edits the "dns" and "filter"
   settings sections; Save sends only the changed members of each.
-  Validation errors appear next to the field.
+  Validation errors appear next to the field. On a follower that syncs the
+  DNS settings, the synced members are disabled (with the synced banner).
   Query: ?section=upstreams|cache|blocking|protection|ratelimit|access|encrypted|devices|names|ipv6|dnssec (scrolls there)
 -->
 <script lang="ts">
@@ -30,6 +31,7 @@
   import ProtectionSection from './settings/ProtectionSection.svelte'
   import RateLimitSection from './settings/RateLimitSection.svelte'
   import UpstreamsSection from './settings/UpstreamsSection.svelte'
+  import SyncedNotice from './shared/SyncedNotice.svelte'
 
   const dns = settingsForm('dns')
   const filter = settingsForm('filter')
@@ -48,6 +50,11 @@
 
   const SECTIONS = ['upstreams', 'cache', 'blocking', 'protection', 'ratelimit', 'access', 'encrypted', 'devices', 'names', 'ipv6', 'dnssec'] as const
   type Section = (typeof SECTIONS)[number]
+
+  // On a follower that syncs the DNS settings, their syncable members are
+  // read-only; server names, encrypted DNS, plain DNS, the allowed networks
+  // and the router resolver stay this PiCache's own.
+  const synced = $derived(session.isSynced('dns-settings'))
 
   const ready = $derived(!!dns.draft && !!filter.draft)
   const dirty = $derived(dns.dirty || filter.dirty)
@@ -131,6 +138,8 @@
          locks the configuration: those two sections disable their settings themselves.
          Encrypted DNS sits outside: viewers copy its addresses, admins create profiles
          while the configuration is locked; it disables its settings itself. -->
+    <SyncedNotice section="dns-settings" note={t('dns.settings.syncedNote')} />
+
     <fieldset class="sections" disabled={!session.canOperate}>
       <UpstreamsSection
         form={dns}
@@ -143,11 +152,13 @@
         presets={presets.data}
       />
       <CacheSection form={dns} cache={upstreams.data?.cache} onflushed={() => upstreams.refresh()} />
-      <fieldset class="sections" disabled={!session.isAdmin}>
+      <fieldset class="sections" disabled={!session.canEditSection('dns-settings')}>
         <BlockingSection form={filter} />
         <ProtectionSection form={dns} stats={dnsStats.data} />
         <RateLimitSection form={dns} stats={dnsStats.data} />
-        <AccessSection form={dns} stats={dnsStats.data} />
+      </fieldset>
+      <fieldset class="sections" disabled={!session.isAdmin}>
+        <AccessSection form={dns} stats={dnsStats.data} {synced} />
       </fieldset>
     </fieldset>
     <EncryptedSection
@@ -158,7 +169,9 @@
       groups={groups.data}
     />
     <fieldset class="sections" disabled={!session.isAdmin}>
-      <NamesSection form={dns} status={appStatus.overview.data?.router} />
+      <NamesSection form={dns} status={appStatus.overview.data?.router} {synced} />
+    </fieldset>
+    <fieldset class="sections" disabled={!session.canEditSection('dns-settings')}>
       <Ipv6Section form={dns} />
       <DnssecSection form={dns} />
     </fieldset>

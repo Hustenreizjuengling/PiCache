@@ -142,7 +142,13 @@ func (s *Server) webDoH(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "DoH through a proxy that is not in web.trustedProxies is refused", http.StatusForbidden)
 		return
 	}
-	s.d.DNS.ServeDoH(w, r, ci.client)
+	if ci.client != ci.peer {
+		// The effective client of a trusted proxy: never identified by
+		// iface: (the address did not arrive by its interface).
+		s.d.DNS.ServeDoHForwarded(w, r, ci.client)
+		return
+	}
+	s.d.DNS.ServeDoH(w, r, ci.client.WithZone(ci.zone))
 }
 
 // hasProxyHeaders reports a request that carries a client address a proxy

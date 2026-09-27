@@ -97,6 +97,10 @@ The binding rules are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - SQL uses parameterised statements only. Table names start with their
   component (`dns_records`, `filter_lists`, …), and each component migrates
   only its own tables with append-only steps.
+- Migration steps are append-only **from the moment they are merged to
+  `main`**, not from the release: the nightly build may already have applied
+  a merged step on test machines. Fix a merged step with a new step, never by
+  editing it.
 - Every cache, map, queue, list and upload has an explicit size limit.
 - A change to the REST API updates [docs/API.md](docs/API.md) in the same
   pull request; the same applies to ARCHITECTURE.md and DEPLOYMENT.md.
@@ -249,3 +253,28 @@ After the first release, open the package
 `ghcr.io/hustenreizjuengling/picache` on GitHub (**Packages**) and set its
 visibility to public (**Package settings → Change visibility**): GitHub
 creates new container packages as private, even for a public repository.
+
+### Nightly builds and the nightly key
+
+`.github/workflows/nightly.yml` publishes a nightly pre-release of `main`
+every day that `main` changed (and on demand, **Actions → Nightly → Run
+workflow**), named `v<next patch>-nightly.<YYYYMMDD>.<n>`, and deletes
+nightlies beyond the newest 7. It signs with a separate Ed25519 key: its
+public half is `docs/nightly-key.pem` and the list `nightlyKeys` in
+`internal/update/keys.go`, which verifies only versions containing
+`-nightly.` (the release key never signs them, the nightly key never signs a
+release). Create it like the release key:
+
+```sh
+(umask 077 && openssl genpkey -algorithm ed25519 -out picache-nightly-key.pem)
+openssl pkey -in picache-nightly-key.pem -pubout -out docs/nightly-key.pem
+openssl pkey -in picache-nightly-key.pem -pubout -outform DER | tail -c 32 | base64   # for nightlyKeys
+```
+
+Then create the environment **`nightly`** with **Deployment branches and
+tags → Selected branches** and the rule `main`, and add the environment
+secret `NIGHTLY_SIGNING_KEY` (the whole PEM file):
+`gh secret set NIGHTLY_SIGNING_KEY --env nightly --repo Hustenreizjuengling/PiCache < picache-nightly-key.pem`.
+The workflow verifies every signature against `docs/nightly-key.pem` before
+it publishes. Nightlies push no container images, and hosts install them only
+with `install.sh --nightly`.

@@ -35,9 +35,13 @@
     addLabel: string
     /** Buttons after "Add". */
     extra?: Snippet
+    /** The entries may be changed (default: admin rights; false while the list is synced from a primary). */
+    editable?: boolean
   }
 
-  let { value = $bindable(), error, field, max, stats, orderable = false, entryLabel, addLabel, extra }: Props = $props()
+  let { value = $bindable(), error, field, max, stats, orderable = false, entryLabel, addLabel, extra, editable }: Props = $props()
+
+  const canEdit = $derived(editable ?? session.isAdmin)
 
   type Test = { running: boolean; result?: UpstreamTestResult; error?: ApiError }
   let tests = $state<Record<string, Test>>({})
@@ -96,23 +100,23 @@
                 aria-label={entryLabel(i + 1)}
                 placeholder="https://dns.example/dns-query"
                 maxlength={1024}
-                disabled={!session.isAdmin}
+                disabled={!canEdit}
               />
             </div>
             <Button size="sm" loading={tr?.running} disabled={!session.canOperate || !u.trim()} onclick={() => test(u)}>
               {t('common.action.test')}
             </Button>
             {#if orderable}
-              <IconButton icon="arrow-up" size="sm" label={t('dns.settings.upstreams.up')} disabled={!session.isAdmin || i === 0} onclick={() => move(i, -1)} />
+              <IconButton icon="arrow-up" size="sm" label={t('dns.settings.upstreams.up')} disabled={!canEdit || i === 0} onclick={() => move(i, -1)} />
               <IconButton
                 icon="arrow-down"
                 size="sm"
                 label={t('dns.settings.upstreams.down')}
-                disabled={!session.isAdmin || i === value.length - 1}
+                disabled={!canEdit || i === value.length - 1}
                 onclick={() => move(i, 1)}
               />
             {/if}
-            <IconButton icon="trash" size="sm" variant="danger" label={t('dns.settings.upstreams.remove')} disabled={!session.isAdmin} onclick={() => removeAt(i)} />
+            <IconButton icon="trash" size="sm" variant="danger" label={t('dns.settings.upstreams.remove')} disabled={!canEdit} onclick={() => removeAt(i)} />
           </div>
           {#if err}<p class="err">{err}</p>{/if}
           <div class="meta small">
@@ -152,7 +156,7 @@
   {/if}
   {#if listError}<p class="err">{listError}</p>{/if}
   <div class="row">
-    <Button size="sm" icon="plus" disabled={!session.isAdmin || value.length >= max} onclick={add}>{addLabel}</Button>
+    <Button size="sm" icon="plus" disabled={!canEdit || value.length >= max} onclick={add}>{addLabel}</Button>
     {@render extra?.()}
   </div>
 </div>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -47,6 +48,42 @@ func (c *capture) requests() []capturedRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]capturedRequest(nil), c.reqs...)
+}
+
+// CloseIdleConnections drops the kept-alive connection of the delivery
+// client (a changed outbound proxy applies to the next message).
+func TestCloseIdleConnections(t *testing.T) {
+	s, _ := newTestService(t)
+	closed := make(chan struct{}, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateClosed {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	res, err := s.client.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	select {
+	case <-closed:
+		t.Fatal("the connection was not kept alive")
+	case <-time.After(50 * time.Millisecond):
+	}
+	s.CloseIdleConnections()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle connection was not closed")
+	}
+	(*Service)(nil).CloseIdleConnections() // no service: nothing to do
 }
 
 var testMessage = Message{Event: EventHealthFailed, Severity: SeverityError, Title: "Health check failed: upstreams",

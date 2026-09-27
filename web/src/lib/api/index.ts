@@ -1,6 +1,6 @@
 // Public entry point of the API layer: import { api, resource, … } from '$lib/api'.
 
-export { api, type ClientStatsOpts } from './endpoints'
+export { api, type ClientStatsOpts, type SettingsWriteOpts } from './endpoints'
 export { ApiError, apiUrl, isApiError, request, setApiHooks, toApiError, type FetchedFile, type Query, type ReqOpts } from './client'
 export { Resource, poll, resource, type Loader, type ResourceOptions } from './poll.svelte'
 export { LiveStream, streamCache, streamQueries, streamSystemLog, type StreamOptions, type StreamState } from './sse.svelte'

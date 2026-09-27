@@ -2,9 +2,10 @@
   @component
   Health & about: the health checks with hints, the warning history, host
   resources with their warning thresholds, database sizes, then what is
-  running: version and build, uptime, listeners (including failed ones),
-  directories, the master key source, memory, the support bundle (admins)
-  and links to the documentation.
+  running: version and build (with the update channel), uptime, listeners
+  (including failed ones; changed under System › Network), directories,
+  the master key source, memory, the support bundle (admins) and links to
+  the documentation.
   Query: ?section=warnings|host|databases|thresholds|support (scrolls there), ?warnings=open
 -->
 <script lang="ts">
@@ -34,6 +35,8 @@
   const databases = resource((signal) => api.system.databases({ signal }), { interval: 60_000 })
   // Whether DoT and DoH are switched on: a failed dot/doh listener only matters then.
   const encrypted = resource((signal) => api.dns.encrypted({ signal }), { interval: 60_000 })
+  // Whether the NTP server answers: a failed ntp listener only matters then.
+  const ntp = resource((signal) => api.settings.get({ signal }).then((s) => s.ntp.enabled), { interval: 60_000 })
   const thresholds = settingsForm('health')
 
   // ?section=… (e.g. the warnings badge in the top bar) scrolls there once the panels above have loaded.
@@ -65,6 +68,9 @@
               href: href('/system/updates'),
             },
           ]
+        : []),
+      ...(upd?.channel
+        ? [{ label: t('system.health.about.channel'), value: t(`system.updates.settings.channel.${upd.channel}`), href: href('/system/updates') }]
         : []),
       { label: t('system.health.about.commit'), value: v.commit, mono: true },
       { label: t('system.health.about.built'), value: buildDate(v.date) },
@@ -167,6 +173,7 @@
   <ListenersPanel
     listeners={info.data?.listeners}
     encrypted={encrypted.data && { dot: encrypted.data.dot.enabled, doh: encrypted.data.doh.enabled }}
+    ntp={ntp.data}
   />
 
   {#if session.canOperate}

@@ -43,7 +43,7 @@ func TestClientIDIdentifiers(t *testing.T) {
 	_, err = r.CreateClient(ctx, ClientInput{Name: "Bad", Identifiers: []string{"clientid:bad_id"}})
 	var ae *apperr.Error
 	if !errors.As(err, &ae) || ae.Field != "identifiers[0]" ||
-		ae.Message != "must be an IP address, a CIDR (e.g. 192.168.1.0/24), a MAC address or clientid:<ClientID>" {
+		ae.Message != "must be an IP address, a CIDR (e.g. 192.168.1.0/24), a MAC address, clientid:<ClientID>, iface:<interface> or host:<name>" {
 		t.Fatalf("invalid: %v", err)
 	}
 	_, err = r.CreateClient(ctx, ClientInput{Name: "None"})

@@ -27,7 +27,7 @@ func TestLatestSelection(t *testing.T) {
 		{TagName: "v1.2.5", Assets: stdAssets("picache-linux-arm64", "picache-linux-armv7", SumsFile, SigFile)}, // no amd64
 	}
 	c := g.client()
-	rel, err := c.Latest(t.Context(), false)
+	rel, err := c.Latest(t.Context(), ChannelStable)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestLatestSelection(t *testing.T) {
 		t.Errorf("requests %v", reqs)
 	}
 
-	rel, err = c.Latest(t.Context(), true)
+	rel, err = c.Latest(t.Context(), ChannelBeta)
 	if err != nil || rel == nil || rel.Version != "v1.3.0-rc.1" || !rel.Prerelease {
 		t.Fatalf("Latest with pre-releases = %+v, %v", rel, err)
 	}
@@ -51,19 +51,19 @@ func TestLatestSelection(t *testing.T) {
 	// Architectures: arm uses the armv7 binary; arm64 has v1.2.5.
 	for arch, want := range map[string]string{"arm64": "v1.2.5", "arm": "v1.2.5", "amd64": "v1.2.0"} {
 		c.Arch = arch
-		if rel, err := c.Latest(t.Context(), false); err != nil || rel == nil || rel.Version != want {
+		if rel, err := c.Latest(t.Context(), ChannelStable); err != nil || rel == nil || rel.Version != want {
 			t.Errorf("%s: %+v, %v", arch, rel, err)
 		}
 	}
 	c.Arch = "386"
-	if _, err := c.Latest(t.Context(), false); err == nil || !strings.Contains(err.Error(), "linux/386") {
+	if _, err := c.Latest(t.Context(), ChannelStable); err == nil || !strings.Contains(err.Error(), "linux/386") {
 		t.Errorf("386: %v", err)
 	}
 
 	// Nothing eligible: no release, no error.
 	g.releases = []ghRel{{TagName: "v9.0.0", Draft: true, Assets: stdAssets()}}
 	c.Arch = "amd64"
-	if rel, err := c.Latest(t.Context(), true); rel != nil || err != nil {
+	if rel, err := c.Latest(t.Context(), ChannelBeta); rel != nil || err != nil {
 		t.Errorf("only drafts: %+v, %v", rel, err)
 	}
 }
@@ -80,7 +80,7 @@ func TestReleaseNotesAreBounded(t *testing.T) {
 	g := newFakeGitHub(t)
 	long := strings.Repeat("ä", maxNotes) // 2 bytes each
 	g.releases = []ghRel{{TagName: "v1.0.0", Assets: stdAssets(), Body: long}}
-	rel, err := g.client().Latest(t.Context(), false)
+	rel, err := g.client().Latest(t.Context(), ChannelStable)
 	if err != nil || rel == nil {
 		t.Fatal(rel, err)
 	}
@@ -98,7 +98,7 @@ func TestCheckErrors(t *testing.T) {
 		http.StatusInternalServerError: "release information is not reachable (HTTP 500)",
 	} {
 		g.status = status
-		if _, err := c.Latest(t.Context(), false); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := c.Latest(t.Context(), ChannelStable); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("HTTP %d: %v", status, err)
 		}
 	}
@@ -110,24 +110,24 @@ func TestCheckErrors(t *testing.T) {
 		_, _ = io.WriteString(w, `"}]`)
 	}))
 	defer big.Close()
-	if _, err := (&Client{APIBase: big.URL}).Latest(t.Context(), false); err == nil || !strings.Contains(err.Error(), "larger than 2 MiB") {
+	if _, err := (&Client{APIBase: big.URL}).Latest(t.Context(), ChannelStable); err == nil || !strings.Contains(err.Error(), "larger than 2 MiB") {
 		t.Errorf("large response: %v", err)
 	}
 	// Not JSON.
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "<html>") }))
 	defer bad.Close()
-	if _, err := (&Client{APIBase: bad.URL}).Latest(t.Context(), false); err == nil || !strings.Contains(err.Error(), "invalid") {
+	if _, err := (&Client{APIBase: bad.URL}).Latest(t.Context(), ChannelStable); err == nil || !strings.Contains(err.Error(), "invalid") {
 		t.Errorf("not JSON: %v", err)
 	}
 	// No network.
 	bad.Close()
-	if _, err := (&Client{APIBase: bad.URL}).Latest(t.Context(), false); err == nil || !strings.HasPrefix(err.Error(), "release information is not reachable") {
+	if _, err := (&Client{APIBase: bad.URL}).Latest(t.Context(), ChannelStable); err == nil || !strings.HasPrefix(err.Error(), "release information is not reachable") {
 		t.Errorf("no network: %v", err)
 	}
 	// A cancelled check returns at once.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := g.client().Latest(ctx, false); err == nil {
+	if _, err := g.client().Latest(ctx, ChannelStable); err == nil {
 		t.Error("cancelled check succeeded")
 	}
 }

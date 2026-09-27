@@ -72,6 +72,7 @@ func (r *Registry) recordSeen(ip netip.Addr, persist bool) {
 	r.seenMu.Unlock()
 	if !ok {
 		r.enqueueName(ip)
+		r.whois.enqueue(ip)
 	}
 }
 
@@ -95,7 +96,8 @@ func (r *Registry) seenInterval() time.Duration {
 }
 
 // seenLoop flushes seen data every seenInterval, refreshes hostnames hourly
-// and prunes daily. A final flush runs when ctx ends.
+// and prunes daily (and at once after the retention was lowered). A final
+// flush runs when ctx ends.
 func (r *Registry) seenLoop(ctx context.Context) {
 	flush := time.NewTimer(r.seenInterval())
 	defer flush.Stop()
@@ -118,7 +120,28 @@ func (r *Registry) seenLoop(ctx context.Context) {
 			r.refreshNames()
 		case <-prune.C:
 			r.prune(ctx)
+		case <-r.pruneKick:
+			r.prune(ctx)
+		case <-r.namesKick:
+			r.clearStoredNames(ctx)
 		}
+	}
+}
+
+// clearStoredNames drops the host names stored with the seen data after a
+// name source was switched off: a stored name does not say which source
+// it came from, and a source that is off names no address any more
+// (Known, Devices). The next flush stores the names of the enabled
+// sources again. It holds flushMu like flush and the forgetting of seen
+// data.
+func (r *Registry) clearStoredNames(ctx context.Context) {
+	if r.ldb == nil {
+		return
+	}
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
+	if _, err := r.ldb.W.ExecContext(ctx, `UPDATE clients_seen SET hostname = '' WHERE hostname != ''`); err != nil {
+		r.log.Warn("could not drop the stored client names", slog.Any("err", err))
 	}
 }
 
@@ -128,11 +151,14 @@ type seenRow struct {
 	queries     int64
 }
 
-// flush writes pending activity to logs.db.
+// flush writes pending activity to logs.db. It holds flushMu from copying
+// the pending counts until the write returned (ForgetKnown).
 func (r *Registry) flush(ctx context.Context) {
 	if r.ldb == nil {
 		return
 	}
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
 	var rows []seenRow
 	r.seenMu.Lock()
 	r.seen.each(func(ip netip.Addr, e *seenEntry) bool {
@@ -145,6 +171,9 @@ func (r *Registry) flush(ctx context.Context) {
 	r.seenMu.Unlock()
 	if len(rows) == 0 {
 		return
+	}
+	if r.flushHook != nil {
+		r.flushHook()
 	}
 	arp := *r.arp.Load()
 	err := r.ldb.Tx(ctx, func(tx *sql.Tx) error {
@@ -173,10 +202,10 @@ func (r *Registry) flush(ctx context.Context) {
 	}
 }
 
-// prune removes activity older than 30 days (memory and logs.db) and keeps
-// logs.db below maxSeenRows.
+// prune removes activity older than logs.seenRetentionDays (memory and
+// logs.db) and keeps logs.db below maxSeenRows.
 func (r *Registry) prune(ctx context.Context) {
-	cutoff := time.Now().Add(-seenRetention)
+	cutoff := time.Now().Add(-r.retention())
 	r.seenMu.Lock()
 	var old []netip.Addr
 	r.seen.each(func(ip netip.Addr, e *seenEntry) bool {
@@ -202,12 +231,14 @@ func (r *Registry) prune(ctx context.Context) {
 	}
 }
 
-// Known lists addresses seen within the last `within` (0 = 30 days), most
-// recent first (at most 10 000).
+// Known lists addresses seen within the last `within` (0 = 30 days, at most
+// the retention), most recent first (at most 10 000). The interface, the
+// vendor of the MAC and the WHOIS annotation are computed now.
 func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, error) {
-	if within <= 0 || within > seenRetention {
+	if within <= 0 {
 		within = seenRetention
 	}
+	within = min(within, r.retention())
 	since := time.Now().Add(-within)
 	byIP := map[netip.Addr]*Known{}
 	if r.ldb != nil {
@@ -277,9 +308,17 @@ func (r *Registry) Known(ctx context.Context, within time.Duration) ([]Known, er
 		if c == nil {
 			c = snap.clientOfClientID(k.DNSClientID)
 		}
+		if c == nil {
+			c = r.matchHost(snap, ip)
+		}
 		if c != nil {
 			k.ClientID, k.Name = c.id, c.name
 		}
+		if r.ifaceOf != nil {
+			k.Interface = r.ifaceOf(ip)
+		}
+		k.Vendor, k.MACRandomized = VendorOf(k.MAC)
+		k.WHOIS = r.whois.info(ip)
 		out = append(out, *k)
 	}
 	r.fillMACNames(out)

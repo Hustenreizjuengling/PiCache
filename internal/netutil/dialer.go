@@ -45,6 +45,10 @@ type SafeDialer struct {
 	Timeout      time.Duration
 	// OwnAddrs returns this machine's addresses (loop protection). nil = LocalAddrs.
 	OwnAddrs func() []netip.Addr
+	// Proxy returns the outbound proxy to tunnel through (nil: dial
+	// directly). The target is resolved and checked the same way; the
+	// proxy is asked for a tunnel to the checked IP literal (Tunnel).
+	Proxy func(ctx context.Context) *Tunnel
 }
 
 // DialContext implements the http.Transport dial signature.
@@ -80,10 +84,20 @@ func (d *SafeDialer) DialContext(ctx context.Context, network, address string) (
 	if timeout == 0 {
 		timeout = 10 * time.Second
 	}
+	var tunnel *Tunnel
+	if d.Proxy != nil {
+		tunnel = d.Proxy(ctx)
+	}
 	var lastErr error
 	for _, ip := range allowed {
-		nd := net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
-		conn, err := nd.DialContext(ctx, network, netip.AddrPortFrom(ip, uint16(port)).String())
+		var conn net.Conn
+		var err error
+		if tunnel != nil {
+			conn, err = tunnel.Dial(ctx, netip.AddrPortFrom(ip, uint16(port)))
+		} else {
+			nd := net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+			conn, err = nd.DialContext(ctx, network, netip.AddrPortFrom(ip, uint16(port)).String())
+		}
 		if err == nil {
 			return conn, nil
 		}

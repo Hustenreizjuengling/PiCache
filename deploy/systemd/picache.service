@@ -26,10 +26,15 @@ StateDirectory=picache
 StateDirectoryMode=0750
 CacheDirectory=picache
 CacheDirectoryMode=0750
+# /var/log/picache for PICACHE_LOG_FILE=/var/log/picache/picache.log (off
+# by default; the journal always gets the log).
+LogsDirectory=picache
+LogsDirectoryMode=0750
 ReadWritePaths=-/srv/picache
 
 # Bind :53, :80, :443 and :853 (and UDP 67 and 547 while the DHCP server is
-# switched on in the web UI, also later at run time) as an unprivileged user.
+# switched on in the web UI, also later at run time, and 123/udp for the
+# NTP server with PICACHE_NTP_LISTEN=:123) as an unprivileged user.
 # CAP_NET_RAW only opens the raw ICMPv6 socket at start while IPv6 router
 # advertisements are on; PiCache drops it on every thread right after start
 # and refuses to run if that fails (capset is allowed below for exactly
@@ -54,7 +59,18 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
-ProtectClock=yes
+# No ProtectClock=yes: its own seccomp filter refuses adjtimex even with
+# modes 0 (read only), which the NTP server uses to read whether the host
+# clock is synchronised (SystemCallFilter=adjtimex below). The clock stays
+# out of reach: CAP_SYS_TIME is not in the bounding set, so the kernel
+# refuses adjtimex with modes other than 0 (EPERM), and clock_settime,
+# settimeofday and clock_adjtime stay outside @system-service. The /dev/rtc
+# devices are hidden by PrivateDevices=yes. Checked on 2026-09-27 with
+# systemd 252 (Debian 12) and 257 (Debian 13), each as PID 1 of a container,
+# with these settings as a non-root user: adjtimex with modes 0 succeeds,
+# adjtimex with ADJ_TICK and clock_settime fail with EPERM; with
+# ProtectClock=yes added, adjtimex with modes 0 fails with EPERM too
+# (SystemCallFilter=adjtimex does not re-allow it), so it stays off.
 ProtectHostname=yes
 ProtectProc=invisible
 # Not ProcSubset=pid: PiCache reads /proc/filesystems, /proc/net/* and
@@ -72,6 +88,8 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
 # Re-allowed so PiCache can drop CAP_NET_RAW (see above).
 SystemCallFilter=capset
+# Re-allowed to read the clock state for the NTP server (see ProtectClock).
+SystemCallFilter=adjtimex
 SystemCallErrorNumber=EPERM
 UMask=0027
 LimitNOFILE=1048576

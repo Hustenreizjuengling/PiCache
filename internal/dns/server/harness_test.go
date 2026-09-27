@@ -295,6 +295,7 @@ type fakeClients struct {
 	transient map[netip.Addr]int
 	derived   []derivedCall
 	seenIDs   map[string]netip.Addr // SeenDNSClientID
+	forwarded []netip.Addr          // IdentifyForwarded
 }
 
 func (f *fakeClients) IdentifyDNSClientID(id string) (*clients.Identity, bool) {
@@ -325,6 +326,13 @@ func (f *fakeClients) Identify(ip netip.Addr) *clients.Identity {
 		return id
 	}
 	return &clients.Identity{IP: ip, GroupIDs: []int64{clients.DefaultGroupID}}
+}
+
+func (f *fakeClients) IdentifyForwarded(ip netip.Addr) *clients.Identity {
+	f.mu.Lock()
+	f.forwarded = append(f.forwarded, ip)
+	f.mu.Unlock()
+	return f.Identify(ip)
 }
 
 func (f *fakeClients) IdentifyDerived(ip netip.Addr, mac string) *clients.Identity {

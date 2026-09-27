@@ -3,7 +3,7 @@
   "Restart PiCache": asks for confirmation, then shows a dialog until the new
   process answers. After a restore all sessions are revoked, so the app then
   shows the sign-in screen.
-  <RestartButton variant="primary" label="Restart now" message="…" />
+  <RestartButton variant="primary" label="Restart now" message="…" timeoutText="…" />
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -19,11 +19,13 @@
     size?: 'sm' | 'md'
     /** Text of the confirmation (defaults to the general restart explanation). */
     message?: string
+    /** Text when PiCache has not answered for 3 minutes (defaults to checking the service). */
+    timeoutText?: string
     /** PiCache answers again and the session survived. */
     ondone?: () => void
   }
 
-  let { label, variant = 'secondary', size = 'md', message, ondone }: Props = $props()
+  let { label, variant = 'secondary', size = 'md', message, timeoutText, ondone }: Props = $props()
 
   const watcher = new RestartWatcher()
   let open = $state(false)
@@ -62,7 +64,7 @@
 
 <Dialog bind:open title={t('system.restart.waitTitle')} size="sm" onclose={() => watcher.stop()}>
   {#if watcher.phase === 'timeout'}
-    <Notice tone="warn" title={t('system.restart.timeoutTitle')}>{t('system.restart.timeoutText')}</Notice>
+    <Notice tone="warn" title={t('system.restart.timeoutTitle')}>{timeoutText ?? t('system.restart.timeoutText')}</Notice>
   {:else}
     <div class="wait" role="status">
       <Spinner size={24} />

@@ -6,6 +6,8 @@ import { toApiError, type ApiError } from './api/client'
 
 function sentence(s: string): string {
   const trimmed = s.trim()
+  // A message that starts with a typed value such as "iface:wg0 belongs to …" keeps its case.
+  if (/^[a-z]+:\S/.test(trimmed)) return trimmed
   return trimmed ? trimmed[0].toUpperCase() + trimmed.slice(1) : trimmed
 }
 

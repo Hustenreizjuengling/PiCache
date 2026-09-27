@@ -5,7 +5,10 @@
   those are (with this machine's interface addresses as help), the router
   resolver (auto = default gateway, a fixed address, or off), single-label
   names kept local and extra networks whose reverse lookups stay local
-  (with a warning for public ranges).
+  (with a warning for public ranges). On a follower that syncs the DNS
+  settings, the local domain, single-label names and the reverse networks
+  are read-only (server names, their addresses and the router resolver stay
+  this PiCache's own).
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -21,9 +24,11 @@
     form: SettingsForm<'dns'>
     /** Current router resolver state (from the status poll). */
     status: RouterStatus | undefined
+    /** The members a follower syncs from its primary are read-only. */
+    synced?: boolean
   }
 
-  let { form, status }: Props = $props()
+  let { form, status, synced = false }: Props = $props()
 
   const d = $derived(form.draft as DnsSettings)
 
@@ -86,9 +91,11 @@
 <Panel id="dns-set-names" title={t('dns.settings.names.title')} description={t('dns.settings.names.description')}>
   <div class="stack">
     <div class="grid">
-      <Field label={t('dns.settings.names.localDomain')} optional help={t('dns.settings.names.localDomainHelp')} error={form.error('localDomain')}>
-        <Input bind:value={d.localDomain} mono placeholder="lan" maxlength={253} autocomplete="off" />
-      </Field>
+      <fieldset class="plain" disabled={synced}>
+        <Field label={t('dns.settings.names.localDomain')} optional help={t('dns.settings.names.localDomainHelp')} error={form.error('localDomain')}>
+          <Input bind:value={d.localDomain} mono placeholder="lan" maxlength={253} autocomplete="off" />
+        </Field>
+      </fieldset>
       <Field label={t('dns.settings.names.serverNames')} optional help={t('dns.settings.names.serverNamesHelp')} error={lineError(form.saveError, 'dns.serverNames')}>
         <LinesInput bind:value={d.serverNames} rows={2} placeholder="picache" />
       </Field>
@@ -131,35 +138,43 @@
         </Field>
       {/if}
     </div>
-    <div class="stack-sm">
-      <Toggle
-        bind:checked={d.domainNeeded}
-        label={t('dns.settings.names.domainNeeded')}
-        description={d.localDomain.trim()
-          ? t('dns.settings.names.domainNeededHelp', { example: `nas.${d.localDomain.trim()}` })
-          : t('dns.settings.names.domainNeededHelpNoDomain')}
-      />
-      {#if form.error('domainNeeded')}<p class="err">{form.error('domainNeeded')}</p>{/if}
-    </div>
-    <Field
-      label={t('dns.settings.names.reverse')}
-      optional
-      help={t('dns.settings.names.reverseHelp')}
-      error={lineError(form.saveError, 'dns.privateReverseNetworks')}
-    >
-      <LinesInput bind:value={d.privateReverseNetworks} rows={3} placeholder="10.8.0.0/16" />
-    </Field>
-    {#if publicNetworks.length > 0}
-      <Notice tone="warn">
-        {#each publicNetworks as n (n)}
-          <p>{t('dns.settings.names.reversePublic', { network: n })}</p>
-        {/each}
-      </Notice>
-    {/if}
+    <fieldset class="stack plain" disabled={synced}>
+      <div class="stack-sm">
+        <Toggle
+          bind:checked={d.domainNeeded}
+          label={t('dns.settings.names.domainNeeded')}
+          description={d.localDomain.trim()
+            ? t('dns.settings.names.domainNeededHelp', { example: `nas.${d.localDomain.trim()}` })
+            : t('dns.settings.names.domainNeededHelpNoDomain')}
+        />
+        {#if form.error('domainNeeded')}<p class="err">{form.error('domainNeeded')}</p>{/if}
+      </div>
+      <Field
+        label={t('dns.settings.names.reverse')}
+        optional
+        help={t('dns.settings.names.reverseHelp')}
+        error={lineError(form.saveError, 'dns.privateReverseNetworks')}
+      >
+        <LinesInput bind:value={d.privateReverseNetworks} rows={3} placeholder="10.8.0.0/16" />
+      </Field>
+      {#if publicNetworks.length > 0}
+        <Notice tone="warn">
+          {#each publicNetworks as n (n)}
+            <p>{t('dns.settings.names.reversePublic', { network: n })}</p>
+          {/each}
+        </Notice>
+      {/if}
+    </fieldset>
   </div>
 </Panel>
 
 <style>
+  .plain {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
   .sub {
     padding-top: var(--sp-3);
     border-top: 1px solid var(--line);

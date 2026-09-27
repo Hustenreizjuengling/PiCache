@@ -42,7 +42,10 @@ var expectedClasses = func() map[string]routeClass {
 		"PUT /api/v1/system/log/level", "DELETE /api/v1/system/log/level", "POST /api/v1/system/events/{id}/ack",
 		"POST /api/v1/system/events/ack-all", "POST /api/v1/system/support-bundle",
 		// 0.14.0: a profile link changes no configuration.
-		"POST /api/v1/dns/profile-links")
+		"POST /api/v1/dns/profile-links",
+		// 0.15.0: a sync run changes nothing but the synced data (an
+		// internal update the configuration lock does not apply to).
+		"POST /api/v1/system/sync/run")
 	add(routeClass{lock: lockPause}, "POST /api/v1/dns/blocking")
 	add(none,
 		"POST /api/v1/auth/setup", "POST /api/v1/auth/login", "POST /api/v1/auth/logout", "POST /api/v1/dns/lookup",
@@ -77,13 +80,18 @@ var expectedClasses = func() map[string]routeClass {
 		"POST /api/v1/filter/ip-rules", "PUT /api/v1/filter/ip-rules/{id}", "DELETE /api/v1/filter/ip-rules/{id}",
 		"POST /api/v1/filter/ip-rules/batch", "POST /api/v1/filter/lists/batch",
 		"POST /api/v1/dns/records/import", "POST /api/v1/dns/records/batch", "POST /api/v1/dns/forwarders/batch",
-		"POST /api/v1/clients/batch", "POST /api/v1/groups/batch", "PUT /api/v1/groups/{id}/upstreams")
+		"POST /api/v1/clients/batch", "POST /api/v1/groups/batch", "PUT /api/v1/groups/{id}/upstreams",
+		// 0.15.0: forgetting one address or device, the listeners of the
+		// next start.
+		"DELETE /api/v1/clients/known", "PUT /api/v1/system/listeners")
 	add(destroy,
 		"POST /api/v1/system/restore", "POST /api/v1/dhcp/reset", "DELETE /api/v1/dhcp/leases",
 		"POST /api/v1/cache/services/{service}/purge", "POST /api/v1/cache/groups/delete", "POST /api/v1/storage/targets/{id}/init",
 		"DELETE /api/v1/storage/targets/{id}", "DELETE /api/v1/system/backups/scheduled/files/{name}",
 		"DELETE /api/v1/system/users/{id}", "DELETE /api/v1/system/tls",
-		"DELETE /api/v1/logs/queries", "DELETE /api/v1/stats")
+		"DELETE /api/v1/logs/queries", "DELETE /api/v1/stats",
+		// 0.15.0
+		"POST /api/v1/clients/known/flush")
 	return m
 }()
 

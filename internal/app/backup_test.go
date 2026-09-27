@@ -181,7 +181,7 @@ func TestStageRestoreRejectsUntrustedSchema(t *testing.T) {
 				t.Skipf("cannot create %s here: %v", name, err)
 			}
 			d.Close()
-			_, err = a.StageRestore(ctx, bytes.NewReader(readFile(t, up)))
+			_, err = a.StageRestore(ctx, bytes.NewReader(readFile(t, up)), nil)
 			if apperr.KindOf(err) != apperr.KindInvalid {
 				t.Fatalf("StageRestore = %v, want an invalid-backup error", err)
 			}
@@ -205,7 +205,7 @@ func TestBackupRoundTrip(t *testing.T) {
 	if err := a.Backup(ctx, &buf, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.StageRestore(ctx, bytes.NewReader(buf.Bytes())); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(buf.Bytes()), nil); err != nil {
 		t.Fatalf("a PiCache backup must be accepted: %v", err)
 	}
 	closeLive(a)
@@ -235,7 +235,7 @@ func TestRestoreKeepsLiveAccounts(t *testing.T) {
 	// The attacker also adds a second admin.
 	execFile(t, up, `INSERT INTO auth_users (username, password_hash, created_at) SELECT 'mallory', password_hash, 1 FROM auth_users`)
 
-	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)), nil); err != nil {
 		t.Fatal(err)
 	}
 	closeLive(a)
@@ -337,9 +337,10 @@ func TestRestoreOlderBackupIsMigrated(t *testing.T) {
 		`ALTER TABLE client_groups DROP COLUMN upstreams`,     // added by clients v4 (0.13.0)
 		`ALTER TABLE client_groups DROP COLUMN upstream_preset`,
 		`ALTER TABLE client_groups DROP COLUMN device_client_id`,
+		`DROP TABLE settings_secrets`, // added by settings v6 (0.15.0)
 		`DELETE FROM schema_migrations WHERE component IN ('settings', 'clients') AND version > 1`)
 
-	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)), nil); err != nil {
 		t.Fatalf("a backup of an older version must be accepted: %v", err)
 	}
 	closeLive(a)
@@ -396,7 +397,7 @@ func TestApplyStagedRestoreDiscardsUntrustedFile(t *testing.T) {
 func TestStageRestoreSerialised(t *testing.T) {
 	a := newRestoreApp(t)
 	restoreMu.Lock()
-	_, err := a.StageRestore(context.Background(), strings.NewReader("x"))
+	_, err := a.StageRestore(context.Background(), strings.NewReader("x"), nil)
 	restoreMu.Unlock()
 	if apperr.KindOf(err) != apperr.KindConflict {
 		t.Fatalf("concurrent StageRestore = %v, want conflict", err)
@@ -496,7 +497,7 @@ func TestStageRestoreRejectsDisguisedIndexes(t *testing.T) {
 			makeConfigDB(t, up, "admin", "attacker password", "de")
 			execFile(t, up, `CREATE INDEX settings_updated ON settings(updated_at)`)
 			craftFile(t, up, stmts...)
-			_, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)))
+			_, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)), nil)
 			if apperr.KindOf(err) != apperr.KindInvalid || !strings.Contains(err.Error(), "index") {
 				t.Fatalf("StageRestore = %v, want an invalid-backup error about the index", err)
 			}
@@ -511,7 +512,7 @@ func TestStageRestoreRejectsDisguisedIndexes(t *testing.T) {
 	up := filepath.Join(t.TempDir(), "upload.db")
 	makeConfigDB(t, up, "admin", "attacker password", "de")
 	execFile(t, up, "CREATE  INDEX\tsettings_updated\n\tON settings(updated_at)")
-	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up))); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)), nil); err != nil {
 		t.Fatalf("an upload with the live indexes must be accepted: %v", err)
 	}
 }
@@ -556,7 +557,7 @@ func TestPlantedLiveTriggerIsRemoved(t *testing.T) {
 	}
 	// The backup of a database with a planted trigger is still a valid
 	// PiCache backup.
-	if _, err := a.StageRestore(ctx, bytes.NewReader(buf.Bytes())); err != nil {
+	if _, err := a.StageRestore(ctx, bytes.NewReader(buf.Bytes()), nil); err != nil {
 		t.Fatalf("the scrubbed backup must be accepted: %v", err)
 	}
 
@@ -651,6 +652,7 @@ func TestPreUpgradeCopyKeepsV010Schema(t *testing.T) {
 	// Back to the state 0.10 left: auth v1, settings v4, binary v0.10.0.
 	execFile(t, a.paths.ConfigDB,
 		`ALTER TABLE auth_users DROP COLUMN role`,
+		`DROP TABLE IF EXISTS settings_secrets`,
 		`DELETE FROM schema_migrations WHERE (component = 'auth' AND version > 1) OR (component = 'settings' AND version > 4)`,
 		`UPDATE settings SET doc = json_remove(doc, '$.web.restrictToNetworks')`,
 		`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -693,7 +695,7 @@ func TestPreUpgradeCopyKeepsV010Schema(t *testing.T) {
 	if authV, setV, hasRole := versions(cp); authV != 1 || setV != 4 || hasRole {
 		t.Fatalf("the copy has auth v%d, settings v%d, role column %v", authV, setV, hasRole)
 	}
-	if authV, setV, hasRole := versions(a.cdb.R); authV != 2 || setV != 5 || !hasRole {
+	if authV, setV, hasRole := versions(a.cdb.R); authV != 3 || setV != 6 || !hasRole {
 		t.Fatalf("live: auth v%d, settings v%d, role column %v", authV, setV, hasRole)
 	}
 	if set.Get().Web.RestrictToNetworks {

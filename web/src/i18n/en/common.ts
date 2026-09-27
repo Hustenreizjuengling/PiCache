@@ -36,6 +36,8 @@ export default {
   'nav.health': 'Health & about',
   'nav.notifications': 'Notifications',
   'nav.updates': 'Updates',
+  'nav.systemNetwork': 'Network',
+  'nav.sync': 'Sync',
   'nav.updateAvailable': 'Update available',
 
   // actions (buttons say what happens; pages add the object: "Add blocklist")
@@ -77,6 +79,9 @@ export default {
   'state.never': 'Never',
   'state.unknown': 'Unknown',
   'state.readOnly': 'You are signed in with read-only access. Changes are disabled.',
+  'synced.title': 'Synced from {origin}: change it on the primary',
+  'synced.titleNoOrigin': 'Synced from the primary: change it there',
+  'synced.status': 'Sync status',
   'label.name': 'Name',
   'label.comment': 'Comment',
   'label.groups': 'Groups',

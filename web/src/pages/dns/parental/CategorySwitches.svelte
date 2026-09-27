@@ -6,7 +6,8 @@
   the list waits for its first download or has failed without a copy. A
   bound list that was given another category (it then pauses with
   blocking, so the switch is off) is named with what switching on does.
-  Bound to the switch states of the draft.
+  Bound to the switch states of the draft; disabled while the lists and
+  rules are synced from a primary (a switch assigns a list to the group).
 -->
 <script lang="ts">
   import { t, type MessageKey } from '$i18n/index.svelte'
@@ -22,9 +23,10 @@
     group: GroupControls
     filterCatalog: readonly CatalogEntry[] | undefined
     lists: readonly FilterList[] | undefined
+    disabled?: boolean
   }
 
-  let { value = $bindable(), group, filterCatalog, lists }: Props = $props()
+  let { value = $bindable(), group, filterCatalog, lists, disabled = false }: Props = $props()
 
   const rows = $derived(
     switchesOf(group).map((s) => {
@@ -44,6 +46,7 @@
         bind:checked={() => !!value[r.id], (on) => (value[r.id] = on)}
         label={t(`dns.parental.switch.${r.id}` as MessageKey)}
         description={t(`dns.parental.switch.${r.id}Help` as MessageKey)}
+        {disabled}
       />
       {#if r.name}
         <p class="meta xsmall muted">{r.entries ? `${r.name} · ${entriesText(r.entries)}` : r.name}</p>

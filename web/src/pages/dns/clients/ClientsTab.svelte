@@ -3,7 +3,8 @@
   Configured clients: name, identifiers, groups, options and their traffic
   over the selected range (all addresses the client was recognised by; the
   ones beyond its identifiers show as "+N addresses"). Rows open the client
-  panel; admins select clients to delete them together.
+  panel; admins select clients to delete them together (not while clients
+  and groups are synced from a primary).
   Query: ?sel=<client id>&group=<group id> (only the clients of that group)
 -->
 <script lang="ts">
@@ -19,6 +20,7 @@
   import { runBatch } from '../shared/batch'
   import { identifierText } from '../shared/clientid'
   import { groupNames } from '../shared/groups'
+  import { vendorTexts } from '../shared/vendor'
   import ClientPanel from './ClientPanel.svelte'
   import { clientTotals, type Totals } from './clientStats'
 
@@ -52,6 +54,10 @@
   )
   const selId = $derived(Number(router.param('sel')) || 0)
   const selected = $derived(rows?.find((c) => c.id === selId))
+  /** The manufacturers of the selected client's devices (from its seen addresses). */
+  const vendors = $derived(selected ? vendorTexts((known ?? []).filter((k) => k.clientId === selected.id)) : undefined)
+  // Read-only while clients and groups are synced from a primary.
+  const canEdit = $derived(session.canEditSection('clients-and-groups'))
 
   async function deleteChecked() {
     busy = true
@@ -136,7 +142,7 @@
       </span>
     {/if}
     {@render rangePicker()}
-    <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.clients.add')}</Button>
+    <Button variant="primary" icon="plus" disabled={!canEdit} onclick={() => (addOpen = true)}>{t('dns.clients.add')}</Button>
   {/snippet}
   <Table
     {columns}
@@ -148,7 +154,7 @@
     onrowclick={(c) => router.setQuery({ sel: c.id })}
     selected={selected?.id}
     caption={t('dns.clients.title')}
-    selectable={session.isAdmin}
+    selectable={canEdit}
     bind:checked
     checkLabel={(c) => t('dns.clients.selectNamed', { name: c.name })}
   >
@@ -159,7 +165,7 @@
         </EmptyState>
       {:else}
         <EmptyState compact icon="users" title={t('dns.clients.empty')} text={t('dns.clients.emptyText')}>
-          <Button size="sm" variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>
+          <Button size="sm" variant="primary" icon="plus" disabled={!canEdit} onclick={() => (addOpen = true)}>
             {t('dns.clients.add')}
           </Button>
           <Button size="sm" onclick={() => router.setQuery({ tab: 'seen', sel: null })}>{t('dns.clients.showSeen')}</Button>
@@ -167,7 +173,7 @@
       {/if}
     {/snippet}
   </Table>
-  {#if session.isAdmin}
+  {#if canEdit}
     <BulkBar
       count={checked.length}
       {busy}
@@ -182,6 +188,7 @@
   bind:open={() => !!selected, (v) => !v && router.setQuery({ sel: null })}
   client={selected}
   totals={selected?.totals}
+  {vendors}
   {groups}
   {presets}
   {range}

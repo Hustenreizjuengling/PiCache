@@ -421,8 +421,10 @@ func (s *Server) identifyClient(qc *qctx) {
 	case addr.IsValid():
 		qc.client, qc.derived = addr, true
 		qc.id = s.identify(addr)
+	case qc.forwarded && s.d.Clients != nil:
+		qc.id = s.d.Clients.IdentifyForwarded(qc.source)
 	default:
-		qc.id = s.identify(qc.source)
+		qc.id = s.identify(qc.peer())
 	}
 	s.applyClientID(qc)
 }

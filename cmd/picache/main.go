@@ -16,6 +16,10 @@
 //	picache logs tail|export [flags]      follow or export the query log through the API
 //	picache db check                      check picache.db
 //	picache db salvage --out <file>       copy the readable rows of a damaged picache.db
+//	picache status|pause|resume|explain|lists|allow|deny|query|config
+//	                                      API commands (a token from PICACHE_TOKEN or --token-file)
+//	picache restore <file>                stage a backup for the next start
+//	picache listeners --reset             use the environment and default listeners again
 package main
 
 import (
@@ -98,6 +102,26 @@ func run(args []string) int {
 		return logsCmd(args)
 	case "db":
 		return dbCmd(args)
+	case "status":
+		return statusCmd(args)
+	case "pause":
+		return pauseCmd(args)
+	case "resume":
+		return resumeCmd(args)
+	case "explain":
+		return explainCmd(args)
+	case "lists":
+		return listsCmd(args)
+	case "allow", "deny":
+		return ruleCmd(cmd, args)
+	case "query":
+		return queryCmd(args)
+	case "config":
+		return configCmd(args)
+	case "restore":
+		return restoreCmd(args)
+	case "listeners":
+		return listenersCmd(args)
 	case "help":
 		fmt.Println(strings.TrimSpace(usage))
 		return 0
@@ -121,7 +145,8 @@ commands:
   serve                         run PiCache (default). Flags override the PICACHE_* variables:
                                 --data-dir, --cache-dir, --dns-listen, --cache-listen, --sni-listen,
                                 --web-listen, --web-tls-listen, --dot-listen (DNS over TLS, default
-                                :853), --doh-listen (DNS over HTTPS only, default off), --log-level
+                                :853), --doh-listen (DNS over HTTPS only, default off),
+                                --ntp-listen (NTP server, default off), --log-level
   version, --version            print version information
   help, --help, -h              print this help
   healthcheck [url]             check the local web endpoint and DNS
@@ -160,6 +185,32 @@ commands:
   db salvage --out FILE [--force]
                                 copy every readable row of a damaged picache.db into the new file
                                 FILE (PiCache must be stopped; exit code 3: rows lost)
+  restore FILE [--sections a,b] [--force]
+                                stage a backup for the next start (all sections, or settings,
+                                clients-and-groups, lists-and-rules, local-dns, parental, dhcp,
+                                download-cache, notifications, storage); restart PiCache to apply it
+  listeners --reset             forget the listeners saved in the web UI: the next start uses the
+                                PICACHE_*_LISTEN variables and the defaults
+  status [--watch] [--interval 5s] [--json]
+                                queries, blocked share, cache hits, health and top clients
+                                (--watch redraws every interval until Ctrl-C)
+  pause DURATION                pause blocking (e.g. 30m, 2h, 1d; up to 7 days)
+  resume                        resume blocking
+  explain DOMAIN [--client IP] [--type QTYPE] [--json]
+                                which lists and rules match a domain
+  lists update                  refresh every list now
+  allow|deny DOMAIN [--group NAME|ID]... [--comment TEXT]
+                                add an allow or block rule for a domain and its subdomains
+  query NAME [TYPE] [--client IP] [--json]
+                                how PiCache answers a query (the pipeline trace)
+  config get [SECTION]          print the settings (or one section) as JSON
+  config set SECTION FILE|- [--dry-run]
+                                change one settings section from a JSON file or stdin
+  config apply FILE|- [--dry-run]
+                                change the settings from a JSON document (all or nothing)
+                                The API commands use [--url URL] and an API token from
+                                PICACHE_TOKEN or [--token-file FILE] (status, explain, query and
+                                config get need a read token, the others an admin token)
 
 Configuration is read from PICACHE_* environment variables and, for all
 commands, from /etc/picache/picache.env (or $PICACHE_ENV_FILE) if present
@@ -225,6 +276,30 @@ func newLogger(cfg *config.Config) *slog.Logger {
 	return slog.New(applog.New(h, cfg.LogLevel))
 }
 
+// addLogSinks adds the log file (PICACHE_LOG_FILE) and syslog
+// (PICACHE_LOG_SYSLOG) of serve; they start writing after the privilege
+// drop (app.Run).
+func addLogSinks(log *slog.Logger, cfg *config.Config) {
+	h, ok := log.Handler().(*applog.Handler)
+	if !ok {
+		return
+	}
+	if cfg.LogFile != "" {
+		h.Log().AddFileSink(cfg.LogFile, cfg.LogFormat)
+	}
+	if cfg.LogSyslogNetwork != "" {
+		host, _ := os.Hostname()
+		h.Log().AddSyslogSink(cfg.LogSyslogNetwork, cfg.LogSyslogAddr, host)
+	}
+}
+
+// closeLogSinks writes what the sinks still queue (at most 2 s).
+func closeLogSinks(log *slog.Logger) {
+	if h, ok := log.Handler().(*applog.Handler); ok {
+		h.Log().CloseSinks(2 * time.Second)
+	}
+}
+
 func serve(args []string) int {
 	cfg, err := config.Load(args, os.Getenv)
 	if errors.Is(err, flag.ErrHelp) { // picache serve -h
@@ -236,6 +311,7 @@ func serve(args []string) int {
 		return 2
 	}
 	log := newLogger(cfg)
+	addLogSinks(log, cfg)
 	slog.SetDefault(log)
 	setMemoryLimit(log)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -243,6 +319,7 @@ func serve(args []string) int {
 	hup := notifyHUP()
 	defer signal.Stop(hup)
 	err = app.Run(ctx, cfg, log, hup)
+	defer closeLogSinks(log)
 	switch {
 	case errors.Is(err, app.ErrRestart):
 		return app.ExitRestart
@@ -363,41 +440,18 @@ func loopbackFor(addr string) (string, string, bool) {
 	return host, port, true
 }
 
-func localURL() string {
-	listen := os.Getenv("PICACHE_WEB_LISTEN")
-	if listen == "" {
-		listen = ":8080"
-	}
-	if strings.EqualFold(listen, "off") || strings.EqualFold(listen, "none") {
-		tlsListen := os.Getenv("PICACHE_WEB_TLS_LISTEN")
-		if tlsListen == "" {
-			tlsListen = ":8443"
-		}
-		if h, p, ok := loopbackFor(strings.Split(tlsListen, ",")[0]); ok {
-			return "https://" + net.JoinHostPort(h, p) + "/healthz"
-		}
-	}
-	if h, p, ok := loopbackFor(strings.Split(listen, ",")[0]); ok {
-		return "http://" + net.JoinHostPort(h, p) + "/healthz"
-	}
-	return "http://127.0.0.1:8080/healthz"
-}
-
-// dnsCheck asks the local DNS listener for the health probe name, which
-// PiCache answers with 127.0.0.1 without upstreams and without counting or
-// logging the query (a different server on the port answers NXDOMAIN).
+// dnsCheck asks the local DNS listener (the effective listeners) for the
+// health probe name, which PiCache answers with 127.0.0.1 without
+// upstreams and without counting or logging the query (a different server
+// on the port answers NXDOMAIN).
 func dnsCheck() error {
-	listen := os.Getenv("PICACHE_DNS_LISTEN")
-	if listen == "" {
-		listen = ":53"
-	}
-	h, p, ok := loopbackFor(strings.Split(listen, ",")[0])
-	if !ok {
-		return fmt.Errorf("cannot parse PICACHE_DNS_LISTEN %q", listen)
+	addr, err := dnsAddr()
+	if err != nil {
+		return err
 	}
 	m := new(dns.Msg).SetQuestion(dnsserver.HealthProbeName, dns.TypeA)
 	c := &dns.Client{Timeout: 2 * time.Second}
-	r, _, err := c.Exchange(m, net.JoinHostPort(h, p))
+	r, _, err := c.Exchange(m, addr)
 	if err != nil {
 		return err
 	}
@@ -619,6 +673,8 @@ func webAccessCmd(args []string) int {
 	}
 	fmt.Println("Web access reset requested. PiCache applies it within a minute (at once: sudo systemctl kill -s HUP --kill-whom=main picache; " +
 		"Docker: docker kill -s HUP <container>). If PiCache is not running, it is applied at the next start.")
+	fmt.Println("If the web UI listens on an address saved under System → Network that no longer works: " +
+		"sudo picache listeners --reset, then sudo systemctl restart picache.")
 	return 0
 }
 

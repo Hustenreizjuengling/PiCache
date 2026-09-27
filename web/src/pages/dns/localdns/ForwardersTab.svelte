@@ -91,7 +91,7 @@
   <Toggle
     bind:checked={() => f.enabled, (on) => setEnabled(f, on)}
     ariaLabel={t('dns.forwarders.enableNamed', { domain: forwarderTitle(f) })}
-    disabled={!session.isAdmin || toggling.includes(f.id)}
+    disabled={!session.canEditSection('local-dns') || toggling.includes(f.id)}
   />
 {/snippet}
 
@@ -123,7 +123,7 @@
 
 <Panel flush title={t('dns.forwarders.title')} description={t('dns.forwarders.description')}>
   {#snippet actions()}
-    {#if session.isAdmin}
+    {#if session.canEditSection('local-dns')}
       <Button icon="upload" onclick={() => (importOpen = true)}>{t('dns.forwarders.import')}</Button>
       <Button variant="primary" icon="plus" onclick={() => (addOpen = true)}>
         {t('dns.forwarders.add')}
@@ -140,13 +140,13 @@
     onrowclick={(f) => router.setQuery({ sel: f.id })}
     selected={selected?.id}
     caption={t('dns.forwarders.title')}
-    selectable={session.isAdmin}
+    selectable={session.canEditSection('local-dns')}
     bind:checked
     checkLabel={(f) => t('dns.forwarders.selectNamed', { domain: forwarderTitle(f) })}
   >
     {#snippet empty()}
       <EmptyState compact icon="link" title={t('dns.forwarders.empty')} text={t('dns.forwarders.emptyText')}>
-        {#if session.isAdmin}
+        {#if session.canEditSection('local-dns')}
           <Button size="sm" variant="primary" icon="plus" onclick={() => (addOpen = true)}>
             {t('dns.forwarders.add')}
           </Button>
@@ -154,7 +154,7 @@
       </EmptyState>
     {/snippet}
   </Table>
-  {#if session.isAdmin}
+  {#if session.canEditSection('local-dns')}
     <BulkBar
       count={checked.length}
       {busy}
@@ -175,7 +175,7 @@
   onsaved={() => forwarders.refresh()}
   ondeleted={() => forwarders.refresh()}
 />
-{#if session.isAdmin}
+{#if session.canEditSection('local-dns')}
   <ImportDialog bind:open={importOpen} onimported={() => forwarders.refresh()} />
 {/if}
 

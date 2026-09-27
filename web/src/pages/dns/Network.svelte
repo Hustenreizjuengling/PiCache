@@ -3,7 +3,8 @@
   DNS › Network check: do all devices use PiCache? One verdict sentence,
   the router and PiCache's addresses, a card with concrete steps for every
   check that needs attention (FRITZ!Box or other routers), the passed
-  checks, and the devices of the network with a scan and "Add as client".
+  checks, the devices of the network with a scan and "Add as client", and
+  the interfaces of this machine (addresses, networks, gateways, link).
   Read-only principals see everything without scan and add actions.
   Query: ?show=unused (only devices that do not use PiCache)
 -->
@@ -18,6 +19,7 @@
   import CheckCard from './network/CheckCard.svelte'
   import { sortedChecks, verdict } from './network/checks'
   import DevicesPanel from './network/DevicesPanel.svelte'
+  import InterfacesPanel from './network/InterfacesPanel.svelte'
 
   // A scan this page started is followed (every 2 s) until the server reports it done.
   let following = $state(false)
@@ -237,6 +239,7 @@
       ondismissnote={() => (note = undefined)}
       onchanged={() => check.refresh()}
     />
+    <InterfacesPanel />
   {/if}
 </div>
 

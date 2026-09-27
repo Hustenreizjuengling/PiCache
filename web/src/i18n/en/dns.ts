@@ -545,9 +545,24 @@ export default {
   'clients.batchDeleteText': 'Their devices are treated as unknown clients in the Default group again.',
   'clients.identifiers': 'Identifiers',
   'clients.identifiersHelp':
-    'One per line: an IP address, a network such as 192.168.1.0/24, a MAC address (only for devices in the same network as PiCache) or clientid:<ClientID> (the device ID of DoT and DoH). An IP address or network also covers the device’s other addresses in the same network, such as its changing IPv6 addresses. A MAC address recognises a device most reliably.',
-  'clients.identifiersRequired': 'Enter at least one IP address, network, MAC address or ClientID.',
+    'One per line: an IP address, a network such as 192.168.1.0/24, a MAC address (only for devices in the same network as PiCache), clientid:<ClientID> (the device ID of DoT and DoH), iface:<interface> (every device that reaches PiCache through an interface of this machine) or host:<name> (the host name a device gives itself). An IP address or network also covers the device’s other addresses in the same network, such as its changing IPv6 addresses. A MAC address recognises a device most reliably.',
+  'clients.identifiersRequired': 'Enter at least one IP address, network, MAC address, ClientID, interface or host name.',
   'clients.clientIdIdentifier': 'ClientID {id}',
+  'clients.ifaceIdentifier': 'Interface {name}',
+  'clients.hostIdentifier': 'Host name {name}',
+  'clients.ifaceTitle': 'Identified by interface',
+  'clients.ifaceHelp':
+    'Every device whose address belongs to the networks of this interface is this client, whatever its MAC address. Use iface: for networks whose devices are all one client, such as a guest VLAN or a VPN (wg0); use networks or MAC addresses for the main network.',
+  'clients.ifaceList': 'Interfaces of this machine: {names}',
+  'clients.ifaceBridge':
+    'PiCache runs in a container bridge network: every device reaches it through the bridge, so an interface cannot tell devices apart here.',
+  'clients.hostTitle': 'Any device can claim a host name',
+  'clients.hostWarn':
+    'A device chooses its own name: any device in your networks can claim this identity (its DHCP name, or its reverse-lookup name where devices register their own). PiCache matches the name it knows for an address from DHCP, reverse lookups or the hosts file (Device names on “Seen recently”); reverse-lookup names count only for addresses of your networks, never for internet addresses, whose owners set them. Until PiCache knows the name, the device’s queries get the Default group. Use it only where a wrong match does no harm.',
+  'clients.hostConfirmTitle': 'Identify devices by their host name?',
+  'clients.hostConfirmText':
+    'A device chooses its own name: any device can claim this identity. Every device that calls itself {names} becomes this client and gets its groups.',
+  'clients.hostConfirm': 'Use the host name',
   'clients.groupsHelp': 'Lists and rules of these groups apply to the client.',
   'clients.noGroupWarning': 'Without a group the client is put in the Default group.',
   'clients.bypass': 'Bypass the download cache',
@@ -592,6 +607,7 @@ export default {
   'seen.description.7d': 'Devices that sent queries, their addresses grouped by MAC address. The traffic columns cover the last 7 days.',
   'seen.description.30d': 'Devices that sent queries, their addresses grouped by MAC address. The traffic columns cover the last 30 days.',
   'seen.within': 'Seen within',
+  'seen.withinDays': 'Last {days} days (all kept)',
   'seen.addresses': 'Addresses',
   'seen.hostname': 'Host name',
   'seen.mac': 'MAC address',
@@ -616,6 +632,49 @@ export default {
   'seen.clientIds.unknown': 'unknown',
   'seen.clientIds.empty': 'No device has sent a ClientID since PiCache started.',
   'seen.clientIds.emptyText': 'Devices send one when their DoT host or DoH address contains it (DNS settings › Set up devices).',
+  'seen.interface': 'Interface',
+  'seen.interfaceHelp': 'The interface of this machine that replies to this address leave by',
+  'seen.networkOwner': 'Network owner',
+  'seen.forget': 'Forget',
+  'seen.forgetDevice': 'Forget device',
+  'seen.forgetAddress': 'Forget {ip}',
+  'seen.forgetTitle': 'Forget {name}?',
+  'seen.forgetDeviceText':
+    'PiCache forgets every address of this MAC address with its name and counts. The device shows up here again with its next query. Configured clients, the query log and the statistics are kept.',
+  'seen.forgetAddressText':
+    'PiCache forgets this address with its name and counts. It shows up here again with its next query. Configured clients, the query log and the statistics are kept.',
+  'seen.forgetAll': 'Forget all',
+  'seen.forgetAllTitle': 'Forget every seen device?',
+  'seen.forgetAllText':
+    'PiCache forgets every seen address with its name and counts. Devices show up here again with their next query. Configured clients, the query log and the statistics are kept.',
+  'seen.forgotten.one': '{count} address forgotten',
+  'seen.forgotten.other': '{count} addresses forgotten',
+  'seen.reappear': 'Forgotten devices show up again when they send their next query.',
+
+  // manufacturer of a MAC address
+  'vendor.label': 'Manufacturer',
+  'vendor.private': 'Private address (randomised)',
+  'vendor.privateHelp':
+    'The device uses a random MAC address, a privacy feature of phones and computers, so its manufacturer is unknown. It may use another one per network or after a while.',
+
+  // device names
+  'names.title': 'Device names',
+  'names.description':
+    'Where PiCache takes the names of devices from after the name of a configured client; the first source that knows an address wins. The names appear in the query log, the statistics, the network check and here.',
+  'names.loadError': 'The device name settings could not be loaded',
+  'names.saved': 'Device names updated',
+  'names.dhcp': 'Names from PiCache’s DHCP server',
+  'names.dhcpHelp': 'The host name a device sent when it got its address from PiCache’s DHCP server.',
+  'names.ptr': 'Reverse lookups (PTR)',
+  'names.ptrHelp':
+    'PiCache asks your router (or the local PTR upstreams) for the name of each address. Off: no such queries are sent and the names found are dropped.',
+  'names.hostsFile': 'Hosts file of this machine',
+  'names.hostsFileHelp':
+    'Names from /etc/hosts of the machine PiCache runs on, read again every 5 minutes when it changed. They name devices only and never answer DNS queries (use local records for that).',
+  'names.hostsFileContainer': 'PiCache runs in a container: this is the container’s own /etc/hosts, so the switch is not meaningful here.',
+  'names.whois': 'Network owner of public addresses (WHOIS)',
+  'names.whoisHelp':
+    'For devices that query from a public address outside your networks, such as a phone on mobile data, PiCache asks the internet registries (RDAP) who owns that network and shows it as “Network owner”. This sends the network of the address (a /24 or /48, never the address itself) to the registries over HTTPS. Nothing is looked up while client addresses are anonymised.',
 
   // groups
   'groups.title': 'Groups',
@@ -788,6 +847,7 @@ export default {
   'parental.resolver.replaceConfirm': 'Use {resolver}',
   'parental.resolver.removeConfirm': 'Remove the own upstreams',
   'parental.switch.editHelp': 'Uses blocklists that PiCache downloads. Applies always, also while blocking is paused. Not schedulable. An allow rule unblocks a wrongly blocked site.',
+  'parental.switch.synced': 'The lists and rules are synced from the primary: change the category switches there.',
   'parental.switch.enableNote': 'Switching on uses the list for this group. If you had disabled the list, it is enabled again, also for its other groups.',
   'parental.switch.adult': 'Adult content',
   'parental.switch.adultHelp': 'Pornography and other sites for adults.',
@@ -1021,6 +1081,39 @@ export default {
   'network.devices.empty': 'No devices found',
   'network.devices.emptyText': 'Devices appear after they talked on the network recently. Scan the network to find idle ones.',
   'network.devices.emptyUnused': 'Every device you can see uses PiCache.',
+  'network.ifaces.title': 'Interfaces of this machine',
+  'network.ifaces.description':
+    'Addresses, networks and gateways of PiCache’s network interfaces (loopback left out). A client with the identifier iface:<name> covers the devices in the networks of that interface.',
+  'network.ifaces.bridge': 'PiCache runs in a container bridge network: these are the container’s own interfaces, not the host’s.',
+  'network.ifaces.unavailable': 'The interfaces could not be read: {reason}',
+  'network.ifaces.empty': 'No interface details',
+  'network.ifaces.emptyText': 'Interface details are available when PiCache runs on Linux.',
+  'network.ifaces.name': 'Interface',
+  'network.ifaces.addresses': 'Addresses',
+  'network.ifaces.networks': 'Networks',
+  'network.ifaces.networksHelp': 'The networks routed through this interface: devices there reach PiCache through it',
+  'network.ifaces.gateway': 'Default gateway',
+  'network.ifaces.link': 'Link',
+  'network.ifaces.traffic': 'Traffic',
+  'network.ifaces.virtual': 'virtual',
+  'network.ifaces.virtualHelp': 'A bridge, tunnel, VPN or container interface',
+  'network.ifaces.state.up': 'Up',
+  'network.ifaces.state.disabled': 'Switched off',
+  'network.ifaces.state.down': 'Down',
+  'network.ifaces.state.dormant': 'Dormant',
+  'network.ifaces.state.lowerlayerdown': 'No link',
+  'network.ifaces.state.notpresent': 'Not present',
+  'network.ifaces.state.testing': 'Testing',
+  'network.ifaces.state.unknown': 'Unknown',
+  'network.ifaces.mbits': '{n} Mbit/s',
+  'network.ifaces.gbits': '{n} Gbit/s',
+  'network.ifaces.full': 'full duplex',
+  'network.ifaces.half': 'half duplex',
+  'network.ifaces.mtu': 'MTU {mtu}',
+  'network.ifaces.received': 'Received {bytes}',
+  'network.ifaces.sent': 'Sent {bytes}',
+  'network.ifaces.errors.one': '{count} error',
+  'network.ifaces.errors.other': '{count} errors',
   'network.limits': 'Devices only appear after they talked on the network recently. Devices with hard-coded DNS servers or encrypted DNS never ask PiCache, even when everything above is set up correctly.',
   'network.scan.button': 'Scan network',
   'network.scan.explain': 'Sends one small packet to each address in your local network so that devices show up.',
@@ -1626,6 +1719,8 @@ export default {
   'settings.bootstrapHelp': 'Plain DNS servers (IP addresses) used only to look up the names of encrypted upstreams, fallbacks and plain upstreams given by name. IPv4 servers are tried first; IPv6 ones help in IPv6-only networks.',
   'settings.preferIpv6': 'Connect to upstreams over IPv6 first',
   'settings.preferIpv6Help': 'For encrypted upstreams and plain upstreams given by name: their IPv6 addresses are tried before the IPv4 ones. Upstreams given by IP address are not affected.',
+  'settings.syncedNote':
+    'The synced settings are read-only here. Server names, encrypted DNS, plain DNS, the allowed networks and the router resolver stay this PiCache’s own.',
   'settings.localPtr': 'Private reverse lookups',
   'settings.localPtrHelp': 'DNS servers (IP addresses) that know the names of devices in your network, usually your router. They answer reverse lookups of private addresses.',
 

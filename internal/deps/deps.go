@@ -12,6 +12,7 @@ import (
 	_ "golang.org/x/crypto/argon2"
 	_ "golang.org/x/crypto/chacha20poly1305"
 	_ "golang.org/x/net/idna"
+	_ "golang.org/x/net/proxy"
 	_ "golang.org/x/net/publicsuffix"
 	_ "golang.org/x/sync/errgroup"
 	_ "golang.org/x/sync/singleflight"

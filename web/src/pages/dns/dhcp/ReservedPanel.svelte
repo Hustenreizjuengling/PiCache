@@ -1,10 +1,10 @@
 <!--
   @component
-  Reserved addresses (static leases): device name, address, MAC address,
-  lease time and client ID (when any reservation has one), comment and
-  whether a device uses it right now. Rows open the editor. Everyone can
-  export the list (CSV, hosts file); admins add reservations and import
-  lists here.
+  Reserved addresses (static leases): device name, address, MAC address
+  with its manufacturer, lease time and client ID (when any reservation has
+  one), comment and whether a device uses it right now. Rows open the
+  editor. Everyone can export the list (CSV, hosts file); admins add
+  reservations and import lists here.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
@@ -13,6 +13,8 @@
   import { formatDuration } from '$lib/format'
   import { session } from '$lib/session.svelte'
   import { Button, Chip, EmptyState, Menu, Panel, Table, type Column, type MenuItem } from '$lib/ui'
+  import MacVendor from '../shared/MacVendor.svelte'
+  import { vendorText } from '../shared/vendor'
   import ImportDialog from './ImportDialog.svelte'
   import { ipSortKey } from './net'
 
@@ -43,7 +45,7 @@
   const columns = $derived<Column<DhcpStaticLease>[]>([
     { key: 'name', label: t('dns.dhcp.static.name'), sortable: true, value: (s) => s.hostname ?? '', cell: nameCell },
     { key: 'ip', label: t('dns.dhcp.static.ip'), mono: true, sortable: true, value: (s) => ipSortKey(s.ip), format: (s) => s.ip },
-    { key: 'mac', label: t('dns.dhcp.static.mac'), mono: true, value: (s) => s.mac },
+    { key: 'mac', label: t('dns.dhcp.static.mac'), sortable: true, value: (s) => vendorText(s) ?? '', cell: macCell },
     ...(hasLease
       ? [
           {
@@ -69,6 +71,10 @@
   {:else}
     <span class="subtle">{t('dns.dhcp.leases.noName')}</span>
   {/if}
+{/snippet}
+
+{#snippet macCell(s: DhcpStaticLease)}
+  <MacVendor mac={s.mac} vendor={s.vendor} macRandomized={s.macRandomized} />
 {/snippet}
 
 {#snippet statusCell(s: DhcpStaticLease)}

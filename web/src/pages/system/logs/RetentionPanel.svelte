@@ -1,8 +1,9 @@
 <!--
   @component
   How long each kind of log data is kept (query log, cache requests,
-  downloads, statistics) and the size cap of logs.db. Formerly the log
-  settings of Backup & restore; saved with the Logs & privacy page.
+  downloads, statistics, the addresses seen by the DNS server) and the size
+  cap of logs.db. Formerly the log settings of Backup & restore; saved with
+  the Logs & privacy page.
 -->
 <script lang="ts">
   import { t, type MessageKey } from '$i18n/index.svelte'
@@ -14,7 +15,13 @@
 
   let { form }: { form: SettingsForm<'logs'> } = $props()
 
-  type NumKey = 'queryLogRetentionHours' | 'cacheLogRetentionHours' | 'sessionRetentionDays' | 'statsRetentionDays' | 'maxDbSizeMiB'
+  type NumKey =
+    | 'queryLogRetentionHours'
+    | 'cacheLogRetentionHours'
+    | 'sessionRetentionDays'
+    | 'statsRetentionDays'
+    | 'seenRetentionDays'
+    | 'maxDbSizeMiB'
 
   interface NumField {
     key: NumKey
@@ -56,6 +63,13 @@
       label: 'system.logs.statsRetention',
       help: 'system.logs.statsRetentionHelp',
       range: RANGES.statsRetentionDays,
+      show: (n) => formatDuration(n * DAY),
+    },
+    {
+      key: 'seenRetentionDays',
+      label: 'system.logs.seenRetention',
+      help: 'system.logs.seenRetentionHelp',
+      range: RANGES.seenRetentionDays,
       show: (n) => formatDuration(n * DAY),
     },
     {

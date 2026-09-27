@@ -5,6 +5,107 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Databases:** `picache.db` gets auth migration 3 (`auth_tokens` is
+  rebuilt for the new scope `sync`; tokens keep their scopes) and settings
+  migration 6 (the table `settings_secrets` for the sealed sync token and
+  proxy password; `updates.channel` is set from `includePrereleases`:
+  `true` → `beta`, else `stable`). The new sections `clients`, `sync`,
+  `network`, `ntp` and `logs.seenRetentionDays` load with their defaults.
+  `logs.db` has no step.
+- **Downgrade:** 0.14 refuses the migrated `picache.db`; going back needs
+  the copy made before the upgrade (the automatic rollback uses it). 0.14
+  ignores listeners saved in the web UI and binds the `PICACHE_*_LISTEN`
+  values and defaults again.
+- **Units:** `picache.service` gets `LogsDirectory=picache`,
+  `LogsDirectoryMode=0750` and `SystemCallFilter=adjtimex` and loses
+  `ProtectClock=yes` (its own filter refuses reading the clock state; the
+  clock still cannot be set: `CAP_SYS_TIME` is not in the bounding set and
+  the setting calls stay filtered). The one-line installer or an update
+  from the web UI installs them; until then a log file below
+  `/var/log/picache` cannot be opened and the NTP server answers
+  unsynchronised. Checked under systemd 252 (Debian 12) and 257 (Debian 13):
+  with the new unit a read-only `adjtimex` succeeds while a setting
+  `adjtimex` and `clock_settime` fail; with `ProtectClock=yes` the read
+  fails too.
+- **API:** `POST /tokens` accepts the scope `sync`; `GET /auth/status`
+  gains `syncedSections`; `GET /system/update` gains `channel`,
+  `nightlyAllowed` and `installProxy`; `GET /system/log` gains `sinks`;
+  `POST /system/restore` takes `?sections=` and answers `sections`;
+  `PUT /settings` and `PATCH /settings/{section}` take `?dryRun=true`, and
+  PATCH accepts `clients`, `sync`, `network` and `ntp`;
+  `clients.Known`, `api.NetworkDevice`, `dhcp.Lease` and
+  `dhcp.StaticLease` gain `vendor` and `macRandomized`; the support
+  bundle's `listeners.json` gains `effective`. New log components `ntp`
+  and `sync`.
+
+### Added
+
+- **Vendor of a MAC address:** the IEEE MA-L, MA-M and MA-S registries are
+  embedded (`internal/oui`, about 1 MiB, refreshed with `make oui`); the
+  network check, the seen clients, DHCP leases and reservations show the
+  vendor, or "Private address (randomised)" for locally administered MACs.
+  The IEEE does not restrict the redistribution of the listing, so the
+  table is embedded (THIRD_PARTY_NOTICES.md).
+- **Seen clients:** forget an address or a device (`DELETE /clients/known`)
+  or all seen data (`POST /clients/known/flush`); retention
+  `logs.seenRetentionDays` (7–365, default 30); the interface, vendor and
+  network owner of each address.
+- **Identify clients by interface** (`iface:<name>`: the interface the route
+  to the source leaves by; for guest VLANs and VPNs) **and by host name**
+  (`host:<name>`: the device's DHCP, PTR or hosts-file name; spoofable,
+  opt-in per identifier).
+- **Name sources** (`clients.nameSources`): DHCP lease names and PTR names
+  can be switched off, `/etc/hosts` and WHOIS (RDAP, the owner of a public
+  network; sends the /24 or /48 out) switched on.
+- **Network interfaces** (`GET /network/interfaces`): state, speed, MTU,
+  addresses, networks, gateways and counters per interface.
+- **Command line:** `picache status [--watch]`, `pause`, `resume`,
+  `explain`, `lists update`, `allow`, `deny`, `query`, `config get|set|apply`
+  (with `--dry-run`), `restore` and `listeners --reset`.
+- **Declarative configuration:** `?dryRun=true` on the settings routes,
+  `picache config`, and `PICACHE_INITIAL_CONFIG` (a settings document applied
+  once at the first start).
+- **Log file and syslog** (`PICACHE_LOG_FILE`: a `<name>.log` file below
+  `/var/log/picache`, directly in the data directory or below its `logs/`,
+  rotated at 10 MiB with 5 compressed generations; `PICACHE_LOG_SYSLOG`,
+  RFC 5424 over UDP or TCP) and the health check `logging`.
+- **Profiling** (`PICACHE_PPROF=on`): Go profiles on `/debug/pprof/` for
+  admins on the PiCache host.
+- **Listeners in the web UI** (System → Network; `GET`/`PUT
+  /system/listeners`): saved in the data directory and applied at the next
+  start; a saved listener that cannot be bound falls back to its variable or
+  default instead of stopping PiCache.
+- **Partial restore:** restore selected sections of a backup (settings,
+  clients and groups, lists and rules, local DNS, parental controls, DHCP,
+  download-cache services, notifications, storage), from the web UI or with
+  `picache restore`.
+- **Follower sync:** a second PiCache pulls clients and groups, lists and
+  rules, local DNS, parental controls and the DNS filtering settings from a
+  primary (`GET /system/export` with the new token scope `sync`; System →
+  Sync), applies them live and keeps them read-only; health check `sync`.
+- **Update channels** (`updates.channel`: stable, beta, nightly) and
+  **nightly builds** of `main`, signed with a separate key
+  (`docs/nightly-key.pem`) and installed by the update helper only on hosts
+  with `install.sh --nightly`.
+- **NTP server** (`PICACHE_NTP_LISTEN`, `ntp.enabled`): SNTP answers from the
+  host clock, behind the DNS access list and a rate limit; health check
+  `ntp`.
+- **Outbound proxy** (`network.proxy`, `network.proxyFor`) for list
+  downloads, the release check and notifications (HTTP CONNECT or SOCKS5
+  tunnels to the checked addresses), and `PICACHE_UPDATE_PROXY` for the
+  update helper.
+
+### Changed
+
+- **Dependencies:** none added; `golang.org/x/net/proxy` (part of the
+  existing `golang.org/x/net`) is used for SOCKS5.
+- **Settings:** `updates.includePrereleases` is derived from
+  `updates.channel`.
+- **Healthcheck and CLI** find the web and DNS listeners also when they
+  were saved in the web UI.
+
 ## [0.14.0] - 2026-09-27
 
 ### Upgrade notes

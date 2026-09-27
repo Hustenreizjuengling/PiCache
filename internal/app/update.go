@@ -40,7 +40,7 @@ type updater struct {
 	current string // version of the running binary
 	// mode reports helper, docker or manual (see updateMode).
 	mode  func() string
-	check func(ctx context.Context, includePre bool) (*update.Release, error)
+	check func(ctx context.Context, channel string) (*update.Release, error)
 	now   func() time.Time
 	emit  func(notify.Message) // nil: no notifications
 
@@ -62,7 +62,7 @@ type updateSeen struct {
 }
 
 func newUpdater(dataDir, current string, cdb *db.DB, set *settings.Store, mode func() string,
-	check func(ctx context.Context, includePre bool) (*update.Release, error), log *slog.Logger) *updater {
+	check func(ctx context.Context, channel string) (*update.Release, error), log *slog.Logger) *updater {
 	return &updater{log: log.With(slog.String("component", "update")), set: set, cdb: cdb, dataDir: dataDir,
 		current: current, mode: mode, check: check, now: time.Now, kick: make(chan struct{}, 1)}
 }
@@ -205,7 +205,7 @@ func (u *updater) checkNow(ctx context.Context) update.CheckResult {
 	u.mu.Unlock()
 
 	cctx, cancel := context.WithTimeout(ctx, update.CheckTimeout)
-	rel, err := u.check(cctx, u.set.Get().Updates.IncludePrereleases)
+	rel, err := u.check(cctx, u.set.Get().Updates.Channel)
 	cancel()
 	res := update.CheckResult{Latest: rel, CheckedAt: u.now().UTC()}
 	if err != nil {
@@ -299,7 +299,12 @@ func (u *updater) notify(m notify.Message) {
 func (u *updater) overview(last update.CheckResult) update.Overview {
 	s := u.set.Get().Updates
 	st := update.ReadStatus(u.dataDir, u.current, u.now())
-	return update.NewOverview(u.current, u.mode(), s.CheckEnabled, s.IncludePrereleases, last, st)
+	o := update.NewOverview(u.current, u.mode(), s.CheckEnabled, s.Channel, last, st)
+	o.NightlyAllowed = update.NightlyAllowed()
+	if p, err := update.ParseUpdateProxy(os.Getenv("PICACHE_UPDATE_PROXY")); err == nil && p != nil {
+		o.InstallProxy = p.Origin()
+	}
+	return o
 }
 
 // --- api.Updater ---

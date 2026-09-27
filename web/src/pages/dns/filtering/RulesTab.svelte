@@ -149,7 +149,7 @@
   <Toggle
     bind:checked={() => r.enabled, (on) => setEnabled(r, on)}
     ariaLabel={t('dns.rules.enableNamed', { pattern: r.pattern })}
-    disabled={!session.isAdmin || toggling.includes(r.id)}
+    disabled={!session.canEditSection('lists-and-rules') || toggling.includes(r.id)}
   />
 {/snippet}
 
@@ -187,10 +187,10 @@
     <Button variant="ghost" icon="download" href={api.filter.rules.exportUrl({ action: query.action, type: query.type })} download>
       {t('dns.rules.export')}
     </Button>
-    {#if session.isAdmin}
+    {#if session.canEditSection('lists-and-rules')}
       <Button icon="upload" onclick={() => (importOpen = true)}>{t('dns.rules.import')}</Button>
     {/if}
-    <Button variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>{t('dns.rules.add')}</Button>
+    <Button variant="primary" icon="plus" disabled={!session.canEditSection('lists-and-rules')} onclick={() => (addOpen = true)}>{t('dns.rules.add')}</Button>
   {/snippet}
 
   <div class="toolbar filters">
@@ -230,7 +230,7 @@
     onrowclick={(r) => router.setQuery({ sel: r.id })}
     selected={selected?.id}
     caption={t('dns.rules.title')}
-    selectable={session.isAdmin}
+    selectable={session.canEditSection('lists-and-rules')}
     bind:checked
     checkLabel={(r) => t('dns.rules.selectNamed', { pattern: r.pattern })}
   >
@@ -239,14 +239,14 @@
         <EmptyState compact title={t('dns.rules.emptyFiltered')} />
       {:else}
         <EmptyState compact icon="shield" title={t('dns.rules.empty')} text={t('dns.rules.emptyText')}>
-          <Button size="sm" variant="primary" icon="plus" disabled={!session.isAdmin} onclick={() => (addOpen = true)}>
+          <Button size="sm" variant="primary" icon="plus" disabled={!session.canEditSection('lists-and-rules')} onclick={() => (addOpen = true)}>
             {t('dns.rules.add')}
           </Button>
         </EmptyState>
       {/if}
     {/snippet}
   </Table>
-  {#if session.isAdmin}
+  {#if session.canEditSection('lists-and-rules')}
     <BulkBar
       count={checked.length}
       {busy}
@@ -260,7 +260,7 @@
   {/if}
 </Panel>
 
-{#if session.isAdmin}
+{#if session.canEditSection('lists-and-rules')}
   <RuleImportDialog bind:open={importOpen} {groups} onimported={changed} />
 {/if}
 <RulePanel bind:open={addOpen} {groups} onsaved={changed} />

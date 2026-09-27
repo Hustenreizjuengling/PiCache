@@ -71,6 +71,11 @@ func scrubBackup(ctx context.Context, path string, includeSecrets bool) error {
 				return err
 			}
 		}
+		// The secrets of the settings (the sync token, the proxy
+		// password) are rows of their own.
+		if err := clearTable(ctx, d, "settings_secrets", "sealed settings secrets (sync token, proxy password)"); err != nil {
+			return err
+		}
 	}
 	// VACUUM rewrites the file, so deleted secrets are not left in free pages.
 	_, err = d.ExecContext(ctx, `VACUUM`)
@@ -82,6 +87,26 @@ func scrubBackup(ctx context.Context, path string, includeSecrets bool) error {
 var sealedColumns = []struct{ table, column, what string }{
 	{"storage_targets", "password_sealed", "sealed NAS passwords"},
 	{"notify_channels", "secret_sealed", "sealed notification secrets"},
+}
+
+// clearTable deletes every row of table and verifies it (a missing table,
+// e.g. in a copy of an older version, is fine).
+func clearTable(ctx context.Context, d *sql.DB, table, what string) error {
+	_, err := d.ExecContext(ctx, `DELETE FROM `+table)
+	switch {
+	case err != nil && strings.Contains(err.Error(), "no such table"):
+		return nil
+	case err != nil:
+		return err
+	}
+	var left int
+	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&left); err != nil {
+		return err
+	}
+	if left != 0 {
+		return fmt.Errorf("%d %s could not be removed", left, what)
+	}
+	return nil
 }
 
 // clearColumn sets column to NULL in every row of table and verifies it (a
@@ -109,13 +134,19 @@ func clearColumn(ctx context.Context, d *sql.DB, table, column, what string) err
 // applyStagedRestore). It returns the staged settings as that start will
 // load them (nil when they cannot be decoded). Only one upload is handled
 // at a time, each in its own temporary file.
-func (a *App) StageRestore(ctx context.Context, r io.Reader) (*settings.All, error) {
+func (a *App) StageRestore(ctx context.Context, r io.Reader, sections []string) (*settings.All, error) {
 	if !restoreMu.TryLock() {
 		return nil, apperr.Conflict("another backup is being uploaded; try again when it is done")
 	}
 	defer restoreMu.Unlock()
 	if a.cdb == nil {
 		return nil, apperr.Unavailable("the configuration database is not open")
+	}
+	if sections != nil {
+		var err error
+		if sections, err = settings.CheckSections("sections", sections, settings.RestoreSections, "restore"); err != nil {
+			return nil, err
+		}
 	}
 	live, err := schemaNames(ctx, a.cdb.R)
 	if err != nil {
@@ -144,6 +175,19 @@ func (a *App) StageRestore(ctx context.Context, r io.Reader) (*settings.All, err
 	}
 	if err := validateBackup(ctx, tmp, live); err != nil {
 		return nil, apperr.Wrap(apperr.KindInvalid, err, "not a usable PiCache backup: %v", err)
+	}
+	if sections != nil {
+		// The merge of a partial restore as a dry run: its errors (a group
+		// the live data lacks, a missing storage target) come now.
+		if err := dryRunRestore(ctx, a.paths.ConfigDB, tmp, sections); err != nil {
+			if _, ok := apperr.As(err); ok {
+				return nil, err
+			}
+			return nil, fmt.Errorf("restore: dry run: %w", err)
+		}
+	}
+	if err := writeRestoreMeta(ctx, tmp, sections, ""); err != nil {
+		return nil, fmt.Errorf("restore: %w", err)
 	}
 	// The settings as the next start will load them, so the API can warn a
 	// requester the restored web access would lock out.
@@ -344,7 +388,21 @@ func (a *App) applyStagedRestore() (bool, error) {
 	if _, err := os.Stat(staged); err != nil {
 		return false, nil
 	}
-	if err := a.prepareRestore(context.Background(), staged); err != nil {
+	ctx := context.Background()
+	sections, by, err := readRestoreMeta(ctx, staged)
+	if err == nil && sections != nil {
+		err = a.applyPartialRestore(ctx, staged, sections)
+		if err == nil {
+			a.restoreSections, a.restoreBy = sections, by
+			a.log.Warn("applied a staged partial configuration restore (accounts and sessions kept)",
+				slog.Any("sections", sections), slog.String("previous", a.paths.ConfigDB+".before-restore"))
+			return true, nil
+		}
+	}
+	if err == nil {
+		err = a.prepareRestore(ctx, staged)
+	}
+	if err != nil {
 		failed := fmt.Sprintf("%s.failed-restore-%s", a.paths.ConfigDB, time.Now().UTC().Format("20060102T150405"))
 		if rerr := os.Rename(staged, failed); rerr != nil {
 			_ = os.Remove(staged)
@@ -371,6 +429,7 @@ func (a *App) applyStagedRestore() (bool, error) {
 		return false, fmt.Errorf("restore: %w", err)
 	}
 	a.restoredAt = time.Now()
+	a.restoreSections, a.restoreBy = slices.Clone(settings.RestoreSections), by
 	a.log.Warn("applied staged configuration restore (accounts, API tokens and audit log kept, sessions ended)",
 		slog.String("previous", backup))
 	return true, nil
@@ -431,7 +490,9 @@ func (a *App) rollbackRestore() error {
 	for _, sfx := range []string{"-wal", "-shm"} {
 		_ = os.Remove(a.paths.ConfigDB + sfx)
 	}
-	a.restoredAt = time.Time{}
+	// The restore never took effect: the next build neither ends sessions,
+	// forgets the sync state nor audits system.restore for it.
+	a.restoredAt, a.restoreSections, a.restoreBy = time.Time{}, nil, ""
 	return os.Rename(backup, a.paths.ConfigDB)
 }
 

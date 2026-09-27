@@ -3,7 +3,8 @@
   Side panel with a form: used for adding and editing records, forwarders,
   rules, lists, clients and groups. The footer holds Delete (edit mode, left),
   optional extra actions, Cancel and the submit button. Read-only principals
-  see the form disabled with a notice.
+  see the form disabled with a notice; so does everyone while the form's
+  section is synced from a primary (with the synced banner).
 
   <FormPanel bind:open title="Edit rule" submitLabel="Save changes" {saving} {error}
              onsubmit={save} ondelete={remove}>
@@ -13,8 +14,10 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { t } from '$i18n/index.svelte'
+  import type { SyncSection } from '$lib/api'
   import { session } from '$lib/session.svelte'
   import { Button, Notice, SidePanel } from '$lib/ui'
+  import SyncedNotice from './SyncedNotice.svelte'
 
   interface Props {
     open?: boolean
@@ -35,6 +38,8 @@
     header?: Snippet
     /** Extra footer buttons (left of Cancel). */
     extra?: Snippet
+    /** The section a follower may sync from its primary: read-only while it is synced. */
+    section?: SyncSection
     children: Snippet
   }
 
@@ -52,12 +57,13 @@
     submitDisabled = false,
     header,
     extra,
+    section,
     children,
   }: Props = $props()
 
   const auto = $props.id()
   const formId = `form-${auto}`
-  const readOnly = $derived(!session.isAdmin)
+  const readOnly = $derived(section ? !session.canEditSection(section) : !session.isAdmin)
 
   function submit(e: SubmitEvent) {
     e.preventDefault()
@@ -70,6 +76,7 @@
   <div class="content">
     {@render header?.()}
     {#if !session.canOperate}<Notice>{t('common.state.readOnly')}</Notice>{/if}
+    {#if section}<SyncedNotice {section} />{/if}
     {#if error}<Notice tone="fail">{error}</Notice>{/if}
     <form id={formId} onsubmit={submit} novalidate>
       <fieldset disabled={readOnly} class="stack">

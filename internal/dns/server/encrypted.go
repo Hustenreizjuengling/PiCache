@@ -103,22 +103,24 @@ func (s *Server) blockedClientID(id string) (string, bool) {
 }
 
 // applyClientID lets a ClientID decide the identity (end of step 5): only
-// when the usual identification found no configured client does a known
-// ClientID make the query its client's (groups, name and flags; the
-// address and MAC stay the source's). A ClientID never changes the client
-// of a device identified by its address or MAC.
+// when the usual identification found no configured client (a client found
+// by a host: identifier comes after the ClientID) does a known ClientID
+// make the query its client's (groups, name and flags; the address and MAC
+// stay the source's). A ClientID never changes the client of a device
+// identified by its address, interface or MAC.
 func (s *Server) applyClientID(qc *qctx) {
 	id := qc.clientID
 	if id == "" || s.d.Clients == nil {
 		return
 	}
 	known, ok := s.d.Clients.IdentifyDNSClientID(id)
+	bySource := qc.id.ClientID != 0 && !qc.id.ByHost
 	switch {
 	case !ok:
 		qc.note("ClientID " + id + ": no client has it; identified by the source")
-	case qc.id.ClientID != 0 && known.ClientID != qc.id.ClientID:
+	case bySource && known.ClientID != qc.id.ClientID:
 		qc.note(fmt.Sprintf("ClientID %s ignored: the source is client %s", id, qc.id.Name))
-	case qc.id.ClientID != 0:
+	case bySource:
 		qc.note(fmt.Sprintf("ClientID %s: client %s", id, qc.id.Name))
 	default:
 		merged := *known

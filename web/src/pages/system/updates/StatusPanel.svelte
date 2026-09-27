@@ -141,9 +141,11 @@
       <dt>{t('system.updates.current.auto')}</dt>
       <dd>
         {info.checkEnabled
-          ? info.includePrereleases
-            ? t('system.updates.current.autoOnPre')
-            : t('system.updates.current.autoOn')
+          ? info.channel === 'nightly'
+            ? t('system.updates.current.autoOnNightly')
+            : info.includePrereleases
+              ? t('system.updates.current.autoOnPre')
+              : t('system.updates.current.autoOn')
           : t('system.updates.current.autoOff')}
       </dd>
       {#if lastRun}

@@ -267,6 +267,12 @@ func ApplyPending(ctx context.Context, client *Client, o Options) error {
 	st.Message = "looking up release " + req.Version
 	q.write(st)
 
+	if IsNightly(req.Version) && !nightlyAllowed(o.NightlyMarker) {
+		st.State, st.FinishedAt, st.Message = StateFailed, time.Now().UTC(), ErrNightlyNotEnabled.Error()
+		q.write(st)
+		log.Error("update refused", slog.String("version", req.Version), slog.Any("err", ErrNightlyNotEnabled))
+		return ErrNightlyNotEnabled
+	}
 	o.Version, o.AllowDowngrade, o.Confirm = req.Version, false, nil
 	o.Progress = func(step, msg string) {
 		st.Step, st.Message = step, sanitizeMessage(msg)

@@ -47,6 +47,12 @@ type qctx struct {
 	ednsMAC  bool
 	proto    string // udp | tcp | dot | doh | lookup
 	clientID string // the ClientID the query carried (DoT, DoH; "" = none)
+	// forwarded: the source is a client a trusted proxy forwarded (DoH on
+	// the web listeners): iface: identifiers do not apply.
+	forwarded bool
+	// zone: the zone of an IPv6 link-local transport source (the
+	// interface it arrived on; iface: identifiers); "" otherwise.
+	zone     string
 	id       *clients.Identity
 	set      *settings.All
 	blocking bool            // blocking active (not disabled or paused, globally or for every group of the client)
@@ -89,6 +95,10 @@ func newQuery(ctx context.Context, req *dns.Msg, source netip.Addr, proto string
 }
 
 func (qc *qctx) tracing() bool { return qc.steps != nil }
+
+// peer returns the transport source as Clients.Identify takes it: with the
+// zone of an IPv6 link-local source.
+func (qc *qctx) peer() netip.Addr { return qc.source.WithZone(qc.zone) }
 
 // note appends a trace step (Lookup only).
 func (qc *qctx) note(step string) {

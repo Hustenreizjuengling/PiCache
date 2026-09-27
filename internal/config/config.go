@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,8 +32,18 @@ type Config struct {
 	// while dns.encrypted.dot is on (bound either way, so the switch needs
 	// no restart); DoHListen (PICACHE_DOH_LISTEN, default off) serves only
 	// DNS over HTTPS (/dns-query) while dns.encrypted.doh is on.
-	DoTListen      []string
-	DoHListen      []string
+	DoTListen []string
+	DoHListen []string
+	// NTPListen (PICACHE_NTP_LISTEN, default off, e.g. ":123"): the NTP
+	// server's UDP addresses, bound at start; ntp.enabled switches
+	// answering without a restart.
+	NTPListen []string
+	// ListenerLock names, per role of the listeners files (RoleDNS, …),
+	// what set it on the host: "flag" or the variable (PICACHE_DNS_LISTEN,
+	// …). A locked role ignores the listeners files and cannot be changed
+	// in the UI; the Listen members above hold the flag, environment or
+	// default values (the fallback of a saved role that cannot be bound).
+	ListenerLock   map[string]string
 	WebTLSCertFile string   // PICACHE_WEB_TLS_CERT (optional, else self-signed)
 	WebTLSKeyFile  string   // PICACHE_WEB_TLS_KEY
 	WebHosts       []string // PICACHE_WEB_HOSTS: extra allowed Host names for the UI
@@ -56,6 +67,22 @@ type Config struct {
 
 	LogLevel  slog.Level // PICACHE_LOG_LEVEL: debug|info|warn|error
 	LogFormat string     // PICACHE_LOG_FORMAT: text|json
+	// LogFile (PICACHE_LOG_FILE, default off): the application log is also
+	// written to this file (an absolute path of a <name>.log file below
+	// /var/log/picache, directly in the data directory or below its logs/;
+	// LogFileAllowed), rotated at 10 MiB.
+	LogFile string
+	// LogSyslogNetwork and LogSyslogAddr (PICACHE_LOG_SYSLOG
+	// udp://host:port or tcp://host:port, default off): the application log
+	// is also sent to this syslog server (RFC 5424).
+	LogSyslogNetwork string
+	LogSyslogAddr    string
+	// PProf (PICACHE_PPROF on|off, default off) serves the Go profiles
+	// under /debug/pprof/ to admins from this machine.
+	PProf bool
+	// InitialConfig (PICACHE_INITIAL_CONFIG) is a settings document applied
+	// at the first start only.
+	InitialConfig string
 
 	AdminUser string // PICACHE_ADMIN_USER (default "admin"), used with AdminPassword
 	// AdminPassword (PICACHE_ADMIN_PASSWORD_FILE preferred, or PICACHE_ADMIN_PASSWORD)
@@ -134,6 +161,7 @@ func defaults() Config {
 		WebListen:    []string{":8080"},
 		WebTLSListen: []string{":8443"},
 		DoTListen:    []string{":853"},
+		ListenerLock: map[string]string{},
 		LogLevel:     slog.LevelInfo,
 		LogFormat:    "text",
 		AdminUser:    "admin",
@@ -185,6 +213,7 @@ func load(args []string, getenv func(string) string, secrets bool) (*Config, err
 	webTLSListen := fs.String("web-tls-listen", strings.Join(c.WebTLSListen, ","), "web UI HTTPS listen addresses (PICACHE_WEB_TLS_LISTEN)")
 	dotListen := fs.String("dot-listen", strings.Join(c.DoTListen, ","), "DNS over TLS listen addresses (PICACHE_DOT_LISTEN)")
 	dohListen := fs.String("doh-listen", strings.Join(c.DoHListen, ","), "DNS over HTTPS listen addresses (PICACHE_DOH_LISTEN)")
+	ntpListen := fs.String("ntp-listen", strings.Join(c.NTPListen, ","), "NTP server listen addresses (PICACHE_NTP_LISTEN)")
 	logLevel := fs.String("log-level", c.LogLevel.String(), "log level (PICACHE_LOG_LEVEL)")
 	dev := fs.Bool("dev", c.Dev, "development mode (PICACHE_DEV)")
 	if err := fs.Parse(args); err != nil {
@@ -201,6 +230,14 @@ func load(args []string, getenv func(string) string, secrets bool) (*Config, err
 	c.WebTLSListen = splitList(*webTLSListen)
 	c.DoTListen = splitList(*dotListen)
 	c.DoHListen = splitList(*dohListen)
+	c.NTPListen = splitList(*ntpListen)
+	fs.Visit(func(f *flag.Flag) {
+		for role, name := range listenerFlag {
+			if f.Name == name {
+				c.ListenerLock[role] = "flag"
+			}
+		}
+	})
 	lvl, err := parseLevel(*logLevel)
 	if err != nil {
 		return nil, err
@@ -224,6 +261,11 @@ func (c *Config) applyEnv(getenv func(string) string, secrets bool) error {
 		// disable a listener.
 		if v := getenv(key); v != "" {
 			*dst = splitList(v)
+			for role, env := range ListenerEnv {
+				if env == key {
+					c.ListenerLock[role] = key
+				}
+			}
 		}
 	}
 	str("PICACHE_DATA_DIR", &c.DataDir)
@@ -235,6 +277,25 @@ func (c *Config) applyEnv(getenv func(string) string, secrets bool) error {
 	list("PICACHE_WEB_TLS_LISTEN", &c.WebTLSListen)
 	list("PICACHE_DOT_LISTEN", &c.DoTListen)
 	list("PICACHE_DOH_LISTEN", &c.DoHListen)
+	list("PICACHE_NTP_LISTEN", &c.NTPListen)
+	str("PICACHE_LOG_FILE", &c.LogFile)
+	str("PICACHE_INITIAL_CONFIG", &c.InitialConfig)
+	if v := strings.TrimSpace(getenv("PICACHE_LOG_SYSLOG")); v != "" {
+		network, addr, err := ParseSyslogURL(v)
+		if err != nil {
+			return fmt.Errorf("PICACHE_LOG_SYSLOG: %w", err)
+		}
+		c.LogSyslogNetwork, c.LogSyslogAddr = network, addr
+	}
+	if v := getenv("PICACHE_PPROF"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "on":
+			c.PProf = true
+		case "off":
+		default:
+			return fmt.Errorf("PICACHE_PPROF must be on or off, got %q", v)
+		}
+	}
 	str("PICACHE_WEB_TLS_CERT", &c.WebTLSCertFile)
 	str("PICACHE_WEB_TLS_KEY", &c.WebTLSKeyFile)
 	list("PICACHE_WEB_HOSTS", &c.WebHosts)
@@ -315,6 +376,14 @@ func (c *Config) validate() error {
 			errs = append(errs, err)
 		}
 	}
+	if c.LogFile != "" && !LogFileAllowed(c.LogFile, c.DataDir) {
+		errs = append(errs, fmt.Errorf("PICACHE_LOG_FILE must be a <name>.log file below %s, directly in %s or below %s/logs", LogDir, c.DataDir, c.DataDir))
+	}
+	for _, addr := range c.NTPListen {
+		if _, err := ParseListenerAddr(addr); err != nil {
+			errs = append(errs, fmt.Errorf("PICACHE_NTP_LISTEN %q: %w", addr, err))
+		}
+	}
 	if c.AdminPassword != "" && len(c.AdminPassword) < 10 {
 		errs = append(errs, errors.New("PICACHE_ADMIN_PASSWORD must be at least 10 characters"))
 	}
@@ -373,4 +442,66 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// LogDir is the log directory of the systemd unit (LogsDirectory=picache).
+const LogDir = "/var/log/picache"
+
+// LogFileAllowed reports whether path may be PICACHE_LOG_FILE: an
+// absolute, clean path of a file named <name>.log below /var/log/picache,
+// directly in the data directory or below <data dir>/logs. The sink
+// appends to the file, renames it away and compresses it: every other
+// file of the data directory is state (the databases, keys/master.key,
+// tls/, the listeners files, the root helper's request directories), and
+// none of it is named *.log.
+func LogFileAllowed(path, dataDir string) bool {
+	if !filepath.IsAbs(path) && !strings.HasPrefix(path, "/") {
+		return false
+	}
+	p := filepath.Clean(path)
+	if p != path && filepath.ToSlash(p) != path {
+		return false
+	}
+	if name := filepath.Base(p); len(name) <= len(".log") || !strings.HasSuffix(name, ".log") {
+		return false
+	}
+	if below(LogDir, p) {
+		return true
+	}
+	if dataDir == "" {
+		return false
+	}
+	d := filepath.Clean(dataDir)
+	return filepath.Dir(p) == d || below(filepath.Join(d, "logs"), p)
+}
+
+// below reports whether the clean path p is strictly below the directory
+// base.
+func below(base, p string) bool {
+	rel, err := filepath.Rel(filepath.Clean(base), p)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) &&
+		!filepath.IsAbs(rel)
+}
+
+// ParseSyslogURL parses PICACHE_LOG_SYSLOG: udp://host:port or
+// tcp://host:port (host an IP literal or a name; no other scheme, no
+// path, user info, query or fragment).
+func ParseSyslogURL(s string) (network, addr string, err error) {
+	const form = "must be udp://host:port or tcp://host:port"
+	scheme, rest, ok := strings.Cut(s, "://")
+	scheme = strings.ToLower(scheme)
+	if !ok || (scheme != "udp" && scheme != "tcp") || rest == "" || strings.ContainsAny(rest, "/?#@ ") {
+		return "", "", errors.New(form)
+	}
+	host, port, err := net.SplitHostPort(rest)
+	if err != nil || host == "" {
+		return "", "", errors.New(form)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return "", "", errors.New(form)
+	}
+	if strings.Contains(host, "%") {
+		return "", "", errors.New(form)
+	}
+	return scheme, net.JoinHostPort(host, port), nil
 }

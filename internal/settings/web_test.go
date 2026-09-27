@@ -210,7 +210,7 @@ func TestMigrateRestrictToNetworks(t *testing.T) {
 			}
 			var v int
 			if err := d2.R.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations WHERE component = 'settings'`).
-				Scan(&v); err != nil || v != len(migrations) || v != 5 {
+				Scan(&v); err != nil || v != len(migrations) || v < 5 {
 				t.Fatalf("settings schema version %d (%v)", v, err)
 			}
 		})

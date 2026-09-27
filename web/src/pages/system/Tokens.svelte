@@ -109,6 +109,8 @@
 {#snippet scopeCell(x: TokenInfo)}
   {#if x.scope === 'admin'}
     <Badge tone="warn">{t('system.tokens.scope.admin')}</Badge>
+  {:else if x.scope === 'sync'}
+    <Badge tone="info" title={t('system.tokens.scopeHelp.sync')}>{t('system.tokens.scope.syncShort')}</Badge>
   {:else}
     <Badge>{t('system.tokens.scope.read')}</Badge>
   {/if}
@@ -186,7 +188,7 @@
           ...(showOwner ? [{ label: t('system.tokens.owner'), value: selected.username }] : []),
           {
             label: t('system.tokens.scopeLabel'),
-            value: selected.scope === 'admin' ? t('system.tokens.scope.admin') : t('system.tokens.scope.read'),
+            value: t(`system.tokens.scope.${selected.scope}`),
           },
           { label: t('system.tokens.prefix'), value: `${selected.prefix}…`, mono: true },
           { label: t('common.label.created'), value: formatDateTime(selected.createdAt) },
@@ -201,7 +203,7 @@
         ]}
       />
       <p class="small muted">
-        {selected.scope === 'admin' ? t('system.tokens.scopeHelp.admin') : t('system.tokens.scopeHelp.read')}
+        {t(`system.tokens.scopeHelp.${selected.scope}`)}
       </p>
     </div>
   {:else if tokens.loaded}

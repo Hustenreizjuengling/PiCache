@@ -1,0 +1,235 @@
+name: Nightly
+
+# Publishes a nightly build of main as a GitHub pre-release (docs/
+# ARCHITECTURE.md 14.1, CONTRIBUTING.md "Nightly builds"): version
+# v<M>.<m>.<p+1>-nightly.<YYYYMMDD>.<n>, where M.m.p is the core version of
+# the newest release or release candidate and <n> the run of that UTC day.
+# SHA256SUMS is signed with the separate nightly key (NIGHTLY_SIGNING_KEY,
+# verified against docs/nightly-key.pem); the update helper installs a
+# nightly only on hosts with /etc/picache/nightly.enabled (install.sh
+# --nightly). No container image. Nightly releases and their tags beyond the
+# newest 7 are deleted. Tags pushed with GITHUB_TOKEN do not start
+# release.yml, so nothing is released twice.
+#
+# As in release.yml, the signing key is only ever present in the job `sign`,
+# which runs no checked-out code, no dependency and no action.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GO_VERSION: "1.27.x"
+  GOTOOLCHAIN: local
+
+jobs:
+  build:
+    name: Nightly assets
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      skip: ${{ steps.version.outputs.skip }}
+      commit: ${{ steps.info.outputs.commit }}
+      sums: ${{ steps.sums.outputs.sums }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the tags give the version
+
+      # The core of the newest release or release candidate (nightlies left
+      # out), its patch + 1, the UTC day and the run of that day. A
+      # scheduled run is skipped when main has not changed since the newest
+      # nightly.
+      - name: Nightly version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          core=$(git tag -l 'v*' | grep -Ev -- '-nightly\.' |
+            sed -nE 's/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-.*)?$/\1 \2 \3/p' |
+            sort -k1,1n -k2,2n -k3,3n | tail -n 1)
+          if [ -z "$core" ]; then
+            echo "::error::No release tag found."
+            exit 1
+          fi
+          read -r major minor patch <<<"$core"
+          day=$(date -u +%Y%m%d)
+          n=$(git tag -l "v*-nightly.$day.*" | sed -nE "s/^.*-nightly\.$day\.([0-9]+)$/\1/p" | sort -n | tail -n 1)
+          tag="v$major.$minor.$((patch + 1))-nightly.$day.$(( ${n:-0} + 1 ))"
+          newest=$(git tag -l 'v*-nightly.*' --sort=-creatordate | head -n 1)
+          skip=false
+          if [ "$EVENT" = schedule ] && [ -n "$newest" ] && [ "$(git rev-list -n 1 "$newest")" = "$(git rev-parse HEAD)" ]; then
+            skip=true
+            echo "main has not changed since $newest; no nightly today."
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "Nightly version: $tag"
+
+      - name: Build information
+        id: info
+        if: steps.version.outputs.skip != 'true'
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        if: steps.version.outputs.skip != 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-go@v7
+        if: steps.version.outputs.skip != 'true'
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: false
+
+      - name: Build the nightly assets
+        if: steps.version.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: make dist VERSION="$TAG" COMMIT="$(git rev-parse --short=12 HEAD)"
+
+      - name: SHA256SUMS for the signing job
+        id: sums
+        if: steps.version.outputs.skip != 'true'
+        run: echo "sums=$(base64 -w0 dist/SHA256SUMS)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        if: steps.version.outputs.skip != 'true'
+        with:
+          name: nightly-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  sign:
+    name: Sign SHA256SUMS
+    needs: build
+    if: needs.build.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Keep NIGHTLY_SIGNING_KEY as a secret of this environment with a
+    # deployment rule for the branch main. It is a separate key: the
+    # release key (environment release) never signs a nightly.
+    environment: nightly
+    permissions: {}
+    outputs:
+      sig: ${{ steps.sign.outputs.sig }}
+    steps:
+      - name: Sign SHA256SUMS
+        id: sign
+        env:
+          NIGHTLY_SIGNING_KEY: ${{ secrets.NIGHTLY_SIGNING_KEY }}
+          SUMS: ${{ needs.build.outputs.sums }}
+        run: |
+          if [ -z "$NIGHTLY_SIGNING_KEY" ]; then
+            echo "::error::The secret NIGHTLY_SIGNING_KEY is missing or empty. Add the Ed25519 nightly key (PEM) under Settings > Environments > nightly, see CONTRIBUTING.md."
+            exit 1
+          fi
+          dir=$(mktemp -d "$RUNNER_TEMP/sign.XXXXXX")
+          trap 'rm -rf "$dir"' EXIT
+          (umask 077 && printf '%s\n' "$NIGHTLY_SIGNING_KEY" > "$dir/key.pem")
+          printf '%s' "$SUMS" | base64 -d > "$dir/SHA256SUMS"
+          openssl pkeyutl -sign -rawin -inkey "$dir/key.pem" -in "$dir/SHA256SUMS" -out "$dir/SHA256SUMS.sig.bin"
+          echo "sig=$(base64 -w0 "$dir/SHA256SUMS.sig.bin")" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: GitHub pre-release
+    needs: [build, sign]
+    if: needs.build.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the pre-release and its tag, delete old nightlies
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      COMMIT: ${{ needs.build.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: nightly-assets
+          path: dist/
+
+      - name: Add the signature
+        env:
+          SIG: ${{ needs.sign.outputs.sig }}
+        run: printf '%s\n' "$SIG" > dist/SHA256SUMS.sig
+
+      - name: Verify the nightly assets
+        env:
+          SUMS: ${{ needs.build.outputs.sums }}
+        run: |
+          expected="SHA256SUMS SHA256SUMS.sig get-picache.sh picache-deploy.tar.gz picache-linux-amd64 picache-linux-arm64 picache-linux-armv7"
+          actual=$(find dist -mindepth 1 -printf '%P\n' | LC_ALL=C sort | paste -sd ' ')
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::dist/ holds \"$actual\", expected \"$expected\"."
+            exit 1
+          fi
+          if [ "$(base64 -w0 dist/SHA256SUMS)" != "$SUMS" ]; then
+            echo "::error::dist/SHA256SUMS is not the file that was signed."
+            exit 1
+          fi
+          base64 -d dist/SHA256SUMS.sig > "$RUNNER_TEMP/SHA256SUMS.sig.bin"
+          if ! openssl pkeyutl -verify -pubin -inkey docs/nightly-key.pem -rawin \
+              -in dist/SHA256SUMS -sigfile "$RUNNER_TEMP/SHA256SUMS.sig.bin"; then
+            echo "::error::SHA256SUMS.sig does not verify against docs/nightly-key.pem. Is NIGHTLY_SIGNING_KEY the matching private key?"
+            exit 1
+          fi
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          chmod +x dist/picache-linux-amd64
+          out=$(dist/picache-linux-amd64 version)
+          echo "$out"
+          case "$out" in
+            "picache $TAG "*) ;;
+            *) echo "::error::The binary does not report the version $TAG."; exit 1 ;;
+          esac
+
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Nightly build of main at $COMMIT. Untested: for testing only."
+            echo
+            echo "Installed by the update helper only on hosts with /etc/picache/nightly.enabled (install.sh --nightly)."
+            echo "Signed with the nightly key (docs/nightly-key.pem), never with the release key."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --prerelease \
+            --title "PiCache $TAG (nightly)" --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/picache-linux-amd64 dist/picache-linux-arm64 dist/picache-linux-armv7 \
+            dist/picache-deploy.tar.gz dist/get-picache.sh dist/SHA256SUMS dist/SHA256SUMS.sig
+
+      # The newest 7 nightlies stay; older ones and their tags are deleted.
+      - name: Delete older nightlies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | test("-nightly\\."))] | sort_by(.createdAt) | reverse | .[7:] | .[].tagName' |
+          while read -r old; do
+            [ -n "$old" ] || continue
+            echo "deleting $old"
+            gh release delete "$old" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          done

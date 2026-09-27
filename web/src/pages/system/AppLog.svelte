@@ -5,7 +5,8 @@
   component filter, followed live over SSE (pause/resume), and a download
   of the loaded records as NDJSON. The newest 500 records load first;
   "Show older" loads every record the ring keeps (2000). Debug logging can
-  be turned on for a while. Secrets are redacted by the server; client addresses and domains
+  be turned on for a while; the log file and syslog sinks show their state.
+  Secrets are redacted by the server; client addresses and domains
   are masked while the privacy settings say so.
   Query: ?level=debug|info|warn|error&component=<name>
 -->
@@ -20,6 +21,7 @@
   import { session } from '$lib/session.svelte'
   import { Button, Chip, EmptyState, IconButton, Notice, Panel, Select, Skeleton } from '$lib/ui'
   import LevelPanel from './applog/LevelPanel.svelte'
+  import SinksPanel from './applog/SinksPanel.svelte'
   import { asLevel, LEVEL_TONES, LEVELS, matches, toNdjson } from './applog/records'
 
   /** Records loaded at first; "Show older" loads up to MAX (all the ring keeps), the stream adds to them up to MAX. */
@@ -123,6 +125,9 @@
         components={log.data.components}
         onchange={(st) => log.data && log.set({ ...log.data, baseLevel: st.baseLevel, override: st.override })}
       />
+      {#if log.data.sinks?.length}
+        <SinksPanel sinks={log.data.sinks} />
+      {/if}
     {/if}
 
     <Panel

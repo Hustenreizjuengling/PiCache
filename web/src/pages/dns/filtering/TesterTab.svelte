@@ -151,7 +151,7 @@
     <Panel title={t('dns.tester.resultTitle', { name: res.name, type: res.type })}>
       {#snippet actions()}
         {#if ruleAction}
-          <Button icon={ruleAction === 'allow' ? 'shield-off' : 'shield'} disabled={!session.isAdmin} onclick={createRule}>
+          <Button icon={ruleAction === 'allow' ? 'shield-off' : 'shield'} disabled={!session.canEditSection('lists-and-rules')} onclick={createRule}>
             {ruleAction === 'allow' ? t('dns.queryLog.allowDomain') : t('dns.queryLog.blockDomain')}
           </Button>
         {/if}

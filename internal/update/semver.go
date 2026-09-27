@@ -69,6 +69,37 @@ func (v Version) String() string {
 // Prerelease reports whether v has pre-release identifiers.
 func (v Version) Prerelease() bool { return len(v.Pre) > 0 }
 
+// IsNightly reports a nightly build: v<M>.<m>.<p+1>-nightly.<YYYYMMDD>.<n>,
+// where M.m.p is the core of the newest release or release candidate when
+// it was built, so it sorts above everything published before it and
+// below the next release (and release candidate) of its core.
+func IsNightly(version string) bool { return strings.Contains(version, "-nightly.") }
+
+// Update channels (settings updates.channel).
+const (
+	ChannelStable  = "stable"
+	ChannelBeta    = "beta"
+	ChannelNightly = "nightly"
+)
+
+// Offered reports whether a channel offers a version: stable only
+// releases without a pre-release part, beta also release candidates (never
+// nightly builds), nightly all of them.
+func Offered(channel string, v Version) bool {
+	switch {
+	case !v.Prerelease():
+		return true
+	case IsNightly(v.String()):
+		return channel == ChannelNightly
+	}
+	return channel == ChannelBeta || channel == ChannelNightly
+}
+
+// ValidChannel reports stable, beta or nightly.
+func ValidChannel(c string) bool {
+	return c == ChannelStable || c == ChannelBeta || c == ChannelNightly
+}
+
 // Compare returns -1, 0 or +1 by SemVer precedence.
 func Compare(a, b Version) int {
 	for _, p := range [][2]uint64{{a.Major, b.Major}, {a.Minor, b.Minor}, {a.Patch, b.Patch}} {

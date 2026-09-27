@@ -239,10 +239,10 @@ func TestEncryptedStatusAndHealth(t *testing.T) {
 		t.Fatalf("health %s %q", s, msg)
 	}
 	// The listeners check counts a failed DoT listener only while DoT is on.
-	if s, _, _ := listenersHealth(a.Listeners(), settings.EncryptedDNS{}); s != "ok" {
+	if s, _, _ := listenersHealth(a.Listeners(), settings.EncryptedDNS{}, false, nil); s != "ok" {
 		t.Fatal("failed DoT listener counted while DoT is off")
 	}
-	if s, msg, _ := listenersHealth(a.Listeners(), settings.EncryptedDNS{DoT: true}); s != "warn" || !strings.Contains(msg, "dot: bind") {
+	if s, msg, _ := listenersHealth(a.Listeners(), settings.EncryptedDNS{DoT: true}, false, nil); s != "warn" || !strings.Contains(msg, "dot: bind") {
 		t.Fatalf("listeners %s %q", s, msg)
 	}
 

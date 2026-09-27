@@ -16,9 +16,10 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// perm is the permission a route requires (docs/API.md: P, R, U, A, S).
+// perm is the permission a route requires (docs/API.md: P, R, U, A, S, X).
 type perm int
 
 const (
@@ -27,7 +28,11 @@ const (
 	permAdmin               // A: admin scope (an admin's browser session or an admin API token)
 	permSession             // S: interactive browser session of an admin (never API tokens)
 	permSelf                // U: interactive browser session of any role (never API tokens): the own account
+	permExport              // X: an admin session, an admin token or a sync token (GET /system/export only)
 )
+
+// errSyncTokenScope answers a sync token on every route but the export.
+var errSyncTokenScope = apperr.Forbidden("this token can only read the configuration export")
 
 // lockClass says whether PICACHE_CONFIG_LOCKED refuses a route for
 // sessions (docs/ARCHITECTURE.md 6.1).
@@ -40,15 +45,31 @@ const (
 	lockPause                   // POST /dns/blocking: the handler locks a permanent disable (routePause)
 )
 
-// routeOpt classifies a route for the configuration lock and the
-// destructive switch.
-type routeOpt int
+// routeOpt classifies a route for the configuration lock, the destructive
+// switch and the follower sync.
+type routeOpt struct {
+	kind    int
+	section string                   // routeSyncSection
+	gate    func(*http.Request) bool // routeGate
+}
 
-const (
-	routeExempt      routeOpt = iota + 1 // not locked by PICACHE_CONFIG_LOCKED
-	routePause                           // lock class pause (only POST /dns/blocking)
-	routeDestructive                     // refused while PICACHE_DESTRUCTIVE_API is off
+// routeGate answers 404 before authentication unless gate allows the
+// request (the profiles of /debug/pprof: switched on, this machine only).
+func routeGate(gate func(*http.Request) bool) routeOpt { return routeOpt{kind: 6, gate: gate} }
+
+var (
+	routeExempt      = routeOpt{kind: 1} // not locked by PICACHE_CONFIG_LOCKED
+	routePause       = routeOpt{kind: 2} // lock class pause (only POST /dns/blocking)
+	routeDestructive = routeOpt{kind: 3} // refused while PICACHE_DESTRUCTIVE_API is off
+	// routeSyncChecked marks a route whose handler refuses changes of the
+	// synced members itself (the settings routes).
+	routeSyncChecked = routeOpt{kind: 5}
 )
+
+// routeSyncSection marks a route that writes a section a follower syncs
+// (settings.ExportSections): while that section is synced it answers every
+// principal 409 "this is synced from <origin>: change it on the primary".
+func routeSyncSection(section string) routeOpt { return routeOpt{kind: 4, section: section} }
 
 // routeInfo is one registered route (the tests iterate the registry).
 type routeInfo struct {
@@ -56,6 +77,8 @@ type routeInfo struct {
 	Perm        perm
 	Lock        lockClass
 	Destructive bool
+	SyncSection string // the synced section it writes ("" = none)
+	SyncChecked bool   // the handler checks the synced members (settings)
 }
 
 // handlerFunc is an API handler that returns an error instead of writing it.
@@ -81,16 +104,20 @@ func classify(pattern string, p perm, opts []routeOpt) routeInfo {
 	info := routeInfo{Pattern: pattern, Perm: p, Lock: lockLocked}
 	method, _, _ := strings.Cut(pattern, " ")
 	for _, o := range opts {
-		switch o {
-		case routeExempt:
+		switch o.kind {
+		case routeExempt.kind:
 			info.Lock = lockExempt
-		case routePause:
+		case routePause.kind:
 			info.Lock = lockPause
-		case routeDestructive:
+		case routeDestructive.kind:
 			info.Destructive = true
+		case 4:
+			info.SyncSection = o.section
+		case routeSyncChecked.kind:
+			info.SyncSection, info.SyncChecked = settings.SectionDNSSettings, true
 		}
 	}
-	if method == http.MethodGet || method == http.MethodHead || p == permPublic || p == permRead || p == permSelf {
+	if method == http.MethodGet || method == http.MethodHead || p == permPublic || p == permRead || p == permSelf || p == permExport {
 		info.Lock = lockNone
 	}
 	return info
@@ -105,11 +132,30 @@ func classify(pattern string, p perm, opts []routeOpt) routeInfo {
 func (s *Server) route(pattern string, p perm, h handlerFunc, opts ...routeOpt) {
 	info := classify(pattern, p, opts)
 	s.routes = append(s.routes, info)
+	var gate func(*http.Request) bool
+	for _, o := range opts {
+		if o.gate != nil {
+			gate = o.gate
+		}
+	}
 	s.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		if gate != nil && !gate(r) {
+			w.Header().Set("Cache-Control", "no-store")
+			http.NotFound(w, r)
+			return
+		}
 		if p != permPublic {
 			pr, err := s.d.Auth.Authenticate(r)
 			if err != nil {
 				writeError(w, r, s.log, err)
+				return
+			}
+			if pr.Scope == auth.ScopeSync && p != permExport {
+				writeError(w, r, s.log, errSyncTokenScope)
+				return
+			}
+			if p == permExport && !canExport(pr) {
+				writeError(w, r, s.log, apperr.Forbidden("this action requires admin rights"))
 				return
 			}
 			if (p == permAdmin || p == permSession) && pr.Scope != auth.ScopeAdmin {
@@ -128,6 +174,12 @@ func (s *Server) route(pattern string, p perm, h handlerFunc, opts ...routeOpt) 
 				writeError(w, r, s.log, apperr.Forbidden("this action is disabled on this host (PICACHE_DESTRUCTIVE_API=false)"))
 				return
 			}
+			if info.SyncSection != "" && !info.SyncChecked {
+				if err := s.syncedSection(info.SyncSection, ""); err != nil {
+					writeError(w, r, s.log, err)
+					return
+				}
+			}
 			r = r.WithContext(context.WithValue(r.Context(), principalKey, pr))
 		}
 		w.Header().Set("Cache-Control", "no-store")
@@ -135,6 +187,12 @@ func (s *Server) route(pattern string, p perm, h handlerFunc, opts ...routeOpt) 
 			writeError(w, r, s.log, err)
 		}
 	})
+}
+
+// canExport reports the principals of permission X: an admin session, an
+// admin token, or a sync token whose owner is an admin.
+func canExport(p *auth.Principal) bool {
+	return p.Scope == auth.ScopeAdmin || (p.Scope == auth.ScopeSync && p.Role == auth.RoleAdmin)
 }
 
 // configLocked reports whether PICACHE_CONFIG_LOCKED is on.

@@ -127,21 +127,21 @@ func TestNewOverview(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		current    string
-		includePre bool
+		channel    string
 		latest     *Release
 		mode       string
 		wantLatest bool
 		available  bool
 		cli        string
 	}{
-		{"update", "v1.2.3", false, stable, ModeHelper, true, true, "sudo picache update --version v1.2.4"},
-		{"up to date", "v1.2.4", false, stable, ModeManual, true, false, "sudo picache update"},
-		{"pre-release allowed", "v1.2.3", true, rc, ModeHelper, true, true, "sudo picache update --version v1.3.0-rc.1"},
-		{"pre-release no longer allowed", "v1.2.3", false, rc, ModeHelper, false, false, "sudo picache update"},
-		{"dev build", "dev", false, stable, ModeDocker, true, true, "sudo picache update --version v1.2.4"},
-		{"nothing found", "v1.2.3", false, nil, ModeManual, false, false, "sudo picache update"},
+		{"update", "v1.2.3", ChannelStable, stable, ModeHelper, true, true, "sudo picache update --version v1.2.4"},
+		{"up to date", "v1.2.4", ChannelStable, stable, ModeManual, true, false, "sudo picache update"},
+		{"pre-release allowed", "v1.2.3", ChannelBeta, rc, ModeHelper, true, true, "sudo picache update --version v1.3.0-rc.1"},
+		{"pre-release no longer allowed", "v1.2.3", ChannelStable, rc, ModeHelper, false, false, "sudo picache update"},
+		{"dev build", "dev", ChannelStable, stable, ModeDocker, true, true, "sudo picache update --version v1.2.4"},
+		{"nothing found", "v1.2.3", ChannelStable, nil, ModeManual, false, false, "sudo picache update"},
 	} {
-		o := NewOverview(tc.current, tc.mode, true, tc.includePre, CheckResult{Latest: tc.latest}, nil)
+		o := NewOverview(tc.current, tc.mode, true, tc.channel, CheckResult{Latest: tc.latest}, nil)
 		if (o.Latest != nil) != tc.wantLatest || o.UpdateAvailable != tc.available || o.Commands.CLI != tc.cli ||
 			o.Current.Version != tc.current || o.CurrentIsDevBuild != (tc.current == "dev") || o.Mode != tc.mode ||
 			(o.Commands.Docker != "") != (tc.mode == ModeDocker) {

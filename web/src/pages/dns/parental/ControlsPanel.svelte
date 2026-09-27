@@ -1,7 +1,8 @@
 <!--
   @component
   Edits the restrictions of one group in a side panel: safe search per
-  search engine, the category switches (downloaded lists, always on), the
+  search engine, the category switches (downloaded lists, always on;
+  read-only while the lists and rules are synced from a primary), the
   services that are always blocked and up to 10 schedules (add, edit
   inline, turn on/off, delete). Everything is sent with "Save changes"
   (PUT /parental/groups/{id}, always with all four members); validation
@@ -25,6 +26,7 @@
     type SafeSearch,
   } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
+  import { session } from '$lib/session.svelte'
   import { Button, IconButton, Notice, toast, Toggle } from '$lib/ui'
   import FormPanel from '../shared/FormPanel.svelte'
   import PauseMenu from '../shared/PauseMenu.svelte'
@@ -109,6 +111,8 @@
   }
 
   const groupId = $derived(group?.groupId)
+  // A category switch assigns a list to the group: read-only while the lists and rules are synced from a primary.
+  const categoriesSynced = $derived(session.isSynced('lists-and-rules'))
   $effect.pre(() => {
     if (!open) return
     void groupId
@@ -273,8 +277,12 @@
     <section class="stack-sm" aria-labelledby="pc-cats">
       <h3 id="pc-cats">{t('dns.parental.switch.title')}</h3>
       <p class="small muted">{t('dns.parental.switch.editHelp')}</p>
-      <CategorySwitches bind:value={draft.categories} {group} {filterCatalog} {lists} />
-      <p class="small muted">{t('dns.parental.switch.enableNote')}</p>
+      <CategorySwitches bind:value={draft.categories} {group} {filterCatalog} {lists} disabled={categoriesSynced} />
+      {#if categoriesSynced}
+        <p class="small muted">{t('dns.parental.switch.synced')}</p>
+      {:else}
+        <p class="small muted">{t('dns.parental.switch.enableNote')}</p>
+      {/if}
     </section>
   {/if}
 

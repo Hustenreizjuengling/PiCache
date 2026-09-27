@@ -43,14 +43,14 @@ type fakeReleases struct {
 	rel   *update.Release
 	err   error
 	calls int
-	pre   []bool
+	pre   []string
 }
 
-func (f *fakeReleases) latest(_ context.Context, includePre bool) (*update.Release, error) {
+func (f *fakeReleases) latest(_ context.Context, channel string) (*update.Release, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	f.pre = append(f.pre, includePre)
+	f.pre = append(f.pre, channel)
 	return f.rel, f.err
 }
 
@@ -174,7 +174,7 @@ func TestUpdateCheckSchedule(t *testing.T) {
 		}
 		u.kickCheck() // what the settings listener in build does
 		synctest.Wait()
-		if f.count() != 3 || !f.pre[2] {
+		if f.count() != 3 || f.pre[2] != update.ChannelBeta {
 			t.Fatalf("settings change: %d checks, pre-releases %v", f.count(), f.pre)
 		}
 

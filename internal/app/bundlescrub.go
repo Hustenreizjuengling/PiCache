@@ -39,6 +39,7 @@ const (
 	ruleBlockedClient                    // an address, CIDR or MAC (MACs dropped)
 	ruleDroppedDomain                    // "domain[:TYPE]" (the domain as a name)
 	ruleRouter                           // "", "auto" or an address
+	ruleSet                              // written as "[set]" when not empty (sync.caPem, network.proxy.username)
 )
 
 // settingRules has a decision for every leaf of settings.All (dotted JSON
@@ -91,7 +92,18 @@ var settingRules = map[string]settingRule{
 	"logs.queryLogEnabled": ruleKeep, "logs.queryLogRetentionHours": ruleKeep, "logs.sessionRetentionDays": ruleKeep,
 	"logs.statsEnabled": ruleKeep, "logs.statsOnlyAddressQueries": ruleKeep, "logs.statsRetentionDays": ruleKeep,
 
-	"updates.checkEnabled": ruleKeep, "updates.includePrereleases": ruleKeep,
+	"updates.checkEnabled": ruleKeep, "updates.includePrereleases": ruleKeep, "updates.channel": ruleKeep,
+
+	"clients.nameSources.ptr": ruleKeep, "clients.nameSources.dhcp": ruleKeep, "clients.nameSources.hostsFile": ruleKeep,
+	"clients.nameSources.whois": ruleKeep, "logs.seenRetentionDays": ruleKeep,
+
+	"sync.mode": ruleKeep, "sync.source": ruleUpstream, "sync.tokenSet": ruleKeep, "sync.caPem": ruleSet,
+	"sync.intervalMinutes": ruleKeep, "sync.sections": ruleKeep,
+
+	"network.proxy.url": ruleUpstream, "network.proxy.username": ruleSet, "network.proxy.passwordSet": ruleKeep,
+	"network.proxyFor.lists": ruleKeep, "network.proxyFor.updateCheck": ruleKeep, "network.proxyFor.notifications": ruleKeep,
+
+	"ntp.enabled": ruleKeep, "ntp.stratum": ruleKeep,
 
 	"web.allowedHosts": ruleHost, "web.allowedNetworks": ruleAddr, "web.language": ruleKeep, "web.metricsEnabled": ruleKeep,
 	"web.redirectToHttps": ruleKeep, "web.restrictToNetworks": ruleKeep, "web.sessionIdleMinutes": ruleKeep,
@@ -342,6 +354,9 @@ func (sc *scrubber) settingValue(path, v string) (string, bool) {
 	switch rule {
 	case ruleKeep:
 		return v, true
+	case ruleSet:
+		sc.counts[countRedacted]++
+		return "[set]", true
 	case ruleUpstream:
 		return sc.scrubUpstream(v), true
 	case ruleRouter:

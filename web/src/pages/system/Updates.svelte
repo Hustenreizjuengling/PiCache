@@ -5,7 +5,7 @@
   version and how to install it here. With the root helper (mode `helper`)
   admins install it from this page after confirming their password and
   follow its progress through the restart; Docker and manual installations
-  get the commands to run. Also the update check settings.
+  get the commands to run. Also the update check settings and the channel.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -158,7 +158,7 @@
         </div>
       {/if}
       <div class="settings">
-        <SettingsPanel onsaved={() => upd.refresh()} />
+        <SettingsPanel {info} onsaved={() => upd.refresh()} />
       </div>
     </div>
   {/if}

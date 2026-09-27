@@ -45,7 +45,7 @@
       value: (r) => r.queries,
       format: (r) => formatNumber(r.queries),
     },
-    ...(session.isAdmin ? [{ key: 'actions', label: t('common.label.actions'), align: 'right' as const, width: '1%', cell: actionCell }] : []),
+    ...(session.canEditSection('clients-and-groups') ? [{ key: 'actions', label: t('common.label.actions'), align: 'right' as const, width: '1%', cell: actionCell }] : []),
   ])
 </script>
 

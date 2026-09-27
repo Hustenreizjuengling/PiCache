@@ -59,7 +59,7 @@ export interface VersionInfo {
   arch: string
 }
 
-/** api.ListenerInfo: bound addresses and bind errors by role (dns-udp, dns-tcp, cache, sni, web, web-tls, dot, doh). */
+/** api.ListenerInfo: bound addresses and bind errors by role (dns-udp, dns-tcp, cache, sni, web, web-tls, dot, doh, ntp). */
 export interface ListenerInfo {
   bound: Record<string, string[]>
   failed?: Record<string, string>
@@ -161,6 +161,8 @@ export interface RestartResult {
 export interface RestoreResult {
   staged: boolean
   message: string
+  /** The sections restored at the next start (every restorable section for a full restore). */
+  sections: RestoreSection[]
   /** Set when the restored settings would not let this browser use the web UI after the restart. */
   webAccessWarning?: string
   /** Set when the restored settings turn plain DNS off but no encrypted DNS listener of this host serves them. */
@@ -168,11 +170,64 @@ export interface RestoreResult {
 }
 
 /**
+ * Parts of the configuration (docs/ARCHITECTURE.md 15, section map): what a
+ * partial restore replaces and what a follower syncs. `dns-settings` (the
+ * syncable members of the dns and filter settings) is synced only; a restore
+ * restores it as part of `settings`.
+ */
+export type ConfigSection =
+  | 'settings'
+  | 'clients-and-groups'
+  | 'lists-and-rules'
+  | 'local-dns'
+  | 'parental'
+  | 'dhcp'
+  | 'download-cache'
+  | 'notifications'
+  | 'storage'
+  | 'dns-settings'
+
+/** Sections of POST /system/restore?sections=… */
+export type RestoreSection = Exclude<ConfigSection, 'dns-settings'>
+
+/** Sections a follower syncs (settings sync.sections, GET /system/export?sections=…). */
+export type SyncSection = 'clients-and-groups' | 'lists-and-rules' | 'local-dns' | 'parental' | 'dns-settings'
+
+/** Restorable sections in display order. */
+export const RESTORE_SECTIONS: readonly RestoreSection[] = [
+  'settings',
+  'clients-and-groups',
+  'lists-and-rules',
+  'local-dns',
+  'parental',
+  'dhcp',
+  'download-cache',
+  'notifications',
+  'storage',
+]
+
+/** Syncable sections in display order. */
+export const SYNC_SECTIONS: readonly SyncSection[] = ['clients-and-groups', 'lists-and-rules', 'local-dns', 'parental', 'dns-settings']
+
+/**
+ * Sections that refer to the groups: selecting `clients-and-groups` (which
+ * replaces the groups) requires them too, for a restore and a sync alike.
+ */
+export const GROUP_LINKED_SECTIONS: readonly ('lists-and-rules' | 'local-dns' | 'parental')[] = ['lists-and-rules', 'local-dns', 'parental']
+
+/**
  * How an update is installed (docs/ARCHITECTURE.md 14.4): `helper` = from the
  * web UI through the root helper, `docker` = pull the new image, `manual` =
  * `sudo picache update` on the host.
  */
 export type UpdateMode = 'helper' | 'docker' | 'manual'
+
+/**
+ * Which releases are offered: `stable` = releases only, `beta` = also
+ * release candidates (-rc.N), `nightly` = also the daily builds of main
+ * (-nightly.<date>.<n>, signed with a separate key).
+ */
+export type UpdateChannel = 'stable' | 'beta' | 'nightly'
 
 /** State of the last update run (status.json of the root helper). */
 export type UpdateState = 'running' | 'succeeded' | 'failed' | 'rolled-back'
@@ -210,7 +265,13 @@ export interface UpdateInfo {
   currentIsDevBuild: boolean
   mode: UpdateMode
   checkEnabled: boolean
+  /** Derived from channel (channel != "stable"). */
   includePrereleases: boolean
+  channel: UpdateChannel
+  /** The root helper installs nightly builds on this host (/etc/picache/nightly.enabled exists: install.sh --nightly). */
+  nightlyAllowed: boolean
+  /** The proxy installs download through (PICACHE_UPDATE_PROXY of the host, scheme://host:port). */
+  installProxy?: string
   latest?: UpdateRelease
   updateAvailable: boolean
   /** Time of the last check (successful or not). */
@@ -229,7 +290,8 @@ export interface UpdateQueued {
 
 // ---------------------------------------------------------------- auth
 
-export type Scope = 'admin' | 'read'
+/** `sync` tokens read only the configuration export (a follower's credential; created by admins). */
+export type Scope = 'admin' | 'read' | 'sync'
 
 /** An account's role: admins manage everything, viewers read and manage only their own account. */
 export type Role = 'admin' | 'viewer'
@@ -260,6 +322,8 @@ export interface AuthStatus {
   configLocked: boolean
   /** Destructive actions are allowed (PICACHE_DESTRUCTIVE_API); false while signed out. */
   destructiveApi: boolean
+  /** Sections this follower syncs from its primary (read-only here); [] unless follower, absent while signed out. */
+  syncedSections?: SyncSection[]
 }
 
 /** POST /system/users */
@@ -573,6 +637,8 @@ export interface LogsSettings {
   statsOnlyAddressQueries: boolean
   /** Seconds between writes of new log rows and counts (5..300). */
   flushSeconds: number
+  /** Days the addresses seen by the DNS server are kept (7..365). */
+  seenRetentionDays: number
   /** Read-only: derived from the four switches; a value sent is ignored. */
   privacyLevel: PrivacyLevel
 }
@@ -605,12 +671,13 @@ export interface WebSettings {
   tlsMinVersion: '1.2' | '1.3'
 }
 
-/** settings.Updates */
+/** settings.Updates (400 field "updates.channel", e.g. "nightly builds have no container image" in Docker). */
 export interface UpdatesSettings {
   /** Check GitHub for a new release every day. */
   checkEnabled: boolean
-  /** Offer pre-releases (vX.Y.Z-rc.N) too. */
+  /** Derived alias of channel (channel != "stable"); send channel only. */
   includePrereleases: boolean
+  channel: UpdateChannel
 }
 
 /** How often scheduled backups run. */
@@ -688,6 +755,71 @@ export interface DhcpSettings {
   ipv6: DhcpIpv6Settings
 }
 
+/** settings.Clients: where the names of addresses come from (first hit wins, after a configured client name). */
+export interface ClientsSettings {
+  nameSources: {
+    /** Reverse lookups (PTR) of client addresses. */
+    ptr: boolean
+    /** Host names of PiCache's own DHCP leases. */
+    dhcp: boolean
+    /** /etc/hosts of the machine PiCache runs on (in Docker: the container's own file). */
+    hostsFile: boolean
+    /** RDAP lookups of the network owner of public source addresses (an annotation, never a name; sends data out). */
+    whois: boolean
+  }
+}
+
+/**
+ * settings.Sync: this PiCache as a read-only follower of a primary. `token`
+ * is write-only (absent or null keeps the stored one, "" removes it, a value
+ * replaces it); reads carry only tokenSet.
+ */
+export interface SyncSettings {
+  mode: 'off' | 'follower'
+  /** The primary's base URL: https://host[:port]. */
+  source: string
+  /** Input only: a sync token of the primary. */
+  token?: string | null
+  /** Output only: a token is stored. */
+  tokenSet: boolean
+  /** Trust anchor: 1–4 PEM certificates (the primary's local CA or its certificate); "" = the system roots. */
+  caPem: string
+  /** 5..1440 */
+  intervalMinutes: number
+  sections: SyncSection[]
+}
+
+/**
+ * settings.Network: the outbound proxy for the chosen downloads. `password`
+ * is write-only like SyncSettings.token; reads carry only passwordSet.
+ */
+export interface NetworkSettings {
+  proxy: {
+    /** http://host:port or socks5://host:port ("" = none). */
+    url: string
+    username: string
+    /** Input only. */
+    password?: string | null
+    /** Output only: a password is stored. */
+    passwordSet: boolean
+  }
+  proxyFor: {
+    /** Blocklist and cache-domains downloads. */
+    lists: boolean
+    /** The release check. */
+    updateCheck: boolean
+    /** Notification channels and their tests. */
+    notifications: boolean
+  }
+}
+
+/** settings.NTP: answering NTP clients on the ntp listener (PICACHE_NTP_LISTEN). */
+export interface NtpSettings {
+  enabled: boolean
+  /** 2..15, used while the host clock is synchronised. */
+  stratum: number
+}
+
 /** settings.All */
 export interface Settings {
   dns: DnsSettings
@@ -700,6 +832,10 @@ export interface Settings {
   backups: BackupsSettings
   dhcp: DhcpSettings
   health: HealthSettings
+  clients: ClientsSettings
+  sync: SyncSettings
+  network: NetworkSettings
+  ntp: NtpSettings
 }
 
 /** Sections accepted by PATCH /settings/{section}. */
@@ -1246,6 +1382,14 @@ export interface KnownClient {
    * clientId/name come from its client when the address identifies none itself.
    */
   dnsClientId?: string
+  /** The interface replies to the address leave by (computed from the routes when read). */
+  interface?: string
+  /** Manufacturer of the MAC address (IEEE registry). */
+  vendor?: string
+  /** The MAC address is locally administered (a private, randomised address): never a vendor. */
+  macRandomized?: boolean
+  /** Owner of the address's network (RDAP; public addresses only, name source whois). */
+  whois?: { org: string; country?: string }
 }
 
 /** clients.SeenDNSClientID: a ClientID sent since the start (kept in memory, at most 1024). */
@@ -1487,6 +1631,8 @@ export interface NetworkDevice {
   lastQuery?: Timestamp
   queries24h: number
   status: DeviceStatus
+  vendor?: string
+  macRandomized?: boolean
 }
 
 export type RouterKind = 'fritzbox' | 'generic' | 'unknown'
@@ -1528,6 +1674,40 @@ export interface NetworkCheck {
   scan: NetworkScanState
   /** PiCache's own DHCP server (DNS → DHCP). */
   dhcp?: { serving: boolean; interface?: string; routerAdvertisements: boolean }
+}
+
+/** Operational state of an interface (sysfs operstate). */
+export type OperState = 'up' | 'down' | 'dormant' | 'lowerlayerdown' | 'notpresent' | 'testing' | 'unknown'
+
+/** An interface of GET /network/interfaces (loopback excluded). Lists are never null. */
+export interface NetworkInterface {
+  name: string
+  index: number
+  mac?: string
+  up: boolean
+  operState: OperState
+  mtu: number
+  /** Absent when the driver does not report it. */
+  speedMbps?: number
+  duplex?: 'full' | 'half'
+  /** CIDR notation. */
+  addresses: string[]
+  /** The non-default routes through the interface (at most 64). */
+  networks: string[]
+  /** Bridges, veth, tunnels and the like. */
+  virtual: boolean
+  rxBytes: number
+  txBytes: number
+  rxErrors: number
+  txErrors: number
+  defaultGateways: { family: 'ipv4' | 'ipv6'; gateway: string }[]
+}
+
+/** GET /network/interfaces (sorted by name; [] on systems other than Linux). */
+export interface NetworkInterfaces {
+  /** bridge: a container bridge network (the container's own interfaces). */
+  mode: 'host' | 'bridge'
+  interfaces: NetworkInterface[]
 }
 
 /** 202 of POST /network/scan */
@@ -1752,6 +1932,8 @@ export interface DhcpLease {
   nameGenerated?: boolean
   /** Another active lease holds the host name: this one gets no name of its own. */
   nameConflict?: boolean
+  vendor?: string
+  macRandomized?: boolean
 }
 
 export interface DhcpStaticLease {
@@ -1767,6 +1949,8 @@ export interface DhcpStaticLease {
   updatedAt: Timestamp
   /** A device uses it right now. */
   active: boolean
+  vendor?: string
+  macRandomized?: boolean
 }
 
 /**
@@ -3000,6 +3184,20 @@ export interface SystemLog {
   capacity: number
   /** Records live subscribers missed because they were too slow. */
   dropped: number
+  /** The log file and syslog sinks (PICACHE_LOG_FILE, PICACHE_LOG_SYSLOG); [] without any. */
+  sinks: LogSink[]
+}
+
+/** api.LogSink: an extra destination of the application log. */
+export interface LogSink {
+  kind: 'file' | 'syslog'
+  /** The file path or host:port. */
+  target: string
+  /** The last write succeeded. */
+  ok: boolean
+  error?: string
+  /** Records dropped because the sink could not keep up or was unreachable. */
+  dropped: number
 }
 
 /** Minimum level of GET /system/log and the log stream. */
@@ -3083,4 +3281,106 @@ export interface SupportBundleInput {
   currentPassword: string
   /** Keep host names, client names, MAC and private addresses (replaced by placeholders otherwise). */
   includeClientNames?: boolean
+}
+
+// ---------------------------------------------------------------- listeners
+
+/** A listener role of the saved listeners (System → Network), in display order. */
+export type ListenerRole = 'dns' | 'cache' | 'sni' | 'web' | 'webTls' | 'dot' | 'doh' | 'ntp'
+
+/** One role of GET /system/listeners. Addresses are "ip:port" or ":port" (IPv6 in brackets). */
+export interface ListenerRoleConfig {
+  role: ListenerRole
+  /** Bound now (dns: the addresses of dns-udp and dns-tcp). */
+  bound: string[]
+  /** The saved set (for the next start, else the one in use); absent when the file does not set the role. */
+  saved?: string[]
+  /** The built-in default ([] = off). */
+  default: string[]
+  /** Set by an environment variable or a command-line flag: not changeable here. */
+  locked: boolean
+  /** The environment variable (e.g. PICACHE_DNS_LISTEN) or "flag". */
+  lockedBy?: string
+  /** The saved set may switch the role off ([]): never dns and cache, web only while the saved set gives webTls addresses. */
+  canDisable: boolean
+}
+
+/**
+ * GET /system/listeners (also the answer of PUT). Listeners are bootstrap
+ * configuration: a saved set applies at the next start; a role that cannot
+ * be bound then falls back to its environment or default value.
+ */
+export interface ListenersConfig {
+  editable: boolean
+  /** Why not editable: in Docker the compose file sets them. */
+  reason?: 'docker'
+  /** A saved set is waiting for the next start. */
+  restartRequired: boolean
+  roles: ListenerRoleConfig[]
+  /** The last saved set that could not be bound completely. */
+  failed?: { time: Timestamp; roles: Partial<Record<ListenerRole, string>>; saved: Partial<Record<ListenerRole, string[]>> }
+}
+
+/**
+ * PUT /system/listeners: the whole saved set (an absent role is removed from
+ * the file: environment or default again; [] = off). 400 with field
+ * listeners.<role>[i], listeners.<role>, listeners.web or currentPassword;
+ * 409 in Docker.
+ */
+export interface ListenersInput {
+  listeners: Partial<Record<ListenerRole, string[]>>
+  currentPassword: string
+}
+
+// ---------------------------------------------------------------- follower sync
+
+/** GET /system/sync */
+export interface SyncStatus {
+  mode: 'off' | 'follower'
+  /** The primary's origin (scheme://host[:port]). */
+  source?: string
+  sections: SyncSection[]
+  intervalMinutes: number
+  running: boolean
+  lastRun?: Timestamp
+  lastSuccess?: Timestamp
+  lastError?: string
+  /** contentSha256 of the export applied last. */
+  lastAppliedSha256?: string
+  /** The primary's version at the last run. */
+  primaryVersion?: string
+  nextRun?: Timestamp
+}
+
+/**
+ * GET /system/export?sections=… (admins and sync tokens): the configuration of
+ * the chosen syncable sections. Group references are ids; `groups` names
+ * every group of the primary.
+ */
+export interface ConfigExport {
+  format: 'picache-export'
+  formatVersion: 1
+  /** The primary's version. */
+  version: string
+  schema: Record<string, number>
+  exportedAt: Timestamp
+  instanceId: string
+  /** Lower-case hex SHA-256 of the deterministic JSON of `sections`. */
+  contentSha256: string
+  groups: { id: number; name: string }[]
+  sections: {
+    'clients-and-groups'?: { groups: ClientGroup[]; clients: Client[] }
+    'lists-and-rules'?: { lists: FilterList[]; rules: FilterRule[]; ipRules: IPRule[] }
+    'local-dns'?: { records: DnsRecord[]; forwarders: Forwarder[] }
+    parental?: {
+      groups: {
+        groupId: number
+        blockedServices: string[]
+        schedules: ParentalSchedule[]
+        safeSearch: SafeSearch
+        categories: Partial<Record<CategorySwitch, boolean>>
+      }[]
+    }
+    'dns-settings'?: { dns: Partial<DnsSettings>; filter: Partial<FilterSettings> }
+  }
 }

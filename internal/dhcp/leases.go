@@ -14,6 +14,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
+	"github.com/hustenreizjuengling/picache/internal/oui"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -28,6 +29,7 @@ func (s *Service) Leases() []Lease {
 		host := s.t.effectiveName(l)
 		e := Lease{MAC: l.mac, IP: l.ip.String(), Hostname: host, ClientID: l.clientID, Expires: l.expires.UTC(),
 			Active: l.active(now)}
+		e.Vendor, e.MACRandomized = oui.Lookup(l.mac)
 		if st := s.t.reservationOf(l); st != nil && st.ip == l.ip {
 			e.Static = true
 		}
@@ -186,9 +188,11 @@ func (s *Service) Statics() []StaticLease {
 // on its address belongs to it (by MAC or client identifier).
 func (s *Service) staticOut(st *static, now time.Time) StaticLease {
 	l := s.t.byIP[st.ip]
-	return StaticLease{MAC: st.mac, IP: st.ip.String(), Hostname: st.hostname, Comment: st.comment, ClientID: st.clientID,
+	out := StaticLease{MAC: st.mac, IP: st.ip.String(), Hostname: st.hostname, Comment: st.comment, ClientID: st.clientID,
 		LeaseSeconds: st.leaseSeconds, CreatedAt: st.created.UTC(), UpdatedAt: st.updated.UTC(),
 		Active: l != nil && l.active(now) && s.t.reservationOf(l) == st}
+	out.Vendor, out.MACRandomized = oui.Lookup(st.mac)
+	return out
 }
 
 // CreateStatic adds a static lease (POST /dhcp/static).

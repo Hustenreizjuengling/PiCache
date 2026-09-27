@@ -14,6 +14,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/api"
 	"github.com/hustenreizjuengling/picache/internal/applog"
+	"github.com/hustenreizjuengling/picache/internal/config"
 	"github.com/hustenreizjuengling/picache/internal/dhcp"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/version"
@@ -53,6 +54,21 @@ type bundleVersion struct {
 	StartedAt  time.Time `json:"startedAt"`
 	UptimeSec  int64     `json:"uptimeSec"`
 	Deployment string    `json:"deployment"` // systemd | docker | other
+}
+
+// bundleListeners is listeners.json: what this process bound (and what
+// failed), plus the effective listeners the command line tools use
+// (config.EffectiveListeners: the environment, listeners.json, the
+// defaults) with the source of each role.
+type bundleListeners struct {
+	api.ListenerInfo `json:",inline"`
+	Effective        map[string]bundleEffective `json:"effective"`
+}
+
+// bundleEffective is the effective value of a listener role.
+type bundleEffective struct {
+	Addrs  []string `json:"addrs"`
+	Source string   `json:"source"` // env | file | default
 }
 
 // bundleFile is a file of the bundle with its redaction counts.
@@ -120,7 +136,12 @@ func (a *App) SupportBundle(ctx context.Context, includeClientNames bool) ([]byt
 	if err := addJSON("health.json", a.Health(ctx), true); err != nil {
 		return nil, err
 	}
-	if err := addJSON("listeners.json", a.Listeners(), true); err != nil {
+	eff, _ := config.EffectiveListeners(os.Getenv, a.cfg.DataDir)
+	bl := bundleListeners{ListenerInfo: a.Listeners(), Effective: map[string]bundleEffective{}}
+	for role, addrs := range eff.Roles {
+		bl.Effective[role] = bundleEffective{Addrs: addrs, Source: string(eff.Source[role])}
+	}
+	if err := addJSON("listeners.json", bl, true); err != nil {
 		return nil, err
 	}
 	var nc any = map[string]any{"available": false}

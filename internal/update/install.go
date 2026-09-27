@@ -61,6 +61,9 @@ type Options struct {
 	// Progress reports each step (status.json, CLI output).
 	Progress func(step, message string)
 	Log      *slog.Logger
+	// NightlyMarker is the path of the marker that allows the root helper
+	// to install nightly builds ("": NightlyMarker).
+	NightlyMarker string
 
 	Host Host
 }
@@ -129,10 +132,11 @@ type applier struct {
 	prev   string // <bindir>/picache.prev
 	asset  string // picache-linux-<arch>
 
-	version  string            // the version being installed
-	units    map[string][]byte // unit files of the release (nil: not updated)
-	replaced []string          // units replaced in this run (restored on a rollback)
-	unitNote string            // why the unit files were not updated ("" when they were or need not be)
+	version    string            // the version being installed
+	nightlyKey bool              // SHA256SUMS was verified with a nightly key
+	units      map[string][]byte // unit files of the release (nil: not updated)
+	replaced   []string          // units replaced in this run (restored on a rollback)
+	unitNote   string            // why the unit files were not updated ("" when they were or need not be)
 }
 
 func newApplier(o Options) (*applier, error) {
@@ -243,6 +247,9 @@ func (a *applier) run(ctx context.Context, res Result) (Result, error) {
 		if err := checkNewer(a.o.Current, v, a.o.AllowDowngrade); err != nil {
 			return res, err
 		}
+		if IsNightly(v.String()) != a.nightlyKey {
+			return res, fmt.Errorf("%s is signed with the key of the other channel (release or nightly)", v)
+		}
 		res.Version = v.String()
 	} else if !strings.HasPrefix(out, "picache "+a.o.Version+" ") {
 		return res, fmt.Errorf("the new binary reports %q instead of version %s", clip(firstLine(out), 80), a.o.Version)
@@ -338,8 +345,20 @@ func (a *applier) verifiedSums(ctx context.Context) (map[string][32]byte, error)
 		return nil, err
 	}
 	a.progress(StepVerify, "verifying the signature of "+SumsFile)
-	if err := verifySignature(sums, sig, trustedKeys); err != nil {
-		return nil, err
+	if a.o.Version != "" {
+		if err := verifySignature(sums, sig, keysFor(a.o.Version)); err != nil {
+			return nil, err
+		}
+		a.nightlyKey = IsNightly(a.o.Version)
+	} else {
+		// Files of a directory without a version: the release keys first;
+		// the version the binary reports must match the key (checked in run).
+		if err := verifySignature(sums, sig, trustedKeys); err != nil {
+			if verifySignature(sums, sig, nightlyKeys) != nil {
+				return nil, err
+			}
+			a.nightlyKey = true
+		}
 	}
 	return parseSums(sums)
 }

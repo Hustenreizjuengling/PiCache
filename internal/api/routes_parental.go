@@ -10,6 +10,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/dns/parental"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // registerParentalRoutes registers the parental controls endpoints
@@ -19,7 +20,7 @@ func (s *Server) registerParentalRoutes() {
 	s.route("GET /api/v1/parental/services", permRead, s.parentalServices)
 	s.route("GET /api/v1/parental/groups", permRead, s.parentalGroups)
 	s.route("GET /api/v1/parental/groups/{id}", permRead, s.parentalGroup)
-	s.route("PUT /api/v1/parental/groups/{id}", permAdmin, s.parentalUpdate)
+	s.route("PUT /api/v1/parental/groups/{id}", permAdmin, s.parentalUpdate, routeSyncSection(settings.SectionParental))
 	s.route("PUT /api/v1/parental/groups/{id}/override", permAdmin, s.parentalOverride, routeExempt)
 	s.route("DELETE /api/v1/parental/groups/{id}/override", permAdmin, s.parentalOverrideClear, routeExempt)
 	s.route("PUT /api/v1/parental/groups/{id}/pause", permAdmin, s.parentalPause, routeExempt)
@@ -105,10 +106,24 @@ func (s *Server) parentalUpdate(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
-	if _, err := s.d.Parental.Get(ctx, id); err != nil {
+	cur, err := s.d.Parental.Get(ctx, id)
+	if err != nil {
 		return err // 404 for an unknown group, before any list changes
 	}
 	want := in.Categories.Want()
+	if len(want) > 0 {
+		// The switches change the filter lists: refused while a follower
+		// syncs them (only a switch that changes).
+		s.fillCategories(&cur)
+		on := categoriesOn(cur.Categories)
+		for k, v := range want {
+			if on[k] != v {
+				if err := s.syncedSection(settings.SectionListsRules, "categories"); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	if len(want) > 0 && s.d.Filter == nil {
 		return apperr.Unavailable("the category switches need the filter lists")
 	}

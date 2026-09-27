@@ -53,6 +53,14 @@ type queryConn struct {
 	source   netip.Addr
 	clientID string
 	overload func()
+	// forwarded: the source is the effective client a trusted reverse
+	// proxy forwarded (DoH on the web listeners), not the transport
+	// source: iface: identifiers never apply.
+	forwarded bool
+	// zone: the zone the kernel reported with an IPv6 link-local transport
+	// source, i.e. the interface it arrived on (netutil.LinkLocalZone);
+	// source itself is canonical.
+	zone string
 }
 
 // stream reports whether replies travel over a stream (TCP, DoT, DoH):
@@ -66,7 +74,7 @@ func (c queryConn) encrypted() bool { return c.proto == ProtoDoT || c.proto == P
 // ServeDNS runs the request pipeline (ARCHITECTURE 7.1) for one query over
 // UDP, TCP or DoT.
 func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
-	c := queryConn{proto: h.proto, source: netutil.AddrFromNet(w.RemoteAddr())}
+	c := queryConn{proto: h.proto, source: netutil.AddrFromNet(w.RemoteAddr()), zone: netutil.PeerZone(w.RemoteAddr())}
 	if c.proto == "" {
 		c.proto = ProtoUDP
 		if _, isTCP := w.RemoteAddr().(*net.TCPAddr); isTCP {
@@ -141,9 +149,11 @@ func (s *Server) serve(ctx context.Context, w dns.ResponseWriter, req *dns.Msg, 
 	}
 	qc := newQuery(ctx, req, ip, c.proto, set)
 	qc.clientID = c.clientID
+	qc.forwarded = c.forwarded
+	qc.zone = c.zone
 	if rcode, reason := validate(req); rcode >= 0 {
 		s.refused.Add(1)
-		qc.id = s.identify(ip)
+		qc.id = s.identify(qc.peer())
 		s.reply(w, qc, s.refusal(qc, rcode, reason), stream)
 		return
 	}
@@ -168,7 +178,7 @@ func (s *Server) serve(ctx context.Context, w dns.ResponseWriter, req *dns.Msg, 
 	// that bootstrap encrypted DNS; this machine is exempt.
 	if !c.encrypted() && s.plainClosed(set) && !s.plainExempt(ip) && !plainBootstrapName(set, qc.qname) {
 		s.refused.Add(1)
-		qc.id = s.identify(ip)
+		qc.id = s.identify(qc.peer())
 		res := s.refusal(qc, dns.RcodeRefused, ReasonPlainDNSOff)
 		res.plainOff = true
 		s.reply(w, qc, res, stream)
@@ -193,7 +203,7 @@ func (s *Server) serve(ctx context.Context, w dns.ResponseWriter, req *dns.Msg, 
 	// 4. Hardening: ANY.
 	if set.DNS.RefuseANY && qc.qtype == dns.TypeANY {
 		s.refused.Add(1)
-		qc.id = s.identify(ip)
+		qc.id = s.identify(qc.peer())
 		s.reply(w, qc, s.refusal(qc, dns.RcodeNotImplemented, "ANY queries are refused"), stream)
 		return
 	}

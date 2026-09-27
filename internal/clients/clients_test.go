@@ -121,10 +121,10 @@ func TestSnapshotCIDRTieHighestID(t *testing.T) {
 		{ID: 7, Name: "newer", Identifiers: []string{"10.0.0.0/8"}, GroupIDs: []int64{1}},
 		{ID: 5, Name: "narrow", Identifiers: []string{"10.1.0.0/16"}, GroupIDs: []int64{1}},
 	})
-	if c := s.match(ip("10.2.0.1"), ""); c == nil || c.name != "newer" {
+	if c := s.match(ip("10.2.0.1"), "", ""); c == nil || c.name != "newer" {
 		t.Errorf("tie must pick the highest ID, got %+v", c)
 	}
-	if c := s.match(ip("10.1.0.1"), ""); c == nil || c.name != "narrow" {
+	if c := s.match(ip("10.1.0.1"), "", ""); c == nil || c.name != "narrow" {
 		t.Errorf("longest prefix must win, got %+v", c)
 	}
 }
