@@ -374,7 +374,7 @@ func typedRR(owner string, typ uint16, value string, ttl uint32) dns.RR {
 		return &dns.PTR{Hdr: h, Ptr: fqdn(value)}
 	case dns.TypeHTTPS, dns.TypeSVCB:
 		d, err := parseSVCBValue(value)
-		if err != nil || d.Priority < 0 || d.Priority > math.MaxUint16 || d.Port != nil && (*d.Port < 0 || *d.Port > math.MaxUint16) {
+		if err != nil || d.Priority < 0 || d.Priority > math.MaxUint16 {
 			return nil
 		}
 		svcb := dns.SVCB{Hdr: h, Priority: uint16(d.Priority), Target: target(strings.ToLower(d.Target))}
@@ -382,7 +382,11 @@ func typedRR(owner string, typ uint16, value string, ttl uint32) dns.RR {
 			svcb.Value = append(svcb.Value, &dns.SVCBAlpn{Alpn: slices.Clone(d.ALPN)})
 		}
 		if d.Port != nil {
-			svcb.Value = append(svcb.Value, &dns.SVCBPort{Port: uint16(*d.Port)})
+			port := *d.Port
+			if port < 0 || port > math.MaxUint16 {
+				return nil
+			}
+			svcb.Value = append(svcb.Value, &dns.SVCBPort{Port: uint16(port)})
 		}
 		for _, hint := range []struct {
 			list []string
