@@ -36,10 +36,10 @@ fail() {
 make_list() { sed -n "s/^$1 := //p" "$root/Makefile"; }
 binaries=$(make_list BINARIES)
 deb_arches=$(make_list DEB_ARCHES)
-[ -n "$binaries" ] && [ -n "$deb_arches" ] || {
+if [ -z "$binaries" ] || [ -z "$deb_arches" ]; then
 	echo "check-dist.sh: BINARIES or DEB_ARCHES not found in the Makefile" >&2
 	exit 2
-}
+fi
 
 (cd "$dist" && sha256sum --check --strict --quiet SHA256SUMS) || fail "SHA256SUMS does not match"
 
