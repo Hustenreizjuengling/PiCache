@@ -5,10 +5,15 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-09-30
+
 ### Fixed
 
 - Download cache: concurrent first requests for an object on a host without
   range support now always share one upstream download (#3).
+- Local DNS: an SRV, MX, SVCB or HTTPS record with a number out of range is
+  no longer answered with a wrapped value; interface index and MTU are read
+  safely on 32-bit hosts (CodeQL findings).
 
 ## [0.16.0] - 2026-09-29
 
@@ -1157,7 +1162,8 @@ First release.
   Docker installations update with
   `docker compose pull && docker compose up -d`.
 
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.13.0...v0.14.0
