@@ -95,7 +95,9 @@ const COMMANDS = [
   'nft',
   'ufw',
 ]
-const COMMAND_RE = new RegExp(`(?<![\\w.-])(?:${COMMANDS.map((c) => c.replace(/[.-]/g, '\\$&')).join('|')})(?![\\w-])`, 'g')
+/** Escapes every character with a meaning in a regular expression. */
+const escapeRegExp = (s) => s.replace(/[\\^$.*+?()[\]{}|-]/g, '\\$&')
+const COMMAND_RE = new RegExp(`(?<![\\w.-])(?:${COMMANDS.map(escapeRegExp).join('|')})(?![\\w-])`, 'g')
 // Quoted text (UI labels, translated): “…”, „…“, "…", «…», »…«, ”…”.
 const QUOTED = /“[^”\n]*”|„[^“”\n]*[“”]|"[^"\n]*"|«[^»\n]*»|»[^«\n]*«|”[^”\n]*”/g
 

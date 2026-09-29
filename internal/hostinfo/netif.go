@@ -1,6 +1,7 @@
 package hostinfo
 
 import (
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -65,12 +66,20 @@ func (s *Sampler) Interfaces() []Interface {
 			}
 			return v
 		}
+		// small is num for the int members: 0 unless it fits in 32 bits
+		// (int has 32 bits on 386 and arm).
+		small := func(a string) int {
+			if v := num(a); v >= 0 && v <= math.MaxInt32 {
+				return int(v)
+			}
+			return 0
+		}
 		flags := num("flags")
 		if flags&iffLoopback != 0 || attr("type") == "772" {
 			continue
 		}
-		in := Interface{Name: n, Index: int(num("ifindex")), MAC: macAttr(attr("address")), Up: flags&iffUp != 0,
-			OperState: attr("operstate"), MTU: int(num("mtu")),
+		in := Interface{Name: n, Index: small("ifindex"), MAC: macAttr(attr("address")), Up: flags&iffUp != 0,
+			OperState: attr("operstate"), MTU: small("mtu"),
 			RxBytes: num("statistics/rx_bytes"), TxBytes: num("statistics/tx_bytes"),
 			RxErrors: num("statistics/rx_errors"), TxErrors: num("statistics/tx_errors")}
 		if !slices.Contains(operStates, in.OperState) {

@@ -32,7 +32,7 @@ if (!entry) {
 const files = existsSync(ASSETS) ? readdirSync(ASSETS) : []
 for (const { id } of readLocales()) {
   if (id === 'en') continue
-  const re = new RegExp(`^${id.replace(/[.-]/g, '\\$&')}-[\\w-]{8}\\.js$`)
+  const re = new RegExp(`^${id.replace(/[\\^$.*+?()[\]{}|-]/g, '\\$&')}-[\\w-]{8}\\.js$`)
   const chunks = files.filter((f) => re.test(f))
   if (chunks.length !== 1) {
     problems.push(`language ${id}: expected one chunk assets/${id}-<hash>.js, found ${chunks.length}`)

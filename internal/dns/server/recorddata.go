@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"slices"
@@ -353,7 +354,7 @@ func recordData(typ, value string) any {
 func typedRR(owner string, typ uint16, value string, ttl uint32) dns.RR {
 	h := rrHeader(owner, typ, ttl)
 	f := strings.Fields(value)
-	atoi := func(s string) uint16 { n, _ := strconv.Atoi(s); return uint16(n) }
+	atoi := func(s string) uint16 { n, _ := strconv.ParseUint(s, 10, 16); return uint16(n) }
 	target := func(s string) string {
 		if s == "." {
 			return "."
@@ -373,7 +374,7 @@ func typedRR(owner string, typ uint16, value string, ttl uint32) dns.RR {
 		return &dns.PTR{Hdr: h, Ptr: fqdn(value)}
 	case dns.TypeHTTPS, dns.TypeSVCB:
 		d, err := parseSVCBValue(value)
-		if err != nil {
+		if err != nil || d.Priority < 0 || d.Priority > math.MaxUint16 || d.Port != nil && (*d.Port < 0 || *d.Port > math.MaxUint16) {
 			return nil
 		}
 		svcb := dns.SVCB{Hdr: h, Priority: uint16(d.Priority), Target: target(strings.ToLower(d.Target))}
