@@ -270,6 +270,11 @@ func (rq *request) firstAnswer(idx int64) (*http.Response, respInfo, bool, error
 	if rq.ctx.Err() != nil {
 		return nil, respInfo{}, false, errClientGone
 	}
+	if info, ok := rq.followLeader(); ok {
+		// No fill was joined or started because the object got a leader
+		// meanwhile (or no slot is free and another request leads).
+		return nil, info, false, nil
+	}
 	if !rq.useSlices {
 		resp, err := rq.upstreamGet(-1, 0)
 		if err != nil {
@@ -491,7 +496,11 @@ func (rq *request) serveAt(pos, end int64) (int64, error) {
 		return n, err
 	}
 	f, _, ok := rq.acquireFill(i)
-	if !ok {
+	switch {
+	case !ok && rq.leader() != nil:
+		rq.useSlices = false // the object got a leader: follow it
+		return 0, nil
+	case !ok:
 		// No fill slot: this slice directly, uncached.
 		return rq.openDirect(pos, end, e, true, false)
 	}
@@ -716,7 +725,9 @@ func (rq *request) consumed(i, pos, n, end int64, err error) {
 // readAhead starts fills for up to readAheadSlices uncached slices after
 // slice i (not beyond slice last of the current range). Slots are only
 // taken if free. Nothing is read ahead while nothing can be stored: the
-// data would be fetched twice.
+// data would be fetched twice. Nor while the object has a leader (its
+// upstream ignored Range, and the leader captures the following slices):
+// the request follows it from then on.
 func (rq *request) readAhead(i, last int64) {
 	s := rq.s
 	n := int64(s.settings().Cache.ReadAheadSlices)
@@ -749,7 +760,12 @@ func (rq *request) readAhead(i, last int64) {
 			return
 		}
 		f := rq.newFill(j, false)
-		if s.fills.insert(f) != nil {
+		switch old, led := rq.insertUnlessLed(f); {
+		case led:
+			s.slots.release(rq.ckey)
+			rq.useSlices = false
+			return
+		case old != nil:
 			s.slots.release(rq.ckey)
 			continue
 		}
@@ -786,7 +802,8 @@ func (rq *request) newFill(idx int64, owned bool) *fill {
 
 // acquireFill joins the in-flight fill of slice idx or starts a demand
 // fill (waiting up to 2 s for a slot, once per request). created reports a
-// new fill; ok=false means no fill is available.
+// new fill; ok=false means no fill is available: no slot is free, or the
+// object has a leader (its upstream ignored Range: the caller follows it).
 func (rq *request) acquireFill(idx int64) (f *fill, created, ok bool) {
 	s := rq.s
 	for range 2 {
@@ -806,7 +823,11 @@ func (rq *request) acquireFill(idx int64) (f *fill, created, ok bool) {
 		}
 		f := rq.newFill(idx, true)
 		f.attached = 1
-		if s.fills.insert(f) != nil {
+		switch old, led := rq.insertUnlessLed(f); {
+		case led:
+			s.slots.release(rq.ckey)
+			return nil, false, false
+		case old != nil:
 			s.slots.release(rq.ckey)
 			continue
 		}

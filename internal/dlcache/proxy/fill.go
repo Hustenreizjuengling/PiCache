@@ -242,21 +242,22 @@ func (f *fill) storeSlice() (bool, uint64) {
 // finish ends a fill that failed or got no slice. A non-slice response is
 // handed to the owning request if it still waits, else discarded; a range
 // failure handed over announces the owner as the object's leader before
-// the fill's other readers wake up (they follow it).
+// the fill leaves the table and before its other readers wake up (they
+// follow it): a request either joins the fill or finds the leader.
 func (f *fill) finish(info respInfo, err error, resp *http.Response) {
-	f.s.fills.remove(f)
 	f.mu.Lock()
-	if f.phase == phaseHeaders {
-		f.info = info
-	}
-	f.err, f.phase = err, phaseDone
-	f.timer.Stop()
 	if resp != nil && f.owned && !f.ownerGone {
 		if info.kind == kindRangeFail {
 			resp.Body = f.s.withLead(f, info, resp.Body)
 		}
 		f.handoff, resp = resp, nil
 	}
+	f.s.fills.remove(f)
+	if f.phase == phaseHeaders {
+		f.info = info
+	}
+	f.err, f.phase = err, phaseDone
+	f.timer.Stop()
 	f.cond.Broadcast()
 	f.maybeFreeLocked()
 	f.mu.Unlock()
@@ -460,16 +461,26 @@ func (t *fillTable) ofObject(store, id string) map[int64]*fill {
 
 // insert adds f unless a fill for its key exists, which is returned.
 func (t *fillTable) insert(f *fill) *fill {
+	old, _ := t.insertUnless(f, nil)
+	return old
+}
+
+// insertUnless adds f unless a fill for its key exists (old) or skip,
+// called under the table's lock, reports true (skipped).
+func (t *fillTable) insertUnless(f *fill, skip func() bool) (old *fill, skipped bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if old := t.m[f.key]; old != nil {
-		return old
+		return old, false
+	}
+	if skip != nil && skip() {
+		return nil, true
 	}
 	if t.m == nil {
 		t.m = make(map[sliceKey]*fill)
 	}
 	t.m[f.key] = f
-	return nil
+	return nil, false
 }
 
 func (t *fillTable) remove(f *fill) {

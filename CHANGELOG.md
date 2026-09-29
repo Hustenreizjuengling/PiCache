@@ -5,6 +5,11 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Download cache: concurrent first requests for an object on a host without
+  range support now always share one upstream download (#3).
+
 ## [0.16.0] - 2026-09-29
 
 ### Upgrade notes

@@ -20,8 +20,15 @@ import (
 //     a host not yet marked no-slice, whose range failure is handed to its
 //     creator, or a whole-object fill (fill.noRange) for a marked host. The
 //     creator becomes the leader when the answer is handed to it (the
-//     registration happens before the fill's readers wake up); the fill's
-//     other readers follow it.
+//     registration happens before the fill's readers wake up and before
+//     the fill leaves the fill table); the fill's other readers follow it.
+//   - Joining and following are atomic: a fill that fetches the object
+//     (demand, read-ahead or whole-object fill) is only inserted into the
+//     fill table while the object has no leader, checked under the table's
+//     lock (insertUnlessLed). A request that no longer finds the first fill
+//     therefore finds its leader, and a request that found the object
+//     recorded (its first slices stored) follows the leader instead of
+//     reading ahead with Range.
 //   - A follower waits for the leader only while it captures and will reach
 //     the follower's slice within followAhead slices; when the leader
 //     stalls (no body bytes for the stall time), stops capturing or ends,
@@ -274,13 +281,26 @@ func (rq *request) serveWithoutRanges(i, pos, e, end int64) (int64, error) {
 		if f, ok := rq.acquireWholeFill(); ok {
 			return rq.fromFill(f, i, pos, e, end)
 		}
+		if l := rq.leader(); l != nil && l != lead {
+			return 0, nil // the object got another leader: look again
+		}
 	}
 	return rq.openDirect(pos, end, 0, false, true)
 }
 
+// insertUnlessLed inserts f, a fill that fetches the request's object,
+// unless a fill for its key exists (old) or the object has a leader the
+// request follows (led). Both are decided under the fill table's lock, and
+// the first fill of an object announces its leader before it leaves the
+// table (fill.finish): a request that no longer finds that fill finds the
+// leader and does not fetch the object once more.
+func (rq *request) insertUnlessLed(f *fill) (old *fill, led bool) {
+	return rq.s.fills.insertUnless(f, func() bool { return rq.leader() != nil })
+}
+
 // acquireWholeFill joins or starts the whole-object fill of the object (a
 // fill of slice 0 without Range). ok=false if a sliced fill of slice 0 is
-// in flight or no fill slot is free.
+// in flight, no fill slot is free or the object has a leader.
 func (rq *request) acquireWholeFill() (f *fill, ok bool) {
 	s := rq.s
 	for range 2 {
@@ -306,7 +326,11 @@ func (rq *request) acquireWholeFill() (f *fill, ok bool) {
 		f := rq.newFill(0, true)
 		f.noRange, f.meta.NoSlice = true, true
 		f.attached = 1
-		if s.fills.insert(f) != nil {
+		switch old, led := rq.insertUnlessLed(f); {
+		case led:
+			s.slots.release(rq.ckey)
+			return nil, false
+		case old != nil:
 			s.slots.release(rq.ckey)
 			continue
 		}

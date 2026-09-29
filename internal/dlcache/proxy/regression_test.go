@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -259,47 +260,29 @@ func TestCollapsingWithoutRanges(t *testing.T) {
 			name = "marked"
 		}
 		t.Run(name, func(t *testing.T) {
-			// Collapsing needs every client to reach the first fetch before the
-			// leader's answer arrives. On a busy CI runner a client is sometimes
-			// too late and fetches on its own (correct, but not collapsed; see
-			// the issue "proxy: concurrent first requests do not always
-			// collapse"), so try up to three times; one run must collapse.
-			var h *harness
-			var host string
-			var data []byte
-			for attempt := 1; ; attempt++ {
-				h = newHarness(t)
-				host = testHost
-				if marked {
-					host = "noslice.example"
-					for i := range noSliceThreshold {
-						h.s.noslice.failure(host, cachestore.ObjectID(testService, "/o"+string(rune('a'+i))), time.Now())
-					}
-					if use, _ := h.s.noslice.useSlicing(host, time.Now()); use {
-						t.Fatal("host not marked")
-					}
+			h := newHarness(t)
+			host := testHost
+			if marked {
+				host = "noslice.example"
+				for i := range noSliceThreshold {
+					h.s.noslice.failure(host, cachestore.ObjectID(testService, "/o"+string(rune('a'+i))), time.Now())
 				}
-				data = testData(8 * testSlice)
-				gate := make(chan struct{})
-				h.origin.set("/whole", &originObj{data: data, noRange: true, gate: gate})
-				for i, body := range gatedClients(t, h, host, "/whole", clients, gate) {
-					if !bytes.Equal(body, data) {
-						t.Fatalf("marked=%v client %d: %d of %d bytes", marked, i, len(body), len(data))
-					}
+				if use, _ := h.s.noslice.useSlicing(host, time.Now()); use {
+					t.Fatal("host not marked")
 				}
-				got := len(h.origin.ranges("/whole"))
-				if got == 1 {
-					break
+			}
+			data := testData(8 * testSlice)
+			gate := make(chan struct{})
+			h.origin.set("/whole", &originObj{data: data, noRange: true, gate: gate})
+			for i, body := range gatedClients(t, h, host, "/whole", clients, gate) {
+				if !bytes.Equal(body, data) {
+					t.Fatalf("marked=%v client %d: %d of %d bytes", marked, i, len(body), len(data))
 				}
-				if attempt == 3 && !marked {
-					// Known race for hosts not yet marked no-slice, reproducible
-					// on CI runners: https://github.com/Hustenreizjuengling/PiCache/issues/3
-					t.Skipf("unmarked host: %d upstream downloads for %d clients (issue #3)", got, clients)
-				}
-				if attempt == 3 {
-					t.Fatalf("marked=%v: %d upstream downloads for %d clients", marked, got, clients)
-				}
-				t.Logf("marked=%v attempt %d: %d upstream downloads for %d clients; retrying", marked, attempt, got, clients)
+			}
+			// Also a client that reaches the proxy only after the leader's
+			// answer or its first stored slices follows the leader.
+			if rs := h.origin.ranges("/whole"); len(rs) != 1 {
+				t.Fatalf("marked=%v: %d upstream downloads for %d clients: %q", marked, len(rs), clients, rs)
 			}
 			h.waitSlices(testService, "/whole", 8)
 			evs := h.events(clients)
@@ -317,6 +300,83 @@ func TestCollapsingWithoutRanges(t *testing.T) {
 				t.Fatalf("marked=%v: afterwards %q", marked, resp.Header.Get(cacheStatusHeader))
 			}
 		})
+	}
+}
+
+// TestLateRequestFollowsLeader: a request that arrives after the leader of
+// an object whose upstream ignores Range recorded it (its first slices are
+// stored, the leader waits for the rest of the body) reads the stored
+// slices and follows the leader: it sends no range request (read-ahead)
+// upstream (issue #3).
+func TestLateRequestFollowsLeader(t *testing.T) {
+	h := newHarness(t)
+	data := testData(8 * testSlice)
+	gate := make(chan struct{})
+	h.origin.set("/late", &originObj{data: data, noRange: true, gate: gate})
+	bodies := make(chan []byte, 2)
+	get := func() {
+		req, _ := http.NewRequest("GET", h.proxy.URL+"/late", nil)
+		req.Host = testHost
+		resp, err := h.client.Do(req)
+		if err != nil {
+			t.Error(err)
+			bodies <- nil
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		bodies <- body
+	}
+	go get()
+	h.waitSlices(testService, "/late", 4) // the first half; the leader captures slice 4
+	go get()
+	capture := sliceKey{store: h.store.ID(), id: cachestore.ObjectID(testService, "/late"), idx: 4}
+	eventually(t, func() bool { // the late request streams the leader's capture of slice 4
+		f := h.s.fills.get(capture)
+		if f == nil {
+			return false
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.attached > 0
+	})
+	close(gate)
+	for range 2 {
+		if body := <-bodies; !bytes.Equal(body, data) {
+			t.Fatalf("%d of %d bytes", len(body), len(data))
+		}
+	}
+	if rs := h.origin.ranges("/late"); len(rs) != 1 {
+		t.Fatalf("%d upstream requests for 2 clients: %q", len(rs), rs)
+	}
+}
+
+// TestLeaderAnnouncedBeforeFillLeaves: the first fill of an object whose
+// upstream ignores Range leaves the fill table only after its creator was
+// announced as the object's leader, so a request that no longer finds the
+// fill finds the leader (issue #3). The announcement (withLead) asks
+// whether the store is full: the test looks at both tables there and at
+// every other such question during the download.
+func TestLeaderAnnouncedBeforeFillLeaves(t *testing.T) {
+	h := newHarness(t)
+	data := testData(4 * testSlice)
+	h.origin.set("/o", &originObj{data: data, noRange: true})
+	id := cachestore.ObjectID(testService, "/o")
+	first := sliceKey{store: h.store.ID(), id: id, idx: 0}
+	var calls, neither atomic.Int32
+	check := func() {
+		calls.Add(1)
+		if h.s.fills.get(first) == nil && h.s.leaders.get(objKey{store: first.store, id: id}) == nil {
+			neither.Add(1)
+		}
+	}
+	h.onFull.Store(&check)
+	if _, body := h.get("GET", testHost, "/o", nil); !bytes.Equal(body, data) {
+		t.Fatalf("%d of %d bytes", len(body), len(data))
+	}
+	h.onFull.Store(nil)
+	if calls.Load() == 0 || neither.Load() != 0 {
+		t.Fatalf("%d of %d checks found neither the first fill nor a leader", neither.Load(), calls.Load())
 	}
 }
 

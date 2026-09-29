@@ -546,6 +546,9 @@ type harness struct {
 	client *http.Client
 	ids    *fakeClients
 	full   atomic.Bool
+	// onFull, if set, runs whenever the proxy asks whether the store is
+	// full (Deps.StoreFull).
+	onFull atomic.Pointer[func()]
 	noSt   bool
 	// switched: Deps.Store returns nil (the store was switched away or
 	// went offline); may be set while requests run.
@@ -615,7 +618,12 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 			}
 			return h.store
 		},
-		StoreFull:  h.full.Load,
+		StoreFull: func() bool {
+			if fn := h.onFull.Load(); fn != nil {
+				(*fn)()
+			}
+			return h.full.Load()
+		},
 		Clients:    h.ids,
 		Logs:       h.logs,
 		ACL:        netutil.NewACLWatcher(set),
