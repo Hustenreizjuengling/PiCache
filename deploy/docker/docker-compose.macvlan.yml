@@ -1,0 +1,82 @@
+# PiCache with its own address in the LAN (Docker macvlan network).
+#
+# For hosts whose own services already use 53, 80 or 443 (a NAS web UI, a
+# reverse proxy): the container gets a LAN address of its own, so every
+# PiCache port is free, clients keep their real addresses and the DHCP
+# server and IPv6 router advertisements work (docs/DEPLOYMENT.md "Docker",
+# "macvlan").
+#
+#   1. Set parent (the host's LAN interface: ip -br link), subnet, gateway
+#      and ipv4_address below. Docker refuses to start while parent is
+#      CHANGE_ME. The address must be outside the router's DHCP pool (or
+#      reserved there): nothing else may use it.
+#   2. cd deploy/docker
+#      docker compose -f docker-compose.macvlan.yml up -d
+#      docker exec -u 65532:65532 picache /picache setup-token
+#   3. Open http://<ipv4_address>:8080/ and create the admin account.
+#
+# Limits of macvlan (DEPLOYMENT): the host itself cannot reach the
+# container's address (a NAS that uses PiCache as its own DNS server loses
+# name resolution, image pulls included) unless it keeps another DNS server
+# or gets a macvlan shim; Wi-Fi interfaces cannot be the parent, bonds and
+# VM NICs need promiscuous mode / forged transmits allowed. Set
+# dns.serverNameAddresses (DNS -> DNS settings) to ipv4_address.
+#
+# Security: the same hardening as docker-compose.yml. The container starts
+# as root only to bind the ports, then drops to 65532:65532 before touching
+# any file. Never add SYS_ADMIN or "privileged".
+name: picache
+
+services:
+  picache:
+    image: ghcr.io/hustenreizjuengling/picache:latest
+    container_name: picache
+    restart: unless-stopped
+    networks:
+      picache-lan:
+        # PiCache's own LAN address: outside the router's DHCP pool.
+        ipv4_address: 192.0.2.53
+        # ipv6_address: fd00:db8::53
+    read_only: true
+    cap_drop: [ALL]
+    # NET_RAW is used only at start, for the raw socket of IPv6 router
+    # advertisements (DNS -> DHCP); the privilege drop clears it.
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID, NET_RAW]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m
+    stop_grace_period: 30s
+    volumes:
+      - picache-data:/data
+      - picache-cache:/cache
+    # environment:
+    #   TZ: "Europe/Berlin" # time zone of scheduled backups (default UTC)
+    #   PICACHE_WEB_HOSTS: "picache.lan"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  picache-lan:
+    driver: macvlan
+    driver_opts:
+      # The host's LAN interface (not Wi-Fi), e.g. eth0 or enp3s0.
+      parent: CHANGE_ME
+    # enable_ipv6: true
+    ipam:
+      config:
+        # Your LAN and its router (192.0.2.0/24 is a documentation
+        # placeholder).
+        - subnet: 192.0.2.0/24
+          gateway: 192.0.2.1
+          # Optionally a block the router's DHCP server never hands out:
+          # ip_range: 192.0.2.48/29
+        # IPv6 (optional): a ULA prefix of your LAN; announce
+        # ipv6_address above as DNS server.
+        # - subnet: fd00:db8::/64
+
+volumes:
+  picache-data:
+  picache-cache:

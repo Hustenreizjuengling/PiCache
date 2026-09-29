@@ -5,7 +5,7 @@
   the API tokens page. Saving only sends the changed members.
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { LOCALES, t } from '$i18n/index.svelte'
   import { api, resource, type WebSettings } from '$lib/api'
   import { formatDuration } from '$lib/format'
   import { session } from '$lib/session.svelte'
@@ -74,8 +74,7 @@
 
   const languages = $derived([
     { value: '', label: t('system.web.languageBrowser') },
-    { value: 'en', label: 'English' },
-    { value: 'de', label: 'Deutsch' },
+    ...LOCALES.map((l) => ({ value: l.id, label: l.label })),
   ])
 
   function duration(n: unknown, unitMs: number): string {
@@ -94,7 +93,7 @@
   const formId = $props.id()
 </script>
 
-<Panel title={t('system.web.title')} description={t('system.web.description')}>
+<Panel id="account-set-web" title={t('system.web.title')} description={t('system.web.description')}>
   {#if form.loadError && !form.draft}
     <Notice tone="fail" title={t('system.web.loadError')}>{form.loadError.message}</Notice>
   {:else if !form.draft}

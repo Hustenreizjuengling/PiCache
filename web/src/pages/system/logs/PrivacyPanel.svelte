@@ -30,7 +30,7 @@
   }
 </script>
 
-<Panel id="privacy" title={t('system.logs.level.title')} description={t('system.logs.level.description')}>
+<Panel id="logs-set-privacy" title={t('system.logs.level.title')} description={t('system.logs.level.description')}>
   <div class="stack">
     <div class="levels" role="radiogroup" aria-label={t('system.logs.level.title')}>
       {#each LEVELS as l (l)}
@@ -46,10 +46,10 @@
 
     {#if chosen === 'custom'}
       <div class="switches stack-sm">
-        <Checkbox bind:checked={d.queryLogEnabled} label={t('system.logs.queryLog')} description={t('system.logs.queryLogHelp')} />
-        <Checkbox bind:checked={d.anonymizeClientIps} label={t('system.logs.anonymize')} description={t('system.logs.anonymizeHelp')} />
-        <Checkbox bind:checked={d.hideDomains} label={t('system.logs.hideDomains')} description={t('system.logs.hideDomainsHelp')} />
-        <Checkbox bind:checked={d.statsEnabled} label={t('system.logs.stats')} description={t('system.logs.statsHelp')} />
+        <Checkbox bind:checked={d.queryLogEnabled} id="logs-field-queryLogEnabled" label={t('system.logs.queryLog')} description={t('system.logs.queryLogHelp')} />
+        <Checkbox bind:checked={d.anonymizeClientIps} id="logs-field-anonymizeClientIps" label={t('system.logs.anonymize')} description={t('system.logs.anonymizeHelp')} />
+        <Checkbox bind:checked={d.hideDomains} id="logs-field-hideDomains" label={t('system.logs.hideDomains')} description={t('system.logs.hideDomainsHelp')} />
+        <Checkbox bind:checked={d.statsEnabled} id="logs-field-statsEnabled" label={t('system.logs.stats')} description={t('system.logs.statsHelp')} />
       </div>
     {/if}
 

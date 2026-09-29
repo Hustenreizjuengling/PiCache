@@ -40,7 +40,7 @@ func IsProtection(category string) bool { return slices.Contains(protectionCateg
 // validCategory reports whether c may be stored for a list.
 func validCategory(c string) bool { return c == CategoryOther || slices.Contains(Categories, c) }
 
-// Memory of a list entry and the entry budget of a small host.
+// Memory of a list entry and the entry budget of a host.
 const (
 	// EntryBytes approximates the memory of one entry: at most 16 bytes
 	// in the matcher and about 8 in the kept parse result (plus the peak
@@ -49,11 +49,42 @@ const (
 	// LargeEntries marks a "large" list: never recommended, never bound
 	// to a category switch.
 	LargeEntries = 1_000_000
-	// EntryBudget is the number of compiled entries above which the health
-	// check warns that a small host may run short of memory (measured,
-	// ARCHITECTURE 7.2).
-	EntryBudget = 4_000_000
+	// MaxEntryBudget is the entry budget of a host with 1 GiB of memory or
+	// more, or with an unknown amount (BudgetFor; measured, ARCHITECTURE
+	// 7.2).
+	MaxEntryBudget = 4_000_000
+	// minEntryBudget is the smallest budget BudgetFor gives, and
+	// budgetStep what it rounds down to.
+	minEntryBudget = 500_000
+	budgetStep     = 100_000
 )
+
+// BudgetFor returns the entry budget of a host that may use limit bytes of
+// memory (the cgroup v2 limit, or MemTotal rounded up by NominalMemory;
+// 0 = unknown): the number of
+// compiled entries above which the health check warns that the host may run
+// short of memory and enabling more lists needs force. MaxEntryBudget for
+// an unknown limit or 1 GiB and more, else MaxEntryBudget × limit / 1 GiB
+// rounded down to a multiple of 100 000, at least 500 000 (512 MiB:
+// 2 000 000).
+func BudgetFor(limit uint64) int {
+	const gib = 1 << 30
+	if limit == 0 || limit >= gib {
+		return MaxEntryBudget
+	}
+	n := int(MaxEntryBudget * limit / gib)
+	return max(n/budgetStep*budgetStep, minEntryBudget)
+}
+
+// NominalMemory rounds a machine's MemTotal up to the next multiple of
+// 128 MiB, its nominal size: the kernel and the GPU keep part of the
+// memory, so a 1 GB board reports about 926 MiB and a 512 MB one about
+// 430 MiB, and their budgets follow the nominal size. An exact cgroup
+// limit is used as it is.
+func NominalMemory(memTotal uint64) uint64 {
+	const step = 128 << 20
+	return (memTotal + step - 1) / step * step
+}
 
 // categoryPreset is a parental category switch (PUT
 // /parental/groups/{id} categories): it binds the catalogue lists keys

@@ -146,7 +146,7 @@ func (a *App) SupportBundle(ctx context.Context, includeClientNames bool) ([]byt
 	}
 	var nc any = map[string]any{"available": false}
 	if a.network != nil {
-		c := a.network.Check(ctx)
+		c := a.network.Check(ctx, netip.Addr{})
 		if includeClientNames {
 			nc = c
 		} else {

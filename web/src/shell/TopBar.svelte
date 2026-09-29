@@ -52,7 +52,7 @@
     ),
   )
   const langItems = $derived(
-    LOCALES.map((l): MenuItem => ({ label: l.label, checked: i18n.locale === l.id, onselect: () => setLocale(l.id) })),
+    LOCALES.map((l): MenuItem => ({ label: l.label, checked: i18n.locale === l.id, onselect: () => void setLocale(l.id) })),
   )
   const accountItems = $derived<MenuItem[]>([
     { label: t('common.nav.account'), icon: 'user', href: href('/system/account') },

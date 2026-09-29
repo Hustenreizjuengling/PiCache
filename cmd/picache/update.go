@@ -50,11 +50,35 @@ var newReleaseClient = func() *update.Client {
 	return &update.Client{HTTP: c}
 }
 
+// packaged reports whether the Debian package installed PiCache
+// (update.PackageMarker; tests replace it). Such a host is updated with
+// apt: `picache update` refuses every installing form.
+var packaged = update.PackageInstalled
+
+// debArch is the Debian architecture of this binary ("" if none is built).
+func debArch() string {
+	a, _ := update.DebianArch(runtime.GOARCH, update.BuildGOARM())
+	return a
+}
+
+// refusePackaged prints the apt steps and reports true in package mode
+// (before anything is downloaded).
+func refusePackaged(ver string) bool {
+	if !packaged() {
+		return false
+	}
+	fmt.Fprintln(os.Stderr, "picache update: "+update.PackageUpdateHint(ver, debArch()))
+	return true
+}
+
 func updateCmd(args []string) int {
 	if len(args) > 0 && args[0] == "apply-pending" {
 		if len(args) != 1 {
 			fmt.Fprintln(os.Stderr, updateUsage)
 			return 2
+		}
+		if refusePackaged("") {
+			return 1
 		}
 		return updateApplyPending()
 	}
@@ -100,14 +124,22 @@ func updateCmd(args []string) int {
 	if *check {
 		return updateCheck(ch)
 	}
+	if refusePackaged(*ver) {
+		return 1
+	}
 	return updateInstall(*ver, ch, *downgrade, *yes, *from)
 }
 
 // updateCheck prints the running and the latest version (no root needed).
+// In package mode only releases with the .deb of this architecture count,
+// and an available update names the apt steps.
 func updateCheck(channel string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), update.CheckTimeout)
 	defer cancel()
-	rel, err := newReleaseClient().Latest(ctx, channel)
+	c := newReleaseClient()
+	pkg := packaged()
+	c.Package = pkg
+	rel, err := c.Latest(ctx, channel)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "picache update:", err)
 		return 1
@@ -121,6 +153,11 @@ func updateCheck(channel string) int {
 	fmt.Println("release: " + rel.URL)
 	v, err := update.ParseVersion(rel.Version)
 	if err == nil && update.ParseRunning(version.Version).Accepts(v) {
+		if pkg {
+			fmt.Println("An update is available.")
+			fmt.Println(update.PackageUpdateHint(rel.Version, debArch()))
+			return exitUpdateAvailable
+		}
 		fmt.Println("An update is available: sudo picache update --version " + rel.Version)
 		return exitUpdateAvailable
 	}

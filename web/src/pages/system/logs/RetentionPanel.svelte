@@ -87,6 +87,12 @@
     return form.error(f.key) ?? rangeError(d[f.key], f.range)
   }
 
+  const byKey = Object.fromEntries(fields.map((f) => [f.key, f])) as Record<NumKey, NumField>
+
+  function attrs(f: NumField) {
+    return { label: t(f.label), error: fieldError(f), help: helpText(f) }
+  }
+
   function helpText(f: NumField): string {
     const v = d[f.key]
     const def = form.defaults?.[f.key]
@@ -97,13 +103,19 @@
   }
 </script>
 
-<Panel id="retention" title={t('system.logs.retention.title')} description={t('system.logs.retention.description')}>
+{#snippet input(f: NumField)}
+  <Input type="number" bind:value={d[f.key]} min={f.range.min} max={f.range.max} step={1} inputmode="numeric" />
+{/snippet}
+
+<Panel id="logs-set-retention" title={t('system.logs.retention.title')} description={t('system.logs.retention.description')}>
+  <!-- One literal id per field: the settings search jumps to them. -->
   <div class="grid">
-    {#each fields as f (f.key)}
-      <Field label={t(f.label)} error={fieldError(f)} help={helpText(f)}>
-        <Input type="number" bind:value={d[f.key]} min={f.range.min} max={f.range.max} step={1} inputmode="numeric" />
-      </Field>
-    {/each}
+    <Field id="logs-field-queryLogRetentionHours" {...attrs(byKey.queryLogRetentionHours)}>{@render input(byKey.queryLogRetentionHours)}</Field>
+    <Field id="logs-field-cacheLogRetentionHours" {...attrs(byKey.cacheLogRetentionHours)}>{@render input(byKey.cacheLogRetentionHours)}</Field>
+    <Field id="logs-field-sessionRetentionDays" {...attrs(byKey.sessionRetentionDays)}>{@render input(byKey.sessionRetentionDays)}</Field>
+    <Field id="logs-field-statsRetentionDays" {...attrs(byKey.statsRetentionDays)}>{@render input(byKey.statsRetentionDays)}</Field>
+    <Field id="logs-field-seenRetentionDays" {...attrs(byKey.seenRetentionDays)}>{@render input(byKey.seenRetentionDays)}</Field>
+    <Field id="logs-field-maxDbSizeMiB" {...attrs(byKey.maxDbSizeMiB)}>{@render input(byKey.maxDbSizeMiB)}</Field>
   </div>
 </Panel>
 

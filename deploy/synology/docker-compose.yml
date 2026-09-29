@@ -1,0 +1,74 @@
+# PiCache on a Synology NAS: Container Manager (DSM 7.2 or later) ->
+# Project -> Create, source "Create docker-compose.yml", paste this file
+# (docs/DEPLOYMENT.md "NAS").
+#
+# The container gets its own LAN address (macvlan), so DSM keeps 80/443 and
+# nothing on the NAS clashes with PiCache's port 53.
+#
+#   1. Set parent (the NAS's LAN interface: ovs_eth0 with Open vSwitch,
+#      i.e. when Virtual Machine Manager is installed, else eth0), subnet,
+#      gateway and ipv4_address below. The project does not start while
+#      parent is CHANGE_ME. The address must be outside the router's DHCP
+#      pool.
+#   2. After the start, the setup token (SSH as an administrator):
+#        sudo docker exec -u 65532:65532 picache /picache setup-token
+#      then open http://<ipv4_address>:8080/.
+#
+# The data lives in named volumes owned by the image's user 65532:65532. To
+# keep it in a shared folder instead, create the directories owned by a DSM
+# user (id <user> shows its uid:gid) and set PICACHE_RUN_AS to that pair:
+#   sudo install -d -o <uid> -g <gid> -m 0750 /volume1/docker/picache/data /volume1/docker/picache/cache
+#
+# The NAS itself cannot reach the container's address over macvlan: keep
+# another DNS server in DSM's network settings. Alternative (DNS only): host
+# networking with PICACHE_DNS_LISTEN=<NAS-IP>:53, PICACHE_CACHE_LISTEN=off,
+# PICACHE_SNI_LISTEN=off (DEPLOYMENT).
+#
+# Security: PiCache starts as root only to bind its ports, then runs as
+# PICACHE_RUN_AS (never empty or 0); never add SYS_ADMIN or privileged.
+name: picache
+
+services:
+  picache:
+    image: ghcr.io/hustenreizjuengling/picache:latest
+    container_name: picache
+    restart: unless-stopped
+    networks:
+      picache-lan:
+        # PiCache's own LAN address: outside the router's DHCP pool.
+        ipv4_address: 192.0.2.53
+    privileged: false
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID]
+    # cap_add: [NET_BIND_SERVICE, SETUID, SETGID, NET_RAW] # only for IPv6 router advertisements
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m
+    stop_grace_period: 30s
+    environment:
+      # The image's user; with host directories the DSM user's uid:gid.
+      PICACHE_RUN_AS: "65532:65532"
+      TZ: "Etc/UTC"
+    volumes:
+      - picache-data:/data
+      - picache-cache:/cache
+      # - /volume1/docker/picache/data:/data
+      # - /volume1/docker/picache/cache:/cache
+
+networks:
+  picache-lan:
+    driver: macvlan
+    driver_opts:
+      # ovs_eth0 (Open vSwitch) or eth0.
+      parent: CHANGE_ME
+    ipam:
+      config:
+        # Your LAN and its router (192.0.2.0/24 is a documentation
+        # placeholder).
+        - subnet: 192.0.2.0/24
+          gateway: 192.0.2.1
+
+volumes:
+  picache-data:
+  picache-cache:

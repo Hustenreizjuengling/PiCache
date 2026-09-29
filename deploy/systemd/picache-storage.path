@@ -1,5 +1,7 @@
 # PiCache host-apply: starts the root helper whenever the web UI queues a NAS
-# mount request. Installed only by `install.sh --with-host-apply`.
+# mount request. Installed by deploy/install.sh --with-host-apply to
+# /usr/local/lib/systemd/system (the Debian package: /usr/lib/systemd/system,
+# enabled only with /etc/picache/host-apply.enabled).
 [Unit]
 Description=Watch for PiCache NAS mount requests
 Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md

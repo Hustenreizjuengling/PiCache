@@ -40,13 +40,13 @@
 <Panel id="dns-set-blocking" title={t('dns.settings.blocking.title')} description={t('dns.settings.blocking.description')}>
   <div class="stack">
     <div class="grid">
-      <Field label={t('dns.settings.blocking.mode')} help={modeHelp} error={form.error('blockingMode')}>
+      <Field id="dns-field-blockingMode" label={t('dns.settings.blocking.mode')} help={modeHelp} error={form.error('blockingMode')}>
         <Select
           bind:value={() => d.blockingMode, (v) => (d.blockingMode = MODES.includes(v as BlockingMode) ? (v as BlockingMode) : 'null')}
           options={modeOptions}
         />
       </Field>
-      <Field label={t('dns.settings.blocking.ttl')} help={t('dns.settings.blocking.ttlHelp')} error={form.error('blockedTtl')}>
+      <Field id="dns-field-blockedTtl" label={t('dns.settings.blocking.ttl')} help={t('dns.settings.blocking.ttlHelp')} error={form.error('blockedTtl')}>
         <NumberInput bind:value={d.blockedTtl} min={0} max={86400} unit={t('dns.shared.unit.seconds')} />
       </Field>
     </div>
@@ -54,14 +54,14 @@
       <div class="grid">
         <AddressInput
           bind:value={d.blockingIpv4}
-          label={t('dns.settings.blocking.ipv4')}
+          id="dns-field-blockingIpv4" label={t('dns.settings.blocking.ipv4')}
           placeholder="192.168.1.2"
           required
           error={form.error('blockingIpv4')}
         />
         <AddressInput
           bind:value={d.blockingIpv6}
-          label={t('dns.settings.blocking.ipv6')}
+          id="dns-field-blockingIpv6" label={t('dns.settings.blocking.ipv6')}
           placeholder="fd00::2"
           optional
           help={t('dns.settings.blocking.ipv6Help')}
@@ -70,20 +70,20 @@
       </div>
       <p class="small muted">{t('dns.settings.blocking.selfHelp')}</p>
     {/if}
-    <Toggle bind:checked={d.cnameInspection} label={t('dns.settings.blocking.cname')} description={t('dns.settings.blocking.cnameHelp')} />
-    <Field label={t('dns.settings.blocking.interval')} help={t('dns.settings.blocking.intervalHelp')} error={form.error('updateIntervalHours')}>
+    <Toggle bind:checked={d.cnameInspection} id="dns-field-cnameInspection" label={t('dns.settings.blocking.cname')} description={t('dns.settings.blocking.cnameHelp')} />
+    <Field id="dns-field-updateIntervalHours" label={t('dns.settings.blocking.interval')} help={t('dns.settings.blocking.intervalHelp')} error={form.error('updateIntervalHours')}>
       <NumberInput bind:value={d.updateIntervalHours} min={0} max={720} unit={t('dns.shared.unit.hours')} />
     </Field>
 
     <h3>{t('dns.settings.special.title')}</h3>
     <Toggle
       bind:checked={d.blockMozillaCanary}
-      label={t('dns.settings.special.canary')}
+      id="dns-field-blockMozillaCanary" label={t('dns.settings.special.canary')}
       description={t('dns.settings.special.canaryHelp')}
     />
     <Toggle
       bind:checked={d.blockIcloudPrivateRelay}
-      label={t('dns.settings.special.relay')}
+      id="dns-field-blockIcloudPrivateRelay" label={t('dns.settings.special.relay')}
       description={t('dns.settings.special.relayHelp')}
     />
   </div>

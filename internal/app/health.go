@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -65,10 +66,11 @@ func (a *App) healthLoop(ctx context.Context) {
 
 // blocklistsHealth evaluates the check "blocklists" (first match): nothing
 // loaded while lists fail fails; failed or stale lists warn; more compiled
-// entries than filter.EntryBudget (the memory of a small host) warn; own
+// entries than budget (the entry budget of this host's memory,
+// filter.BudgetFor) warn; own
 // lists with entries that the TLD guard ignores warn (a list that blocks
 // whole TLDs needs the category abused-tlds).
-func blocklistsHealth(blockingEnabled bool, fs filter.Stats) (status, msg, hint string) {
+func blocklistsHealth(blockingEnabled bool, fs filter.Stats, budget int) (status, msg, hint string) {
 	switch {
 	case blockingEnabled && fs.FailedLists > 0 && fs.Entries == 0:
 		return "fail", "no blocklist could be loaded; nothing is blocked", "check the list URLs and the internet connection"
@@ -76,9 +78,9 @@ func blocklistsHealth(blockingEnabled bool, fs filter.Stats) (status, msg, hint 
 		return "warn", fmt.Sprintf("%d list(s) failed to update", fs.FailedLists), "see Filtering → Blocklists"
 	case fs.StaleLists > 0:
 		return "warn", fmt.Sprintf("%d list(s) not updated for a long time", fs.StaleLists), "see Filtering → Blocklists"
-	case fs.Entries > filter.EntryBudget:
+	case fs.Entries > budget:
 		return "warn", fmt.Sprintf("the blocklists hold %d entries; a small host may run short of memory", fs.Entries),
-			fmt.Sprintf("use fewer or smaller lists (at most about %d entries in total, Filtering → Blocklists)", filter.EntryBudget)
+			fmt.Sprintf("use fewer or smaller lists (at most about %d entries in total on this host, Filtering → Blocklists)", budget)
 	case fs.TLDGuardLists > 0:
 		return "warn", fmt.Sprintf("%d own list(s) contain entries that would block a whole top-level domain; they are ignored", fs.TLDGuardLists),
 			"if a list is meant to block whole TLDs, give it the category abused-tlds (Filtering → Blocklists)"
@@ -181,7 +183,7 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	add("upstreams", st, msg, hint)
 
 	// Filtering
-	st, msg, hint = blocklistsHealth(set.Filter.Enabled, a.filter.Stats())
+	st, msg, hint = blocklistsHealth(set.Filter.Enabled, a.filter.Stats(), a.filter.EntryBudget())
 	add("blocklists", st, msg, hint)
 
 	// DNS rate limiting
@@ -270,7 +272,7 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 
 	// Network check (the cached check of DNS → Network check)
 	if a.network != nil {
-		st, msg, hint := networkHealth(a.network.Check(ctx))
+		st, msg, hint := networkHealth(a.network.Check(ctx, netip.Addr{}))
 		add("network", st, msg, hint)
 	}
 

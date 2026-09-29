@@ -63,11 +63,13 @@ const (
 	StepDone     = "done"
 )
 
-// Update modes reported to the UI (Overview.Mode).
+// Update modes reported to the UI (Overview.Mode), in the order they are
+// decided (ARCHITECTURE 14.4): docker, package, helper, manual.
 const (
-	ModeHelper = "helper" // the root helper installs updates queued in the UI
-	ModeDocker = "docker" // pull the new image
-	ModeManual = "manual" // sudo picache update on the host
+	ModeHelper  = "helper"  // the root helper installs updates queued in the UI
+	ModeDocker  = "docker"  // pull the new image
+	ModeManual  = "manual"  // sudo picache update on the host
+	ModePackage = "package" // installed as a Debian package: apt install the next .deb
 )
 
 // Commands shown in the UI for the modes without the helper.
@@ -91,6 +93,11 @@ type CheckResult struct {
 	Latest    *Release  `json:"latest,omitempty"`
 	CheckedAt time.Time `json:"checkedAt,omitzero"`
 	Error     string    `json:"error,omitempty"`
+	// Package: the check ran in package mode, so it offered only releases
+	// with the .deb of this architecture. A stored result of the other
+	// kind is not used after the installation changed between install.sh
+	// and the Debian package (v0.16.0).
+	Package bool `json:"package,omitempty"`
 }
 
 // Status is the progress or result of an update run
@@ -132,6 +139,20 @@ type Overview struct {
 	CheckError      string    `json:"checkError,omitempty"`
 	Status          *Status   `json:"status,omitempty"`
 	Commands        Commands  `json:"commands"`
+	// Package describes the Debian package of this host (mode package
+	// only).
+	Package *PackageInfo `json:"package,omitempty"`
+}
+
+// PackageInfo is Overview.Package: how the Debian package of this host is
+// updated by hand.
+type PackageInfo struct {
+	Format string `json:"format"` // deb
+	Arch   string `json:"arch"`   // the Debian architecture (DebianArch)
+	// File and URL name the .deb of Latest on its release (only while
+	// Latest is set).
+	File string `json:"file,omitempty"`
+	URL  string `json:"url,omitempty"`
 }
 
 // NewOverview combines the running version, the last check and the state

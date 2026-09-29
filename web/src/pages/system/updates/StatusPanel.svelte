@@ -138,6 +138,10 @@
       <dd>{Number.isNaN(Date.parse(cur.date)) ? cur.date || '–' : formatDateTime(cur.date)}</dd>
       <dt>{t('system.updates.current.install')}</dt>
       <dd>{modeLabel}</dd>
+      {#if info.mode === 'package' && info.package}
+        <dt>{t('system.updates.current.arch')}</dt>
+        <dd class="mono">{info.package.arch}</dd>
+      {/if}
       <dt>{t('system.updates.current.auto')}</dt>
       <dd>
         {info.checkEnabled

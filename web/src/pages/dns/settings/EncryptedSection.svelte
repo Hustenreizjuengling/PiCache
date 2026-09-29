@@ -64,19 +64,19 @@
       <div class="stack-sm">
         <Toggle
           bind:checked={d.encrypted.dot}
-          label={t('dns.settings.encrypted.dot')}
+          id="dns-field-encrypted-dot" label={t('dns.settings.encrypted.dot')}
           description={t('dns.settings.encrypted.dotHelp')}
         />
         <Toggle
           bind:checked={d.encrypted.doh}
-          label={t('dns.settings.encrypted.doh')}
+          id="dns-field-encrypted-doh" label={t('dns.settings.encrypted.doh')}
           description={t('dns.settings.encrypted.dohHelp')}
         />
         {#if protocolError}<p class="err">{protocolError}</p>{/if}
       </div>
       <div class="name">
         <Field
-          label={t('dns.settings.encrypted.serverName')}
+          id="dns-field-encrypted-serverName" label={t('dns.settings.encrypted.serverName')}
           optional={!anyOn}
           required={anyOn}
           help={t('dns.settings.encrypted.serverNameHelp')}
@@ -116,7 +116,7 @@
         <Toggle
           bind:checked={() => d.plainDns, setPlain}
           disabled={plainLocked}
-          label={t('dns.settings.encrypted.plain.label')}
+          id="dns-field-plainDns" label={t('dns.settings.encrypted.plain.label')}
           description={t('dns.settings.encrypted.plain.help')}
         />
       </fieldset>

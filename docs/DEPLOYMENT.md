@@ -1,13 +1,16 @@
 # Deploying PiCache
 
 PiCache is one static binary (`picache`) with the web UI built in. It runs on
-Linux (amd64, arm64, armv7). There are three supported ways to deploy it:
+Linux (amd64, arm64, armv7; best effort: armv6, 386 and riscv64,
+[Download](#download)). These are the supported ways to deploy it:
 
 | Target | When | Guide |
 |---|---|---|
-| **Debian 12/13 with systemd** (bare metal, VM, Raspberry Pi) | the default; full feature set including NAS host-apply | [Bare metal and VMs](#bare-metal-and-vms-debian-1213) |
+| **Linux with systemd** (bare metal, VM, Raspberry Pi): Debian, Ubuntu, Fedora, RHEL/Alma/Rocky, Arch, openSUSE | the default; full feature set including NAS host-apply and updates from the web UI | [Bare metal and VMs](#bare-metal-and-vms), [Distributions](#distributions) |
+| **Debian package** (Debian, Ubuntu, Raspberry Pi OS) | you prefer apt; updates are installed with apt | [Debian package](#debian-package) |
 | **Proxmox VE, unprivileged LXC** | Proxmox hosts | [deploy/lxc/README.md](../deploy/lxc/README.md) |
-| **Docker** (host networking) | hosts that already run Docker | [Docker](#docker) |
+| **Docker** (host networking, or macvlan) | hosts that already run Docker | [Docker](#docker) |
+| **NAS** (Unraid, TrueNAS SCALE, Synology) | a NAS that runs containers | [NAS](#nas) |
 
 Whichever you choose:
 
@@ -17,11 +20,20 @@ Whichever you choose:
   cache over HTTP), **443/tcp** (HTTPS pass-through of the download cache),
   **8080/tcp** and **8443/tcp** (web UI over HTTP and HTTPS). See [Port conflicts](#port-conflicts).
 - Never expose these ports to the Internet (no port forwarding). PiCache
-  answers only private networks by default.
+  answers only private networks by default. Away from home, use a VPN
+  ([GUIDES.md](GUIDES.md#filtering-away-from-home)).
+- Give it **at least 512 MB of memory** (256 MB is not supported); see
+  [Small hosts](#small-hosts).
+
+After the installation: [ROUTERS.md](ROUTERS.md) (pointing your router at
+PiCache), [DEVICES.md](DEVICES.md) (setting up single devices, also shown in
+the web UI) and [GUIDES.md](GUIDES.md) (a local recursive resolver with
+Unbound, VPNs, Home Assistant, firewall rules).
 
 Contents: [Download](#download) · [Build from source](#build-from-source) ·
-[Bare metal](#bare-metal-and-vms-debian-1213) · [LXC](#proxmox-lxc) ·
-[Docker](#docker) · [First-run setup](#first-run-setup) ·
+[Bare metal](#bare-metal-and-vms) · [Distributions](#distributions) ·
+[Debian package](#debian-package) · [LXC](#proxmox-lxc) ·
+[Docker](#docker) · [NAS](#nas) · [First-run setup](#first-run-setup) ·
 [Web access and accounts](#web-access-and-accounts) ·
 [HTTPS certificates](#https-certificates) ·
 [Behind a reverse proxy](#behind-a-reverse-proxy) ·
@@ -40,22 +52,35 @@ Releases are published on
 [GitHub](https://github.com/Hustenreizjuengling/PiCache/releases). Each
 release has these files:
 
-| File | Contents |
-|---|---|
-| `picache-linux-amd64` | static binary for x86-64 |
-| `picache-linux-arm64` | static binary for 64-bit ARM (Raspberry Pi OS 64-bit, Debian arm64) |
-| `picache-linux-armv7` | static binary for 32-bit ARM (`armhf`) |
-| `picache-deploy.tar.gz` | `deploy/` (installer, systemd units, compose files, LXC guide), `LICENSE` and `THIRD_PARTY_NOTICES.md` |
-| `SHA256SUMS` | SHA-256 checksums of the four files above |
-| `SHA256SUMS.sig` | Ed25519 signature of `SHA256SUMS` made with the PiCache release key |
+| File | Contents | Support |
+|---|---|---|
+| `picache-linux-amd64` | static binary for x86-64 | supported |
+| `picache-linux-arm64` | static binary for 64-bit ARM (Raspberry Pi 3/4/5 with a 64-bit OS, Debian arm64) | supported |
+| `picache-linux-armv7` | static binary for 32-bit ARMv7 (`GOARM=7`: Raspberry Pi 2/3/4 with a 32-bit OS) | supported |
+| `picache-linux-armv6` | static binary for 32-bit ARMv6 (`GOARM=6`: Raspberry Pi Zero W and Pi 1; runs on ARMv7 too) | best effort |
+| `picache-linux-386` | static binary for 32-bit x86 (`GO386=sse2`: Pentium 4 or later; i586-class CPUs fail the installer's `version` check) | best effort |
+| `picache-linux-riscv64` | static binary for 64-bit RISC-V | best effort |
+| `picache_<version>_<arch>.deb` | Debian packages for `amd64`, `arm64`, `armhf` (the armv6 build), `i386` and `riscv64` ([Debian package](#debian-package)) | as the binary |
+| `get-picache.sh` | the one-line installer ([One-line install](#one-line-install)) | |
+| `picache-deploy.tar.gz` | `deploy/` (installer, systemd units, compose files, NAS templates, LXC guide), `LICENSE` and `THIRD_PARTY_NOTICES.md` | |
+| `SHA256SUMS` | SHA-256 checksums of every other file | |
+| `SHA256SUMS.sig` | Ed25519 signature of `SHA256SUMS` made with the PiCache release key | |
+
+*Best effort* means: built, vetted and started under emulation in CI, not
+tested on hardware. On armv6 run the download cache off and only a few
+lists ([Small hosts](#small-hosts)). A binary reports its architecture in
+`picache version`; updates keep an armv7 installation on armv7 and an armv6
+one on armv6 (the updater reads the ARM version from the running binary).
 
 Download the binary for the machine, `picache-deploy.tar.gz` and both
 checksum files of the newest release, check them, and unpack the deploy
 files:
 
 ```sh
-arch=$(dpkg --print-architecture)          # amd64, arm64 or armhf
-[ "$arch" = armhf ] && arch=armv7
+case $(uname -m) in                          # the name of this machine's build
+  x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; armv7*|armv8l) arch=armv7 ;;
+  armv6l) arch=armv6 ;; i?86) arch=386 ;; riscv64) arch=riscv64 ;;
+esac
 base=https://github.com/Hustenreizjuengling/PiCache/releases/latest/download
 for f in "picache-linux-$arch" picache-deploy.tar.gz SHA256SUMS SHA256SUMS.sig; do
   curl -fLO "$base/$f"
@@ -70,8 +95,10 @@ with OpenSSL 3 as described in
 [SECURITY.md](SECURITY.md#verifying-a-release-by-hand). Later updates check
 the signature by themselves ([Updates](#updates)).
 
-Container images for linux/amd64, linux/arm64 and linux/arm/v7 are published
-as `ghcr.io/hustenreizjuengling/picache` ([Docker](#docker)).
+Container images for linux/amd64, linux/arm64, linux/arm/v7 and linux/riscv64
+are published as `ghcr.io/hustenreizjuengling/picache` ([Docker](#docker)).
+There is no image for linux/arm/v6 or linux/386: the distroless base image
+has none (checked for 0.16.0).
 
 ## Build from source
 
@@ -81,7 +108,7 @@ You need Go 1.27 and Node.js 22 (for the web UI), plus GNU make:
 git clone https://github.com/hustenreizjuengling/picache.git
 cd picache
 make               # web UI + bin/picache for this machine
-make build-all     # bin/picache-linux-{amd64,arm64,armv7} (run `make web` first)
+make build-all     # bin/picache-linux-{386,amd64,arm64,armv6,armv7,riscv64} (run `make web` first)
 ```
 
 The binary is static (`CGO_ENABLED=0`). You can build on a workstation and
@@ -89,18 +116,20 @@ copy it to the target. Use `picache-linux-arm64` for 64-bit Raspberry Pi OS
 or Debian arm64, and `picache-linux-armv7` for 32-bit ARM systems. A binary
 built without `make web` serves a short "web UI is not built" notice instead
 of the UI; the API still works. `make dist VERSION=vX.Y.Z` builds the
-release files in `dist/`, as the release workflow does
+release files in `dist/`, the Debian packages included (it needs
+`dpkg-deb`, package `dpkg`), as the release workflow does
 ([CONTRIBUTING.md](../CONTRIBUTING.md#releases)).
 
 The Docker image can also be built from source (see [Docker](#docker)).
 
 ---
 
-## Bare metal and VMs (Debian 12/13)
+## Bare metal and VMs
 
 ### One-line install
 
-On a Debian 12/13 machine or LXC container with systemd, as root:
+On a Linux machine or LXC container with systemd 247 or later
+([Distributions](#distributions)), as root:
 
 ```sh
 curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh
@@ -129,8 +158,14 @@ sudo sh get-picache.sh
 Running it again upgrades an existing installation, unit files included.
 Installations from before 0.8.0 need that once: their update helper cannot
 replace unit files ([Updates](#updates)).
-It needs `curl` (or `wget`); `openssl` and `ca-certificates` are installed
-with apt when they are missing, as in minimal LXC templates.
+It needs `curl` (or `wget`) and OpenSSL 3 (for the Ed25519 signature);
+`openssl` and `ca-certificates` are installed with `apt-get`, `dnf` or
+`zypper` when they are missing, as in minimal LXC templates (on Arch it
+prints `pacman -S --needed openssl ca-certificates` and stops). With FIPS
+mode on, OpenSSL may refuse Ed25519: the script then says so; check the
+release on another machine ([Download](#download)) and run `install.sh` from
+`picache-deploy.tar.gz`. It refuses to run where PiCache is installed as a
+[Debian package](#debian-package) (update that with apt).
 
 ### Manual install
 
@@ -152,8 +187,11 @@ sudo sh deploy/install.sh --binary ./picache-linux-amd64 --without-dhcp
 The installer is idempotent; running it again upgrades an existing
 installation. It never downloads anything. It:
 
-1. requires systemd, warns (and continues) on systems other than Debian
-   12/13, and checks that the binary runs on this machine;
+1. requires systemd 247 or later (older versions silently ignore some of
+   the unit's protections), warns (and continues) on untested distributions
+   ([Distributions](#distributions)), refuses to run where the
+   [Debian package](#debian-package) is installed, and checks that the
+   binary runs on this machine;
 2. creates the system user and group `picache`. An existing `picache` login
    account or non-system group (ID above `SYS_UID_MAX`/`SYS_GID_MAX`, by
    default `UID_MIN`/`GID_MIN` − 1) is refused, and so is a system account
@@ -172,8 +210,11 @@ installation. It never downloads anything. It:
    mount point for a symbolic link;
 6. with `--with-host-apply`: installs `picache-storage.path` and
    `picache-storage.service`, creates `/etc/picache/credentials` (`0700 root`)
-   and `/etc/picache/host-apply.enabled`, and tells you whether `cifs-utils`
-   or `nfs-common` are missing (install them with `apt install`). With a
+   and `/etc/picache/host-apply.enabled`, and tells you whether the mount
+   programs are missing, with the command of your distribution (it never
+   runs a package manager itself: `apt install cifs-utils nfs-common`,
+   `dnf install cifs-utils nfs-utils`, `pacman -S --needed cifs-utils
+   nfs-utils` or `zypper install cifs-utils nfs-client`). With a
    custom `PICACHE_DATA_DIR` or `PICACHE_MOUNT_ROOT` in `picache.env` it writes
    drop-ins (`50-picache-paths.conf`) that point the helper units at those
    paths. In a container whose `/` is not a shared mount (privileged LXC) it
@@ -203,11 +244,15 @@ installation. It never downloads anything. It:
    removes it again. Without either it says nothing about DHCP unless
    another program uses UDP port 67 or 547 (another DHCP server on this
    host); see [DHCP server](#dhcp-server);
-9. checks ports 53, 80, 443, 8080 and 8443 for other programs. If port 53 is
+9. restores the default SELinux labels of the binary, `/etc/picache` and
+   the units while SELinux is enabled ([Distributions](#distributions));
+10. checks ports 53, 80, 443, 8080 and 8443 for other programs. If port 53 is
    taken it prints the fix and does **not** start PiCache
    ([Port 53 conflicts](#port-53-conflicts)); it never reconfigures
-   systemd-resolved or other services;
-10. enables and (re)starts `picache.service` and prints the web UI address and
+   systemd-resolved or other services. While firewalld or ufw is active it
+   prints the commands that open PiCache's ports to your LAN and never
+   changes the firewall itself ([Distributions](#distributions));
+11. enables and (re)starts `picache.service` and prints the web UI address and
    the setup-token command.
 
 `/var/lib/picache` and `/var/cache/picache` are created by systemd
@@ -250,6 +295,201 @@ UI and stored in the database. After editing the file run
 
 ---
 
+## Distributions
+
+`install.sh` and `get-picache.sh` support **Debian 12/13 (Raspberry Pi OS
+included, also the 32-bit one that calls itself `raspbian`), Ubuntu 22.04
+or later, Fedora (current releases), RHEL/AlmaLinux/Rocky Linux 9 or later,
+Arch Linux and openSUSE Tumbleweed and Leap 16**. On other distributions
+with systemd they warn ("untested") and continue. Hosts without systemd
+(OpenRC and others) are not supported: use Docker there.
+
+- **systemd 247 or later** is required: the installer reads `systemctl
+  --version` and refuses older versions ("systemd <v> is too old: PiCache's
+  sandbox needs systemd 247 or later (ProtectProc=invisible); older versions
+  silently ignore some protections"). Every supported distribution has it.
+- **No package manager is run by the installer.** Missing mount programs
+  for host-apply are named with the command of your distribution: Debian
+  and Ubuntu `apt install cifs-utils nfs-common`, Fedora and RHEL `dnf
+  install cifs-utils nfs-utils`, Arch `pacman -S --needed cifs-utils
+  nfs-utils`, openSUSE `zypper install cifs-utils nfs-client`. NFS 4 does
+  not need the `rpcbind` service the NFS client brings
+  (`systemctl mask --now rpcbind.service rpcbind.socket`).
+- **SELinux** (Fedora, RHEL): while `selinuxenabled` succeeds, the
+  installer (and the Debian package) run `restorecon -RF` on
+  `/usr/local/bin/picache`, `/etc/picache` and PiCache's units, and
+  `restorecon -F` on the unit directory; they never run `chcon`,
+  `setenforce` or `semanage permissive`. Check the labels with
+  `ls -Z /usr/local/bin/picache /usr/local/lib/systemd/system/picache.service`
+  and denials with `sudo ausearch -m avc -ts recent`. Updates keep the label:
+  the new binary is created in the binary's own directory and renamed.
+- **Firewalls**: while `firewall-cmd --state` says `running` or `ufw status`
+  says `active`, the installer prints the commands that open PiCache's
+  ports to your LAN and never runs them (like systemd-resolved: you decide).
+  firewalld gets rich rules for `<LAN-CIDR>` in the zone of the primary
+  interface (never by moving the LAN into another zone, which would change
+  the rules for ssh), ufw `ufw allow from <LAN-CIDR> to any port <p> proto
+  <udp|tcp>`. Always 53 udp+tcp and 8080/8443 tcp; the optional ports come
+  as commented lines with their condition: 80/443 (download cache), 853
+  (DoT), the port of `PICACHE_DOH_LISTEN`, 67 and 547 udp (DHCP server:
+  clients have no address yet, so these are limited to the interface), 123
+  udp (NTP server). The detected address and prefix are shown next to
+  `<LAN-CIDR>`; the ports in use are listed under **System → Network →
+  Listeners**. More in [GUIDES.md](GUIDES.md#firewall-rules).
+
+---
+
+## Debian package
+
+On Debian, Ubuntu and Raspberry Pi OS, PiCache can also be installed as a
+Debian package. It installs the same program and units as `install.sh`, but
+in the package paths, and it is updated with apt instead of the update
+helper: there is no apt repository (yet), so you download each release's
+package, verify it and install it.
+
+| Architecture (`dpkg --print-architecture`) | Package | Contains |
+|---|---|---|
+| `amd64` | `picache_<version>_amd64.deb` | `picache-linux-amd64` |
+| `arm64` | `picache_<version>_arm64.deb` | `picache-linux-arm64` |
+| `armhf` | `picache_<version>_armhf.deb` | `picache-linux-armv6` (runs on ARMv6 Raspberry Pi OS, which also says `armhf`, and on ARMv7; a little slower there than the armv7 build) |
+| `i386` | `picache_<version>_i386.deb` | `picache-linux-386` |
+| `riscv64` | `picache_<version>_riscv64.deb` | `picache-linux-riscv64` |
+
+There is no `armel` package. `<version>` is the release tag without its
+`v` (`picache_0.16.0_arm64.deb`, `picache_0.16.0-rc.1_armhf.deb`); apt shows
+the package version with `~` before a pre-release (`0.16.0~rc.1`), so it
+sorts before the release.
+
+**Install.** Download the package, `SHA256SUMS` and `SHA256SUMS.sig` and
+verify them before `apt install`: `apt install ./file` checks no signature,
+and the checksum GitHub shows for an asset is not a signature either.
+
+```sh
+v=0.16.0; arch=$(dpkg --print-architecture)
+base=https://github.com/Hustenreizjuengling/PiCache/releases/download/v$v
+for f in "picache_${v}_$arch.deb" SHA256SUMS SHA256SUMS.sig; do curl -fLO "$base/$f"; done
+curl -fLO https://raw.githubusercontent.com/Hustenreizjuengling/PiCache/main/docs/release-key.pem
+base64 -d SHA256SUMS.sig > SHA256SUMS.sig.bin
+openssl pkeyutl -verify -pubin -inkey release-key.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig.bin
+sha256sum -c --ignore-missing SHA256SUMS         # the package must say OK
+sudo apt install "./picache_${v}_$arch.deb"
+```
+
+`openssl pkeyutl` must print `Signature Verified Successfully` (it needs
+OpenSSL 3). Nightly builds are signed with `docs/nightly-key.pem` instead.
+Better than downloading the key next to the release: keep a copy of
+`docs/release-key.pem` from a checkout you trust.
+
+The package installs `/usr/bin/picache`, the units `picache.service`,
+`picache-storage.service`, `picache-storage.path` and
+`picache-shared-mounts.service` in `/usr/lib/systemd/system/` (the files of
+`deploy/systemd` with `/usr/bin/picache`), the marker
+`/usr/lib/picache/packaged` and the license texts in
+`/usr/share/doc/picache/`. It never installs the update helper. Its scripts
+never ask anything. On the first installation they:
+
+1. check that the program runs on this CPU (otherwise: "this package's
+   binary does not run on this CPU (<uname -m>): apt remove picache and use
+   get-picache.sh");
+2. create the system account `picache`, `/etc/picache` and, only if it does
+   not exist, `/etc/picache/picache.env` (the package never overwrites it:
+   it is not a conffile), the mount root `/srv/picache`, and restore the
+   SELinux labels;
+3. enable `picache.service` and start it. If port 53 is taken, PiCache is
+   installed and enabled but not started, and the fix is printed
+   ([Port 53 conflicts](#port-53-conflicts)); a failed start prints the last
+   log lines. Neither fails the installation: fix it, then run
+   `sudo systemctl start picache`. Where a local `/usr/sbin/policy-rc.d`
+   forbids starting services (Docker's Debian images have one), PiCache is
+   neither started nor, on an upgrade, restarted; start it yourself;
+4. print the firewall commands ([Distributions](#distributions)) and the web
+   UI address. The setup token is never printed (apt keeps its output in
+   `/var/log/apt/term.log`, readable by the group `adm`): get it with
+   `sudo picache setup-token`.
+
+In a chroot or an image build (systemd not running) the service is only
+enabled and starts at the next boot.
+
+**Host-apply** (NAS mounts from the web UI): the units come with the package
+but stay off. Switch them on by creating the root-owned marker, then let
+the package configure them:
+
+```sh
+sudo install -m 0644 -o root -g root /dev/null /etc/picache/host-apply.enabled
+sudo dpkg-reconfigure picache
+```
+
+`dpkg-reconfigure` runs the package's configuration again (it restarts
+PiCache and waits until it is healthy): while the marker exists it writes
+the drop-ins for a custom `PICACHE_DATA_DIR` or `PICACHE_MOUNT_ROOT`,
+enables `picache-shared-mounts.service` in a container whose `/` is not a
+shared mount (a privileged Proxmox LXC), and enables and starts
+`picache-storage.path`, as `install.sh --with-host-apply` does. Enabling
+only `picache-storage.path` by hand skips those steps. Upgrades and
+`dpkg-reconfigure` keep doing this while the marker exists; run it again
+after changing `PICACHE_DATA_DIR` or `PICACHE_MOUNT_ROOT`. Install the
+mount programs with `sudo apt install cifs-utils nfs-common` (suggested by
+the package). Remove the marker and run `sudo systemctl disable --now
+picache-storage.path` to switch host-apply off again.
+
+**Upgrade.** Download, verify and install the package of the new release
+the same way (`sudo apt install ./picache_<version>_<arch>.deb`). **System →
+Updates** shows the file name, a download link and these steps; the update
+check and the notifications work as usual, but the page has no install
+button, and `sudo picache update` refuses with the same steps ("PiCache was
+installed as a Debian package: …"). `picache update --check` works. The
+upgrade restarts PiCache and waits up to 90 seconds for `picache
+healthcheck`. A `.deb` upgrade has **no automatic rollback**: if PiCache does
+not become healthy, the package prints the steps to go back (install the
+previous package with `PICACHE_ALLOW_DOWNGRADE=1`, then, with PiCache
+stopped, put the database copy of the upgrade back as in
+[Going back to an earlier version](#going-back-to-an-earlier-version)). The
+first start of a new version makes that copy before it migrates anything
+([Database copies before an upgrade](#database-copies-before-an-upgrade)).
+
+**Downgrade.** The package refuses to replace a newer installed version
+("picache <new> is older than the installed <old>. <old> may have migrated
+the database, which <new> then refuses …"), because an older version cannot
+open a database a newer one migrated. Restore the matching copy first, then
+allow it once:
+
+```sh
+sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_0.16.0_arm64.deb
+```
+
+**Remove and purge.** `sudo apt remove picache` stops and disables PiCache
+and removes the program and the units; the configuration, the data, the
+cache, the mount root, the account and the NAS mount units stay (the list
+is printed). `sudo apt purge picache` then deletes what `install.sh
+--uninstall --purge` deletes, without asking: `/etc/picache`, the data and
+the cache in their default paths, the log directory `/var/log/picache`,
+empty mount points below `/srv/picache` and the NAS mount units, and the
+`picache` account. It never deletes a custom `PICACHE_DATA_DIR`,
+`PICACHE_CACHE_DIR` or `PICACHE_MOUNT_ROOT` (nor the default directory next
+to it), a mount point or anything with something mounted below it: those
+are kept and listed, and the purge still succeeds; so is a path setting
+that is not a plain absolute path, which it cannot check. When a kept
+directory holds files of the `picache` account, or a path could not be
+checked, the account is kept and locked instead of deleted
+("kept the account picache (uid <n>) because it owns kept files in <paths>;
+it is locked"), so that a later system account can never inherit its data;
+delete those files and then the account (`sudo userdel picache`).
+
+**Switching.** The package and `install.sh` never install over each other:
+
+- From `install.sh` to the package: `curl -fsSL
+  https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh
+  | sudo sh -s -- --uninstall` (keeps `/etc/picache` and `/var/lib/picache`),
+  then `sudo apt install ./<file>`. The package refuses while
+  `/usr/local/bin/picache` or its unit exists.
+- From the package to `install.sh`: `sudo apt remove picache` (keeps the
+  data and `/etc/picache`), then the [one-line installer](#one-line-install).
+  `install.sh` and `get-picache.sh` refuse while dpkg knows the package
+  (removed with only its configuration left is fine) or its marker exists:
+  "PiCache is installed as a Debian package here: update it with apt …".
+
+---
+
 ## Proxmox LXC
 
 Run PiCache natively in an **unprivileged Debian 12/13 container** with
@@ -273,10 +513,15 @@ docker exec -u 65532:65532 picache /picache setup-token
 Then open `http://<host LAN IP>:8080/`.
 
 `docker compose up -d` pulls the release image
-`ghcr.io/hustenreizjuengling/picache:latest` (linux/amd64, linux/arm64 and
-linux/arm/v7). To build the image from the source tree instead, run
-`docker compose up -d --build` in a clone of the repository. Such an image
-reports the version `dev` ([Updates](#updates)).
+`ghcr.io/hustenreizjuengling/picache:latest` (linux/amd64, linux/arm64,
+linux/arm/v7 and linux/riscv64; there is no image for linux/arm/v6 or
+linux/386, whose distroless base image does not exist). To build the image
+from the source tree instead, run `docker compose up -d --build` in a clone
+of the repository; that is also the way to run the newest `main` (nightly
+builds have no image: `git pull && docker compose up -d --build`). Such an
+image reports the version `dev` ([Updates](#updates)). Releases may also be
+mirrored to Docker Hub with the same tags (the maintainers' choice,
+[CONTRIBUTING.md](../CONTRIBUTING.md)); GHCR stays the reference.
 
 `deploy/docker/docker-compose.yml` uses **host networking**, so PiCache sees
 real client addresses (IPv4 and IPv6) and MAC addresses and can detect the
@@ -364,6 +609,85 @@ server.
 Docker Desktop (macOS/Windows) is not a deployment target: containers run in
 a VM, so PiCache cannot see real client addresses, and bind-mount
 propagation does not work.
+
+### macvlan: an own address in the LAN
+
+`deploy/docker/docker-compose.macvlan.yml` gives the container its own LAN
+address, for hosts whose own services already use 53, 80 or 443 (a NAS web
+UI, a reverse proxy). It keeps the hardening of `docker-compose.yml`
+(`read_only`, `cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE, SETUID,
+SETGID, NET_RAW]`, `no-new-privileges`, the `/tmp` tmpfs, named volumes).
+Set `parent` (the host's LAN interface, `ip -br link`; Docker refuses to
+start while it is `CHANGE_ME`), `subnet` and `gateway` of your LAN (the file
+uses the documentation range `192.0.2.0/24` as a placeholder) and
+`ipv4_address`, which must be **outside the router's DHCP pool** (or reserved
+there; `ip_range` can reserve a block for Docker). IPv6 (a ULA subnet) is a
+commented option.
+
+- **The host cannot reach the container's address** (a macvlan rule of the
+  kernel). A NAS that uses PiCache as its own DNS server then loses name
+  resolution, image pulls included: keep another DNS server on the host, or
+  give the host a macvlan "shim" interface (not persistent: a boot script or
+  the network configuration must recreate it):
+
+  ```sh
+  sudo ip link add picache-shim link eth0 type macvlan mode bridge
+  sudo ip addr add 192.0.2.54/32 dev picache-shim
+  sudo ip link set picache-shim up
+  sudo ip route add 192.0.2.53/32 dev picache-shim
+  ```
+- Wi-Fi interfaces cannot be the parent; bonds and the NICs of VMs need
+  promiscuous mode or "forged transmits" allowed on the hypervisor.
+- The DHCP server and IPv6 router advertisements work (the latter need
+  `NET_RAW`, which the file keeps).
+- Set **DNS settings → Local names** (`dns.serverNameAddresses`) to the
+  container's address, so this server's names answer with it.
+
+---
+
+## NAS
+
+Templates for three NAS systems give PiCache its own LAN address (like
+[macvlan](#macvlan-an-own-address-in-the-lan)), so the NAS web UI keeps 80
+and 443 and nothing on the NAS clashes with PiCache's port 53 (Unraid's
+libvirt runs dnsmasq on `192.168.122.1:53`). The fixed address must be
+outside the router's DHCP pool. Every template keeps the hardening:
+`cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE, SETUID, SETGID]` (`NET_RAW`
+only as a commented line, for IPv6 router advertisements),
+`no-new-privileges`, `read_only`, a `/tmp` tmpfs of 64 MB and
+`privileged: false`.
+
+| NAS | Template | Network | Runs as | Data |
+|---|---|---|---|---|
+| Unraid | `deploy/unraid/picache.xml` (copy to `/boot/config/plugins/dockerMan/templates-user/my-picache.xml`, then *Add Container*) | *Custom: br0* with a fixed IP | `99:100` (nobody:users) | `/mnt/cache/appdata/picache/{data,cache}` |
+| TrueNAS SCALE 24.10 or later | `deploy/truenas/docker-compose.yml` (*Apps → Discover Apps → Install via YAML*) | macvlan, `parent: CHANGE_ME` | `568:568` (the apps user) | `/mnt/CHANGE_ME/apps/picache/{data,cache}` |
+| Synology DSM 7.2 or later | `deploy/synology/docker-compose.yml` (*Container Manager → Project → Create*) | macvlan, `parent: CHANGE_ME` (`ovs_eth0` with Open vSwitch, else `eth0`) | `65532:65532` (the image's user) | named volumes |
+
+**Create the data directories first**, owned by the user PiCache runs as:
+Docker creates missing host paths owned by root, which PiCache refuses
+("chown it to …"). Never set `PICACHE_RUN_AS` to root or leave it empty as a
+"fix": PiCache must not run as root ([SECURITY.md](SECURITY.md)).
+
+```sh
+# Unraid (a pool path: SQLite's write-ahead log does not work reliably on the /mnt/user FUSE layer)
+install -d -o 99 -g 100 -m 0750 /mnt/cache/appdata/picache/data /mnt/cache/appdata/picache/cache
+# TrueNAS (replace CHANGE_ME with your pool)
+install -d -o 568 -g 568 -m 0750 /mnt/CHANGE_ME/apps/picache/data /mnt/CHANGE_ME/apps/picache/cache
+# Synology with host directories instead of the named volumes: the DSM user's ids (id <user>)
+sudo install -d -o <uid> -g <gid> -m 0750 /volume1/docker/picache/data /volume1/docker/picache/cache
+```
+
+On Unraid PiCache then runs as `nobody:users` like most Unraid containers:
+keep its appdata directory `0750` and do not share it on the network. The
+setup token: `docker exec -u <uid>:<gid> picache /picache setup-token` with
+the ids above.
+
+The NAS itself cannot reach the container's address (macvlan): keep another
+DNS server in the NAS's own network settings (on Unraid, *Settings → Docker →
+Host access to custom networks* allows it). **Alternative** (DNS only): host
+networking with `PICACHE_DNS_LISTEN=<NAS-IP>:53`, `PICACHE_CACHE_LISTEN=off`
+and `PICACHE_SNI_LISTEN=off` and the web UI on 8080/8443, if nothing on the
+NAS uses port 53 of that address.
 
 ---
 
@@ -794,6 +1118,11 @@ names the problem.
 
 ### Setting up the devices
 
+The steps for every platform (Windows, macOS, iOS, Android, Linux, ChromeOS,
+game consoles, TVs), with your server name and addresses filled in, are on
+**DNS → Network check → Set up a device**; [DEVICES.md](DEVICES.md) has the
+same text. In short:
+
 - **Android 9 or later:** Settings → Network & internet → Private DNS →
   *Private DNS provider hostname*: the server name (or
   `<ClientID>.<server name>`). Android uses port 853 only and needs a
@@ -878,12 +1207,10 @@ until DoT or DoH serves again.
 
 Encrypted DNS is served only to the networks of the DNS access list, like
 plain DNS: PiCache is not a resolver for the Internet. Devices away from
-home use a VPN: Tailscale's `100.64.0.0/10` is allowed by default, a
-WireGuard network is added to **Allowed networks** (`dns.allowedNetworks`);
-DoT or DoH with a ClientID then identifies them. Never switch on *Allow all
-networks* for this, and never forward the web ports (8080/8443) to the
-Internet. If you forward a port for networks you listed in
-`dns.allowedNetworks`, forward only 853 or the port of `PICACHE_DOH_LISTEN`.
+home use a VPN (WireGuard, Tailscale): the steps are in
+[GUIDES.md](GUIDES.md#filtering-away-from-home). Never forward 53, 853, 443,
+8080 or 8443 on the router, never switch on *Allow all networks*, and keep
+*Restrict the web UI to allowed networks* on.
 
 ### DoH through a reverse proxy
 
@@ -929,6 +1256,13 @@ show up; it is not needed for normal operation. Devices only appear after
 they talked on the network recently, and devices with hard-coded DNS servers
 or encrypted DNS never ask PiCache.
 
+**Set up a device** opens step-by-step guides for single devices (the
+address to enter, encrypted DNS, the browsers' own secure DNS), with this
+PiCache's addresses filled in ([DEVICES.md](DEVICES.md)). Admins of a fresh
+installation also see a **getting-started checklist** on the Overview: it
+uses this page's data to tell whether this machine's address is fixed, the
+router hands out PiCache, and the device you are using asks PiCache.
+
 If your router cannot hand out another DNS server at all, PiCache can do it
 itself: see [DHCP server](#dhcp-server). While PiCache serves DHCP, the page
 says so instead of showing the router's IPv4 DNS steps, and it mentions
@@ -960,12 +1294,18 @@ to the network (switching Wi-Fi off and on is enough).
 
 ### Router set-up: other routers
 
+[ROUTERS.md](ROUTERS.md) has the steps for OPNsense, pfSense, OpenWrt,
+ASUS, TP-Link, UniFi, Telekom Speedport and Vodafone Station. In short:
+
 - Set the **DNS server of the DHCP server** to PiCache's IPv4 address
   instead of the router's own address. Do not set PiCache as the router's
   upstream DNS server, that is forwarding.
 - **IPv6**: announce PiCache's ULA (an `fd…` address; give PiCache one if it
   has none) as DNS server through router advertisements (RDNSS) or DHCPv6,
-  or turn off the router's own IPv6 DNS announcement.
+  or turn off the router's own IPv6 DNS announcement. Never a global
+  address: it changes with the provider's prefix.
+- A router that cannot change the DNS server it hands out: use PiCache's own
+  [DHCP server](#dhcp-server).
 - **Docker in bridge mode**: every query appears to come from the container
   network's gateway. Use host networking (the provided compose file does).
 - **Refused sources**: if the check lists addresses whose queries PiCache
@@ -1516,9 +1856,9 @@ Things to know:
   health check *blocklists* names own lists that ignore some.
 - Memory: the category lists are large (the adult list has about 470 000
   entries). One entry needs about 24 bytes; PiCache warns in the health
-  checks when all lists together hold more than 4 000 000 entries, which
-  peaks at about 250 MiB during a list update, enough for a 1 GB host
-  running PiCache alone.
+  checks when all lists together hold more than the host's entry budget
+  (4 000 000 entries from 1 GB of memory, which peak at about 250 MiB during
+  a list update; less below, see [Small hosts](#small-hosts)).
 
 ---
 
@@ -2170,6 +2510,7 @@ signature it cannot verify with the keys built into the running binary
 |---|---|
 | Bare metal, VM, LXC | **Install update** in the web UI, or `sudo picache update` |
 | Without Internet access | `sudo picache update --from <dir>` with the release files |
+| Debian package | `sudo apt install ./picache_<version>_<arch>.deb` after verifying it ([Debian package](#debian-package)) |
 | Docker | `docker compose pull && docker compose up -d` |
 | Bare metal, VM, LXC, by hand | the installer of the new release ([below](#manual-upgrade-with-the-installer)), or `get-picache.sh` again ([One-line install](#one-line-install)) |
 
@@ -2233,8 +2574,12 @@ proxy of **System → Network** when *Release check* is switched on there.
 - The check needs the GitHub repository to be public. Otherwise it reports
   that the release information is not reachable.
 - Checks and downloads use HTTPS and need the CA certificates of the system
-  (Debian package `ca-certificates`, part of every standard installation;
+  (the package `ca-certificates`, part of every standard installation;
   minimal images may lack it). The Docker image brings its own.
+- A host with the [Debian package](#debian-package) is offered only releases
+  that have a package for its architecture (from 0.16.0 on), and **System →
+  Updates** shows the download and `apt install` steps instead of the
+  install button.
 
 ### In the web UI (bare metal, VM, LXC)
 
@@ -2286,6 +2631,8 @@ its first update after 0.8.0 even without the installer. A drop-in
 `/etc/systemd/system/picache.service.d/60-dhcp.conf` left by `--with-dhcp`
 of an older version is harmless (the same settings as the new unit) and is
 removed by the next installer run.
+
+The Debian package has no update helper: see [Debian package](#debian-package).
 
 **The update helper.** The installer sets it up by default
 (`picache-update.path`, `picache-update.service` and the marker
@@ -2424,7 +2771,21 @@ UI are ignored by 0.14 after a rollback: it binds the variables and defaults
 again (if another service took such a port meanwhile, free it or set
 `PICACHE_DNS_LISTEN`).
 
+### Upgrading to 0.16.0
+
+0.16.0 has no database migration: 0.15.0 opens its databases. Upgraded
+installations do not show the getting-started checklist (a fresh
+installation does; **System → Health & about** shows it again). The units
+change only in comments.
+
 ### Going back to an earlier version
+
+0.15.0 opens the databases of 0.16.0 unchanged. With the
+Debian package, install the older package with
+`sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_<version>_<arch>.deb`
+(0.16.0 is the first release with packages, so going below it means
+switching to `install.sh`: `sudo apt remove picache`, then the installer of
+that release).
 
 After a successful update, the previous program stays in
 `/usr/local/bin/picache.prev` until the next update. To go back to it (or to
@@ -2473,15 +2834,21 @@ previous image tag in the compose file and restore the copy from the
 
   `--purge` also stops and removes the NAS mount units of the host-apply
   helper and deletes `/etc/picache`, `/var/lib/picache` (with the database
-  backups), `/var/cache/picache` and the `picache` user. It deletes only
-  these default paths: custom `PICACHE_DATA_DIR`, `PICACHE_CACHE_DIR` or
-  `PICACHE_MOUNT_ROOT` directories and mount points (a cache volume, a
-  share) are listed instead, and it stops without deleting anything while a
-  share is still mounted below them. It asks on the terminal first;
-  `--yes` skips the question.
+  backups), `/var/cache/picache`, `/var/log/picache` and the `picache`
+  user. It deletes only these default paths: custom `PICACHE_DATA_DIR`,
+  `PICACHE_CACHE_DIR` or `PICACHE_MOUNT_ROOT` directories (and the default
+  directory next to them) and mount points (a cache volume, a share) are
+  listed instead, and it stops without deleting anything while a
+  share is still mounted below them. The `picache` account is deleted only
+  when none of the kept directories holds a file of it; otherwise it is kept
+  and locked, so that a later system account can never inherit PiCache's
+  data. It asks on the terminal first; `--yes` skips the question.
 
   In LXC you can instead destroy the container, then remove the host's NAS
   fstab entry and credentials file.
+- **Debian package:** `sudo apt remove picache` keeps the configuration and
+  the data; `sudo apt purge picache` deletes them in their default paths,
+  without asking ([Debian package](#debian-package)).
 - **Docker:** `docker compose down` keeps the volumes. `docker compose down -v`
   also deletes the configuration and the cache.
 
@@ -2533,6 +2900,25 @@ sudo mount /srv/picache/ssd && sudo chown picache:picache /srv/picache/ssd
   uses plain DNS to its bootstrap servers instead of DoH/DoT (health warning).
   Keep `systemd-timesyncd` enabled.
 - Cache hits are limited by the Pi's Gigabit port (about 110 MB/s).
+
+### Small hosts
+
+PiCache needs **at least 512 MB of memory** (256 MB is not supported). The
+blocklists are the largest part: about 24 bytes per entry, and a new set of
+lists is built next to the old one before it replaces it. PiCache therefore
+sizes its **entry budget** by the memory it may use (the container's memory
+limit, else the machine's nominal memory: what the kernel reports, rounded
+up to the next 128 MB, so a 1 GB Raspberry Pi counts as 1 GB although the
+GPU and the kernel keep part of it): 4 000 000 entries from 1 GB on, less
+below (2 000 000 with 512 MB, 1 000 000 with 256 MB, never below 500 000).
+Above the budget the health check `blocklists` warns and **Filtering →
+Blocklists** asks before it enables more lists. Measured in a 512 MB
+container: 2 000 000 entries peak at about 130 MB of memory while a new set
+of lists is built (about 70 MB without lists), well below the limit.
+
+On an **armv6** host (Pi Zero W, Pi 1) keep the download cache off (its
+network and USB ports are too slow for it to help) and use only a few
+lists (for example HaGeZi Multi NORMAL alone).
 
 ### NAS (SMB/NFS)
 

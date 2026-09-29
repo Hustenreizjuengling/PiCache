@@ -41,6 +41,10 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # The Makefile's values (internal/update/assets_test.go checks them).
+      BINARIES: picache-linux-386 picache-linux-amd64 picache-linux-arm64 picache-linux-armv6 picache-linux-armv7 picache-linux-riscv64
+      DEB_ARCHES: amd64 arm64 armhf i386 riscv64
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       skip: ${{ steps.version.outputs.skip }}
@@ -107,6 +111,12 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: make dist VERSION="$TAG" COMMIT="$(git rev-parse --short=12 HEAD)"
 
+      - name: Check the nightly assets
+        if: steps.version.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: sh scripts/check-dist.sh dist "$TAG"
+
       - name: SHA256SUMS for the signing job
         id: sums
         if: steps.version.outputs.skip != 'true'
@@ -162,6 +172,8 @@ jobs:
     env:
       TAG: ${{ needs.build.outputs.tag }}
       COMMIT: ${{ needs.build.outputs.commit }}
+      BINARIES: picache-linux-386 picache-linux-amd64 picache-linux-arm64 picache-linux-armv6 picache-linux-armv7 picache-linux-riscv64
+      DEB_ARCHES: amd64 arm64 armhf i386 riscv64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -181,7 +193,11 @@ jobs:
         env:
           SUMS: ${{ needs.build.outputs.sums }}
         run: |
-          expected="SHA256SUMS SHA256SUMS.sig get-picache.sh picache-deploy.tar.gz picache-linux-amd64 picache-linux-arm64 picache-linux-armv7"
+          expected=$(
+            printf '%s\n' SHA256SUMS SHA256SUMS.sig get-picache.sh picache-deploy.tar.gz $BINARIES
+            for a in $DEB_ARCHES; do printf 'picache_%s_%s.deb\n' "${TAG#v}" "$a"; done
+          )
+          expected=$(printf '%s\n' "$expected" | LC_ALL=C sort | paste -sd ' ')
           actual=$(find dist -mindepth 1 -printf '%P\n' | LC_ALL=C sort | paste -sd ' ')
           if [ "$actual" != "$expected" ]; then
             echo "::error::dist/ holds \"$actual\", expected \"$expected\"."
@@ -216,10 +232,12 @@ jobs:
             echo "Installed by the update helper only on hosts with /etc/picache/nightly.enabled (install.sh --nightly)."
             echo "Signed with the nightly key (docs/nightly-key.pem), never with the release key."
           } > "$RUNNER_TEMP/notes.md"
+          files=(dist/SHA256SUMS dist/SHA256SUMS.sig dist/get-picache.sh dist/picache-deploy.tar.gz)
+          for b in $BINARIES; do files+=("dist/$b"); done
+          for a in $DEB_ARCHES; do files+=("dist/picache_${TAG#v}_$a.deb"); done
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --prerelease \
             --title "PiCache $TAG (nightly)" --notes-file "$RUNNER_TEMP/notes.md" \
-            dist/picache-linux-amd64 dist/picache-linux-arm64 dist/picache-linux-armv7 \
-            dist/picache-deploy.tar.gz dist/get-picache.sh dist/SHA256SUMS dist/SHA256SUMS.sig
+            "${files[@]}"
 
       # The newest 7 nightlies stay; older ones and their tags are deleted.
       - name: Delete older nightlies

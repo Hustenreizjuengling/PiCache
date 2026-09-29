@@ -126,7 +126,7 @@
 {/snippet}
 
 <Panel
-  title={t('system.https.upload.title')}
+  id="https-set-upload" title={t('system.https.upload.title')}
   description={t('system.https.upload.description')}
   footer={status.upload.allowed && session.isAdmin ? submitFooter : undefined}
 >

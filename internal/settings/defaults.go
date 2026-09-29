@@ -96,6 +96,9 @@ func Defaults() All {
 			RestrictToNetworks: true,
 			TrustedProxies:     []string{},
 			TLSMinVersion:      TLSVersion12,
+			// A fresh installation stores false at its first start;
+			// documents without the member (before 0.16.0) read true.
+			OnboardingDone: true,
 		},
 		Updates: Updates{
 			CheckEnabled: true,

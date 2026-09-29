@@ -10,7 +10,7 @@
   import { clearQueryLog, resetStatistics } from './clear'
 </script>
 
-<Panel id="clear" title={t('system.logs.clear.title')} description={t('system.logs.clear.description')} flush>
+<Panel id="logs-set-clear" title={t('system.logs.clear.title')} description={t('system.logs.clear.description')} flush>
   <ul class="actions">
     <li>
       <div class="text">

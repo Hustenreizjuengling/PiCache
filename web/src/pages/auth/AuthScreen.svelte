@@ -14,7 +14,7 @@
   let { title, intro, children }: { title: string; intro?: string; children: Snippet } = $props()
 
   const langItems = $derived(
-    LOCALES.map((l): MenuItem => ({ label: l.label, checked: i18n.locale === l.id, onselect: () => setLocale(l.id) })),
+    LOCALES.map((l): MenuItem => ({ label: l.label, checked: i18n.locale === l.id, onselect: () => void setLocale(l.id) })),
   )
   const themeItems = $derived(
     (['system', 'light', 'dark'] as ThemeChoice[]).map(

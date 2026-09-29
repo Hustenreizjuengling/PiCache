@@ -3,8 +3,9 @@ name: Release
 # Publishes a release when a version tag is pushed (docs/ARCHITECTURE.md,
 # section 14.1; the steps are in CONTRIBUTING.md): builds the assets from the
 # tag, signs SHA256SUMS, creates the GitHub release with the CHANGELOG.md
-# section as notes and pushes the container images to GHCR. Tags with a
-# hyphen (v1.2.3-rc.1) become pre-releases.
+# section as notes and pushes the container images to GHCR (and, when the
+# secret DOCKERHUB_TOKEN is set, copies them to Docker Hub by digest). Tags
+# with a hyphen (v1.2.3-rc.1) become pre-releases.
 #
 # The signing key is only ever present in the job `sign`, which runs no
 # checked-out code, no npm or Go dependency and no action: the build job
@@ -39,6 +40,10 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # The Makefile's values (internal/update/assets_test.go checks them).
+      BINARIES: picache-linux-386 picache-linux-amd64 picache-linux-arm64 picache-linux-armv6 picache-linux-armv7 picache-linux-riscv64
+      DEB_ARCHES: amd64 arm64 armhf i386 riscv64
     outputs:
       commit: ${{ steps.info.outputs.commit }}
       date: ${{ steps.info.outputs.date }}
@@ -91,6 +96,9 @@ jobs:
           DATE: ${{ steps.info.outputs.date }}
         run: make dist VERSION="$TAG" COMMIT="$COMMIT" DATE="$DATE"
 
+      - name: Check the release assets
+        run: sh scripts/check-dist.sh dist "$TAG"
+
       # The signing job gets exactly these bytes (and nothing else).
       - name: SHA256SUMS for the signing job
         id: sums
@@ -140,6 +148,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write # create the release and upload its assets
+    env:
+      BINARIES: picache-linux-386 picache-linux-amd64 picache-linux-arm64 picache-linux-armv6 picache-linux-armv7 picache-linux-riscv64
+      DEB_ARCHES: amd64 arm64 armhf i386 riscv64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -162,7 +173,11 @@ jobs:
         env:
           SUMS: ${{ needs.build.outputs.sums }}
         run: |
-          expected="SHA256SUMS SHA256SUMS.sig get-picache.sh picache-deploy.tar.gz picache-linux-amd64 picache-linux-arm64 picache-linux-armv7"
+          expected=$(
+            printf '%s\n' SHA256SUMS SHA256SUMS.sig get-picache.sh picache-deploy.tar.gz $BINARIES
+            for a in $DEB_ARCHES; do printf 'picache_%s_%s.deb\n' "${TAG#v}" "$a"; done
+          )
+          expected=$(printf '%s\n' "$expected" | LC_ALL=C sort | paste -sd ' ')
           actual=$(find dist -mindepth 1 -printf '%P\n' | LC_ALL=C sort | paste -sd ' ')
           if [ "$actual" != "$expected" ]; then
             echo "::error::dist/ holds \"$actual\", expected \"$expected\"."
@@ -196,10 +211,12 @@ jobs:
         run: |
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          files=(dist/SHA256SUMS dist/SHA256SUMS.sig dist/get-picache.sh dist/picache-deploy.tar.gz)
+          for b in $BINARIES; do files+=("dist/$b"); done
+          for a in $DEB_ARCHES; do files+=("dist/picache_${TAG#v}_$a.deb"); done
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "PiCache $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" "${prerelease[@]}" \
-            dist/picache-linux-amd64 dist/picache-linux-arm64 dist/picache-linux-armv7 \
-            dist/picache-deploy.tar.gz dist/get-picache.sh dist/SHA256SUMS dist/SHA256SUMS.sig
+            "${files[@]}"
 
   image:
     name: Container image
@@ -209,6 +226,8 @@ jobs:
     permissions:
       contents: read
       packages: write # push to ghcr.io
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -237,14 +256,77 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The platforms of the base image gcr.io/distroless/static-debian13
+      # (checked 2026-09-27: amd64, arm64/v8, arm/v7, riscv64, ppc64le, s390x;
+      # no arm/v6 and no 386, so those two architectures get binaries and
+      # Debian packages only).
       - uses: docker/build-push-action@v7
+        id: push
         with:
           context: .
           file: deploy/docker/Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ needs.build.outputs.commit }}
             DATE=${{ needs.build.outputs.date }}
+
+  # Optional mirror on Docker Hub: the images GHCR got, copied by digest
+  # (never rebuilt) with the same tags. Keep DOCKERHUB_USERNAME and
+  # DOCKERHUB_TOKEN (a repository-scoped access token, never the password)
+  # as secrets of the environment dockerhub with a deployment rule for tags
+  # v*, and the image name (<namespace>/picache) as the repository variable
+  # DOCKERHUB_IMAGE (CONTRIBUTING.md). Without the token every step is
+  # skipped.
+  dockerhub:
+    name: Docker Hub mirror
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: dockerhub
+    permissions:
+      packages: read # read the images from ghcr.io
+    env:
+      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+      DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+      DIGEST: ${{ needs.image.outputs.digest }}
+    steps:
+      - uses: docker/setup-buildx-action@v4
+        if: env.HAS_DOCKERHUB == 'true'
+
+      - uses: docker/login-action@v4
+        if: env.HAS_DOCKERHUB == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/login-action@v4
+        if: env.HAS_DOCKERHUB == 'true'
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # X.Y.Z always; X.Y and latest only for releases without a hyphen
+      # (the tags of the image job).
+      - name: Copy the image by digest
+        if: env.HAS_DOCKERHUB == 'true'
+        run: |
+          if ! [[ "$DOCKERHUB_IMAGE" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "::error::The repository variable DOCKERHUB_IMAGE must be <namespace>/picache, not \"$DOCKERHUB_IMAGE\"."
+            exit 1
+          fi
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The image job reported no digest."
+            exit 1
+          fi
+          version=${TAG#v}
+          tags=(-t "docker.io/$DOCKERHUB_IMAGE:$version")
+          case "$version" in
+            *-*) ;;
+            *) tags+=(-t "docker.io/$DOCKERHUB_IMAGE:${version%.*}" -t "docker.io/$DOCKERHUB_IMAGE:latest") ;;
+          esac
+          docker buildx imagetools create "${tags[@]}" "ghcr.io/hustenreizjuengling/picache@$DIGEST"

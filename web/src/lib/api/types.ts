@@ -4,6 +4,8 @@
 //   - int/int64/uint64/float64 → number (64-bit counters stay far below 2^53).
 //   - time series use unix seconds.
 
+import type { Locale } from '../../i18n/locales'
+
 /** An RFC 3339 timestamp (UTC). */
 export type Timestamp = string
 
@@ -218,9 +220,21 @@ export const GROUP_LINKED_SECTIONS: readonly ('lists-and-rules' | 'local-dns' | 
 /**
  * How an update is installed (docs/ARCHITECTURE.md 14.4): `helper` = from the
  * web UI through the root helper, `docker` = pull the new image, `manual` =
- * `sudo picache update` on the host.
+ * `sudo picache update` on the host, `package` = installed as a Debian package
+ * (updated with apt; `package` describes the file).
  */
-export type UpdateMode = 'helper' | 'docker' | 'manual'
+export type UpdateMode = 'helper' | 'docker' | 'manual' | 'package'
+
+/** GET /system/update in mode `package`: the Debian package of this machine. */
+export interface UpdatePackage {
+  format: 'deb'
+  /** Debian architecture (amd64, arm64, armhf, i386, riscv64). */
+  arch: string
+  /** "picache_<version without v>_<arch>.deb" of `latest` (only while `latest` is set). */
+  file?: string
+  /** Its download URL on the release (only while `latest` is set). */
+  url?: string
+}
 
 /**
  * Which releases are offered: `stable` = releases only, `beta` = also
@@ -281,6 +295,8 @@ export interface UpdateInfo {
   status?: UpdateRun
   /** Commands shown for the modes `manual` (cli) and `docker`. */
   commands: { cli: string; docker?: string }
+  /** Mode `package` only. */
+  package?: UpdatePackage
 }
 
 /** POST /system/update/apply */
@@ -660,7 +676,10 @@ export interface WebSettings {
   allowedHosts: string[]
   redirectToHttps: boolean
   metricsEnabled: boolean
-  language: '' | 'en' | 'de'
+  /** '' = the browser's language. */
+  language: '' | Locale
+  /** The getting-started checklist on the Overview was hidden (false on a fresh installation until then). */
+  onboardingDone: boolean
   /** Addresses or CIDRs allowed to use the web UI besides the always allowed ones (at most 64). */
   allowedNetworks: string[]
   /** Only this machine, private and connected networks and the allowed networks may use the web UI. */
@@ -1651,6 +1670,31 @@ export interface NetworkSelf {
   global: string[]
   /** The DNS listener serves IPv6. */
   dnsIpv6: boolean
+  /**
+   * An IPv4 address of the interface of the IPv4 default route came from a
+   * DHCP client (a finite lifetime). Absent in mode "bridge", on systems
+   * other than Linux and without an IPv4 default route.
+   */
+  dynamic4?: boolean
+}
+
+/**
+ * The effective client of the request that asked for the network check
+ * (after the trusted-proxy rules of the web access list).
+ */
+export interface NetworkRequester {
+  address: string
+  /** Loopback or one of this machine's addresses. */
+  local: boolean
+  /** From the device of the network whose addresses contain it. */
+  mac?: string
+  name?: string
+  clientId?: number
+  /** Its DNS queries of the last 24 hours (absent while privacy is set). */
+  queries24h?: number
+  lastQuery?: Timestamp
+  /** logs.anonymizeClientIps is on: no counts. */
+  privacy?: boolean
 }
 
 export interface NetworkScanState {
@@ -1674,6 +1718,8 @@ export interface NetworkCheck {
   scan: NetworkScanState
   /** PiCache's own DHCP server (DNS → DHCP). */
   dhcp?: { serving: boolean; interface?: string; routerAdvertisements: boolean }
+  /** The device that asked (computed for every request, never cached). */
+  requester?: NetworkRequester
 }
 
 /** Operational state of an interface (sysfs operstate). */

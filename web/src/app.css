@@ -60,6 +60,7 @@
 
   /* the only shadow: floating layers */
   --shadow-float: 0 8px 24px rgb(0 0 0 / 0.18);
+  --highlight: #fcefc0; /* search matches and the target of a settings search hit */
 
   /* motion (disabled for prefers-reduced-motion) */
   --dur-fast: 120ms;
@@ -96,6 +97,7 @@
     --brown: #c89b72;
     --stripe: #12161c;
     --shadow-float: 0 8px 24px rgb(0 0 0 / 0.45);
+    --highlight: #4a3d12;
   }
 }
 
@@ -121,6 +123,7 @@
   --brown: #c89b72;
   --stripe: #12161c;
   --shadow-float: 0 8px 24px rgb(0 0 0 / 0.45);
+  --highlight: #4a3d12;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -293,6 +296,29 @@ hr {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* The target of a settings search hit (?jump=, shell/Shell.svelte): fades over 2 s. */
+.jump-highlight {
+  border-radius: var(--r-control);
+  animation: jump-highlight 2s ease-out;
+}
+@keyframes jump-highlight {
+  from {
+    background-color: var(--highlight);
+    box-shadow: 0 0 0 6px var(--highlight);
+  }
+  to {
+    background-color: var(--surface);
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No fading: a steady outline until the class is removed. */
+  .jump-highlight {
+    outline: 3px solid var(--highlight);
+    outline-offset: 3px;
+  }
 }
 
 .stack {

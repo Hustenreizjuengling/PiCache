@@ -317,7 +317,7 @@ var syncRules = func() map[string]bool {
 		"logs.ignoredDomains", "logs.maxDbSizeMiB", "logs.privacyLevel", "logs.queryLogEnabled",
 		"logs.queryLogRetentionHours", "logs.sessionRetentionDays", "logs.statsEnabled",
 		"logs.statsOnlyAddressQueries", "logs.statsRetentionDays", "logs.seenRetentionDays",
-		"web.allowedHosts", "web.allowedNetworks", "web.language", "web.metricsEnabled", "web.redirectToHttps",
+		"web.allowedHosts", "web.allowedNetworks", "web.language", "web.metricsEnabled", "web.onboardingDone", "web.redirectToHttps",
 		"web.restrictToNetworks", "web.sessionIdleMinutes", "web.sessionMaxHours", "web.tlsMinVersion",
 		"web.trustedProxies",
 		"updates.checkEnabled", "updates.includePrereleases", "updates.channel",

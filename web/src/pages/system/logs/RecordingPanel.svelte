@@ -23,10 +23,10 @@
   const flushText = $derived(formatDuration(Math.max(RANGES.flushSeconds.min, d.flushSeconds || 0) * 1000))
 </script>
 
-<Panel id="recording" title={t('system.logs.recording.title')} description={t('system.logs.recording.description')}>
+<Panel id="logs-set-recording" title={t('system.logs.recording.title')} description={t('system.logs.recording.description')}>
   <div class="stack">
     <Field
-      label={t('system.logs.ignored')}
+      id="logs-field-ignoredDomains" label={t('system.logs.ignored')}
       optional
       help={t('system.logs.ignoredHelp', { count: formatNumber(d.ignoredDomains.length), max: MAX_IGNORED_DOMAINS })}
       error={lineError(form.saveError, 'logs.ignoredDomains') ??
@@ -37,13 +37,13 @@
 
     <Checkbox
       bind:checked={d.statsOnlyAddressQueries}
-      label={t('system.logs.addressOnly')}
+      id="logs-field-statsOnlyAddressQueries" label={t('system.logs.addressOnly')}
       description={t('system.logs.addressOnlyHelp')}
     />
 
     <div class="flush">
       <Field
-        label={t('system.logs.flush')}
+        id="logs-field-flushSeconds" label={t('system.logs.flush')}
         help={t('system.logs.flushHelp', { value: flushText })}
         error={form.error('flushSeconds')}
       >

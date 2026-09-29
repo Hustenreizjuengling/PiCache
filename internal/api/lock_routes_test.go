@@ -51,7 +51,10 @@ var expectedClasses = func() map[string]routeClass {
 		"POST /api/v1/auth/setup", "POST /api/v1/auth/login", "POST /api/v1/auth/logout", "POST /api/v1/dns/lookup",
 		"POST /api/v1/filter/explain", "POST /api/v1/auth/password", "DELETE /api/v1/auth/sessions/{id}",
 		"POST /api/v1/auth/totp/begin", "POST /api/v1/auth/totp/confirm", "POST /api/v1/auth/totp/disable",
-		"POST /api/v1/tokens", "DELETE /api/v1/tokens/{id}")
+		"POST /api/v1/tokens", "DELETE /api/v1/tokens/{id}",
+		// 0.16.0: the OpenAPI description (a GET route: never locked, checked
+		// to be registered).
+		"GET /api/v1/openapi.json")
 	add(locked,
 		"PUT /api/v1/settings", "PATCH /api/v1/settings/{section}",
 		"POST /api/v1/dns/records", "PUT /api/v1/dns/records/{id}", "DELETE /api/v1/dns/records/{id}",

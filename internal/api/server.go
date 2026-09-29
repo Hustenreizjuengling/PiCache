@@ -259,6 +259,7 @@ func New(d Deps) *Server {
 	s.registerSyncRoutes()
 	s.registerListenerRoutes()
 	s.registerPProfRoutes()
+	s.registerOpenAPIRoutes()
 
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, s.log, errNotFoundRoute)

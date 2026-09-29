@@ -65,6 +65,7 @@ func TestSnippetsSMB(t *testing.T) {
 	if len(s.Notes) == 0 {
 		t.Error("notes missing")
 	}
+	mustContain(t, "notes", strings.Join(s.Notes, "\n"), "On the machine that mounts the share, install the SMB client (package cifs-utils).")
 
 	// Host-apply, SMB3 encryption, Docker (host ids in fstab), guest access.
 	tg.Mode, tg.Path, tg.SMBSeal, tg.Username, tg.Domain, tg.HasPassword = ModeHostApply, "/srv/picache/"+testID, true, "", "", false
@@ -93,6 +94,11 @@ func TestSnippetsNFS(t *testing.T) {
 		t.Error("NFS has no credentials file")
 	}
 	mustContain(t, "systemd", s.SystemdMount, "Type=nfs4\n", "What=192.168.1.10:/volume1/picache\n")
+	notes := strings.Join(s.Notes, "\n")
+	mustContain(t, "notes", notes, "install the NFS client (Debian/Ubuntu: nfs-common; Fedora/RHEL/Arch: nfs-utils; openSUSE: nfs-client).")
+	if strings.Contains(notes, "apt install") {
+		t.Error("the notes name one distribution's package manager")
+	}
 
 	tg.Server, tg.NFSVersion, tg.NFSNConnect = "2001:db8::10", "3", 2
 	s = renderSnippets(tg, Capabilities{}, cfg)

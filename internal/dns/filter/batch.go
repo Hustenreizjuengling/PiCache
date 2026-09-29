@@ -128,10 +128,10 @@ func (e *Engine) BatchIPRules(ctx context.Context, action string, ids []int64) (
 
 // errBudget is the conflict of enabling lists beyond the entry budget
 // (field force: resend with force to enable them anyway).
-func errBudget(adds, total int) error {
+func errBudget(adds, total, budget int) error {
 	return &apperr.Error{Kind: apperr.KindConflict, Field: "force", Message: fmt.Sprintf(
 		"enabling these lists adds about %d entries; the blocklists would hold about %d, more than %d; a small host may run short of memory",
-		adds, total, EntryBudget)}
+		adds, total, budget)}
 }
 
 // listEstimate is the entry estimate of a list that is about to be
@@ -150,7 +150,7 @@ func listEstimate(rt *listRT) int {
 // BatchLists deletes, enables or disables the lists ids in one transaction
 // (all or nothing). Enabling is refused (apperr.Conflict with field force)
 // when the compiled entries plus the estimates of the lists being enabled
-// exceed EntryBudget, unless force. Deleted lists lose their cached copies
+// exceed the entry budget (EntryBudget), unless force. Deleted lists lose their cached copies
 // after the commit; the matcher is recompiled once.
 func (e *Engine) BatchLists(ctx context.Context, action string, ids []int64, force bool) (int, error) {
 	e.listMu.Lock()
@@ -164,8 +164,8 @@ func (e *Engine) BatchLists(ctx context.Context, action string, ids []int64, for
 			}
 		}
 		e.mu.Unlock()
-		if total := e.snap.Load().lists.entries + adds; adds > 0 && total > EntryBudget {
-			return 0, errBudget(adds, total)
+		if total, budget := e.snap.Load().lists.entries+adds, e.EntryBudget(); adds > 0 && total > budget {
+			return 0, errBudget(adds, total, budget)
 		}
 	}
 	var changed int

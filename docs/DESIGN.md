@@ -35,9 +35,10 @@ Neutrals are cool and slightly blue-grey, like a server rack in daylight, never 
 --focus:     #1f5fbf             --focus:     #8ab8ff
 --danger:    #b42318             --danger:    #ff8b7e
 --warning:   #9a6700             --warning:   #e3b341
+--highlight: #fcefc0             --highlight: #4a3d12
 ```
 
-Status colours for health (online/degraded/offline) reuse green/warning/danger. Pair colours are only for traffic meaning, never for decoration.
+Status colours for health (online/degraded/offline) reuse green/warning/danger. Pair colours are only for traffic meaning, never for decoration. `--highlight` (0.16.0) marks the matched part of a search hit and the target of a settings search hit (`.jump-highlight`: the background fades from it over 2 s; under `prefers-reduced-motion` a static outline instead, no animation).
 
 **Type.** One family: **Atkinson Hyperlegible Next** (variable, OFL, self-hosted woff2, latin + latin-ext subset). It was designed by the Braille Institute for maximum character distinction, which matters here because the UI is mostly domain names, IPs and hashes, where `0/O`, `1/l/I` and `rn/m` confusion costs time. **Atkinson Hyperlegible Mono** is used only for machine values: domains, IPs, MACs, paths, hashes and rule text. It is never used for labels or headings. All numbers use `font-variant-numeric: tabular-nums`.
 
@@ -75,11 +76,14 @@ Scale (1.25 ratio, 15 px base, since dense admin UIs read better slightly smalle
 
 - Sidebar 232 px; it collapses to a top drawer below 900 px. Content is left-aligned. Tables scroll horizontally inside their panel on small screens and never scroll the page sideways.
 - **Overview** is not a card grid. It reads as a single "status sentence" row followed by two broad bands, one per product half:
+  - Between `HealthBanner` and the status line, only for admins (`session.isAdmin`) while `web.onboardingDone` is false (a fresh installation): the **getting-started checklist**, one `Panel` with four steps (upstreams and lists, a fixed address, the router, a test from a device), each `done`, `open` or `unknown` with its links, and "Hide checklist". It stays a panel in the flow, never a card grid, and never changes the host or the network by itself.
   - Row 1: a plain-language status line, e.g. "DNS is answering 42 queries/min · 18 % blocked · cache served 38 GB today, 91 % from disk". Each number links to the matching filtered page.
   - Band "DNS": the traffic chart (blue/orange stacked), then top blocked domains and top clients side by side, and "Blocked by purpose" as a compact ranked bar list (orange bars, safe search striped blue).
   - Band "Cache": the throughput chart (green hit vs brown WAN), live downloads, and storage (used/free with a "full in ~N days" estimate).
 - **Tables** are the core component: 36 px rows (32 px compact), sticky header, right-aligned numbers, mono cells for machine values, status chips in pair colours, row click opens a side panel (not a new page) with details and actions.
 - **Forms**: labels above fields; help text below in `--text-2`; validation messages from the API `field` path shown next to the field; destructive actions need an explicit confirm dialog that names the object ("Delete list HaGeZi Multi?").
+
+- **Header search** is an ARIA combobox (`role="combobox"`, `aria-expanded`, `aria-controls` pointing at a `listbox`, `aria-activedescendant`; ↑/↓ move, Enter opens, Esc closes, Tab leaves): the settings hits of a static index first (matched in the browser, accents and case folded, at most 8), then one fixed option ("Open client <ip>" or "Search the query log for <q>"). Matches are highlighted by splitting the text into parts, never with `{@html}`. Below 640 px the list is as wide as the header and never widens the page. A hit opens its page and scrolls to the section or option (`?jump=`), focuses it and marks it with `--highlight`.
 
 ## Components (web/src/lib/ui)
 
@@ -93,7 +97,8 @@ Icons: a small inline SVG set (stroke 1.5 px, 20 px grid) bundled in `web/src/li
 - Buttons say what happens: "Add blocklist", "Pause blocking for 5 minutes", "Purge from cache". The toast repeats the verb: "Blocklist added".
 - Empty states direct: "No downloads yet. Point a client's DNS at PiCache and start a Steam download."
 - Errors say what happened and how to fix it, e.g. "The NAS share is not mounted. PiCache is serving downloads uncached. Mount /srv/picache/nas or check the storage settings."
-- German and English: all strings live in `web/src/i18n/{en,de}/*.ts`. German uses "du" (informal, typical for home-lab tools) and sentence case.
+- Languages: all strings live in `web/src/i18n/<id>/*.ts` (`en`, `de`). **Every new string is added in every language** in the same change; `npm run check` refuses missing keys, plural forms, placeholders and changed commands. German uses "du" (informal, typical for home-lab tools); the glossary and the rules are in [TRANSLATING.md](TRANSLATING.md). Sentence case in every language.
+- Language pickers (top bar, sign-in page) list the languages by their own names; Web settings offers "Browser language" plus every language.
 
 ## Accessibility and quality floor
 

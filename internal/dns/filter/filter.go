@@ -346,9 +346,24 @@ type Engine struct {
 	compileCh chan struct{} // cap 1: coalesced recompile request
 	wake      chan struct{} // cap 1: list work is pending
 	busy      atomic.Int32  // running downloads, parses and compiles
+	budget    atomic.Int64  // the entry budget (SetEntryBudget; 0 = MaxEntryBudget)
 	inflight  sync.WaitGroup
 	base      context.Context // cancelled when Start returns
 	cancel    context.CancelFunc
+}
+
+// SetEntryBudget sets the entry budget of this host (BudgetFor of its
+// memory; the app sets it before Start). n <= 0 means MaxEntryBudget.
+func (e *Engine) SetEntryBudget(n int) { e.budget.Store(int64(max(n, 0))) }
+
+// EntryBudget returns the entry budget of this host: the number of compiled
+// entries above which enabling lists needs force and the health check
+// warns.
+func (e *Engine) EntryBudget() int {
+	if n := e.budget.Load(); n > 0 {
+		return int(n)
+	}
+	return MaxEntryBudget
 }
 
 // New creates the engine. fetch is the HTTP client for list downloads

@@ -5,7 +5,7 @@
   running: version and build (with the update channel), uptime, listeners
   (including failed ones; changed under System › Network), directories,
   the master key source, memory, the support bundle (admins) and links to
-  the documentation.
+  the documentation, with "Show the getting-started checklist" (admins).
   Query: ?section=warnings|host|databases|thresholds|support (scrolls there), ?warnings=open
 -->
 <script lang="ts">
@@ -18,7 +18,7 @@
   import { session } from '$lib/session.svelte'
   import { settingsForm } from '$lib/settings.svelte'
   import { appStatus } from '$lib/status.svelte'
-  import { Icon, KeyValue, Notice, Panel, Skeleton, type KeyValueItem } from '$lib/ui'
+  import { Button, Icon, KeyValue, Notice, Panel, Skeleton, toast, type KeyValueItem } from '$lib/ui'
   import RestartButton from './RestartButton.svelte'
   import ChecksPanel from './health/ChecksPanel.svelte'
   import DatabasesPanel from './health/DatabasesPanel.svelte'
@@ -108,6 +108,21 @@
   })
 
   const keyKind = $derived(info.data ? masterKeyKind(info.data.masterKeySource) : undefined)
+
+  // The getting-started checklist of the Overview comes back (web.onboardingDone false).
+  let showingStart = $state(false)
+
+  async function showStart() {
+    showingStart = true
+    try {
+      await api.settings.patch('web', { onboardingDone: false })
+      router.navigate('/')
+    } catch (err) {
+      toast.error(err)
+    } finally {
+      showingStart = false
+    }
+  }
 </script>
 
 <div class="page">
@@ -181,6 +196,11 @@
   {/if}
 
   <Panel title={t('system.health.docs.title')} description={t('system.health.docs.description')}>
+    {#snippet actions()}
+      {#if session.isAdmin}
+        <Button size="sm" icon="list" loading={showingStart} onclick={showStart}>{t('system.health.start.show')}</Button>
+      {/if}
+    {/snippet}
     <ul class="docs">
       {#each DOCS as d (d.url)}
         <li>

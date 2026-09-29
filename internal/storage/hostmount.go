@@ -339,7 +339,8 @@ func (h *helper) prepareMountpoint(where string, uid, gid int) error {
 func mountRootError(root string, err error) error {
 	if errors.Is(err, syscall.EROFS) {
 		return fmt.Errorf("%w. The root helper may only write below the mount root of its unit (/srv/picache): "+
-			"after changing PICACHE_MOUNT_ROOT (%s) re-run install.sh --with-host-apply, which adds it with a drop-in", err, root)
+			"after changing PICACHE_MOUNT_ROOT (%s) re-run install.sh --with-host-apply (Debian package: dpkg-reconfigure picache), "+
+			"which adds it with a drop-in", err, root)
 	}
 	return err
 }
@@ -406,20 +407,29 @@ func (h *helper) password(ctx context.Context, t Target, stdin []byte) ([]byte, 
 
 // checkMountHelper refuses a share whose mount program is missing. Without
 // it the kernel mounts on its own and fails with misleading messages (NFS:
-// "Server address does not match proto= option").
+// "Server address does not match proto= option"). The messages name the
+// package of every supported distribution family (smbClientHint,
+// nfsClientHint).
 func (h *helper) checkMountHelper(kind Kind) error {
 	if h.env.hasHelper == nil {
 		return nil
 	}
 	switch {
 	case kind == KindSMB && !h.env.hasHelper("mount.cifs"):
-		return errors.New("mount.cifs is not installed on this machine; install it with: sudo apt install cifs-utils")
+		return errors.New("mount.cifs is not installed on this machine; " + smbClientHint)
 	case kind == KindNFS && !h.env.hasHelper("mount.nfs"):
-		return errors.New("mount.nfs is not installed on this machine; install it with: sudo apt install nfs-common " +
-			"(NFS 4 does not need the rpcbind service that comes with it: sudo systemctl mask --now rpcbind.service rpcbind.socket)")
+		return errors.New("mount.nfs is not installed on this machine; " + nfsClientHint +
+			" (NFS 4 does not need the rpcbind service that comes with it: sudo systemctl mask --now rpcbind.service rpcbind.socket)")
 	}
 	return nil
 }
+
+// The packages of the mount programs per distribution family (Debian and
+// Ubuntu, Fedora and RHEL, Arch, openSUSE; docs/DEPLOYMENT.md).
+const (
+	smbClientHint = "install the SMB client (package cifs-utils)"
+	nfsClientHint = "install the NFS client (Debian/Ubuntu: nfs-common; Fedora/RHEL/Arch: nfs-utils; openSUSE: nfs-client)"
+)
 
 // credentialsFile renders the mount.cifs credentials file (the caller clears it).
 func credentialsFile(t Target, pw []byte) []byte {

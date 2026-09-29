@@ -80,7 +80,7 @@
   $effect(() => {
     const s = section
     if (!form.draft || !SECTIONS.includes(s)) return
-    untrack(() => void tick().then(() => document.getElementById(s)?.scrollIntoView({ block: 'start' })))
+    untrack(() => void tick().then(() => document.getElementById(`logs-set-${s}`)?.scrollIntoView({ block: 'start' })))
   })
 </script>
 

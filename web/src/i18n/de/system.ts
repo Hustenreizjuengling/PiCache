@@ -227,6 +227,8 @@ const de: Messages<typeof en> = {
   'tokens.description':
     'Für Skripte, Monitoring und automatische Sicherungen (Authorization: Bearer …). Tokens können nie Tokens, Konten, Passwörter, Zwei-Faktor-Authentifizierung, Sitzungen oder HTTPS-Zertifikate verwalten und keine Sicherungen wiederherstellen.',
   'tokens.create': 'Token erstellen',
+  'tokens.apiDocs': 'docs/API.md beschreibt jede Route mit ihrer Zugriffsstufe; dasselbe maschinenlesbar:',
+  'tokens.openapi': 'OpenAPI-Beschreibung (JSON)',
   'tokens.createTitle': 'API-Token erstellen',
   'tokens.createdTitle': 'Token erstellt',
   'tokens.created': 'Token erstellt',
@@ -375,7 +377,7 @@ const de: Messages<typeof en> = {
     'Firefox hat eine eigene Liste: Einstellungen > Datenschutz & Sicherheit > Zertifikate > Zertifikate anzeigen > Zertifizierungsstellen > Importieren, picache-ca.crt wählen und „Dieser CA vertrauen, um Websites zu identifizieren“ ankreuzen.',
   'https.trust.linux.title': 'Linux',
   'https.trust.linux.text':
-    'Debian und Ubuntu nehmen sie mit dem Befehl unten in den Systemspeicher auf. Chrome und Chromium nutzen eine eigene Liste: Einstellungen > Datenschutz und Sicherheit > Sicherheit > Zertifikate verwalten > Zertifizierungsstellen > Importieren.',
+    'Nimm sie mit dem Befehl deiner Distribution unten in den Systemspeicher auf. Chrome und Chromium nutzen eine eigene Liste: Einstellungen > Datenschutz und Sicherheit > Sicherheit > Zertifikate verwalten > Zertifizierungsstellen > Importieren.',
   'https.trust.riskTitle': 'Was das Vertrauen in die CA bedeutet',
   'https.trust.riskText':
     'Die CA kann nur für die eigenen Namen und Adressen von PiCache bürgen. Ihr Schlüssel bleibt im Datenverzeichnis von PiCache, damit Erneuerungen kein neues Vertrauen brauchen: Wer dieses Verzeichnis lesen kann, könnte solche Zertifikate ebenfalls ausstellen. Entferne die CA von deinen Geräten, wenn du PiCache außer Betrieb nimmst oder das Datenverzeichnis offengelegt wurde, und erstelle nach einer Kompromittierung eine neue CA.',
@@ -954,6 +956,10 @@ const de: Messages<typeof en> = {
   'health.docs.security': 'Sicherheitsmodell',
   'health.docs.api': 'REST-API',
   'health.docs.issues': 'Problem melden',
+  'health.docs.devices': 'Geräte einrichten',
+  'health.docs.routers': 'Router einrichten',
+  'health.docs.guides': 'Anleitungen (Unbound, VPN, Home Assistant, Firewall)',
+  'health.start.show': 'Checkliste „Erste Schritte“ einblenden',
 
   // Benachrichtigungen
   'notifications.adminOnly': 'Nur Admins sehen und ändern die Benachrichtigungskanäle und das Zustellprotokoll.',
@@ -1160,6 +1166,8 @@ const de: Messages<typeof en> = {
   'updates.mode.helper': 'Auf dieser Seite (Update-Helfer)',
   'updates.mode.docker': 'Neues Docker-Image',
   'updates.mode.manual': 'Befehl auf dem Host',
+  'updates.mode.package': 'Als Debian-Paket installiert (apt)',
+  'updates.current.arch': 'Paketarchitektur',
   'updates.runState.running': 'läuft',
   'updates.runState.succeeded': 'installiert',
   'updates.runState.failed': 'fehlgeschlagen',
@@ -1192,6 +1200,13 @@ const de: Messages<typeof en> = {
   'updates.how.manualHint':
     'Der Befehl zeigt den Anfang der Versionshinweise und fragt vor dem Installieren nach. Er prüft die Signatur und kehrt zur aktuellen Version zurück, wenn die neue nicht startet.',
   'updates.how.copy': 'Befehl kopieren',
+  'updates.how.package': 'PiCache wurde als Debian-Paket installiert. Aktualisiere es auf dem PiCache-Host:',
+  'updates.how.packageDownload': 'Lade {file} herunter und aus demselben Release {sums} und {sig}.',
+  'updates.how.packageVerify': 'Prüfe den Download, wie es die Installationsanleitung zeigt: {guide}.',
+  'updates.how.packageGuide': 'Debian package',
+  'updates.how.packageInstall': 'Installiere es als root im Verzeichnis des Downloads:',
+  'updates.how.packageHint':
+    'apt install prüft selbst keine Signatur, also prüfe die Datei vorher. Deine Einstellungen und Daten bleiben; DNS und der Cache sind einige Sekunden lang nicht erreichbar, während PiCache neu startet.',
 
   'updates.install.button': 'Update installieren',
   'updates.install.title': 'PiCache {version} installieren?',
@@ -1282,6 +1297,8 @@ const de: Messages<typeof en> = {
   'updates.settings.nightlyTitle': 'Nightly-Builds sind ungetestet',
   'updates.settings.nightlyText':
     'Sie entstehen jeden Tag aus dem Entwicklungszweig ohne Release-Test und sind mit einem eigenen Schlüssel signiert. Zurück zu stabil geht es mit der nächsten stabilen Version, die neuer als der Nightly-Build ist, oder mit „sudo picache update --version vX.Y.Z --allow-downgrade“ und der Kopie der Datenbank von vor dem Upgrade.',
+  'updates.settings.nightlyTextPackage':
+    'Sie entstehen jeden Tag aus dem Entwicklungszweig ohne Release-Test und sind mit einem eigenen Schlüssel signiert. Zurück zu stabil geht es mit der nächsten stabilen Version, die neuer als der Nightly-Build ist, oder indem du das stabile Paket mit „sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_<version>_<arch>.deb“ installierst und die Kopie der Datenbank von vor dem Upgrade zurücklegst (docs/DEPLOYMENT.md, „Going back to an earlier version“).',
   'updates.settings.nightlyConfirm': 'Nightly-Builds verwenden',
   'updates.settings.nightlyHostTitle': 'Dieser Host installiert noch keine Nightly-Builds',
   'updates.settings.nightlyHostText':

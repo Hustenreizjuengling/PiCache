@@ -78,11 +78,11 @@ func TestBatchLists(t *testing.T) {
 		t.Fatal("a disabled list still blocks")
 	}
 	// The budget: a list whose stored count would exceed it.
-	if _, err := e.db.W.Exec(`UPDATE filter_lists SET entries = ? WHERE id = ?`, EntryBudget, a.ID); err != nil {
+	if _, err := e.db.W.Exec(`UPDATE filter_lists SET entries = ? WHERE id = ?`, MaxEntryBudget, a.ID); err != nil {
 		t.Fatal(err)
 	}
 	e.mu.Lock()
-	e.lists[a.ID].Entries = EntryBudget
+	e.lists[a.ID].Entries = MaxEntryBudget
 	e.mu.Unlock()
 	_, err = e.BatchLists(ctx, BatchEnable, []int64{a.ID, b.ID}, false)
 	ae, ok := apperr.As(err)

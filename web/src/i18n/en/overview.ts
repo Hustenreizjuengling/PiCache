@@ -140,4 +140,53 @@ export default {
   'off.step3': 'Start a download on a device that uses PiCache as its DNS server.',
   'off.enable': 'Open cache settings',
   'off.storage': 'Check storage',
+
+  // getting-started checklist (admins, until hidden)
+  'start.title': 'Get started',
+  'start.description': 'A few steps until every device in your network uses PiCache. Nothing here changes your network by itself.',
+  'start.progress': '{done} of {total} done',
+  'start.hide': 'Hide checklist',
+  'start.hidden': 'Checklist hidden. System › Health & about can show it again.',
+  'start.allDone': 'All steps are done. You can hide this checklist now.',
+  'start.checking': 'Checking…',
+  'start.unavailable': 'The network check is not available right now, so steps 2 to 4 cannot be checked.',
+  'start.unavailableStep': 'Cannot be checked right now.',
+  'start.state.done': 'Done',
+  'start.state.open': 'To do',
+  'start.state.unknown': 'Cannot check',
+  'start.tickedNote': 'You marked this step as done in this browser.',
+  'start.upstreams.title': 'Choose upstream DNS servers and blocklists',
+  'start.upstreams.text':
+    'PiCache asks the upstream servers for every name it does not answer itself, and blocks what your blocklists name. Check both, then tick this step.',
+  'start.upstreams.dns': 'DNS settings',
+  'start.upstreams.lists': 'Blocklists',
+  'start.upstreams.tick': 'I checked them',
+  'start.address.title': 'Give this machine a fixed address',
+  'start.address.static': '{address} is configured statically.',
+  'start.address.dynamic':
+    'This address comes from DHCP and can change. Reserve {address} for this machine in your router (DHCP reservation) or set it statically on the host.',
+  'start.address.unknown': 'This cannot be checked here. Make sure PiCache’s address does not change, for example with a DHCP reservation in your router.',
+  'start.address.tick': 'I reserved it',
+  'start.router.title': 'Point your router at PiCache',
+  'start.router.done': 'Devices in your network ask PiCache, and the network check finds nothing to fix at the router.',
+  'start.router.doneDhcp': 'PiCache’s own DHCP server hands out its address as the DNS server.',
+  'start.router.open':
+    'Make your router hand out {address} as the only DNS server (in its DHCP settings), so every device uses PiCache. The network check shows the steps for your router.',
+  'start.router.openBridge':
+    'Make your router hand out the address of the machine Docker runs on as the only DNS server (in its DHCP settings), so every device uses PiCache. The network check shows the steps for your router.',
+  'start.router.fix': 'The network check found something to fix at your router. It shows the steps.',
+  'start.router.fixContainer':
+    'Every query arrives from the container network’s gateway, so PiCache cannot tell your devices apart. The network check shows how to fix it.',
+  'start.router.link': 'Open the network check',
+  'start.device.title': 'Test from a device',
+  'start.device.bridge': 'This cannot be checked in a container bridge network.',
+  'start.device.unknown': 'This cannot be checked here.',
+  'start.device.local':
+    'You are on the PiCache machine itself (or behind a reverse proxy that is not trusted): open this page from another device.',
+  'start.device.privacy': 'PiCache cannot tell: client addresses are anonymised (privacy setting).',
+  'start.device.done.one': 'Your device {device} asked PiCache {count} time in the last 24 h.',
+  'start.device.done.other': 'Your device {device} asked PiCache {count} times in the last 24 h.',
+  'start.device.open': 'Your device {address} has not asked PiCache yet: set its DNS server to {server}.',
+  'start.device.guides': 'Device guides',
+  'start.device.tick': 'It works on my device',
 }

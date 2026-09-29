@@ -48,17 +48,28 @@ func TestLatestSelection(t *testing.T) {
 		t.Fatalf("Latest with pre-releases = %+v, %v", rel, err)
 	}
 
-	// Architectures: arm uses the armv7 binary; arm64 has v1.2.5.
+	// Architectures: arm uses the armv7 binary unless the binary was built
+	// with GOARM=6; arm64 has v1.2.5.
+	c.GOARM = "7"
 	for arch, want := range map[string]string{"arm64": "v1.2.5", "arm": "v1.2.5", "amd64": "v1.2.0"} {
 		c.Arch = arch
 		if rel, err := c.Latest(t.Context(), ChannelStable); err != nil || rel == nil || rel.Version != want {
 			t.Errorf("%s: %+v, %v", arch, rel, err)
 		}
 	}
-	c.Arch = "386"
-	if _, err := c.Latest(t.Context(), ChannelStable); err == nil || !strings.Contains(err.Error(), "linux/386") {
-		t.Errorf("386: %v", err)
+	c.Arch, c.GOARM = "arm", "6"
+	if rel, err := c.Latest(t.Context(), ChannelStable); err != nil || rel != nil {
+		t.Errorf("armv6 without armv6 binaries: %+v, %v", rel, err)
 	}
+	c.Arch, c.GOARM = "mips", ""
+	if _, err := c.Latest(t.Context(), ChannelStable); err == nil || !strings.Contains(err.Error(), "linux/mips") {
+		t.Errorf("mips: %v", err)
+	}
+	c.Arch, c.GOARM = "arm", "5"
+	if _, err := c.Latest(t.Context(), ChannelStable); err == nil || !strings.Contains(err.Error(), "linux/arm (GOARM=5)") {
+		t.Errorf("GOARM=5: %v", err)
+	}
+	c.GOARM = ""
 
 	// Nothing eligible: no release, no error.
 	g.releases = []ghRel{{TagName: "v9.0.0", Draft: true, Assets: stdAssets()}}
@@ -69,9 +80,25 @@ func TestLatestSelection(t *testing.T) {
 }
 
 func TestAssetName(t *testing.T) {
-	for arch, want := range map[string]string{"amd64": "picache-linux-amd64", "arm64": "picache-linux-arm64", "arm": "picache-linux-armv7", "386": "", "riscv64": ""} {
-		if got, ok := AssetName(arch); got != want || ok != (want != "") {
-			t.Errorf("AssetName(%s) = %q, %v", arch, got, ok)
+	for _, tc := range []struct{ goarch, goarm, want, deb string }{
+		{"amd64", "", "picache-linux-amd64", "amd64"},
+		{"arm64", "", "picache-linux-arm64", "arm64"},
+		{"arm", "7", "picache-linux-armv7", "armhf"},
+		{"arm", "", "picache-linux-armv7", "armhf"},
+		{"arm", "6", "picache-linux-armv6", "armhf"},
+		{"arm", "5", "", ""},
+		{"arm", "8", "", ""},
+		{"386", "", "picache-linux-386", "i386"},
+		{"riscv64", "", "picache-linux-riscv64", "riscv64"},
+		{"mips", "", "", ""},
+		{"ppc64le", "", "", ""},
+		{"", "", "", ""},
+	} {
+		if got, ok := AssetName(tc.goarch, tc.goarm); got != tc.want || ok != (tc.want != "") {
+			t.Errorf("AssetName(%s, %q) = %q, %v", tc.goarch, tc.goarm, got, ok)
+		}
+		if got, ok := DebianArch(tc.goarch, tc.goarm); got != tc.deb || ok != (tc.deb != "") {
+			t.Errorf("DebianArch(%s, %q) = %q, %v", tc.goarch, tc.goarm, got, ok)
 		}
 	}
 }

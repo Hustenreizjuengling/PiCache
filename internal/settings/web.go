@@ -2,10 +2,33 @@ package settings
 
 import (
 	"net/netip"
+	"slices"
 	"strconv"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 )
+
+// Languages are the ids of the UI languages, in the order of the language
+// pickers: the same list as LOCALES in web/src/i18n/locales.ts (a test
+// compares them). web.language is "" (the browser's language) or one of
+// them.
+var Languages = []string{"en", "de"}
+
+// KnownLanguage reports whether web.language may be l.
+func KnownLanguage(l string) bool { return l == "" || slices.Contains(Languages, l) }
+
+// forgetUnknownLanguage reads a stored web.language this version does not
+// know (a later version's language, kept by a downgrade) as "" (the
+// browser's language) instead of leaving the whole document invalid; it
+// returns the value it dropped. Writes still refuse such a value.
+func (w *Web) forgetUnknownLanguage() (string, bool) {
+	if KnownLanguage(w.Language) {
+		return "", false
+	}
+	old := w.Language
+	w.Language = ""
+	return old, true
+}
 
 // validateAccess checks the web access members: web.allowedNetworks (at
 // most 64 addresses or CIDRs of at least /8 IPv4, /32 IPv6),

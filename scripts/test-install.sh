@@ -6,13 +6,22 @@
 # helper's writable paths), the DHCP settings (PICACHE_DHCP spellings, the removal of
 # the pre-0.8.0 drop-in and marker, the markers that replace the old opt-in,
 # the 0.7.0 env comment, --with-dhcp, --without-dhcp), hits a port-53
-# conflict and uninstalls PiCache in a throwaway Debian container. systemd
-# does not run there: systemctl and journalctl are stand-ins that record
-# their arguments, so PiCache itself is never started.
+# conflict, checks the systemd version (the refusal below 247),
+# `systemd-analyze verify` of the installed units, the firewall hints
+# (firewalld and ufw stand-ins), the SELinux relabel (selinuxenabled and
+# restorecon stand-ins), the refusal next to the Debian package (a
+# dpkg-query stand-in), Raspberry Pi OS (ID=raspbian) as Debian, the purge
+# (the default paths with /var/log/picache and the account deleted, or the
+# account kept and locked for a custom PICACHE_DATA_DIR) and
+# get-picache.sh's CA-bundle and OpenSSL checks on the distribution's own
+# files, and uninstalls PiCache in a throwaway container. systemd does not
+# run there: systemctl and journalctl are stand-ins that record their
+# arguments, so PiCache itself is never started.
 #
-#   scripts/test-install.sh bin/picache-linux-amd64 [debian:13]
+#   scripts/test-install.sh bin/picache-linux-amd64 [debian:13|fedora:latest|archlinux:latest|opensuse/tumbleweed:latest]
 #
-# Needs Docker and network access (apt-get installs iproute2 and netcat).
+# Needs Docker and network access (the package manager of the image
+# installs iproute2, netcat, systemd and the other tools first).
 set -eu
 
 [ $# -ge 1 ] || {
@@ -32,6 +41,7 @@ docker run --rm -i \
 	-v "$root/LICENSE:/src/LICENSE:ro" \
 	-v "$root/THIRD_PARTY_NOTICES.md:/src/THIRD_PARTY_NOTICES.md:ro" \
 	-v "$bin:/src/picache:ro" \
+	-v "$root/scripts/get-picache.sh:/src/scripts/get-picache.sh:ro" \
 	"$image" sh -s <<'EOF'
 set -eu
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -42,15 +52,41 @@ check_mode() {
 }
 starts() { grep -c '^restart picache.service' /tmp/systemctl.log || true; }
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null && apt-get install -y -qq iproute2 netcat-openbsd >/dev/null
+# The tools the installer uses, per image family (the installer itself never
+# runs a package manager), and the CA bundle get-picache.sh must find.
+id=$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')
+case $id in
+debian | ubuntu)
+	export DEBIAN_FRONTEND=noninteractive
+	apt-get update -qq >/dev/null
+	apt-get install -y -qq iproute2 netcat-openbsd systemd passwd procps openssl ca-certificates >/dev/null
+	bundle=/etc/ssl/certs/ca-certificates.crt
+	;;
+fedora)
+	dnf -y -q install iproute netcat systemd shadow-utils util-linux findutils procps-ng gawk openssl ca-certificates >/dev/null
+	bundle=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+	;;
+arch)
+	pacman -Syu --noconfirm --needed iproute2 openbsd-netcat systemd shadow util-linux findutils procps-ng gawk openssl ca-certificates >/dev/null
+	bundle=/etc/ssl/certs/ca-certificates.crt
+	;;
+opensuse-tumbleweed | opensuse-leap)
+	zypper --non-interactive --quiet install iproute2 netcat-openbsd systemd shadow util-linux findutils procps gawk openssl ca-certificates >/dev/null
+	bundle=/etc/ssl/ca-bundle.pem
+	;;
+*) fail "no prelude for $id" ;;
+esac
 
-# systemd stand-ins
-mkdir -p /run/systemd/system
+# systemd stand-ins (earlier in PATH than the real ones)
+mkdir -p /run/systemd/system /usr/local/sbin
 cat >/usr/local/sbin/systemctl <<'STUB'
 #!/bin/sh
 echo "$*" >>/tmp/systemctl.log
-[ "$1" = restart ] && mkdir -p /var/lib/picache && touch /var/lib/picache/picache.db
+# restart: the database and the unit's LogsDirectory=.
+case $1 in
+--version) echo "systemd ${STANDIN_SYSTEMD:-257} (${STANDIN_SYSTEMD:-257}-stand-in)" ;;
+restart) mkdir -p /var/lib/picache && touch /var/lib/picache/picache.db && install -d -o picache -g picache -m 0750 /var/log/picache ;;
+esac
 exit 0
 STUB
 printf '#!/bin/sh\nexit 0\n' >/usr/local/sbin/journalctl
@@ -58,6 +94,52 @@ chmod 0755 /usr/local/sbin/systemctl /usr/local/sbin/journalctl
 : >/tmp/systemctl.log
 cp /src/picache /tmp/picache
 chmod 0644 /tmp/picache # the installer must make it executable itself
+
+echo "== get-picache.sh finds the CA bundle and OpenSSL 3 of $id"
+sed '$d' /src/scripts/get-picache.sh >/tmp/get-lib.sh
+got=$(sh -c '. /tmp/get-lib.sh; ca_bundle')
+# The distribution's bundle, or another name of the same file (Fedora has
+# the Debian and the classic RHEL name as links).
+[ -s "$bundle" ] || fail "test setup: no $bundle"
+[ -n "$got" ] && { [ "$got" = "$bundle" ] || cmp -s "$got" "$bundle"; } || fail "ca_bundle: got '$got', want '$bundle'"
+sh -c '. /tmp/get-lib.sh; check_openssl' || fail "check_openssl refused $(openssl version)"
+
+echo "== systemd older than 247 is refused"
+out=$(STANDIN_SYSTEMD=246 sh /src/deploy/install.sh --binary /tmp/picache 2>&1) && fail "installed with systemd 246"
+echo "$out" | grep -q "systemd 246 is too old: PiCache's sandbox needs systemd 247 or later (ProtectProc=invisible)" ||
+	fail "no systemd message: $out"
+[ ! -e /usr/local/bin/picache ] || fail "installed files with systemd 246"
+
+echo "== Raspberry Pi OS (ID=raspbian) is Debian"
+sed '$d' /src/deploy/install.sh >/tmp/install-lib.sh
+cp /etc/os-release /tmp/os-release.orig
+rm -f /etc/os-release
+cat >/etc/os-release <<'OSR'
+PRETTY_NAME="Raspbian GNU/Linux 12 (bookworm)"
+ID=raspbian
+ID_LIKE=debian
+VERSION_ID="12"
+OSR
+out=$(sh -c '. /tmp/install-lib.sh; check_os; os_family' 2>&1)
+[ "$out" = debian ] || fail "raspbian 12: $out"
+sed -i 's/^VERSION_ID=.*/VERSION_ID="11"/' /etc/os-release
+out=$(sh -c '. /tmp/install-lib.sh; check_os' 2>&1)
+echo "$out" | grep -q 'raspbian 11 is untested' || fail "raspbian 11 was not warned about: $out"
+cat /tmp/os-release.orig >/etc/os-release
+
+echo "== the Debian package is refused"
+printf '#!/bin/sh\nprintf "install ok installed"\n' >/usr/local/sbin/dpkg-query
+chmod 0755 /usr/local/sbin/dpkg-query
+for args in "--binary /tmp/picache" "--uninstall"; do
+	# shellcheck disable=SC2086
+	out=$(sh /src/deploy/install.sh $args 2>&1) && fail "install.sh $args ran next to the package"
+	echo "$out" | grep -q 'PiCache is installed as a Debian package here: update it with apt' || fail "$args: $out"
+done
+printf '#!/bin/sh\nprintf "deinstall ok config-files"\n' >/usr/local/sbin/dpkg-query
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null 2>&1 || fail "refused with only the package's configuration files left"
+sh /src/deploy/install.sh --uninstall >/dev/null 2>&1
+rm -f /usr/local/sbin/dpkg-query
+: >/tmp/systemctl.log
 
 echo "== install"
 sh /src/deploy/install.sh --binary /tmp/picache
@@ -97,6 +179,48 @@ check_mode /usr/local/lib/systemd/system/picache-update.path 644 root:root
 check_mode /usr/local/lib/systemd/system/picache-update.service 644 root:root
 grep -q '^enable --now picache-update.path' /tmp/systemctl.log || fail "update path unit not enabled"
 [ ! -e /etc/systemd/system/picache-update.path.d ] || fail "update drop-in written for the default data directory"
+out=$(systemd-analyze verify /usr/local/lib/systemd/system/picache*.service /usr/local/lib/systemd/system/picache*.path 2>&1 || true)
+if echo "$out" | grep -E 'Unknown key|Unknown lvalue|Unknown section'; then fail "systemd-analyze verify: $out"; fi
+
+echo "== firewall hints (firewalld, ufw); the firewall is never changed"
+cat >/usr/local/sbin/firewall-cmd <<'STUB'
+#!/bin/sh
+echo "$*" >>/tmp/firewall.log
+case $1 in
+--state) echo running ;;
+--get-zone-of-interface=*) echo home ;;
+esac
+STUB
+chmod 0755 /usr/local/sbin/firewall-cmd
+out=$(sh /src/deploy/install.sh --binary /tmp/picache 2>&1)
+echo "$out" | grep -q 'firewalld is active' || fail "no firewalld hint: $out"
+echo "$out" | grep -qF "    firewall-cmd --permanent --zone=home --add-rich-rule='rule family=\"ipv4\" source address=\"<LAN-CIDR>\" port port=\"53\" protocol=\"udp\" accept'" ||
+	fail "no rich rule for 53/udp: $out"
+echo "$out" | grep -qF "    # firewall-cmd --permanent --zone=home --add-rich-rule='rule family=\"ipv4\" source address=\"<LAN-CIDR>\" port port=\"853\" protocol=\"tcp\" accept'" ||
+	fail "no commented DoT rule: $out"
+if grep -q -- '--add\|--permanent\|--reload' /tmp/firewall.log; then fail "install.sh changed the firewall: $(cat /tmp/firewall.log)"; fi
+rm -f /usr/local/sbin/firewall-cmd
+printf '#!/bin/sh\necho "$*" >>/tmp/ufw.log\n[ "$1" = status ] && echo "Status: active"\nexit 0\n' >/usr/local/sbin/ufw
+chmod 0755 /usr/local/sbin/ufw
+out=$(sh /src/deploy/install.sh --binary /tmp/picache 2>&1)
+echo "$out" | grep -q '^    ufw allow from <LAN-CIDR> to any port 53 proto udp$' || fail "no ufw rule: $out"
+echo "$out" | grep -q '^    # ufw allow from <LAN-CIDR> to any port 123 proto udp$' || fail "no commented NTP rule: $out"
+if grep -v '^status' /tmp/ufw.log | grep -q .; then fail "install.sh changed ufw: $(cat /tmp/ufw.log)"; fi
+rm -f /usr/local/sbin/ufw
+
+echo "== SELinux: restorecon relabels the installed files"
+printf '#!/bin/sh\nexit 0\n' >/usr/local/sbin/selinuxenabled
+printf '#!/bin/sh\necho "$*" >>/tmp/restorecon.log\n' >/usr/local/sbin/restorecon
+chmod 0755 /usr/local/sbin/selinuxenabled /usr/local/sbin/restorecon
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+grep -q '^-RF /usr/local/bin/picache /etc/picache .*/usr/local/lib/systemd/system/picache.service' /tmp/restorecon.log ||
+	fail "restorecon not called for the files: $(cat /tmp/restorecon.log)"
+grep -qx -- '-F /usr/local/lib/systemd/system' /tmp/restorecon.log || fail "restorecon not called for the unit directory"
+rm -f /usr/local/sbin/selinuxenabled /usr/local/sbin/restorecon /tmp/restorecon.log
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+[ ! -e /tmp/restorecon.log ] || fail "restorecon ran without SELinux"
+: >/tmp/systemctl.log
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
 
 echo "== re-install keeps the configuration"
 echo 'PICACHE_LOG_LEVEL=debug' >>/etc/picache/picache.env
@@ -277,5 +401,33 @@ for f in /usr/local/lib/systemd/system/picache*.prev; do
 done
 [ ! -e /usr/share/doc/picache ] || fail "license texts left behind"
 [ -e /etc/picache/picache.env ] || fail "configuration was removed"
+getent passwd picache >/dev/null || fail "the account was removed without --purge"
+
+echo "== purge: default paths and the account deleted"
+[ -d /var/log/picache ] || fail "test setup: no /var/log/picache"
+install -o picache -g picache -m 0640 /dev/null /var/log/picache/picache.log
+out=$(sh /src/deploy/install.sh --uninstall --purge --yes 2>&1) || { echo "$out"; fail "purge"; }
+for p in /etc/picache /var/lib/picache /var/cache/picache /var/log/picache /srv/picache; do
+	[ ! -e "$p" ] || fail "$p left after the purge"
+done
+if getent passwd picache >/dev/null; then fail "the account was kept: $out"; fi
+if getent group picache >/dev/null; then fail "the group was kept"; fi
+
+echo "== purge with a custom PICACHE_DATA_DIR: the account is kept and locked"
+sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
+echo "PICACHE_DATA_DIR=/srv/pdata" >>/etc/picache/picache.env
+chown -R picache:picache /srv/pdata
+uid=$(id -u picache)
+out=$(sh /src/deploy/install.sh --uninstall --purge --yes 2>&1) || { echo "$out"; fail "purge with a custom data directory"; }
+echo "$out" | grep -q "kept the account picache (uid $uid) because it owns kept files in /srv/pdata; it is locked" ||
+	fail "no locked-account message: $out"
+getent passwd picache >/dev/null || fail "the account was deleted"
+case $(getent shadow picache | cut -d: -f2) in '!'*) ;; *) fail "the account is not locked" ;; esac
+[ "$(getent shadow picache | cut -d: -f8)" = 1 ] || fail "the account does not expire"
+[ -e /srv/pdata/picache.db ] || fail "the custom data directory was deleted"
+# The default directory next to it is kept (and checked) too.
+echo "$out" | grep -qx '  /var/lib/picache' || fail "the default data directory was not kept: $out"
+[ ! -e /var/log/picache ] || fail "/var/log/picache left after the purge"
+[ ! -e /etc/picache ] || fail "/etc/picache left after the purge"
 echo "PASS"
 EOF

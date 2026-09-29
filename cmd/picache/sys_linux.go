@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 )
 
 // becomeOwnerOf switches to the owner of dir when running as root, so files
@@ -39,6 +41,25 @@ func becomeOwnerOf(dir string) error {
 
 // memoryLimit returns the cgroup v2 memory limit or MemTotal (bytes), 0 if unknown.
 func memoryLimit() int64 {
+	if n := cgroupMemoryMax(); n > 0 {
+		return n
+	}
+	return memTotal()
+}
+
+// budgetMemory is the memory the entry budget of the blocklists follows
+// (config.Config.MemoryLimit, filter.BudgetFor): the cgroup v2 limit as it
+// is, else MemTotal rounded up to the machine's nominal size
+// (filter.NominalMemory); 0 if unknown.
+func budgetMemory() uint64 {
+	if n := cgroupMemoryMax(); n > 0 {
+		return uint64(n)
+	}
+	return filter.NominalMemory(uint64(max(memTotal(), 0)))
+}
+
+// cgroupMemoryMax returns the cgroup v2 memory limit (bytes), 0 without one.
+func cgroupMemoryMax() int64 {
 	if b, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
 		s := strings.TrimSpace(string(b))
 		if s != "max" {
@@ -47,6 +68,11 @@ func memoryLimit() int64 {
 			}
 		}
 	}
+	return 0
+}
+
+// memTotal returns MemTotal of /proc/meminfo (bytes), 0 if unknown.
+func memTotal() int64 {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return 0

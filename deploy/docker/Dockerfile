@@ -8,7 +8,11 @@
 #
 # Multi-arch (no emulation needed, Go cross-compiles):
 #   docker buildx build -f deploy/docker/Dockerfile \
-#     --platform linux/amd64,linux/arm64,linux/arm/v7 -t picache .
+#     --platform linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64 -t picache .
+# These are the platforms of the base image gcr.io/distroless/static-debian13
+# that PiCache builds for (checked on 2026-09-27: it has amd64, arm64/v8,
+# arm/v7, riscv64, ppc64le and s390x, but no arm/v6 and no 386, which get
+# binaries and Debian packages only).
 #
 # The image starts as root so it can bind :53/:80/:443 with host networking
 # (Docker grants no ambient capabilities to non-root users), then drops to

@@ -17,6 +17,7 @@
     ariaLabel?: string
     name?: string
     value?: string
+    id?: string
     onchange?: (checked: boolean) => void
   }
 
@@ -29,6 +30,7 @@
     ariaLabel,
     name,
     value,
+    id,
     onchange,
   }: Props = $props()
 </script>
@@ -41,6 +43,7 @@
     {disabled}
     {name}
     {value}
+    {id}
     aria-label={ariaLabel}
     onchange={() => onchange?.(checked)}
   />

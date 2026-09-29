@@ -136,6 +136,16 @@ type netSources struct {
 	send        func(ctx context.Context, addrs []netip.Addr) // sends the scan's datagrams
 	// interfaces returns the interfaces panel (nil: none).
 	interfaces func(ctx context.Context) api.NetworkInterfaces
+	// dynamic4 reports whether this machine's IPv4 address on the
+	// interface of the IPv4 default route came from a DHCP client (ok
+	// false when that cannot be told; nil: never).
+	dynamic4 func() (dynamic, ok bool)
+	// primary returns the addresses of the interfaces of the IPv4 and the
+	// IPv6 default route (nil: none or unknown); self lists them first.
+	primary func() []netip.Addr
+	// anonymized reports logs.anonymizeClientIps (nil: off): the requester
+	// then gets no query counts.
+	anonymized func() bool
 }
 
 // netInputs are the facts one check is computed from.
@@ -164,6 +174,20 @@ type netInputs struct {
 	// (raRecorded: PiCache records router advertisements).
 	raDNS      map[netip.Addr][]string
 	raRecorded bool
+	// dynamic4: see netSources.dynamic4 (nil: unknown; never in bridge
+	// mode).
+	dynamic4 *bool
+	// primary: the addresses of the default routes' interfaces
+	// (netSources.primary).
+	primary map[netip.Addr]bool
+}
+
+// netState is what one computed check keeps besides its answer, so the
+// requester of every request can be described from the cached check
+// (requesterOf): this machine's addresses and the activity per address.
+type netState struct {
+	own map[netip.Addr]bool
+	act map[netip.Addr]*netActivity
 }
 
 // netChecker computes and caches the network check and runs the discovery
@@ -176,6 +200,7 @@ type netChecker struct {
 
 	mu        sync.Mutex // guards the fields below
 	cached    *api.NetworkCheck
+	cachedSt  netState // the state of cached
 	cachedAt  time.Time
 	cachedGen uint64
 	gen       uint64 // incremented when a scan starts or ends (invalidates the cache)
@@ -245,7 +270,65 @@ func (a *App) netSources() netSources {
 			return a.dhcp.RouterRDNSS()
 		},
 		interfaces: a.networkInterfaces,
+		dynamic4: func() (bool, bool) {
+			if runtime.GOOS != "linux" {
+				return false, false
+			}
+			return ipv4Dynamic(netutil.Routes().DefaultRoutes(), netutil.HostAddrs())
+		},
+		primary:    func() []netip.Addr { return primaryAddrs(netutil.Routes().DefaultRoutes(), netutil.HostAddrs()) },
+		anonymized: func() bool { return a.set.Get().Logs.AnonymizeClientIPs },
 	}
+}
+
+// ipv4Dynamic reports whether an IPv4 address of the interface of the IPv4
+// default route with the lowest metric has a finite valid lifetime (a DHCP
+// client configured it, whatever PiCache's own DHCP server does). ok is
+// false without an IPv4 default route or without an IPv4 address on its
+// interface.
+func ipv4Dynamic(defaults []netutil.Route, addrs []netutil.HostAddr) (dynamic, ok bool) {
+	iface := ""
+	for _, r := range defaults { // lowest metric first
+		if r.Prefix.Addr().Is4() {
+			iface = r.Iface
+			break
+		}
+	}
+	if iface == "" {
+		return false, false
+	}
+	for _, h := range addrs {
+		a := netutil.Canon(h.Prefix.Addr())
+		if h.Iface != iface || !a.Is4() || a.IsLoopback() || a.IsLinkLocalUnicast() {
+			continue
+		}
+		ok = true
+		dynamic = dynamic || h.Dynamic
+	}
+	return dynamic, ok
+}
+
+// primaryAddrs returns the addresses of the interface of the IPv4 default
+// route and of the interface of the IPv6 default route (the lowest metric
+// each): the addresses devices in the LAN reach this machine by.
+func primaryAddrs(defaults []netutil.Route, addrs []netutil.HostAddr) []netip.Addr {
+	ifaces := map[string]bool{}
+	var have4, have6 bool
+	for _, r := range defaults { // lowest metric first
+		switch is4 := r.Prefix.Addr().Is4(); {
+		case is4 && !have4:
+			ifaces[r.Iface], have4 = true, true
+		case !is4 && !have6:
+			ifaces[r.Iface], have6 = true, true
+		}
+	}
+	var out []netip.Addr
+	for _, h := range addrs {
+		if ifaces[h.Iface] {
+			out = append(out, netutil.Canon(h.Prefix.Addr()))
+		}
+	}
+	return out
 }
 
 // Interfaces returns the interfaces of this machine (GET
@@ -324,8 +407,18 @@ func (n *netChecker) Start(ctx context.Context) {
 
 // Check returns the network check (api.Network): the cached one while it
 // is younger than 30 s (2 s while a scan runs) and no scan started or
-// ended since, else a fresh one.
-func (n *netChecker) Check(ctx context.Context) api.NetworkCheck {
+// ended since, else a fresh one. With a valid client it describes that
+// requester (for every call from the check's state, never cached).
+func (n *netChecker) Check(ctx context.Context, client netip.Addr) api.NetworkCheck {
+	nc, st := n.check(ctx)
+	if client.IsValid() {
+		anon := n.src.anonymized != nil && n.src.anonymized()
+		nc.Requester = requesterOf(netutil.Canon(client), nc.Devices, st, anon)
+	}
+	return nc
+}
+
+func (n *netChecker) check(ctx context.Context) (api.NetworkCheck, netState) {
 	n.computeMu.Lock()
 	defer n.computeMu.Unlock()
 	now := n.src.now()
@@ -335,23 +428,60 @@ func (n *netChecker) Check(ctx context.Context) api.NetworkCheck {
 		maxAge = netCheckScanMaxAge
 	}
 	if c := n.cached; c != nil && n.cachedGen == n.gen && !now.Before(n.cachedAt) && now.Sub(n.cachedAt) < maxAge {
-		out := *c
+		out, st := *c, n.cachedSt
 		out.Scan = n.scan
 		n.mu.Unlock()
-		return out
+		return out, st
 	}
 	gen := n.gen
 	n.mu.Unlock()
 
-	nc := computeNetworkCheck(n.gather(ctx, now))
+	nc, st := computeNetworkState(n.gather(ctx, now))
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if ctx.Err() == nil { // a cancelled request may have read partial data
 		c := nc
-		n.cached, n.cachedAt, n.cachedGen = &c, now, gen
+		n.cached, n.cachedSt, n.cachedAt, n.cachedGen = &c, st, now, gen
 	}
 	nc.Scan = n.scan
-	return nc
+	return nc, st
+}
+
+// requesterOf describes the effective client of a request: local when it
+// is loopback or one of this machine's addresses; MAC, name and client of
+// the device whose addresses contain it; its queries of the last 24 h and
+// its last query as the device list shows them for that device (every
+// address of its MAC: a dual-stack device may open the web UI over IPv4
+// and ask over IPv6), else from the activity of the address itself (none
+// while client addresses are anonymised: privacy).
+func requesterOf(client netip.Addr, devices []api.NetworkDevice, st netState, anonymized bool) *api.NetworkRequester {
+	r := &api.NetworkRequester{Address: client.String(), Local: client.IsLoopback() || st.own[client]}
+	var dev *api.NetworkDevice
+	for i, d := range devices {
+		if slices.ContainsFunc(d.IPs, func(s string) bool {
+			ip, err := netip.ParseAddr(s)
+			return err == nil && netutil.Canon(ip) == client
+		}) {
+			r.MAC, r.Name, r.ClientID = d.MAC, d.Name, d.ClientID
+			dev = &devices[i]
+			break
+		}
+	}
+	if anonymized {
+		r.Privacy = true
+		return r
+	}
+	var q int64
+	if dev != nil {
+		q, r.LastQuery = dev.Queries24h, dev.LastQuery
+	} else if a := st.act[client]; a != nil {
+		q = a.queries
+		if !a.last.IsZero() {
+			r.LastQuery = a.last.UTC()
+		}
+	}
+	r.Queries24h = &q
+	return r
 }
 
 // gather reads the inputs of one check. Unreadable sources count as empty.
@@ -359,6 +489,19 @@ func (n *netChecker) gather(ctx context.Context, now time.Time) netInputs {
 	s := n.src
 	in := netInputs{now: now, since: s.since, host: s.host(), domain: s.domain(), refused: s.refused(),
 		dnsIPv6: s.dnsIPv6(), ownMACs: s.ownMACs(), describe: s.describe}
+	if s.dynamic4 != nil && !in.host.Bridge {
+		if d, ok := s.dynamic4(); ok {
+			in.dynamic4 = &d
+		}
+	}
+	if s.primary != nil {
+		for _, a := range s.primary() {
+			if in.primary == nil {
+				in.primary = map[netip.Addr]bool{}
+			}
+			in.primary[a] = true
+		}
+	}
 	if s.trustConnected != nil {
 		in.trustConnected = s.trustConnected()
 	}
@@ -436,6 +579,13 @@ func (n *netChecker) routerName(ctx context.Context, gw netip.Addr, now time.Tim
 
 // computeNetworkCheck derives the check from its inputs (pure).
 func computeNetworkCheck(in netInputs) api.NetworkCheck {
+	nc, _ := computeNetworkState(in)
+	return nc
+}
+
+// computeNetworkState derives the check and its state from its inputs
+// (pure).
+func computeNetworkState(in netInputs) (api.NetworkCheck, netState) {
 	nc := api.NetworkCheck{CheckedAt: in.now.UTC(), Mode: "host", StatsAvailable: in.statsOK,
 		Checks: []api.NetworkItem{}, Devices: []api.NetworkDevice{}}
 	if in.host.Bridge {
@@ -443,10 +593,14 @@ func computeNetworkCheck(in netInputs) api.NetworkCheck {
 	}
 	var own map[netip.Addr]bool
 	nc.Self, own = in.self()
+	if !in.host.Bridge {
+		nc.Self.Dynamic4 = in.dynamic4
+	}
 	var router map[netip.Addr]bool
 	var routerMAC string
 	nc.Router, router, routerMAC = in.router(own)
 	act, lastByMAC := in.activity()
+	st := netState{own: own, act: act}
 
 	// Queries of the last 24 h from other devices.
 	var q api.NetworkQueries
@@ -493,7 +647,7 @@ func computeNetworkCheck(in netInputs) api.NetworkCheck {
 
 	// A bridge network shows only the bridge: no device list.
 	if in.host.Bridge {
-		return nc
+		return nc, st
 	}
 	exclude := func(ip netip.Addr, mac string) bool { return mac == routerMAC || own[ip] || router[ip] }
 	devices, counts := in.devices(exclude, act, lastByMAC)
@@ -503,7 +657,7 @@ func computeNetworkCheck(in netInputs) api.NetworkCheck {
 		status = "info"
 	}
 	nc.Checks = append(nc.Checks, api.NetworkItem{ID: "devices", Status: status, Data: counts})
-	return nc
+	return nc, st
 }
 
 // refusedSources returns the refused sources shown (newest first, at most
@@ -528,8 +682,16 @@ func (in *netInputs) refusedSources() []api.NetworkRefusedSource {
 	return out
 }
 
+// tailnetPrefixes are Tailscale's address ranges (CGNAT space and its ULA
+// prefix): devices in the LAN cannot reach this machine by them.
+var tailnetPrefixes = []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd7a:115c:a1e0::/48")}
+
 // self classifies this machine's addresses (link-local ones are left out)
-// and returns them as a set too.
+// and returns them as a set too (every address). The addresses of the
+// default routes' interfaces come first, so the first IPv4 address and ULA
+// are the ones devices in the LAN use (the router steps, the checklist and
+// the device guides name them); tailnet addresses are listed only on such
+// an interface (a LAN in CGNAT space).
 func (in *netInputs) self() (api.NetworkSelf, map[netip.Addr]bool) {
 	own := map[netip.Addr]bool{}
 	var addrs []netip.Addr
@@ -537,10 +699,19 @@ func (in *netInputs) self() (api.NetworkSelf, map[netip.Addr]bool) {
 		a := netutil.Canon(p.Addr())
 		if a.IsValid() && !own[a] {
 			own[a] = true
-			addrs = append(addrs, a)
+			if in.primary[a] || !slices.ContainsFunc(tailnetPrefixes, func(t netip.Prefix) bool { return t.Contains(a) }) {
+				addrs = append(addrs, a)
+			}
 		}
 	}
 	sortAddrs(addrs)
+	rank := func(a netip.Addr) int {
+		if in.primary[a] {
+			return 0
+		}
+		return 1
+	}
+	slices.SortStableFunc(addrs, func(a, b netip.Addr) int { return cmp.Compare(rank(a), rank(b)) })
 	s := api.NetworkSelf{IPv4: []string{}, ULA: []string{}, Global: []string{}, DNSIPv6: in.dnsIPv6}
 	for _, a := range addrs {
 		switch addrClass(a) {

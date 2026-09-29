@@ -880,9 +880,25 @@ func TestApplyHostNeedsMountHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = applyHost(ctx, h.env, cfg, tg.ID, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "sudo apt install nfs-common") {
-		t.Fatalf("want the nfs-common hint, got %v", err)
+	if err == nil || err.Error() != "mount.nfs is not installed on this machine; install the NFS client "+
+		"(Debian/Ubuntu: nfs-common; Fedora/RHEL/Arch: nfs-utils; openSUSE: nfs-client) "+
+		"(NFS 4 does not need the rpcbind service that comes with it: sudo systemctl mask --now rpcbind.service rpcbind.socket)" {
+		t.Fatalf("want the NFS client hint of every distribution, got %v", err)
 	}
+	h.env.hasHelper = func(name string) bool { return name != "mount.cifs" }
+	smb, err := m.Create(ctx, TargetInput{Name: "SMB", Kind: KindSMB, Mode: ModeHostApply, Server: "192.168.1.20", Share: "picache",
+		Username: "picache", Password: ptr("secret password")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = applyHost(ctx, h.env, cfg, smb.ID, nil, nil)
+	if err == nil || err.Error() != "mount.cifs is not installed on this machine; install the SMB client (package cifs-utils)" {
+		t.Fatalf("want the SMB client hint, got %v", err)
+	}
+	if strings.Contains(err.Error(), "apt") {
+		t.Fatal("the hint names one distribution's package manager")
+	}
+	h.env.hasHelper = func(name string) bool { return name != "mount.nfs" }
 	if _, err := os.Stat(filepath.Join(h.env.unitDir, mountUnitName(filepath.Join(cfg.MountRoot, tg.ID)))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a unit was written: %v", err)
 	}

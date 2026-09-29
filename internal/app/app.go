@@ -374,6 +374,8 @@ func (a *App) build(ctx context.Context) error {
 	if a.filter, err = filter.New(ctx, a.cdb, a.set, fetch, a.paths.ListsDir, log); err != nil {
 		return fmt.Errorf("filter: %w", err)
 	}
+	// The entry budget follows the memory PiCache may use (ARCHITECTURE 7.2).
+	a.filter.SetEntryBudget(filter.BudgetFor(a.cfg.MemoryLimit))
 	// Group deletions/renumbering must reach the filter's source→groups table.
 	a.clients.OnChange(func() {
 		if err := a.filter.ReloadGroups(context.Background()); err != nil {
@@ -443,7 +445,10 @@ func (a *App) build(ctx context.Context) error {
 	service := runsAsSystemdService(caps.Systemd)
 	a.hostSampler = a.newHostSampler()
 	a.sampleHost()
-	releases := &update.Client{HTTP: newFetchClient(lookup46, a.proxyFor(proxyUpdateCheck))}
+	// Package mode (the Debian package's marker; never in a container):
+	// the check offers only releases with the .deb of this architecture.
+	packaged := caps.Container != "docker" && caps.Container != "podman" && update.PackageInstalled()
+	releases := &update.Client{HTTP: newFetchClient(lookup46, a.proxyFor(proxyUpdateCheck)), Package: packaged}
 	// A changed outbound proxy applies to the next connection: idle
 	// connections made with the previous setting are closed (list
 	// downloads, the release check, notifications).
@@ -456,7 +461,7 @@ func (a *App) build(ctx context.Context) error {
 	})
 	a.updates = newUpdater(a.cfg.DataDir, version.Version, a.cdb, a.set, func() string {
 		_, err := os.Stat(update.HelperMarker)
-		return updateMode(caps.Container, service, err == nil)
+		return updateMode(caps.Container, packaged, service, err == nil)
 	}, releases.Latest, log)
 	a.updates.emit = a.emit
 	a.updates.load(ctx)
@@ -618,6 +623,12 @@ func (a *App) lookupClientName(ctx context.Context, ip netip.Addr) (string, erro
 // applyDetectedDefaults adapts first-start defaults to the environment
 // (local domain from /etc/resolv.conf).
 func (a *App) applyDetectedDefaults(ctx context.Context) {
+	// A fresh installation shows the getting-started checklist (Defaults
+	// gives true for documents of earlier versions). PICACHE_INITIAL_CONFIG
+	// runs later, so a document that sets the member wins.
+	if _, err := a.set.Update(ctx, func(s *settings.All) error { s.Web.OnboardingDone = false; return nil }); err != nil {
+		a.log.Warn("could not enable the getting-started checklist", slog.Any("err", err))
+	}
 	search := netutil.ResolvConfSearch()
 	if len(search) == 0 {
 		return

@@ -52,13 +52,13 @@
     <div class="stack-sm">
       <Toggle
         bind:checked={d.trustConnectedNetworks}
-        label={t('dns.settings.access.trustConnected')}
+        id="dns-field-trustConnectedNetworks" label={t('dns.settings.access.trustConnected')}
         description={t('dns.settings.access.trustConnectedHelp')}
       />
       {#if form.error('trustConnectedNetworks')}<p class="err">{form.error('trustConnectedNetworks')}</p>{/if}
     </div>
     <Field
-      label={t('dns.settings.access.networks')}
+      id="dns-field-allowedNetworks" label={t('dns.settings.access.networks')}
       optional
       help={t('dns.settings.access.networksHelp')}
       error={lineError(form.saveError, 'dns.allowedNetworks')}
@@ -68,7 +68,7 @@
     <div class={['danger', d.allowAllNetworks && 'on']}>
       <Toggle
         bind:checked={() => d.allowAllNetworks, setAllowAll}
-        label={t('dns.settings.access.allowAll')}
+        id="dns-field-allowAllNetworks" label={t('dns.settings.access.allowAll')}
         description={t('dns.settings.access.allowAllHelp')}
       />
     </div>
@@ -76,12 +76,12 @@
       <Notice tone="fail" title={t('dns.settings.access.openTitle')}>{t('dns.settings.access.openText')}</Notice>
     {/if}
     <fieldset class="stack plain" disabled={synced}>
-      <Toggle bind:checked={d.refuseAny} label={t('dns.settings.access.refuseAny')} description={t('dns.settings.access.refuseAnyHelp')} />
+      <Toggle bind:checked={d.refuseAny} id="dns-field-refuseAny" label={t('dns.settings.access.refuseAny')} description={t('dns.settings.access.refuseAnyHelp')} />
 
       <div class="grid">
         <div class="stack-sm">
           <Field
-            label={t('dns.settings.access.blocked')}
+            id="dns-field-blockedClients" label={t('dns.settings.access.blocked')}
             optional
             help={t('dns.settings.access.blockedHelp')}
             error={lineError(form.saveError, 'dns.blockedClients')}
@@ -93,7 +93,7 @@
           {/if}
         </div>
         <Field
-          label={t('dns.settings.access.trusted')}
+          id="dns-field-ednsClientTrusted" label={t('dns.settings.access.trusted')}
           optional
           help={t('dns.settings.access.trustedHelp')}
           error={lineError(form.saveError, 'dns.ednsClientTrusted')}

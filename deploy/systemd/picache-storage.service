@@ -14,6 +14,8 @@
 #    given to this unit too (the same LoadCredentialEncrypted= line);
 #  - custom PICACHE_DATA_DIR / PICACHE_MOUNT_ROOT: install.sh writes
 #    picache-storage.service.d/50-picache-paths.conf.
+# Installed by deploy/install.sh to /usr/local/lib/systemd/system (the Debian
+# package: /usr/lib/systemd/system, enabled only with host-apply.enabled).
 [Unit]
 Description=PiCache storage helper (apply queued NAS mount requests)
 Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md

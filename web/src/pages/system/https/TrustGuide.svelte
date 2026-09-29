@@ -10,10 +10,16 @@
   import { Notice, Panel } from '$lib/ui'
 
   const PLATFORMS = ['windows', 'macos', 'ios', 'android', 'firefox', 'linux'] as const
-  const LINUX_CMD = 'sudo cp picache-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates'
+  // The system store per distribution family (commands are not translated).
+  const LINUX: { family: string; cmd: string }[] = [
+    { family: 'Debian, Ubuntu', cmd: 'sudo cp picache-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates' },
+    { family: 'Fedora, RHEL', cmd: 'sudo cp picache-ca.crt /etc/pki/ca-trust/source/anchors/ && sudo update-ca-trust' },
+    { family: 'Arch', cmd: 'sudo trust anchor --store picache-ca.crt' },
+    { family: 'openSUSE', cmd: 'sudo cp picache-ca.crt /etc/pki/trust/anchors/ && sudo update-ca-certificates' },
+  ]
 </script>
 
-<Panel title={t('system.https.trust.title')} description={t('system.https.trust.description')}>
+<Panel id="https-set-trust" title={t('system.https.trust.title')} description={t('system.https.trust.description')}>
   <div class="stack">
     <div class="platforms">
       {#each PLATFORMS as p (p)}
@@ -21,7 +27,14 @@
           <summary>{t(`system.https.trust.${p}.title` as MessageKey)}</summary>
           <div class="body small muted">
             <p>{t(`system.https.trust.${p}.text` as MessageKey)}</p>
-            {#if p === 'linux'}<p><code class="mono">{LINUX_CMD}</code></p>{/if}
+            {#if p === 'linux'}
+              <dl class="cmds">
+                {#each LINUX as l (l.family)}
+                  <dt>{l.family}</dt>
+                  <dd><code class="mono">{l.cmd}</code></dd>
+                {/each}
+              </dl>
+            {/if}
           </div>
         </details>
       {/each}
@@ -31,6 +44,20 @@
 </Panel>
 
 <style>
+  .cmds {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: var(--sp-2) 0 0;
+  }
+  .cmds dt {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .cmds dd {
+    margin: 0 0 var(--sp-2);
+    overflow-wrap: anywhere;
+  }
   .platforms {
     display: flex;
     flex-direction: column;

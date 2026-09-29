@@ -20,19 +20,25 @@ import (
 
 func TestUpdateMode(t *testing.T) {
 	for _, tc := range []struct {
-		container       string
-		service, marker bool
-		want            string
+		container                 string
+		packaged, service, marker bool
+		want                      string
 	}{
-		{"", true, true, update.ModeHelper},
-		{"lxc", true, true, update.ModeHelper},
-		{"", true, false, update.ModeManual},
-		{"", false, true, update.ModeManual}, // started by hand on a host with the helper
-		{"docker", true, true, update.ModeDocker},
-		{"podman", false, false, update.ModeDocker},
+		{"", false, true, true, update.ModeHelper},
+		{"lxc", false, true, true, update.ModeHelper},
+		{"", false, true, false, update.ModeManual},
+		{"", false, false, true, update.ModeManual}, // started by hand on a host with the helper
+		{"docker", false, true, true, update.ModeDocker},
+		{"podman", false, false, false, update.ModeDocker},
+		// Order: docker, package, helper, manual.
+		{"", true, true, false, update.ModePackage},
+		{"", true, true, true, update.ModePackage}, // a leftover helper marker does not count
+		{"", true, false, false, update.ModePackage},
+		{"lxc", true, true, false, update.ModePackage},
+		{"docker", true, true, true, update.ModeDocker},
 	} {
-		if got := updateMode(tc.container, tc.service, tc.marker); got != tc.want {
-			t.Errorf("updateMode(%q, %v, %v) = %s, want %s", tc.container, tc.service, tc.marker, got, tc.want)
+		if got := updateMode(tc.container, tc.packaged, tc.service, tc.marker); got != tc.want {
+			t.Errorf("updateMode(%q, %v, %v, %v) = %s, want %s", tc.container, tc.packaged, tc.service, tc.marker, got, tc.want)
 		}
 	}
 }

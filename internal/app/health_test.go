@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,17 +77,26 @@ func TestBlocklistsHealth(t *testing.T) {
 		{true, filter.Stats{FailedLists: 1}, "fail", "no blocklist could be loaded; nothing is blocked"},
 		{false, filter.Stats{FailedLists: 1}, "warn", "1 list(s) failed to update"},
 		{true, filter.Stats{Entries: 100, StaleLists: 2}, "warn", "2 list(s) not updated for a long time"},
-		{true, filter.Stats{Entries: filter.EntryBudget}, "ok", ""},
-		{true, filter.Stats{Entries: filter.EntryBudget + 1}, "warn",
-			fmt.Sprintf("the blocklists hold %d entries; a small host may run short of memory", filter.EntryBudget+1)},
+		{true, filter.Stats{Entries: filter.MaxEntryBudget}, "ok", ""},
+		{true, filter.Stats{Entries: filter.MaxEntryBudget + 1}, "warn",
+			fmt.Sprintf("the blocklists hold %d entries; a small host may run short of memory", filter.MaxEntryBudget+1)},
 		{true, filter.Stats{Entries: 100, TLDGuardLists: 1}, "warn",
 			"1 own list(s) contain entries that would block a whole top-level domain; they are ignored"},
 		{true, filter.Stats{Entries: 100, IPGuardLists: 2}, "warn",
 			"2 list(s) of answer addresses contain blocks of broad or private networks; they are ignored"},
 	} {
-		st, msg, _ := blocklistsHealth(tc.enabled, tc.stats)
+		st, msg, _ := blocklistsHealth(tc.enabled, tc.stats, filter.MaxEntryBudget)
 		if st != tc.status || msg != tc.msg {
 			t.Errorf("%+v: %s %q, want %s %q", tc.stats, st, msg, tc.status, tc.msg)
 		}
+	}
+	// A smaller host warns earlier and names its budget.
+	st, msg, hint := blocklistsHealth(true, filter.Stats{Entries: 2_000_001}, filter.BudgetFor(512<<20))
+	if st != "warn" || msg != "the blocklists hold 2000001 entries; a small host may run short of memory" ||
+		!strings.Contains(hint, "at most about 2000000 entries in total on this host") {
+		t.Errorf("512 MiB host: %s %q %q", st, msg, hint)
+	}
+	if st, _, _ := blocklistsHealth(true, filter.Stats{Entries: 2_000_000}, 2_000_000); st != "ok" {
+		t.Errorf("at the budget: %s", st)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	mrand "math/rand/v2"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -38,11 +39,14 @@ type updater struct {
 	cdb     *db.DB // nil: the result is not persisted (tests)
 	dataDir string
 	current string // version of the running binary
-	// mode reports helper, docker or manual (see updateMode).
-	mode  func() string
-	check func(ctx context.Context, channel string) (*update.Release, error)
-	now   func() time.Time
-	emit  func(notify.Message) // nil: no notifications
+	// mode reports helper, docker, package or manual (see updateMode).
+	mode func() string
+	// debArch is the Debian architecture of this binary (mode package:
+	// the .deb the UI names).
+	debArch string
+	check   func(ctx context.Context, channel string) (*update.Release, error)
+	now     func() time.Time
+	emit    func(notify.Message) // nil: no notifications
 
 	checkMu sync.Mutex // one check at a time
 	queueMu sync.Mutex // one queue decision at a time
@@ -63,17 +67,22 @@ type updateSeen struct {
 
 func newUpdater(dataDir, current string, cdb *db.DB, set *settings.Store, mode func() string,
 	check func(ctx context.Context, channel string) (*update.Release, error), log *slog.Logger) *updater {
+	deb, _ := update.DebianArch(runtime.GOARCH, update.BuildGOARM())
 	return &updater{log: log.With(slog.String("component", "update")), set: set, cdb: cdb, dataDir: dataDir,
-		current: current, mode: mode, check: check, now: time.Now, kick: make(chan struct{}, 1)}
+		current: current, mode: mode, debArch: deb, check: check, now: time.Now, kick: make(chan struct{}, 1)}
 }
 
-// updateMode decides how updates are installed: by the root helper when
-// install.sh installed it (marker) and PiCache runs as a systemd service,
-// by pulling a new image in a Docker/Podman container, by hand otherwise.
-func updateMode(container string, systemdService, marker bool) string {
+// updateMode decides how updates are installed (docs/ARCHITECTURE.md 14.4,
+// first match): by pulling a new image in a Docker/Podman container, with
+// apt when the Debian package installed PiCache (packaged: its marker),
+// by the root helper when install.sh installed it (marker) and PiCache
+// runs as a systemd service, by hand otherwise.
+func updateMode(container string, packaged, systemdService, marker bool) string {
 	switch {
 	case container == "docker" || container == "podman":
 		return update.ModeDocker
+	case packaged:
+		return update.ModePackage
 	case marker && systemdService:
 		return update.ModeHelper
 	}
@@ -106,6 +115,13 @@ func (u *updater) load(ctx context.Context) {
 	var res update.CheckResult
 	if err := json.Unmarshal([]byte(doc), &res); err != nil {
 		u.log.Warn("ignoring the stored update check result", slog.Any("err", err))
+		return
+	}
+	// A result from before a change between install.sh and the Debian
+	// package is not used: a package host must not be offered a release
+	// without its .deb. The next check replaces it.
+	if res.Package != (u.mode() == update.ModePackage) {
+		u.log.Info("ignoring the stored update check result: PiCache was installed differently since")
 		return
 	}
 	u.mu.Lock()
@@ -207,7 +223,7 @@ func (u *updater) checkNow(ctx context.Context) update.CheckResult {
 	cctx, cancel := context.WithTimeout(ctx, update.CheckTimeout)
 	rel, err := u.check(cctx, u.set.Get().Updates.Channel)
 	cancel()
-	res := update.CheckResult{Latest: rel, CheckedAt: u.now().UTC()}
+	res := update.CheckResult{Latest: rel, CheckedAt: u.now().UTC(), Package: u.mode() == update.ModePackage}
 	if err != nil {
 		res.Latest, res.Error = prev.Latest, err.Error()
 	}
@@ -300,6 +316,9 @@ func (u *updater) overview(last update.CheckResult) update.Overview {
 	s := u.set.Get().Updates
 	st := update.ReadStatus(u.dataDir, u.current, u.now())
 	o := update.NewOverview(u.current, u.mode(), s.CheckEnabled, s.Channel, last, st)
+	if o.Mode == update.ModePackage {
+		o.Package = update.NewPackageInfo(u.debArch, o.Latest)
+	}
 	o.NightlyAllowed = update.NightlyAllowed()
 	if p, err := update.ParseUpdateProxy(os.Getenv("PICACHE_UPDATE_PROXY")); err == nil && p != nil {
 		o.InstallProxy = p.Origin()
@@ -327,6 +346,8 @@ func (u *updater) QueueUpdate(ctx context.Context, version, requestedBy string) 
 	switch {
 	case o.Mode == update.ModeDocker:
 		return apperr.Conflict("PiCache runs in a container: update it by pulling the new image (%s)", update.DockerCommand)
+	case o.Mode == update.ModePackage:
+		return apperr.Conflict("PiCache was installed as a Debian package: update it with apt (System → Updates shows the steps)")
 	case o.Mode != update.ModeHelper:
 		return apperr.Conflict("the update helper is not installed (run install.sh without --without-updater); update on the host with: %s",
 			o.Commands.CLI)

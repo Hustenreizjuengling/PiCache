@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!--
+  PiCache template for Unraid (docs/DEPLOYMENT.md "NAS"): copy it to
+  /boot/config/plugins/dockerMan/templates-user/my-picache.xml, then Docker ->
+  Add Container -> Template: picache.
+
+  Network "Custom: br0" gives PiCache its own LAN address (MyIP, outside the
+  router's DHCP pool), so the Unraid web UI keeps 80/443 and libvirt's
+  dnsmasq on 192.168.122.1:53 does not clash. Unraid itself cannot reach
+  that address unless "Host access to custom networks" is on (Settings ->
+  Docker): keep another DNS server in Unraid's own network settings.
+
+  Before the first start create the appdata directories on a pool (never
+  /mnt/user: SQLite's write-ahead log does not work reliably on its FUSE
+  layer), owned by nobody:users (99:100), mode 0750, unshared:
+    install -d -o 99 -g 100 -m 0750 /mnt/cache/appdata/picache/data /mnt/cache/appdata/picache/cache
+  The setup token: docker exec -u 99:100 picache /picache setup-token
+
+  PiCache starts as root only to bind its ports, then runs as PICACHE_RUN_AS
+  (never empty or 0). Only for IPv6 router advertisements: add the
+  capability NET_RAW (the Docker option cap-add=NET_RAW) to Extra Parameters.
+-->
+<Container version="2">
+  <Name>picache</Name>
+  <Repository>ghcr.io/hustenreizjuengling/picache:latest</Repository>
+  <Registry>https://github.com/Hustenreizjuengling/PiCache/pkgs/container/picache</Registry>
+  <Network>br0</Network>
+  <MyIP>192.0.2.53</MyIP>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Hustenreizjuengling/PiCache/issues</Support>
+  <Project>https://github.com/Hustenreizjuengling/PiCache</Project>
+  <Overview>PiCache: filtering DNS server and download cache for the home network, with parental controls, encrypted DNS, an optional DHCP server and a web UI. Give it a fixed address outside the router's DHCP pool (MyIP) and point the router's DNS server at it.</Overview>
+  <Category>Network:DNS Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams>--cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID --security-opt=no-new-privileges:true --read-only --tmpfs=/tmp:size=64m</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>A pool path for appdata (not /mnt/user) and a fixed LAN address outside the router's DHCP pool.</Requires>
+  <Config Name="Data" Target="/data" Default="/mnt/cache/appdata/picache/data" Mode="rw" Description="Configuration, logs, keys (a pool path, not /mnt/user; owned by 99:100, mode 0750)" Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/appdata/picache/data</Config>
+  <Config Name="Cache" Target="/cache" Default="/mnt/cache/appdata/picache/cache" Mode="rw" Description="The local download cache (owned by 99:100, mode 0750)" Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/appdata/picache/cache</Config>
+  <Config Name="PICACHE_RUN_AS" Target="PICACHE_RUN_AS" Default="99:100" Mode="" Description="The user PiCache runs as after binding its ports (nobody:users; never empty or 0)" Type="Variable" Display="advanced" Required="true" Mask="false">99:100</Config>
+  <Config Name="TZ" Target="TZ" Default="Etc/UTC" Mode="" Description="Time zone of scheduled backups" Type="Variable" Display="advanced" Required="false" Mask="false">Etc/UTC</Config>
+</Container>

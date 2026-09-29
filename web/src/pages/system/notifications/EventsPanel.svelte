@@ -41,7 +41,7 @@
   <span class="desc">{eventText(e.key, events).description || '–'}</span>
 {/snippet}
 
-<Panel title={t('system.notifications.events.title')} description={t('system.notifications.events.description')} flush>
+<Panel id="notify-set-events" title={t('system.notifications.events.title')} description={t('system.notifications.events.description')} flush>
   <Table
     {columns}
     rows={events}

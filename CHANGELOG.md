@@ -5,6 +5,92 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Databases:** no schema step; 0.15.0 opens the databases of this version.
+  The new setting `web.onboardingDone` loads as `true` on upgraded
+  installations (no getting-started checklist; a fresh installation shows
+  it).
+- **Units:** only comments change; the new binary runs with the 0.15.0
+  units.
+- **Architectures:** armv7 installations stay on the armv7 build (the
+  updater reads the ARM version from the running binary). New builds for
+  armv6, 386 and riscv64 (best effort).
+- **API:** `GET /network/check` gains `self.dynamic4` and `requester`;
+  `GET /system/update` reports the mode `package` with `package`;
+  `POST /system/update/apply` answers 409 in that mode; new
+  `GET /api/v1/openapi.json`. The batch 409 of
+  `POST /filter/lists/batch` and the health check `blocklists` name the
+  entry budget of the host, which now follows its memory.
+
+### Added
+
+- **Debian packages** `picache_<version>_<arch>.deb` for amd64, arm64, armhf
+  (the armv6 build), i386 and riscv64 in every release. They install
+  `/usr/bin/picache` and the units in `/usr/lib/systemd/system`, never the
+  update helper: updates are installed with apt (the web UI and
+  `picache update` show the steps). The package refuses to install over
+  `install.sh` and to downgrade without `PICACHE_ALLOW_DOWNGRADE=1`, never
+  prints the setup token, and `apt purge` deletes only the default paths;
+  `install.sh` and `get-picache.sh` refuse to touch a package installation.
+  No apt repository yet; verify the package against the signed
+  `SHA256SUMS` first.
+- **More architectures:** `picache-linux-armv6` (Pi Zero W, Pi 1),
+  `picache-linux-386` (SSE2) and `picache-linux-riscv64`, best effort (built,
+  vetted and started under emulation in CI); container images also for
+  linux/riscv64.
+- **More distributions** for `install.sh` and `get-picache.sh`: Ubuntu
+  22.04+, Fedora, RHEL/Alma/Rocky 9+, Arch, openSUSE Tumbleweed and Leap 16
+  besides Debian 12/13; systemd 247 or later is required. SELinux labels
+  are restored with `restorecon`; while firewalld or ufw is active the
+  installer prints the commands for PiCache's ports (it never changes the
+  firewall); missing mount programs are named with the command of the
+  distribution.
+- **NAS and macvlan:** `deploy/docker/docker-compose.macvlan.yml` (an own LAN
+  address) and templates for Unraid, TrueNAS SCALE and Synology with the
+  full hardening and a non-root `PICACHE_RUN_AS`.
+- **Translations:** every language except English is loaded when chosen;
+  `npm run check` checks keys, plural forms, placeholders and commands of
+  every language, and `docs/TRANSLATING.md` describes how to add one.
+- **Getting started:** a checklist on the Overview for new installations
+  (upstreams and lists, a fixed address, the router, a test from a device),
+  based on `self.dynamic4` and `requester` of `GET /network/check`; step-by-
+  step guides for single devices (**DNS → Network check → Set up a device**,
+  `docs/DEVICES.md`).
+- **Settings search** in the header: a combobox over every settings page and
+  option, matched in the browser; a hit opens the page at the option.
+- **Guides:** `docs/ROUTERS.md` (OPNsense, pfSense, OpenWrt, ASUS, TP-Link,
+  UniFi, Speedport, Vodafone Station) and `docs/GUIDES.md` (Unbound as a
+  local recursive resolver, filtering away from home with WireGuard or
+  Tailscale, Home Assistant, firewall rules on the host and on the router).
+- **OpenAPI 3.1** description of the whole API at `GET /api/v1/openapi.json`
+  (read permission), checked against the route registry and the settings.
+- **Docker Hub mirror** of the release images (optional, copied by digest
+  from GHCR) in the release workflow.
+
+### Changed
+
+- The **entry budget** of the blocklists follows the memory of the host
+  (the container's limit, else the machine's nominal memory):
+  4 000 000 entries from 1 GiB, less below (2 000 000 with 512 MB), at least
+  500 000. The minimum is 512 MB of memory.
+- `install.sh` runs everything from `main` on its last line (the Debian
+  package's maintainer scripts share its functions); the purge also deletes
+  the log directory `/var/log/picache`, and keeps and locks the `picache`
+  account while kept directories hold its files. Raspberry Pi OS 32-bit
+  (`ID=raspbian`) counts as Debian.
+- `get-picache.sh` finds the CA bundle of every supported distribution,
+  installs missing tools with `apt-get`, `dnf` or `zypper`, needs OpenSSL 3
+  and explains a failed signature check in FIPS mode.
+- The hints for missing NFS and SMB clients name the package of every
+  distribution family.
+
+### Declined
+
+- **Nightly container images:** a scheduled job would need
+  `packages: write`, with which it could overwrite `latest` and `X.Y`.
+  Build `main` locally with `docker compose up -d --build` instead.
+
 ## [0.15.0] - 2026-09-27
 
 ### Upgrade notes

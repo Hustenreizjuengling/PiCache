@@ -15,5 +15,5 @@
 </script>
 
 <Panel id="dns-set-dnssec" title={t('dns.settings.dnssec.title')}>
-  <Toggle bind:checked={d.dnssec} label={t('dns.settings.dnssec.label')} description={t('dns.settings.dnssec.help')} />
+  <Toggle bind:checked={d.dnssec} id="dns-field-dnssec" label={t('dns.settings.dnssec.label')} description={t('dns.settings.dnssec.help')} />
 </Panel>

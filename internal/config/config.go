@@ -94,6 +94,13 @@ type Config struct {
 
 	MountRoot string // PICACHE_MOUNT_ROOT: the only place NAS stores may live, default /srv/picache
 
+	// MemoryLimit is the memory PiCache may use in bytes (the cgroup v2
+	// limit, else MemTotal rounded up to the machine's nominal size,
+	// filter.NominalMemory; 0 = unknown). Not an environment variable:
+	// `picache serve` reads it at start; the entry budget of the
+	// blocklists follows it (filter.BudgetFor).
+	MemoryLimit uint64
+
 	// DHCP (PICACHE_DHCP) decides which DHCP sockets are opened at start,
 	// before the privilege drop: unset, the markers the DHCP service keeps
 	// in the data directory; off, none ever (the DHCP server cannot be

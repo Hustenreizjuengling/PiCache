@@ -12,9 +12,11 @@ them privately as described in [docs/SECURITY.md](docs/SECURITY.md).
 
 - Go 1.27
 - Node.js 22 with npm (web UI)
-- GNU make and a POSIX shell (`make dist` also needs git and GNU tar)
-- Optional: Docker (container image, installer smoke test) and ShellCheck
-  (the CI lints the shell scripts with it)
+- GNU make and a POSIX shell (`make dist` also needs git, GNU tar and
+  `dpkg-deb` from the package `dpkg`, for the Debian packages; it stops with
+  "make dist: needs dpkg-deb (package dpkg)" without it)
+- Optional: Docker (container image, the installer and package tests) and
+  ShellCheck (the CI lints the shell scripts with it)
 
 ## Build, test and lint
 
@@ -24,10 +26,10 @@ The `Makefile` has these targets:
 make              # web UI + bin/picache for this machine (same as `make all`)
 make web          # npm ci + vite build into internal/webui/dist
 make build        # bin/picache; embeds whatever internal/webui/dist holds
-make build-all    # static bin/picache-linux-{amd64,arm64,armv7} (run `make web` first)
-make dist VERSION=v1.2.3   # web UI + the release files in dist/ (see Releases)
+make build-all    # static bin/picache-linux-{386,amd64,arm64,armv6,armv7,riscv64} (run `make web` first)
+make dist VERSION=v1.2.3   # web UI + the release files in dist/, Debian packages included (see Releases)
 make test         # go test ./...
-make vet          # go vet ./... for this platform and for linux/amd64
+make vet          # go vet ./... for this platform, linux/amd64, linux/386, linux/riscv64 and linux/arm (GOARM=6)
 make lint         # fails if a Go file under cmd/ or internal/ is not gofmt-formatted
 make docker       # container image from deploy/docker/Dockerfile
 make clean        # remove bin/, dist/ and the built UI
@@ -37,12 +39,23 @@ The CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) also runs these
 checks. You can run them before you push:
 
 ```sh
-cd web && npm ci && npm run check            # svelte-check: 0 errors, 0 warnings
+cd web && npm ci && npm run check            # svelte-check (0 errors, 0 warnings), the translation and search-index checks
+cd web && npm run build                      # also checks the bundle sizes
 GOOS=linux GOARCH=arm GOARM=7 go vet ./...   # 32-bit ARM
+GOARCH=386 go test ./...                     # 32-bit (on Linux or Windows amd64)
 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-shellcheck -s sh deploy/install.sh scripts/test-install.sh scripts/release-notes.sh
-sh scripts/test-install.sh bin/picache-linux-amd64   # installer smoke test (Docker)
+shellcheck -s sh deploy/install.sh scripts/*.sh
+shellcheck -s sh -e SC2154 -e SC2034 deploy/debian/*.sh   # fragments of the maintainer scripts
+sh scripts/test-get-picache.sh                             # get-picache.sh (no Docker)
+sh scripts/test-install.sh bin/picache-linux-amd64 debian:13   # installer test (Docker; also fedora:latest, archlinux:latest, opensuse/tumbleweed:latest)
+make dist VERSION=v0.0.0-dev && sh scripts/check-dist.sh dist v0.0.0-dev && sh scripts/test-deb.sh dist debian:13
 ```
+
+`scripts/test-deb.sh` is needed whenever `deploy/debian`, `deploy/systemd` or
+`deploy/install.sh` change: the package's maintainer scripts are
+`install.sh` without its first and last line plus `deploy/debian/<name>.sh`.
+So `install.sh` keeps its constants and functions at the top level, does
+everything else in `main`, and ends with exactly `main "$@"`.
 
 The Go tests run on Linux, Windows and macOS in the CI. They need no network
 access.
@@ -111,8 +124,13 @@ The binding rules are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Never render HTML from data (no `{@html}`, no `innerHTML`), no inline
   scripts, no `eval`, no requests to other origins. The Content-Security-Policy
   enforces most of this.
-- Every string exists in English and German (`web/src/i18n/{en,de}`).
-  German uses "du". Sentence case everywhere.
+- **Every string exists in every language** (`web/src/i18n/<id>/`):
+  a change that adds or changes a UI text translates it into every language
+  in the same pull request (the types and `npm run check` refuse missing
+  keys, plural forms, placeholders or changed commands). The glossary and
+  the rules are in [docs/TRANSLATING.md](docs/TRANSLATING.md);
+  German uses "du". Sentence case everywhere. Maintainers review the
+  code-like parts (commands, paths, options) of every translation.
 - Pages work at 360 px width, by keyboard, in light and dark mode and with
   `prefers-reduced-motion`.
 
@@ -189,17 +207,28 @@ then:
 
 - checks the tag and takes the release notes from `CHANGELOG.md`; it stops
   if the section is missing or empty;
-- runs `make dist VERSION=<tag>`: the web UI, the three static binaries,
-  `picache-deploy.tar.gz` and `SHA256SUMS` in `dist/`;
+- runs `make dist VERSION=<tag>`: the web UI, the six static binaries, the
+  five Debian packages, `picache-deploy.tar.gz` and `SHA256SUMS` in `dist/`,
+  then `scripts/check-dist.sh`;
 - signs `SHA256SUMS` in a separate job (environment `release`, no checkout,
   no third-party actions) with the secret `RELEASE_SIGNING_KEY` into
   `SHA256SUMS.sig`, verifies the signature against `docs/release-key.pem`,
   and checks the checksums and that the amd64 binary reports the tag;
-- creates the GitHub release with these seven files (with `get-picache.sh`), as a pre-release for tags
-  with a hyphen;
+- creates the GitHub release with exactly these files (the list of
+  `BINARIES` and `DEB_ARCHES` of the Makefile, repeated in the workflow's job
+  env, plus `get-picache.sh`, `picache-deploy.tar.gz`, `SHA256SUMS` and
+  `SHA256SUMS.sig`), as a pre-release for tags with a hyphen;
 - then builds and pushes the image `ghcr.io/hustenreizjuengling/picache` for
-  linux/amd64, linux/arm64 and linux/arm/v7, tagged `X.Y.Z` and, for stable
-  releases, also `X.Y` and `latest`.
+  linux/amd64, linux/arm64, linux/arm/v7 and linux/riscv64 (the platforms of
+  the distroless base image; it has no arm/v6 and no 386), tagged `X.Y.Z` and,
+  for stable releases, also `X.Y` and `latest`;
+- and, when Docker Hub is set up (below), copies that image by digest to
+  Docker Hub with the same tags.
+
+A new architecture is added in one change to the Makefile (`BINARIES`,
+`DEB_ARCHES`, `cross-build`), both workflows' env, `scripts/get-picache.sh`
+(`arch`), `scripts/build-deb.sh` and `update.AssetName`/`update.DebianArch`;
+`internal/update/assets_test.go` checks that they agree.
 
 Nothing is published when a step before the release fails. If the workflow
 fails, fix the cause, then either re-run the failed jobs (for a temporary
@@ -209,10 +238,14 @@ it may have left, and tag the fixed commit again. Never move the tag of a
 published release, because installations may already run it: publish a new
 patch version instead.
 
-`make dist VERSION=v1.2.0` builds the same files locally (it needs git and
-GNU tar; on macOS install `gnu-tar` and pass `TAR=gtar`). It refuses versions
-that are not SemVer with a `v` prefix, and it packs only files that git
-tracks.
+`make dist VERSION=v1.2.0` builds the same files locally (it needs git, GNU
+tar and `dpkg-deb`; on macOS install `gnu-tar` and pass `TAR=gtar`). It
+refuses versions that are not SemVer with a `v` prefix or whose pre-release
+part contains a hyphen (`v1.2.3-beta-2`: Debian would sort such a version
+differently, `scripts/deb-version.sh`), and it packs only files that git
+tracks. The `Maintainer` of the packages is the Makefile variable
+`DEB_MAINTAINER` (default `PiCache <picache@invalid>`, a placeholder until a
+contact address is published). Lintian cleanliness is not a goal.
 
 ### One-time setup: the signing key
 
@@ -254,6 +287,25 @@ After the first release, open the package
 visibility to public (**Package settings → Change visibility**): GitHub
 creates new container packages as private, even for a public repository.
 
+### Optional: the Docker Hub mirror
+
+The job `dockerhub` of the release workflow copies the released image from
+GHCR to Docker Hub by digest (never a rebuild) with the same tags. It is
+skipped while the secret `DOCKERHUB_TOKEN` is missing. To set it up:
+
+1. On Docker Hub, create the repository (for example `<namespace>/picache`)
+   and a **repository-scoped access token** with read and write access to
+   it (never the account password).
+2. On GitHub, **Settings → Environments → New environment** `dockerhub` with
+   **Deployment branches and tags → Selected branches and tags** and a tag
+   rule `v*`. Add the environment secrets `DOCKERHUB_USERNAME` (the Docker
+   Hub user) and `DOCKERHUB_TOKEN` (the access token).
+3. Add the repository variable **Settings → Secrets and variables → Actions →
+   Variables** `DOCKERHUB_IMAGE` = `<namespace>/picache`.
+
+The job reads the images from GHCR with `packages: read` only and runs no
+checked-out code.
+
 ### Nightly builds and the nightly key
 
 `.github/workflows/nightly.yml` publishes a nightly pre-release of `main`
@@ -276,5 +328,7 @@ tags → Selected branches** and the rule `main`, and add the environment
 secret `NIGHTLY_SIGNING_KEY` (the whole PEM file):
 `gh secret set NIGHTLY_SIGNING_KEY --env nightly --repo Hustenreizjuengling/PiCache < picache-nightly-key.pem`.
 The workflow verifies every signature against `docs/nightly-key.pem` before
-it publishes. Nightlies push no container images, and hosts install them only
-with `install.sh --nightly`.
+it publishes. Nightlies push no container images (a scheduled job would need
+`packages: write`, with which it could overwrite `latest`; build `main`
+locally with `docker compose up -d --build` instead), and hosts install them
+only with `install.sh --nightly`. Nightlies carry Debian packages too.

@@ -137,7 +137,9 @@ unprivileged Proxmox LXC container.
 
 **Web UI and operations**
 
-- English and German UI with dashboard, live query and download streams,
+- A web UI in English and German with a getting-started checklist for new installations, step-by-step
+  guides for single devices, a search over all settings, dashboard, live
+  query and download streams,
   query log, statistics and health checks with hints. Statistics over up to
   a year (daily summaries), top domains and upstreams with their response
   times, query types, an estimate of the distinct domains, activity charts
@@ -184,9 +186,13 @@ unprivileged Proxmox LXC container.
 - Notifications through ntfy, Gotify or a webhook (Home Assistant) when the
   storage goes offline, a health check fails, an update is out or installed,
   or a backup fails.
-- A single static binary for Linux amd64, arm64 and armv7. Deploy it with
-  hardened systemd units, in a Proxmox LXC container, or as a distroless
-  Docker image.
+- A single static binary for Linux amd64, arm64 and armv7 (best effort:
+  armv6, 386 and riscv64). Deploy it with hardened systemd units on Debian,
+  Ubuntu, Fedora, RHEL/Alma/Rocky, Arch or openSUSE, as a Debian package
+  (updated with apt), in a Proxmox LXC container, or as a distroless Docker
+  image (also with its own LAN address, and with templates for Unraid,
+  TrueNAS SCALE and Synology). The REST API is described in OpenAPI 3.1
+  (`GET /api/v1/openapi.json`).
 - Updates: the UI shows new releases with their notes and installs one on
   request (the program and its systemd unit files), only with a valid
   release signature and with an automatic rollback if the new version does
@@ -264,7 +270,8 @@ is not a deployment target.
 
 ## Quick start
 
-**Debian 12/13 (bare metal, VM, Raspberry Pi, LXC), one line:**
+**Linux with systemd (Debian, Ubuntu, Fedora, RHEL/Alma/Rocky, Arch,
+openSUSE; bare metal, VM, Raspberry Pi, LXC), one line:**
 
 ```sh
 curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh
@@ -275,8 +282,9 @@ The script verifies the release signature before it installs anything
 ([details and options](docs/DEPLOYMENT.md#one-line-install); to read it
 first, download it and run `sudo sh get-picache.sh`).
 
-**Debian 12/13 by hand:** download the binary for
-your machine (`picache-linux-amd64`, `-arm64` or `-armv7`),
+**By hand:** download the binary for
+your machine (`picache-linux-amd64`, `-arm64`, `-armv7`, `-armv6`, `-386` or
+`-riscv64`),
 `picache-deploy.tar.gz`, `SHA256SUMS` and `SHA256SUMS.sig` from the
 [latest release](https://github.com/Hustenreizjuengling/PiCache/releases/latest)
 and check them ([how](docs/DEPLOYMENT.md#download)). Then:
@@ -287,6 +295,12 @@ sudo sh deploy/install.sh --binary ./picache-linux-amd64
 sudo picache setup-token
 # open http://<ip>:8080/ and create the admin account
 ```
+
+**Debian package** (Debian, Ubuntu, Raspberry Pi OS): download
+`picache_<version>_<arch>.deb` with `SHA256SUMS` and `SHA256SUMS.sig`,
+verify them ([how](docs/DEPLOYMENT.md#debian-package): `apt install ./file`
+checks no signature), then `sudo apt install ./picache_<version>_<arch>.deb`
+and `sudo picache setup-token`. Updates are installed the same way.
 
 **Proxmox VE (unprivileged LXC):** create a Debian 12/13 container with
 `nesting=1` and a static IP, copy the binary and `picache-deploy.tar.gz`
@@ -303,13 +317,21 @@ docker exec -u 65532:65532 picache /picache setup-token
 # open http://<host-ip>:8080/
 ```
 
-Then point your router's DHCP DNS option at PiCache. If port 53 is already
-in use (for example by systemd-resolved), see
-[Port 53 conflicts](docs/DEPLOYMENT.md#port-53-conflicts).
+**A NAS or a host whose ports 80/443 are taken:** the macvlan compose file
+and the templates for Unraid, TrueNAS SCALE and Synology give PiCache its
+own LAN address ([NAS](docs/DEPLOYMENT.md#nas)).
+
+Then point your router's DHCP DNS option at PiCache
+([ROUTERS.md](docs/ROUTERS.md) has the steps for common routers). If port 53
+is already in use (for example by systemd-resolved), see
+[Port 53 conflicts](docs/DEPLOYMENT.md#port-53-conflicts). More guides:
+[single devices](docs/DEVICES.md), and [Unbound, VPNs, Home Assistant and
+firewall rules](docs/GUIDES.md).
 
 **Updates:** **System → Updates** in the web UI shows new releases and, on
 bare metal, VMs and LXC, installs them; on the command line use
-`sudo picache update`, with Docker `docker compose pull && docker compose up -d`.
+`sudo picache update`, with Docker `docker compose pull && docker compose up -d`,
+with the Debian package `apt install` of the next package.
 See [Updates](docs/DEPLOYMENT.md#updates).
 
 **From source** (Go 1.27, Node.js 22, GNU make):
@@ -318,7 +340,7 @@ See [Updates](docs/DEPLOYMENT.md#updates).
 git clone https://github.com/hustenreizjuengling/picache.git
 cd picache
 make              # web UI + bin/picache for this machine
-make build-all    # static bin/picache-linux-{amd64,arm64,armv7}
+make build-all    # static bin/picache-linux-{386,amd64,arm64,armv6,armv7,riscv64}
 ```
 
 Install such a binary with `sudo sh deploy/install.sh --binary
@@ -370,7 +392,8 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Go 1.27 (`go 1.27.0` in `go.mod`); the code uses `encoding/json/v2`,
   which is part of the standard library from Go 1.27.
 - No CGO (`CGO_ENABLED=0`). Release builds are static binaries for
-  linux/amd64, linux/arm64 and linux/arm (GOARM=7), built with `-trimpath`
+  linux/amd64, linux/arm64, linux/arm (GOARM=7 and GOARM=6), linux/386
+  (GO386=sse2) and linux/riscv64, and Debian packages of them, built with `-trimpath`
   and the version set through `-ldflags`. The code also builds and its tests
   run on Windows and macOS for development (`*_other.go` fallbacks next to
   the `*_linux.go` files).
@@ -414,8 +437,10 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `vite build` writes to `internal/webui/dist`, which the binary embeds with
   `go:embed`. Hashed assets are cached for a year; `index.html` is
   revalidated on every load.
-- English and German: `web/src/i18n/{en,de}/*.ts`; the German dictionaries
-  are type-checked against the English keys.
+- Languages: `web/src/i18n/<id>/*.ts`, every dictionary type-checked
+  against the English keys; `npm run check` also checks plural forms,
+  placeholders and commands, and each language except English is its own
+  chunk loaded on demand ([docs/TRANSLATING.md](docs/TRANSLATING.md)).
 
 **Data**
 
@@ -443,8 +468,10 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **Deployment**
 
-- Debian 12/13 with systemd (bare metal, VM, Raspberry Pi):
-  `deploy/install.sh` installs `picache.service`, which runs as the system
+- Linux with systemd 247 or later (Debian 12/13, Ubuntu 22.04+, Fedora,
+  RHEL/Alma/Rocky 9+, Arch, openSUSE Tumbleweed and Leap 16; bare metal, VM,
+  Raspberry Pi): `deploy/install.sh` (or the Debian package, whose
+  maintainer scripts share its code) installs `picache.service`, which runs as the system
   user `picache` with only `CAP_NET_BIND_SERVICE` (and `CAP_NET_RAW`, used
   only at start for the optional IPv6 router advertisements and dropped
   right after; PiCache refuses to run if that fails), `NoNewPrivileges=yes`,
@@ -466,6 +493,10 @@ full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   clears it with every other capability), `no-new-privileges` and a
   read-only root filesystem; the image's health check runs `picache healthcheck`, whose
   DNS probe is answered locally and never counted or logged.
+- NAS: `deploy/docker/docker-compose.macvlan.yml` and templates for Unraid,
+  TrueNAS SCALE and Synology (`deploy/unraid`, `deploy/truenas`,
+  `deploy/synology`) with the same hardening and a non-root
+  `PICACHE_RUN_AS`.
 - Proxmox VE: an unprivileged Debian container with `nesting=1` and the same
   installer. NAS shares are mounted on the Proxmox host and bind-mounted into
   the container, because an unprivileged container cannot mount SMB or NFS.
@@ -475,19 +506,23 @@ on pushes to `main` and on pull requests)
 
 - Web UI: `npm ci`, `svelte-check` and `vite build` on Node 22.
 - Go on Ubuntu, Windows and macOS: `go vet` and `go test ./...`; on Linux
-  also `gofmt` and `go vet` for linux/arm (v7).
+  also `gofmt`, `go vet` for linux/arm (v7 and v6), linux/386 and
+  linux/riscv64, and the tests as linux/386.
 - `govulncheck` (v1.8.0) against the dependencies.
-- Static binaries for the three Linux targets with the embedded UI, kept as
-  workflow artifacts for 7 days.
+- Static binaries for the six Linux targets with the embedded UI, kept as
+  workflow artifacts for 7 days; `picache version` and the privilege tests
+  under QEMU for 386, riscv64 and armv6.
 - Deployment files: `sh -n` and ShellCheck for the shell scripts,
-  `docker compose config` for both compose files, and an installer smoke test
-  in a Debian container.
-- A multi-arch Docker build (linux/amd64, linux/arm64, linux/arm/v7) that is
-  not pushed anywhere, and a check of `make dist` (the release files).
+  `docker compose config` for every compose file, and the installer test in
+  Debian, Fedora, Arch and openSUSE containers.
+- A multi-arch Docker build (linux/amd64, linux/arm64, linux/arm/v7,
+  linux/riscv64) that is not pushed anywhere, and a check of `make dist`
+  (the release files, `scripts/check-dist.sh`) with the Debian package test
+  on Debian 12 and 13.
 
 **Releases** ([`.github/workflows/release.yml`](.github/workflows/release.yml),
-on pushed `v*` tags): `make dist` builds the three static binaries,
-`picache-deploy.tar.gz` and `SHA256SUMS`; the workflow signs `SHA256SUMS`
+on pushed `v*` tags): `make dist` builds the six static binaries, the five
+Debian packages, `picache-deploy.tar.gz` and `SHA256SUMS`; the workflow signs `SHA256SUMS`
 with the Ed25519 release key, publishes a GitHub release with the
 `CHANGELOG.md` section as notes (a pre-release for tags with a hyphen), and
 pushes multi-arch images to `ghcr.io/hustenreizjuengling/picache` (`X.Y.Z`,
@@ -565,15 +600,16 @@ bin/picache serve --dev --data-dir ./data --cache-dir ./cache \
 ```
 
 The UI development server (`npm run dev` in `web/`) proxies `/api` to
-`127.0.0.1:8080`. `scripts/test-install.sh bin/picache-linux-amd64` runs the
-installer smoke test in a throwaway Debian container (needs Docker). See
+`127.0.0.1:8080`. `scripts/test-install.sh bin/picache-linux-amd64 [image]`
+runs the installer test in a throwaway container, `scripts/test-deb.sh dist`
+the Debian package test (both need Docker). See
 [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request; the
 project follows its [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Kurzüberblick (Deutsch)
 
 PiCache ist ein filternder DNS-Server und ein Download-Cache in einem
-einzigen Programm mit Weboberfläche (Deutsch und Englisch).
+einzigen Programm mit Weboberfläche (auf Deutsch und Englisch).
 
 - **DNS-Filter** für das ganze Netz: Blocklisten, eigene Regeln (auch pro
   Abfragetyp, mit eigener Antwort, Import und Export), Sperren nach
@@ -619,8 +655,12 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
   Oberfläche, Host-Ressourcen, Warnungsverlauf, bereinigtes Support-Paket
   und `picache db salvage` für eine beschädigte Konfigurationsdatenbank –
   alle Daten bleiben auf dem Gerät.
-- **Betrieb** auf Debian 12/13 (auch Raspberry Pi 4/5), in einem Proxmox-LXC
-  oder mit Docker; Kommandozeile (`picache status`, `pause`, `allow`,
+- **Betrieb** auf Linux mit systemd (Debian, Ubuntu, Fedora, RHEL/Alma/Rocky,
+  Arch, openSUSE; auch Raspberry Pi), als Debian-Paket (Updates mit apt), in
+  einem Proxmox-LXC oder mit Docker (auch mit eigener LAN-Adresse und mit
+  Vorlagen für Unraid, TrueNAS SCALE und Synology); Anleitungen für Router,
+  einzelne Geräte, Unbound, VPN, Home Assistant und Firewall-Regeln;
+  Checkliste für den Einstieg und Suche über alle Einstellungen; Kommandozeile (`picache status`, `pause`, `allow`,
   `config` …), Einstellungen als JSON, Protokoll auch in eine Datei oder an
   einen Syslog-Server, optionaler NTP-Server und Proxy für ausgehende
   Downloads, ein zweites PiCache als Folgesystem (Sync) und Geräte mit
@@ -631,14 +671,18 @@ einzigen Programm mit Weboberfläche (Deutsch und Englisch).
   Kommandozeile, bei Docker `docker compose pull && docker compose up -d`).
 - **Stand:** frühe Entwicklung. Releases gibt es auf
   [GitHub](https://github.com/Hustenreizjuengling/PiCache/releases)
-  (Binärdateien mit signierten Prüfsummen) und als Container-Image
-  `ghcr.io/hustenreizjuengling/picache`.
+  (Binärdateien für amd64, arm64 und armv7, ohne Gewähr auch armv6, 386 und
+  riscv64, sowie Debian-Pakete, mit signierten Prüfsummen) und als
+  Container-Image `ghcr.io/hustenreizjuengling/picache`.
 
-Schnellstart auf Debian: Binärdatei und `picache-deploy.tar.gz` des neuesten
+Schnellstart: `curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh`
+(prüft die Signatur und installiert). Von Hand: Binärdatei und `picache-deploy.tar.gz` des neuesten
 Releases herunterladen und prüfen, `tar -xzf picache-deploy.tar.gz`, dann
 `sudo sh deploy/install.sh --binary <datei>` und `sudo picache setup-token`
 ausführen und `http://<ip>:8080/` öffnen.
-Anschließend im Router (DHCP) die IP von PiCache als DNS-Server eintragen.
+Anschließend im Router (DHCP) die IP von PiCache als DNS-Server eintragen
+([docs/ROUTERS.md](docs/ROUTERS.md), englisch; die FRITZ!Box-Schritte zeigt
+auch der Netzwerk-Check).
 Auf einem Raspberry Pi gehört der Cache auf eine USB-SSD, nicht auf die
 SD-Karte. Details stehen in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 (englisch). Sicherheitslücken bitte vertraulich melden, siehe

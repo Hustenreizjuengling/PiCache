@@ -698,7 +698,7 @@ const de: Messages<typeof en> = {
   'settings.sourceTitle': 'Dienstliste',
   'settings.sourceText': 'Woher PiCache die Liste der Download-Dienste und ihrer Hostnamen bekommt.',
   'settings.sourceUrlHelp': 'Eine https-Adresse im Format von uklans/cache-domains.',
-  'settings.httpsUrl': 'Gib eine https://-Adresse ein.',
+  'settings.httpsUrl': 'Gib eine Adresse mit https:// ein.',
   'settings.updateInterval': 'Aktualisieren alle',
   'settings.updateIntervalHelp': '0 aktualisiert nur, wenn du die Liste auf der Dienste-Seite herunterlädst.',
   'settings.servicesLink': 'Download-Dienste öffnen',

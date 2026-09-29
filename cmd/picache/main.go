@@ -314,6 +314,7 @@ func serve(args []string) int {
 	addLogSinks(log, cfg)
 	slog.SetDefault(log)
 	setMemoryLimit(log)
+	cfg.MemoryLimit = budgetMemory()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hup := notifyHUP()

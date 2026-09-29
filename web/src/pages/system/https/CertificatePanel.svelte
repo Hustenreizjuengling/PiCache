@@ -33,7 +33,7 @@
   )
 </script>
 
-<Panel title={t('system.https.cert.title')} description={t('system.https.cert.description')}>
+<Panel id="https-set-cert" title={t('system.https.cert.title')} description={t('system.https.cert.description')}>
   {#snippet actions()}
     {#if status.checkedAt}
       <span class="small muted" title={formatDateTime(status.checkedAt)}>

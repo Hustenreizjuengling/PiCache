@@ -30,8 +30,10 @@ export default defineConfig({
     sourcemap: false,
     target: 'es2022',
     modulePreload: { polyfill: false }, // modern browsers only; never an inline script
-    // The main chunk carries every translation (en and de, about 635 kB of
-    // source in v0.15.0); pages are split off by route.
+    // The main chunk carries English (the fallback); every other language is
+    // a chunk of its own (assets/<id>-<hash>.js) and pages are split off by
+    // route. scripts/check-bundle.mjs (after vite build) keeps the entry
+    // chunk at most 880 000 bytes and each language chunk 450 000 bytes.
     chunkSizeWarningLimit: 900,
   },
   server: {

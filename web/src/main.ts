@@ -4,6 +4,7 @@ import './app.css'
 
 import { mount } from 'svelte'
 import App from './App.svelte'
+import { initI18n } from './i18n/index.svelte'
 import { setApiHooks } from './lib/api'
 import { session } from './lib/session.svelte'
 
@@ -25,4 +26,7 @@ document.addEventListener('visibilitychange', () => {
   void session.refresh()
 })
 
-export default mount(App, { target: document.getElementById('app')! })
+// The language known at start (this browser's pick, else the browser's) is
+// loaded before anything is shown, so no English flashes up first. (No
+// top-level await: it would split the entry chunk.)
+void initI18n().then(() => mount(App, { target: document.getElementById('app')! }))

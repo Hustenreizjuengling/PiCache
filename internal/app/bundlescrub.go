@@ -106,8 +106,9 @@ var settingRules = map[string]settingRule{
 	"ntp.enabled": ruleKeep, "ntp.stratum": ruleKeep,
 
 	"web.allowedHosts": ruleHost, "web.allowedNetworks": ruleAddr, "web.language": ruleKeep, "web.metricsEnabled": ruleKeep,
-	"web.redirectToHttps": ruleKeep, "web.restrictToNetworks": ruleKeep, "web.sessionIdleMinutes": ruleKeep,
-	"web.sessionMaxHours": ruleKeep, "web.tlsMinVersion": ruleKeep, "web.trustedProxies": ruleAddr,
+	"web.onboardingDone": ruleKeep, "web.redirectToHttps": ruleKeep, "web.restrictToNetworks": ruleKeep,
+	"web.sessionIdleMinutes": ruleKeep, "web.sessionMaxHours": ruleKeep, "web.tlsMinVersion": ruleKeep,
+	"web.trustedProxies": ruleAddr,
 }
 
 // Redaction counters of a bundle file (MANIFEST.txt).

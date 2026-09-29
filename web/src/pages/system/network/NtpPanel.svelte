@@ -70,8 +70,8 @@
     <form id="ntp-{formId}" onsubmit={save} novalidate>
       <fieldset class="stack" disabled={!session.isAdmin}>
         {#if general}<Notice tone="fail">{general}</Notice>{/if}
-        <Toggle bind:checked={d.enabled} label={t('system.network.ntp.enabled')} description={t('system.network.ntp.enabledHelp')} />
-        <Field label={t('system.network.ntp.stratum')} help={t('system.network.ntp.stratumHelp', { def: form.defaults?.stratum ?? 3 })} error={form.error('stratum') ?? (invalid ? rangeError(d.stratum, RANGES.ntpStratum) : undefined)}>
+        <Toggle bind:checked={d.enabled} id="net-field-ntp-enabled" label={t('system.network.ntp.enabled')} description={t('system.network.ntp.enabledHelp')} />
+        <Field id="net-field-ntp-stratum" label={t('system.network.ntp.stratum')} help={t('system.network.ntp.stratumHelp', { def: form.defaults?.stratum ?? 3 })} error={form.error('stratum') ?? (invalid ? rangeError(d.stratum, RANGES.ntpStratum) : undefined)}>
           <NumberInput bind:value={d.stratum} min={RANGES.ntpStratum.min} max={RANGES.ntpStratum.max} />
         </Field>
 

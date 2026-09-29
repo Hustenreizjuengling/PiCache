@@ -1,7 +1,8 @@
 <!--
   @component
   API tokens for scripts, monitoring and automated backups: list, create
-  (the secret is shown once), delete; plus the Prometheus metrics switch.
+  (the secret is shown once), delete; plus the Prometheus metrics switch
+  and a link to the OpenAPI description of the API.
   Every session manages tokens (they are created for the signed-in account):
   viewers see and create their own read tokens, admins see every account's
   tokens with their owner and may delete any of them.
@@ -163,6 +164,12 @@
         </EmptyState>
       {/snippet}
     </Table>
+    {#snippet footer()}
+      <p class="small muted">
+        {t('system.tokens.apiDocs')}
+        <a href={api.tokens.openapiUrl()} target="_blank" rel="noopener noreferrer">{t('system.tokens.openapi')}</a>
+      </p>
+    {/snippet}
   </Panel>
 
   <MetricsPanel />

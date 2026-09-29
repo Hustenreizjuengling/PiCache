@@ -85,22 +85,22 @@
 <Panel id="dns-set-ratelimit" title={t('dns.settings.rate.title')} description={t('dns.settings.rate.description')}>
   <div class="stack">
     <div class="grid">
-      <Field label={t('dns.settings.rate.qps')} help={t('dns.settings.rate.qpsHelp')} error={form.error('rateLimitQps')}>
+      <Field id="dns-field-rateLimitQps" label={t('dns.settings.rate.qps')} help={t('dns.settings.rate.qpsHelp')} error={form.error('rateLimitQps')}>
         <NumberInput bind:value={d.rateLimitQps} min={0} max={100000} unit={t('dns.shared.unit.qps')} />
       </Field>
-      <Field label={t('dns.settings.rate.burst')} help={t('dns.settings.rate.burstHelp')} error={form.error('rateLimitBurst')}>
+      <Field id="dns-field-rateLimitBurst" label={t('dns.settings.rate.burst')} help={t('dns.settings.rate.burstHelp')} error={form.error('rateLimitBurst')}>
         <NumberInput bind:value={d.rateLimitBurst} min={0} max={10000000} unit={t('dns.shared.unit.queries')} />
       </Field>
     </div>
     <div class="grid">
-      <Field label={t('dns.settings.rate.ipv4Prefix')} help={t('dns.settings.rate.ipv4PrefixHelp')} error={form.error('rateLimitIpv4Prefix')}>
+      <Field id="dns-field-rateLimitIpv4Prefix" label={t('dns.settings.rate.ipv4Prefix')} help={t('dns.settings.rate.ipv4PrefixHelp')} error={form.error('rateLimitIpv4Prefix')}>
         <NumberInput bind:value={d.rateLimitIpv4Prefix} min={8} max={32} unit={t('dns.shared.unit.prefixBits')} />
       </Field>
-      <Field label={t('dns.settings.rate.ipv6Prefix')} help={t('dns.settings.rate.ipv6PrefixHelp')} error={form.error('rateLimitIpv6Prefix')}>
+      <Field id="dns-field-rateLimitIpv6Prefix" label={t('dns.settings.rate.ipv6Prefix')} help={t('dns.settings.rate.ipv6PrefixHelp')} error={form.error('rateLimitIpv6Prefix')}>
         <NumberInput bind:value={d.rateLimitIpv6Prefix} min={32} max={64} unit={t('dns.shared.unit.prefixBits')} />
       </Field>
     </div>
-    <Field label={t('dns.settings.rate.exemptList')} optional help={t('dns.settings.rate.exemptHelp')} error={lineError(form.saveError, 'dns.rateLimitExempt')}>
+    <Field id="dns-field-rateLimitExempt" label={t('dns.settings.rate.exemptList')} optional help={t('dns.settings.rate.exemptHelp')} error={lineError(form.saveError, 'dns.rateLimitExempt')}>
       <LinesInput bind:value={d.rateLimitExempt} rows={3} placeholder="192.168.1.50/32" />
     </Field>
 

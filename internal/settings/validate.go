@@ -584,10 +584,8 @@ func (a *All) Validate() error {
 			}
 		}
 	}
-	switch w.Language {
-	case "", "en", "de":
-	default:
-		return apperr.Invalid("web.language", "must be empty, en or de")
+	if !KnownLanguage(w.Language) {
+		return apperr.Invalid("web.language", "must be empty or one of %s", strings.Join(Languages, ", "))
 	}
 	if err := w.validateAccess(); err != nil {
 		return err

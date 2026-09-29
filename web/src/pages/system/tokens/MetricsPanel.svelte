@@ -58,7 +58,7 @@
   }
 </script>
 
-<Panel title={t('system.metrics.title')} description={t('system.metrics.description')}>
+<Panel id="tokens-set-metrics" title={t('system.metrics.title')} description={t('system.metrics.description')}>
   {#if form.loadError && !form.draft}
     <Notice tone="fail">{form.loadError.message}</Notice>
   {:else if !form.draft}

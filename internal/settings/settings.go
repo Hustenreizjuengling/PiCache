@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -360,7 +361,13 @@ type Web struct {
 	AllowedHosts       []string `json:"allowedHosts"` // extra Host names (reverse proxy, custom DNS name)
 	RedirectToHTTPS    bool     `json:"redirectToHttps"`
 	MetricsEnabled     bool     `json:"metricsEnabled"`
-	Language           string   `json:"language"` // "" = browser default, "en", "de"
+	// Language is the UI language: "" (the browser's) or one of Languages.
+	Language string `json:"language"`
+	// OnboardingDone hides the getting-started checklist of the Overview.
+	// Defaults gives true, so a document stored before 0.16.0 (and every
+	// restored older backup) shows none; the first start of a fresh
+	// installation stores false (the app's detected defaults).
+	OnboardingDone bool `json:"onboardingDone"`
 	// AllowedNetworks are addresses or CIDRs (at least /8 IPv4, /32 IPv6)
 	// allowed to use the web UI and API besides the default set
 	// (netutil.WebACL) while RestrictToNetworks is on.
@@ -678,6 +685,10 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 			return nil, fmt.Errorf("settings: decode stored document: %w", err)
 		}
 		cur.normalize()
+		if lang, ok := cur.Web.forgetUnknownLanguage(); ok {
+			s.log.Warn("the stored web.language is not a language of this version; using the browser's language",
+				slog.String("language", strconv.QuoteToASCII(lang[:min(len(lang), 32)])))
+		}
 		applySecretFlags(&cur, s.bound)
 		if err := cur.Validate(); err != nil {
 			s.log.Warn("stored settings are invalid; keeping them but fix them in the UI", slog.Any("err", err))
@@ -692,8 +703,10 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 
 // DecodeStored decodes a stored settings document the way Open does after
 // this version's migrations: on top of Defaults, with web.restrictToNetworks
-// off when the document lacks it (migration v5), normalised. The API judges
-// the settings of a staged restore with it before they are applied.
+// off when the document lacks it (migration v5), normalised, and a
+// web.language this version does not know read as "" (like Open, without
+// its log line). The API judges the settings of a staged restore with it
+// before they are applied.
 func DecodeStored(doc []byte) (*All, error) {
 	cur := Defaults()
 	cur.Web.RestrictToNetworks = false
@@ -709,6 +722,7 @@ func DecodeStored(doc []byte) (*All, error) {
 		}
 	}
 	cur.normalize()
+	cur.Web.forgetUnknownLanguage()
 	cur.Sync.Token, cur.Network.Proxy.Password = nil, nil
 	return &cur, nil
 }

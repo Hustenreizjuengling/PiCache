@@ -32,6 +32,8 @@ const auth = {
 }
 
 const tokens = {
+  /** URL of the OpenAPI description of this API (JSON, read access; a plain link sends the session cookie). */
+  openapiUrl: () => apiUrl('/openapi.json'),
   list: (o?: ReqOpts) => http.get<T.TokenInfo[]>('/tokens', o),
   /** 400 with field "currentPassword" for a missing or wrong password. */
   create: (body: { name: string; scope: T.Scope; expiresInDays?: number; currentPassword: string }, o?: ReqOpts) =>
@@ -75,8 +77,9 @@ const system = {
   /**
    * Queues the update to `version` (the available version of the last check)
    * for the root helper. 400 with field "currentPassword" for a missing or
-   * wrong password; 409 when the mode is not `helper`, an update is running or
-   * the version is not the available one.
+   * wrong password; 409 when the mode is not `helper` (in mode `package`:
+   * "update it with apt"), an update is running or the version is not the
+   * available one.
    */
   applyUpdate: (body: { version: string; currentPassword: string }, o?: ReqOpts) =>
     http.post<T.UpdateQueued>('/system/update/apply', body, o),
@@ -347,7 +350,11 @@ const parental = {
 }
 
 const network = {
-  /** Router set-up checks and the devices of the neighbour table (computed at most every 30 s). */
+  /**
+   * Router set-up checks and the devices of the neighbour table (computed at
+   * most every 30 s), plus the device that asks (`requester`, per request).
+   * 503 where the network check is not available.
+   */
   check: (o?: ReqOpts) => http.get<T.NetworkCheck>('/network/check', o),
   /** 202; 409 while a scan runs, 429 within 60 s of the last one, 503 where scanning is not possible. */
   scan: (o?: ReqOpts) => http.post<T.NetworkScanStarted>('/network/scan', undefined, o),

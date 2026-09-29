@@ -145,6 +145,56 @@ const de: Messages<typeof en> = {
   'off.step3': 'Starte einen Download auf einem Gerät, das PiCache als DNS-Server nutzt.',
   'off.enable': 'Cache-Einstellungen öffnen',
   'off.storage': 'Speicher prüfen',
+
+  // Erste Schritte (Admins, bis ausgeblendet)
+  'start.title': 'Erste Schritte',
+  'start.description': 'Ein paar Schritte, bis jedes Gerät in deinem Netzwerk PiCache nutzt. Nichts hier ändert dein Netzwerk von selbst.',
+  'start.progress': '{done} von {total} erledigt',
+  'start.hide': 'Checkliste ausblenden',
+  'start.hidden': 'Checkliste ausgeblendet. Unter System › Zustand & Info kannst du sie wieder einblenden.',
+  'start.allDone': 'Alle Schritte sind erledigt. Du kannst diese Checkliste jetzt ausblenden.',
+  'start.checking': 'Wird geprüft …',
+  'start.unavailable': 'Die Netzwerkprüfung ist gerade nicht verfügbar, daher können die Schritte 2 bis 4 nicht geprüft werden.',
+  'start.unavailableStep': 'Kann gerade nicht geprüft werden.',
+  'start.state.done': 'Erledigt',
+  'start.state.open': 'Offen',
+  'start.state.unknown': 'Nicht prüfbar',
+  'start.tickedNote': 'Du hast diesen Schritt in diesem Browser als erledigt markiert.',
+  'start.upstreams.title': 'Upstream-DNS-Server und Sperrlisten wählen',
+  'start.upstreams.text':
+    'PiCache fragt die Upstream-Server nach jedem Namen, den es nicht selbst beantwortet, und sperrt, was deine Sperrlisten nennen. Prüfe beides und hake diesen Schritt dann ab.',
+  'start.upstreams.dns': 'DNS-Einstellungen',
+  'start.upstreams.lists': 'Sperrlisten',
+  'start.upstreams.tick': 'Habe ich geprüft',
+  'start.address.title': 'Diesem Rechner eine feste Adresse geben',
+  'start.address.static': '{address} ist statisch eingestellt.',
+  'start.address.dynamic':
+    'Diese Adresse kommt per DHCP und kann sich ändern. Reserviere {address} für diesen Rechner in deinem Router (DHCP-Reservierung) oder stelle sie auf dem Host statisch ein.',
+  'start.address.unknown':
+    'Das lässt sich hier nicht prüfen. Sorge dafür, dass sich die Adresse von PiCache nicht ändert, zum Beispiel mit einer DHCP-Reservierung in deinem Router.',
+  'start.address.tick': 'Habe ich reserviert',
+  'start.router.title': 'Den Router auf PiCache zeigen lassen',
+  'start.router.done': 'Geräte in deinem Netzwerk fragen PiCache, und die Netzwerkprüfung findet am Router nichts zu beheben.',
+  'start.router.doneDhcp': 'Der eigene DHCP-Server von PiCache verteilt dessen Adresse als DNS-Server.',
+  'start.router.open':
+    'Lass deinen Router {address} als einzigen DNS-Server verteilen (in seinen DHCP-Einstellungen), damit jedes Gerät PiCache nutzt. Die Netzwerkprüfung zeigt die Schritte für deinen Router.',
+  'start.router.openBridge':
+    'Lass deinen Router die Adresse des Rechners, auf dem Docker läuft, als einzigen DNS-Server verteilen (in seinen DHCP-Einstellungen), damit jedes Gerät PiCache nutzt. Die Netzwerkprüfung zeigt die Schritte für deinen Router.',
+  'start.router.fix': 'Die Netzwerkprüfung hat an deinem Router etwas zu beheben gefunden. Sie zeigt die Schritte.',
+  'start.router.fixContainer':
+    'Jede Anfrage kommt vom Gateway des Container-Netzwerks, daher kann PiCache deine Geräte nicht unterscheiden. Die Netzwerkprüfung zeigt, wie du das behebst.',
+  'start.router.link': 'Netzwerkprüfung öffnen',
+  'start.device.title': 'Mit einem Gerät testen',
+  'start.device.bridge': 'Das lässt sich in einem Container-Bridge-Netzwerk nicht prüfen.',
+  'start.device.unknown': 'Das lässt sich hier nicht prüfen.',
+  'start.device.local':
+    'Du bist auf dem PiCache-Rechner selbst (oder hinter einem Reverse-Proxy, dem nicht vertraut wird): Öffne diese Seite von einem anderen Gerät.',
+  'start.device.privacy': 'PiCache kann es nicht erkennen: Client-Adressen werden anonymisiert (Datenschutz-Einstellung).',
+  'start.device.done.one': 'Dein Gerät {device} hat PiCache in den letzten 24 h {count}-mal gefragt.',
+  'start.device.done.other': 'Dein Gerät {device} hat PiCache in den letzten 24 h {count}-mal gefragt.',
+  'start.device.open': 'Dein Gerät {address} hat PiCache noch nicht gefragt: Stelle seinen DNS-Server auf {server}.',
+  'start.device.guides': 'Anleitungen für Geräte',
+  'start.device.tick': 'Klappt auf meinem Gerät',
 }
 
 export default de

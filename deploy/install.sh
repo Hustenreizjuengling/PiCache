@@ -1,15 +1,27 @@
 #!/bin/sh
-# PiCache installer for Debian 12/13 (bare metal, VM, Proxmox LXC).
+# PiCache installer for Linux with systemd 247 or later (bare metal, VM,
+# Proxmox LXC). Supported: Debian 12/13, Ubuntu 22.04+, Fedora, RHEL/Alma/
+# Rocky 9+, Arch, openSUSE Tumbleweed and Leap 16; other distributions get a
+# warning and continue. Hosts without systemd (OpenRC, …) are not supported.
 #
 #   sudo sh deploy/install.sh --binary ./picache-linux-amd64 [--with-host-apply] [--without-updater]
 #                             [--with-dhcp | --without-dhcp] [--nightly]
 #   sudo sh deploy/install.sh --uninstall [--purge [--yes]]
 #
 # Idempotent: run it again with a newer binary to upgrade. It installs only
-# the local files you give it (it never downloads anything) and never changes
-# systemd-resolved or any other DNS service; it prints the fix instead.
+# the local files you give it (it never downloads anything), never runs a
+# package manager and never changes systemd-resolved, the firewall or any
+# other DNS service; it prints the commands instead.
+#
+# Constants and functions are defined at the top level and everything else
+# happens in main, called on the last line: the maintainer scripts of the
+# Debian package are this file without its first and last line plus
+# deploy/debian/<name>.sh (make dist), so they share these functions.
 set -eu
 
+# ME names this script in error messages (the maintainer scripts set their
+# own name).
+ME=install.sh
 BIN=/usr/local/bin/picache
 UNIT_DIR=/usr/local/lib/systemd/system
 DOC_DIR=/usr/share/doc/picache
@@ -29,6 +41,9 @@ OLD_DHCP_DROPIN=60-dhcp.conf
 DEFAULT_DATA_DIR=/var/lib/picache
 DEFAULT_CACHE_DIR=/var/cache/picache
 DEFAULT_MOUNT_ROOT=/srv/picache
+# The log directory of picache.service (LogsDirectory=picache, where
+# PICACHE_LOG_FILE may write); the purge deletes it like the defaults above.
+DEFAULT_LOG_DIR=/var/log/picache
 # PICACHE_DATA_DIR / PICACHE_MOUNT_ROOT from the env file (read_paths).
 DATA_DIR=$DEFAULT_DATA_DIR
 MOUNT_ROOT=$DEFAULT_MOUNT_ROOT
@@ -41,11 +56,17 @@ UNIT_SRC=$DEPLOY_SRC/systemd
 # tree that contains deploy/.
 DOC_SRC=$(dirname -- "$DEPLOY_SRC")
 DOC_FILES="LICENSE THIRD_PARTY_NOTICES.md"
+# The marker of the Debian package (update.PackageMarker): install.sh
+# refuses to install over the package or to remove it.
+PACKAGE_MARKER=/usr/lib/picache/packaged
+# The oldest systemd whose units PiCache supports (ProtectProc=invisible).
+MIN_SYSTEMD=247
+SUPPORTED_OS="Debian 12+, Ubuntu 22.04+, RHEL/Alma/Rocky 9+, Fedora, Arch, openSUSE Tumbleweed and Leap 16"
 
 say() { printf '%s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
 die() {
-	printf 'install.sh: error: %s\n' "$*" >&2
+	printf '%s: error: %s\n' "$ME" "$*" >&2
 	exit 1
 }
 
@@ -89,20 +110,94 @@ os_release() {
 	sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | tr -d "\"'" | head -n 1
 }
 
+# os_family prints debian, fedora, arch, suse or unknown (ID and ID_LIKE of
+# /etc/os-release): the package names of the hints.
+os_family() {
+	case " $(os_release ID) $(os_release ID_LIKE) " in
+	*" debian "* | *" ubuntu "*) echo debian ;;
+	*" fedora "* | *" rhel "* | *" centos "*) echo fedora ;;
+	*" arch "*) echo arch ;;
+	*" suse "* | *" opensuse "* | *" sles "*) echo suse ;;
+	*) echo unknown ;;
+	esac
+}
+
+# major_at_least VERSION MIN succeeds when the major number of VERSION
+# (the digits before the first ".") is at least MIN.
+major_at_least() {
+	major=${1%%.*}
+	case $major in '' | *[!0-9]*) return 1 ;; esac
+	[ "$major" -ge "$2" ]
+}
+
+# check_os warns (and continues) on distributions other than the supported
+# ones.
 check_os() {
 	id=$(os_release ID)
-	like=$(os_release ID_LIKE)
 	ver=$(os_release VERSION_ID)
-	case " $id $like " in
-	*" debian "*) ;;
-	*) warn "this installer is made for Debian 12 and 13 (found '${id:-unknown}'); continuing" ;;
+	case $id in
+	# Raspberry Pi OS (32-bit) calls itself raspbian; it is Debian.
+	debian | raspbian) case $ver in 12 | 13) return 0 ;; esac ;;
+	ubuntu) if major_at_least "$ver" 22; then return 0; fi ;;
+	fedora | arch | opensuse-tumbleweed) return 0 ;;
+	rhel | almalinux | rocky) if major_at_least "$ver" 9; then return 0; fi ;;
+	opensuse-leap) if major_at_least "$ver" 16; then return 0; fi ;;
 	esac
-	if [ "$id" = debian ]; then
-		case $ver in
-		12 | 13) ;;
-		*) warn "Debian $ver is untested; supported are Debian 12 and 13" ;;
-		esac
+	warn "${id:-this distribution} ${ver} is untested; supported are $SUPPORTED_OS; continuing"
+}
+
+# check_systemd dies unless systemd is 247 or later: older versions silently
+# ignore directives of the units (ProtectProc= and others).
+check_systemd() {
+	line=$(systemctl --version 2>/dev/null | head -n 1) || line=""
+	v=""
+	case $line in
+	"systemd "*)
+		v=${line#systemd }
+		v=${v%%[!0-9]*}
+		;;
+	esac
+	if [ -z "$v" ]; then
+		die "cannot read the systemd version (\"$line\"): PiCache's sandbox needs systemd $MIN_SYSTEMD or later (ProtectProc=invisible). Supported: $SUPPORTED_OS"
 	fi
+	if [ "$v" -lt "$MIN_SYSTEMD" ]; then
+		die "systemd $v is too old: PiCache's sandbox needs systemd $MIN_SYSTEMD or later (ProtectProc=invisible); older versions silently ignore some protections. Supported: $SUPPORTED_OS"
+	fi
+}
+
+# check_not_packaged dies when the Debian package installed PiCache here
+# (dpkg knows it in a state other than not-installed or config-files, or
+# its marker exists): install.sh must not install over it or remove it.
+check_not_packaged() {
+	st=""
+	if command -v dpkg-query >/dev/null 2>&1; then
+		st=$(dpkg-query -W -f='${Status}' picache 2>/dev/null) || st=""
+	fi
+	case $st in
+	"" | *" not-installed" | *" config-files") [ ! -e "$PACKAGE_MARKER" ] && [ ! -L "$PACKAGE_MARKER" ] && return 0 ;;
+	esac
+	die "PiCache is installed as a Debian package here: update it with apt (docs/DEPLOYMENT.md \"Debian package\") or remove it with apt remove picache"
+}
+
+# selinux_relabel gives the installed files their default SELinux labels
+# (restorecon; never chcon, setenforce or a permissive domain) while SELinux
+# is enabled: the binary, the configuration directory, the unit directory
+# itself and PiCache's units in it (other units there are left alone).
+selinux_relabel() {
+	command -v selinuxenabled >/dev/null 2>&1 || return 0
+	selinuxenabled || return 0
+	if ! command -v restorecon >/dev/null 2>&1; then
+		warn "SELinux is enabled but restorecon is missing: relabel $BIN, $CONF_DIR and $UNIT_DIR/picache* yourself"
+		return 0
+	fi
+	units=""
+	for f in "$UNIT_DIR"/picache*.service "$UNIT_DIR"/picache*.path; do
+		[ -e "$f" ] && units="$units $f"
+	done
+	# shellcheck disable=SC2086 # word splitting is intended (no spaces in these paths)
+	restorecon -RF "$BIN" "$CONF_DIR" $units || warn "restorecon failed; check the labels with ls -Z"
+	restorecon -F "$UNIT_DIR" || true
+	say "SELinux: restored the default labels of $BIN, $CONF_DIR and the units"
 }
 
 is_unprivileged_container() {
@@ -125,11 +220,12 @@ sys_id_max() {
 	login_def "SYS_$1_MAX" "$((min - 1))"
 }
 
-# ensure_user creates the system user and group picache or checks existing
-# ones. The service owns the database and the master key, so it must never
-# run as an account that people log in with (for example a user named
-# picache created by the Debian installer).
-ensure_user() {
+# check_user refuses existing accounts named picache that the service must
+# not use (it sets entry and gid for ensure_user). The service owns the
+# database and the master key, so it must never run as an account that
+# people log in with (for example a user named picache created by the
+# distribution's installer).
+check_user() {
 	entry=$(getent passwd picache) || entry=""
 	if [ -n "$entry" ]; then
 		uid=$(printf '%s' "$entry" | cut -d: -f3)
@@ -154,11 +250,18 @@ then run install.sh again."
 		esac
 	fi
 	gid=$(getent group picache | cut -d: -f3)
-	if [ -z "$gid" ]; then
-		groupadd --system picache
-	elif [ "$gid" -gt "$(sys_id_max GID)" ]; then
+	if [ -n "$gid" ] && [ "$gid" -gt "$(sys_id_max GID)" ]; then
 		die "a group named picache exists that is not a system group (gid $gid).
 Rename it (groupmod -n NEWNAME picache) or remove it, then run install.sh again."
+	fi
+}
+
+# ensure_user creates the system user and group picache or checks existing
+# ones (check_user).
+ensure_user() {
+	check_user
+	if [ -z "$gid" ]; then
+		groupadd --system picache
 	fi
 	if [ -z "$entry" ]; then
 		useradd --system --gid picache --home-dir "$DATA_DIR" --no-create-home \
@@ -395,20 +498,37 @@ the Proxmox host and bind-mount it below $MOUNT_ROOT (deploy/lxc/README.md)."
 	write_helper_dropins
 	setup_shared_mounts
 	host_apply_active=1
+	mount_helper_hint
+	say "host-apply helper installed (picache-storage.path)"
+}
+
+# mount_helper_hint names the packages of missing mount programs with one
+# command for the distribution family (it never runs a package manager).
+mount_helper_hint() {
+	family=$(os_family)
+	case $family in
+	debian) nfs="nfs-common" ;;
+	suse) nfs="nfs-client" ;;
+	*) nfs="nfs-utils" ;;
+	esac
 	missing=""
 	command -v mount.cifs >/dev/null 2>&1 || missing="$missing cifs-utils"
-	command -v mount.nfs >/dev/null 2>&1 || missing="$missing nfs-common"
-	if [ -n "$missing" ]; then
-		say "host-apply: mount helpers are missing; install them for the share types you use:"
-		say "    apt install$missing"
-		case $missing in
-		*nfs-common*)
-			say "  NFS 4 does not need the rpcbind service that nfs-common brings; turn it off with:"
-			say "    systemctl mask --now rpcbind.service rpcbind.socket"
-			;;
-		esac
-	fi
-	say "host-apply helper installed (picache-storage.path)"
+	command -v mount.nfs >/dev/null 2>&1 || missing="$missing $nfs"
+	[ -n "$missing" ] || return 0
+	say "host-apply: mount helpers are missing; install them for the share types you use:"
+	case $family in
+	debian) say "    apt install$missing" ;;
+	fedora) say "    dnf install$missing" ;;
+	arch) say "    pacman -S --needed$missing" ;;
+	suse) say "    zypper install$missing" ;;
+	*) say "    the packages$missing (Debian/Ubuntu: cifs-utils nfs-common; Fedora/RHEL/Arch: cifs-utils nfs-utils; openSUSE: cifs-utils nfs-client)" ;;
+	esac
+	case $missing in
+	*nfs*)
+		say "  NFS 4 does not need the rpcbind service that comes with the NFS client; turn it off with:"
+		say "    systemctl mask --now rpcbind.service rpcbind.socket"
+		;;
+	esac
 }
 
 # write_update_dropins points the update helper at a custom data directory
@@ -656,6 +776,110 @@ primary_ip() {
 	printf '%s' "${addr:-<this-host>}"
 }
 
+# primary_iface prints the interface of the IPv4 route to the internet ("" if
+# none).
+primary_iface() {
+	ip -4 route get 1.1.1.1 2>/dev/null |
+		awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }' || true
+}
+
+# primary_cidr prints the IPv4 address of the primary interface with its
+# prefix length, e.g. 192.168.1.10/24 ("" if unknown).
+primary_cidr() {
+	iface=$(primary_iface)
+	[ -n "$iface" ] || return 0
+	ip -4 -o addr show dev "$iface" 2>/dev/null |
+		awk '{ for (i = 1; i < NF; i++) if ($i == "inet") { print $(i + 1); exit } }' || true
+}
+
+# doh_port prints the port of the first PICACHE_DOH_LISTEN address, or the
+# placeholder <DoH port> while it is unset or off.
+doh_port() {
+	v=$(env_value PICACHE_DOH_LISTEN | tr -d "\"' ")
+	v=${v%%,*}
+	case $v in
+	'' | off) printf '%s' '<DoH port>' ;;
+	*) printf '%s' "${v##*:}" ;;
+	esac
+}
+
+# firewall_hints prints the commands that open PiCache's ports to the LAN
+# while firewalld or ufw is active. It never changes the firewall (like
+# systemd-resolved: the admin decides). firewalld: rich rules for
+# <LAN-CIDR> in the zone of the primary interface, never moving the LAN
+# into another zone (that would change the rules of ssh); ufw: allow rules
+# from <LAN-CIDR>. DHCP requests come from 0.0.0.0 (and DHCPv6 from
+# link-local addresses), so the DHCP lines are limited to the interface
+# instead.
+firewall_hints() {
+	fw=""
+	if command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
+		fw=firewalld
+	elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+		fw=ufw
+	fi
+	[ -n "$fw" ] || return 0
+	cidr=$(primary_cidr)
+	iface=$(primary_iface)
+	doh=$(doh_port)
+	say ""
+	say "$fw is active: open PiCache's ports to your LAN yourself (install.sh never changes the firewall)."
+	say "Replace <LAN-CIDR> with your network${cidr:+ (this machine: $cidr)}; the ports in use are listed under"
+	say "System -> Network -> Listeners in the web UI. For IPv6 clients add the same rules for your ULA prefix."
+	if [ "$fw" = firewalld ]; then
+		zone=""
+		[ -z "$iface" ] || zone=$(firewall-cmd --get-zone-of-interface="$iface" 2>/dev/null) || zone=""
+		[ -n "$zone" ] || zone=$(firewall-cmd --get-default-zone 2>/dev/null) || zone=""
+		zone=${zone:-public}
+		rule() {
+			say "${1}firewall-cmd --permanent --zone=$zone --add-rich-rule='rule family=\"ipv4\" source address=\"<LAN-CIDR>\" port port=\"$2\" protocol=\"$3\" accept'"
+		}
+		say "    # the zone of ${iface:-the primary interface}: $zone"
+		rule "    " 53 udp
+		rule "    " 53 tcp
+		rule "    " 8080 tcp
+		rule "    " 8443 tcp
+		say "    # with the download cache on:"
+		rule "    # " 80 tcp
+		rule "    # " 443 tcp
+		say "    # with DoT on:"
+		rule "    # " 853 tcp
+		say "    # with PICACHE_DOH_LISTEN set:"
+		rule "    # " "$doh" tcp
+		say "    # while the DHCP server is on (clients have no address yet):"
+		say "    # firewall-cmd --permanent --zone=$zone --add-port=67/udp --add-port=547/udp"
+		say "    # with the NTP server on:"
+		rule "    # " 123 udp
+		say "    firewall-cmd --reload"
+	else
+		rule() { say "${1}ufw allow from <LAN-CIDR> to any port $2 proto $3"; }
+		rule "    " 53 udp
+		rule "    " 53 tcp
+		rule "    " 8080 tcp
+		rule "    " 8443 tcp
+		say "    # with the download cache on:"
+		rule "    # " 80 tcp
+		rule "    # " 443 tcp
+		say "    # with DoT on:"
+		rule "    # " 853 tcp
+		say "    # with PICACHE_DOH_LISTEN set:"
+		rule "    # " "$doh" tcp
+		say "    # while the DHCP server is on (clients have no address yet):"
+		say "    # ufw allow in on ${iface:-<interface>} to any port 67 proto udp"
+		say "    # ufw allow in on ${iface:-<interface>} to any port 547 proto udp"
+		say "    # with the NTP server on:"
+		rule "    # " 123 udp
+	fi
+}
+
+# journal_tail prints the last log lines of picache.service to stderr
+# without the first-run setup token, which PiCache logs at every start
+# until the setup is done: this output may be kept (apt writes the
+# package's output to /var/log/apt/term.log).
+journal_tail() {
+	journalctl -u picache.service -n 30 --no-pager 2>/dev/null | grep -v setupToken >&2 || true
+}
+
 start_service() {
 	# A unit that hit its start limit earlier (e.g. port 53 was busy) needs a reset.
 	systemctl reset-failed picache.service >/dev/null 2>&1 || true
@@ -667,8 +891,8 @@ start_service() {
 		i=$((i + 1))
 	done
 	if ! systemctl is-active --quiet picache.service; then
-		warn "PiCache did not start. Last log lines:"
-		journalctl -u picache.service -n 30 --no-pager >&2 || true
+		warn "PiCache did not start. Last log lines (without the setup token):"
+		journal_tail
 		if [ "$(systemctl show -p ExecMainStatus --value picache.service 2>/dev/null)" = 226 ]; then
 			say "Exit status 226 (NAMESPACE): in a Proxmox LXC, enable the container's
 nesting feature (pct set <ctid> --features nesting=1) and restart it." >&2
@@ -702,6 +926,29 @@ print_summary() {
 	fi
 }
 
+
+# print_kept lists what --uninstall (and the package's remove) keeps.
+print_kept() {
+	say "  configuration   $CONF_DIR  (NAS credentials in $CRED_DIR)"
+	say "  data            $DATA_DIR  (configuration database, logs, keys)"
+	say "  local cache     $(env_path PICACHE_CACHE_DIR "$DEFAULT_CACHE_DIR" 2>/dev/null || printf '%s' "$DEFAULT_CACHE_DIR")"
+	if [ -d "$DEFAULT_LOG_DIR" ]; then
+		say "  log files       $DEFAULT_LOG_DIR  (PICACHE_LOG_FILE)"
+	fi
+	say "  mount root      $MOUNT_ROOT  (unmount NAS shares before deleting anything)"
+	say "  system user     picache  (userdel picache)"
+	# Mount units written by the host-apply helper (unit name = escaped mount point).
+	prefix=$(systemd-escape --path "$MOUNT_ROOT" 2>/dev/null) || prefix=srv-picache
+	for f in /etc/systemd/system/"$prefix"-*.mount; do
+		[ -e "$f" ] || continue
+		unit=$(basename "$f")
+		id=${unit#"$prefix"-}
+		id=${id%.mount}
+		say "  NAS mount unit  $f"
+		say "      systemctl disable --now $unit && rm -f $f $CRED_DIR/$id.cred $CRED_DIR/$id.applied && rmdir $MOUNT_ROOT/$id"
+	done
+}
+
 do_uninstall() {
 	read_paths
 	remove_updater
@@ -729,21 +976,7 @@ do_uninstall() {
 		return
 	fi
 	say "PiCache was stopped and removed. Kept, delete them yourself if no longer needed:"
-	say "  configuration   $CONF_DIR  (NAS credentials in $CRED_DIR)"
-	say "  data            $DATA_DIR  (configuration database, logs, keys)"
-	say "  local cache     /var/cache/picache"
-	say "  mount root      $MOUNT_ROOT  (unmount NAS shares before deleting anything)"
-	say "  system user     picache  (userdel picache)"
-	# Mount units written by the host-apply helper (unit name = escaped mount point).
-	prefix=$(systemd-escape --path "$MOUNT_ROOT" 2>/dev/null) || prefix=srv-picache
-	for f in /etc/systemd/system/"$prefix"-*.mount; do
-		[ -e "$f" ] || continue
-		unit=$(basename "$f")
-		id=${unit#"$prefix"-}
-		id=${id%.mount}
-		say "  NAS mount unit  $f"
-		say "      systemctl disable --now $unit && rm -f $f $CRED_DIR/$id.cred $CRED_DIR/$id.applied && rmdir $MOUNT_ROOT/$id"
-	done
+	print_kept
 }
 
 # is_mountpoint DIR succeeds when DIR itself is a mount point.
@@ -761,6 +994,8 @@ mounted_below() {
 # (curl ... | sudo sh); --yes skips the question.
 confirm_purge() {
 	read_paths
+	# Refused here, before anything is removed (do_purge needs it too).
+	env_path PICACHE_CACHE_DIR "$DEFAULT_CACHE_DIR" >/dev/null
 	[ "$assume_yes" -eq 0 ] || return 0
 	# In a subshell: a failed redirection of the special built-in `:` would
 	# end the whole script at once (POSIX), without the message below.
@@ -769,8 +1004,9 @@ confirm_purge() {
 	fi
 	cat >/dev/tty <<EOF
 --purge stops PiCache, unmounts the NAS shares it mounted and deletes
-$CONF_DIR, $DATA_DIR (database, logs, keys and backups), the local cache
-and the picache user. Directories outside the default paths are kept.
+$CONF_DIR, $DATA_DIR (database, logs, keys and backups), the local cache,
+$DEFAULT_LOG_DIR and the picache user. Directories outside the default
+paths are kept.
 EOF
 	printf 'Type "purge" to continue: ' >/dev/tty
 	answer=""
@@ -778,238 +1014,334 @@ EOF
 	[ "$answer" = purge ] || die "cancelled; nothing was changed"
 }
 
-# do_purge deletes what --uninstall keeps. Only the default paths are
-# deleted: a custom PICACHE_DATA_DIR, PICACHE_CACHE_DIR or PICACHE_MOUNT_ROOT
-# may point to a directory with other data, and a mount point may be a
-# volume or a NAS share, so those are listed instead.
+# purge_path_of KEY DEFAULT prints a path setting for do_purge: the value of
+# env_path, or an empty line when it is invalid (the package mode never
+# fails on it; such a path is neither deleted nor checked, so it keeps the
+# account, see do_purge).
+purge_path_of() {
+	(env_path "$1" "$2") 2>/dev/null || true
+}
+
+# do_purge MODE deletes what --uninstall keeps: install.sh --uninstall
+# --purge (MODE ask: confirmed before) and the package's postrm purge (MODE
+# package: never asks and never fails). Only the default paths are deleted,
+# never a mount point: a custom PICACHE_DATA_DIR, PICACHE_CACHE_DIR or
+# PICACHE_MOUNT_ROOT may point to a directory with other data, and a mount
+# point may be a volume or a NAS share, so those are kept and listed. With
+# something mounted below a path install.sh refuses (nothing is deleted);
+# the package keeps that path and lists it. The NAS mount units of the
+# host-apply helper are disabled and removed. The account and the group
+# are deleted only when no kept path holds a file of them and every path
+# setting could be read; otherwise the account is kept and locked, so that
+# a later system account of that name can never inherit PiCache's
+# database, keys, backups and logs.
 do_purge() {
-	cache_dir=$(env_path PICACHE_CACHE_DIR "$DEFAULT_CACHE_DIR")
+	mode=$1
+	# unchecked: the path settings the package mode cannot read (not a
+	# plain absolute path; install.sh refuses them before it starts). Their
+	# directories may hold PiCache's files but cannot be searched.
+	unchecked=""
+	unchecked_list=""
+	if [ "$mode" = package ]; then
+		data_dir=$(purge_path_of PICACHE_DATA_DIR "$DEFAULT_DATA_DIR")
+		cache_dir=$(purge_path_of PICACHE_CACHE_DIR "$DEFAULT_CACHE_DIR")
+		mount_root=$(purge_path_of PICACHE_MOUNT_ROOT "$DEFAULT_MOUNT_ROOT")
+		for pair in "PICACHE_DATA_DIR:$data_dir" "PICACHE_CACHE_DIR:$cache_dir" "PICACHE_MOUNT_ROOT:$mount_root"; do
+			[ -z "${pair#*:}" ] || continue
+			key=${pair%%:*}
+			unchecked="$unchecked $key"
+			unchecked_list="$unchecked_list  $key=$(env_value "$key")  (not a plain absolute path: not checked)
+"
+		done
+	else
+		data_dir=$DATA_DIR
+		cache_dir=$(env_path PICACHE_CACHE_DIR "$DEFAULT_CACHE_DIR")
+		mount_root=$MOUNT_ROOT
+	fi
 	# NAS mount units written by the host-apply helper.
-	prefix=$(systemd-escape --path "$MOUNT_ROOT" 2>/dev/null) || prefix=srv-picache
+	prefix=$(systemd-escape --path "${mount_root:-$DEFAULT_MOUNT_ROOT}" 2>/dev/null) || prefix=srv-picache
 	for f in /etc/systemd/system/"$prefix"-*.mount; do
 		[ -e "$f" ] || continue
-		systemctl disable --now "$(basename "$f")" >/dev/null 2>&1 || true
+		if [ -d /run/systemd/system ]; then
+			systemctl disable --now "$(basename "$f")" >/dev/null 2>&1 || true
+		fi
 		rm -f "$f"
 	done
-	systemctl daemon-reload
-	if mounted_below "$MOUNT_ROOT" || mounted_below "$cache_dir" || mounted_below "$DATA_DIR"; then
-		die "something is still mounted below $MOUNT_ROOT, $cache_dir or $DATA_DIR (see findmnt);
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+	fi
+	if [ "$mode" != package ] && { mounted_below "$MOUNT_ROOT" || mounted_below "$cache_dir" || mounted_below "$DATA_DIR" ||
+		mounted_below "$DEFAULT_LOG_DIR"; }; then
+		die "something is still mounted below $MOUNT_ROOT, $cache_dir, $DATA_DIR or $DEFAULT_LOG_DIR (see findmnt);
 unmount it and run --uninstall --purge again. Nothing else was deleted."
 	fi
 	kept=""
-	for pair in "$DATA_DIR:$DEFAULT_DATA_DIR" "$cache_dir:$DEFAULT_CACHE_DIR"; do
+	for pair in "$data_dir:$DEFAULT_DATA_DIR" "$cache_dir:$DEFAULT_CACHE_DIR" "$DEFAULT_LOG_DIR:$DEFAULT_LOG_DIR"; do
 		dir=${pair%%:*}
 		default=${pair#*:}
-		[ -e "$dir" ] || continue
-		if [ "$dir" != "$default" ] || is_mountpoint "$dir"; then
-			kept="$kept
-  $dir"
+		if [ "$dir" != "$default" ]; then
+			# A custom (or unreadable) path is kept, and so is the default
+			# directory: systemd creates it for the unit anyway
+			# (StateDirectory=, CacheDirectory=), and the custom path may lie
+			# below it. Both may hold files of the account.
+			if [ -n "$dir" ] && [ -e "$dir" ]; then kept="$kept $dir"; fi
+			if [ -e "$default" ]; then kept="$kept $default"; fi
 			continue
 		fi
-		rm -rf -- "$dir"
+		[ -e "$dir" ] || continue
+		if is_mountpoint "$dir" || mounted_below "$dir"; then
+			kept="$kept $dir"
+			continue
+		fi
+		rm -rf -- "$dir" || kept="$kept $dir"
 	done
-	rm -rf -- "$CONF_DIR"
-	if [ -d "$MOUNT_ROOT" ]; then
+	rm -rf -- "$CONF_DIR" || kept="$kept $CONF_DIR"
+	if [ -n "$mount_root" ] && [ -d "$mount_root" ]; then
 		# Empty mount points only: never delete files below the mount root.
-		for d in "$MOUNT_ROOT"/*; do
+		for d in "$mount_root"/*; do
 			if [ -d "$d" ]; then rmdir -- "$d" 2>/dev/null || true; fi
 		done
-		if [ "$MOUNT_ROOT" != "$DEFAULT_MOUNT_ROOT" ] || ! rmdir -- "$MOUNT_ROOT" 2>/dev/null; then
-			kept="$kept
-  $MOUNT_ROOT"
+		if [ "$mount_root" != "$DEFAULT_MOUNT_ROOT" ] || ! rmdir -- "$mount_root" 2>/dev/null; then
+			kept="$kept $mount_root"
 		fi
 	fi
-	if entry=$(getent passwd picache); then
-		uid=$(printf '%s' "$entry" | cut -d: -f3)
+	purge_account "$kept" "$unchecked"
+	say "Deleted: the configuration, the data, the cache and the log files in their default paths."
+	if [ -n "$kept$unchecked" ]; then
+		say "Kept (custom paths, mount points or with something mounted below; delete them yourself if no longer needed):"
+		for k in $kept; do
+			say "  $k"
+		done
+		printf '%s' "$unchecked_list"
+	fi
+}
+
+# purge_account deletes the account and group picache unless a kept path
+# (the list in $1) holds a file of them or a path setting could not be
+# checked (its keys in $2): then the account is kept and locked (password
+# and expiry; its shell stays nologin).
+purge_account() {
+	entry=$(getent passwd picache) || entry=""
+	gid=$(getent group picache | cut -d: -f3) || gid=""
+	uid=""
+	[ -z "$entry" ] || uid=$(printf '%s' "$entry" | cut -d: -f3)
+	owned=""
+	if [ -n "$uid$gid" ]; then
+		for k in $1; do
+			[ -e "$k" ] || continue
+			if [ -n "$(find "$k" -xdev \( -uid "${uid:-$gid}" -o -gid "${gid:-$uid}" \) -print -quit 2>/dev/null)" ]; then
+				owned="$owned $k"
+			fi
+		done
+	fi
+	why=""
+	[ -z "$owned" ] || why="it owns kept files in${owned}"
+	[ -z "${2:-}" ] || why="${why:+$why and }the purge cannot check the directories of${2}"
+	if [ -n "$why" ] && [ -n "$uid$gid" ]; then
+		if [ -n "$uid" ]; then
+			usermod -L picache >/dev/null 2>&1 || true
+			usermod -e 1 picache >/dev/null 2>&1 || true
+			say "kept the account picache (uid $uid) because $why; it is locked"
+		else
+			say "kept the group picache (gid $gid) because $why"
+		fi
+		return 0
+	fi
+	if [ -n "$uid" ]; then
 		if [ "$uid" -gt 0 ] && [ "$uid" -le "$(sys_id_max UID)" ]; then
-			userdel picache
+			userdel picache || warn "could not delete the account picache"
+			say "Deleted the account picache."
 		else
 			warn "the account picache is not a system account (uid $uid); it was kept"
 		fi
 	fi
-	gid=$(getent group picache | cut -d: -f3)
+	gid=$(getent group picache | cut -d: -f3) || gid=""
 	if [ -n "$gid" ] && [ "$gid" -gt 0 ] && [ "$gid" -le "$(sys_id_max GID)" ]; then
 		groupdel picache 2>/dev/null || true
-	fi
-	say "Deleted: the configuration, the data and cache in their default paths, and the picache user."
-	if [ -n "$kept" ]; then
-		say "Kept (custom paths or mount points; delete them yourself if no longer needed):$kept"
 	fi
 }
 
 # --- main ------------------------------------------------------------------
 
-binary=""
-with_host_apply=0
-without_updater=0
-with_dhcp=0
-without_dhcp=0
-nightly=0
-uninstall=0
-purge=0
-assume_yes=0
-while [ $# -gt 0 ]; do
-	case $1 in
-	--binary)
-		[ $# -ge 2 ] || die "--binary needs a path"
-		binary=$2
-		shift 2
-		;;
-	--binary=*)
-		binary=${1#--binary=}
-		shift
-		;;
-	--with-host-apply)
-		with_host_apply=1
-		shift
-		;;
-	--without-updater)
-		without_updater=1
-		shift
-		;;
-	--with-dhcp)
-		with_dhcp=1
-		shift
-		;;
-	--without-dhcp)
-		without_dhcp=1
-		shift
-		;;
-	--nightly)
-		nightly=1
-		shift
-		;;
-	--uninstall)
-		uninstall=1
-		shift
-		;;
-	--purge)
-		purge=1
-		shift
-		;;
-	--yes)
-		assume_yes=1
-		shift
-		;;
-	-h | --help)
-		usage
+main() {
+	binary=""
+	with_host_apply=0
+	without_updater=0
+	with_dhcp=0
+	without_dhcp=0
+	nightly=0
+	uninstall=0
+	purge=0
+	assume_yes=0
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--binary)
+			[ $# -ge 2 ] || die "--binary needs a path"
+			binary=$2
+			shift 2
+			;;
+		--binary=*)
+			binary=${1#--binary=}
+			shift
+			;;
+		--with-host-apply)
+			with_host_apply=1
+			shift
+			;;
+		--without-updater)
+			without_updater=1
+			shift
+			;;
+		--with-dhcp)
+			with_dhcp=1
+			shift
+			;;
+		--without-dhcp)
+			without_dhcp=1
+			shift
+			;;
+		--nightly)
+			nightly=1
+			shift
+			;;
+		--uninstall)
+			uninstall=1
+			shift
+			;;
+		--purge)
+			purge=1
+			shift
+			;;
+		--yes)
+			assume_yes=1
+			shift
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*)
+			usage >&2
+			die "unknown argument: $1"
+			;;
+		esac
+	done
+
+	[ "$(id -u)" -eq 0 ] || die "run as root (sudo sh $0 ...)"
+	[ -d /run/systemd/system ] || die "systemd is not running; use the Docker image instead (docs/DEPLOYMENT.md)"
+	umask 022
+
+	if [ "$purge" -eq 1 ] && [ "$uninstall" -eq 0 ]; then
+		die "--purge only goes with --uninstall"
+	fi
+	if [ "$with_dhcp" -eq 1 ] && [ "$without_dhcp" -eq 1 ]; then
+		die "--with-dhcp and --without-dhcp exclude each other"
+	fi
+	check_not_packaged
+	if [ "$uninstall" -eq 1 ]; then
+		if [ "$purge" -eq 1 ]; then
+			confirm_purge
+		fi
+		do_uninstall
+		if [ "$purge" -eq 1 ]; then
+			do_purge ask
+		fi
 		exit 0
-		;;
-	*)
+	fi
+
+	[ -n "$binary" ] || {
 		usage >&2
-		die "unknown argument: $1"
-		;;
-	esac
-done
+		die "--binary PATH is required"
+	}
+	[ -f "$UNIT_SRC/picache.service" ] || die "unit files not found in $UNIT_SRC; run install.sh from the PiCache source tree"
+	check_systemd
+	check_os
+	ensure_user
+	install_binary
+	install_docs
 
-[ "$(id -u)" -eq 0 ] || die "run as root (sudo sh $0 ...)"
-[ -d /run/systemd/system ] || die "systemd is not running; use the Docker image instead (docs/DEPLOYMENT.md)"
-umask 022
+	install -d -m 0750 -o root -g picache "$CONF_DIR"
+	write_env_file
+	read_paths
+	# Root-owned (group picache may enter): the service must not be able to swap
+	# a mount point for a symbolic link that the root helper would then use.
+	install -d -m 0750 -o root -g picache "$MOUNT_ROOT"
 
-if [ "$purge" -eq 1 ] && [ "$uninstall" -eq 0 ]; then
-	die "--purge only goes with --uninstall"
-fi
-if [ "$with_dhcp" -eq 1 ] && [ "$without_dhcp" -eq 1 ]; then
-	die "--with-dhcp and --without-dhcp exclude each other"
-fi
-if [ "$uninstall" -eq 1 ]; then
-	if [ "$purge" -eq 1 ]; then
-		confirm_purge
-	fi
-	do_uninstall
-	if [ "$purge" -eq 1 ]; then
-		do_purge
-	fi
-	exit 0
-fi
-
-[ -n "$binary" ] || {
-	usage >&2
-	die "--binary PATH is required"
-}
-[ -f "$UNIT_SRC/picache.service" ] || die "unit files not found in $UNIT_SRC; run install.sh from the PiCache source tree"
-check_os
-ensure_user
-install_binary
-install_docs
-
-install -d -m 0750 -o root -g picache "$CONF_DIR"
-write_env_file
-read_paths
-# Root-owned (group picache may enter): the service must not be able to swap
-# a mount point for a symbolic link that the root helper would then use.
-install -d -m 0750 -o root -g picache "$MOUNT_ROOT"
-
-install -d -m 0755 "$UNIT_DIR"
-install_unit picache.service
-if [ -e /etc/systemd/system/picache.service ]; then
-	warn "/etc/systemd/system/picache.service exists and overrides the installed unit;
+	install -d -m 0755 "$UNIT_DIR"
+	install_unit picache.service
+	if [ -e /etc/systemd/system/picache.service ]; then
+		warn "/etc/systemd/system/picache.service exists and overrides the installed unit;
 remove it unless you maintain it on purpose (use drop-ins for local changes)."
-fi
-
-host_apply_active=0
-shared_mounts=0
-if [ "$with_host_apply" -eq 1 ] || [ -e "$HOST_APPLY_MARKER" ]; then
-	setup_host_apply
-fi
-updater_active=0
-if [ "$without_updater" -eq 0 ]; then
-	setup_updater
-elif [ -e "$UPDATER_MARKER" ] || [ -e "$UNIT_DIR/picache-update.path" ]; then
-	remove_updater
-	say "update helper removed (--without-updater); update with: sudo picache update"
-fi
-cleanup_dhcp
-if [ "$with_dhcp" -eq 1 ]; then
-	if [ -n "$(env_value PICACHE_DHCP)" ]; then
-		rewrite_env PICACHE_DHCP
 	fi
-	say "DHCP server allowed (--with-dhcp): switch it on in the web UI under DNS -> DHCP"
-elif [ "$without_dhcp" -eq 1 ]; then
-	rewrite_env PICACHE_DHCP off
-	say "DHCP server prevented (--without-dhcp: PICACHE_DHCP=off); it cannot be switched on in the web UI"
-fi
-if [ "$legacy_dhcp_on" -eq 1 ] && [ "$without_dhcp" -eq 0 ]; then
-	seed_dhcp_markers
-fi
-if [ "$nightly" -eq 1 ]; then
-	# A regular file owned by root: the service cannot create it, so it
-	# cannot move this host onto nightly builds by itself.
-	rm -f "$NIGHTLY_MARKER"
-	install -m 0644 -o root -g root /dev/null "$NIGHTLY_MARKER"
-	say "nightly builds allowed (--nightly): choose the update channel \"nightly\" in the web UI (System -> Updates)"
-fi
 
-systemctl daemon-reload
-systemctl enable picache.service >/dev/null
-if [ "$shared_mounts" -eq 1 ]; then
-	systemctl enable --now "$SHARED_MOUNTS_UNIT" >/dev/null
-fi
-if [ "$host_apply_active" -eq 1 ]; then
-	# A unit stopped by a start or trigger limit earlier needs a reset, and a
-	# running path unit a restart to use changed unit files and drop-ins.
-	systemctl reset-failed picache-storage.path picache-storage.service >/dev/null 2>&1 || true
-	systemctl enable --now picache-storage.path >/dev/null
-	systemctl restart picache-storage.path
-fi
-if [ "$updater_active" -eq 1 ]; then
-	systemctl reset-failed picache-update.path picache-update.service >/dev/null 2>&1 || true
-	systemctl enable --now picache-update.path >/dev/null
-	systemctl restart picache-update.path
-fi
+	host_apply_active=0
+	shared_mounts=0
+	if [ "$with_host_apply" -eq 1 ] || [ -e "$HOST_APPLY_MARKER" ]; then
+		setup_host_apply
+	fi
+	updater_active=0
+	if [ "$without_updater" -eq 0 ]; then
+		setup_updater
+	elif [ -e "$UPDATER_MARKER" ] || [ -e "$UNIT_DIR/picache-update.path" ]; then
+		remove_updater
+		say "update helper removed (--without-updater); update with: sudo picache update"
+	fi
+	cleanup_dhcp
+	if [ "$with_dhcp" -eq 1 ]; then
+		if [ -n "$(env_value PICACHE_DHCP)" ]; then
+			rewrite_env PICACHE_DHCP
+		fi
+		say "DHCP server allowed (--with-dhcp): switch it on in the web UI under DNS -> DHCP"
+	elif [ "$without_dhcp" -eq 1 ]; then
+		rewrite_env PICACHE_DHCP off
+		say "DHCP server prevented (--without-dhcp: PICACHE_DHCP=off); it cannot be switched on in the web UI"
+	fi
+	if [ "$legacy_dhcp_on" -eq 1 ] && [ "$without_dhcp" -eq 0 ]; then
+		seed_dhcp_markers
+	fi
+	if [ "$nightly" -eq 1 ]; then
+		# A regular file owned by root: the service cannot create it, so it
+		# cannot move this host onto nightly builds by itself.
+		rm -f "$NIGHTLY_MARKER"
+		install -m 0644 -o root -g root /dev/null "$NIGHTLY_MARKER"
+		say "nightly builds allowed (--nightly): choose the update channel \"nightly\" in the web UI (System -> Updates)"
+	fi
+	selinux_relabel
 
-host_ip=$(primary_ip)
-check_ports
-if [ "$with_dhcp" -eq 0 ] && [ "$without_dhcp" -eq 0 ]; then
-	dhcp_ports_note
-fi
-if [ "$port53_blocked" -eq 1 ]; then
-	say ""
-	say "PiCache is installed and enabled but NOT started because port 53 is in use."
-	say "After fixing that, run: systemctl start picache"
-	say "Then open http://$host_ip:8080/ and get the one-time setup token with:"
-	say "    sudo picache setup-token"
-	exit 0
-fi
-start_service
-print_summary
+	systemctl daemon-reload
+	systemctl enable picache.service >/dev/null
+	if [ "$shared_mounts" -eq 1 ]; then
+		systemctl enable --now "$SHARED_MOUNTS_UNIT" >/dev/null
+	fi
+	if [ "$host_apply_active" -eq 1 ]; then
+		# A unit stopped by a start or trigger limit earlier needs a reset, and a
+		# running path unit a restart to use changed unit files and drop-ins.
+		systemctl reset-failed picache-storage.path picache-storage.service >/dev/null 2>&1 || true
+		systemctl enable --now picache-storage.path >/dev/null
+		systemctl restart picache-storage.path
+	fi
+	if [ "$updater_active" -eq 1 ]; then
+		systemctl reset-failed picache-update.path picache-update.service >/dev/null 2>&1 || true
+		systemctl enable --now picache-update.path >/dev/null
+		systemctl restart picache-update.path
+	fi
+
+	host_ip=$(primary_ip)
+	check_ports
+	if [ "$with_dhcp" -eq 0 ] && [ "$without_dhcp" -eq 0 ]; then
+		dhcp_ports_note
+	fi
+	firewall_hints
+	if [ "$port53_blocked" -eq 1 ]; then
+		say ""
+		say "PiCache is installed and enabled but NOT started because port 53 is in use."
+		say "After fixing that, run: systemctl start picache"
+		say "Then open http://$host_ip:8080/ and get the one-time setup token with:"
+		say "    sudo picache setup-token"
+		exit 0
+	fi
+	start_service
+	print_summary
+}
+
+main "$@"

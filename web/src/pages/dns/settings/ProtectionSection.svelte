@@ -34,7 +34,7 @@
 <Panel id="dns-set-protection" title={t('dns.settings.protection.title')} description={t('dns.settings.protection.description')}>
   <div class="stack">
     <div class="stack-sm">
-      <Toggle bind:checked={d.rebindProtection} label={t('dns.settings.protection.rebind')} description={t('dns.settings.protection.rebindHelp')} />
+      <Toggle bind:checked={d.rebindProtection} id="dns-field-rebindProtection" label={t('dns.settings.protection.rebind')} description={t('dns.settings.protection.rebindHelp')} />
       {#if form.error('rebindProtection')}<p class="err">{form.error('rebindProtection')}</p>{/if}
     </div>
 
@@ -48,7 +48,7 @@
         </Notice>
       {/if}
       <Field
-        label={t('dns.settings.protection.allow')}
+        id="dns-field-rebindAllow" label={t('dns.settings.protection.allow')}
         optional
         help={t('dns.settings.protection.allowHelp')}
         error={lineError(form.saveError, 'dns.rebindAllow')}
@@ -59,7 +59,7 @@
 
     <div class="grid">
       <Field
-        label={t('dns.settings.protection.bogus')}
+        id="dns-field-bogusNxdomain" label={t('dns.settings.protection.bogus')}
         optional
         help={t('dns.settings.protection.bogusHelp')}
         error={lineError(form.saveError, 'dns.bogusNxdomain')}
@@ -68,7 +68,7 @@
       </Field>
       <div class="stack-sm">
         <Field
-          label={t('dns.settings.protection.dropped')}
+          id="dns-field-droppedDomains" label={t('dns.settings.protection.dropped')}
           optional
           help={t('dns.settings.protection.droppedHelp')}
           error={lineError(form.saveError, 'dns.droppedDomains')}
@@ -81,7 +81,7 @@
       </div>
     </div>
 
-    <Field label={t('dns.settings.protection.blockedTtl')} help={t('dns.settings.protection.blockedTtlHelp')} error={form.error('upstreamBlockedTtl')}>
+    <Field id="dns-field-upstreamBlockedTtl" label={t('dns.settings.protection.blockedTtl')} help={t('dns.settings.protection.blockedTtlHelp')} error={form.error('upstreamBlockedTtl')}>
       <NumberInput bind:value={d.upstreamBlockedTtl} min={10} max={86400} unit={t('dns.shared.unit.seconds')} />
     </Field>
   </div>

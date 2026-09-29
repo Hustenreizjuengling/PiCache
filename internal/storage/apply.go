@@ -73,7 +73,8 @@ const (
 // Messages the service shows when the helper does not answer.
 const (
 	msgNotPickedUp = "the root helper has not picked up the request for 3 minutes. Check `systemctl status picache-storage.path` " +
-		"(after `systemctl reset-failed picache-storage.path` start it again); with a custom PICACHE_DATA_DIR re-run install.sh"
+		"(after `systemctl reset-failed picache-storage.path` start it again); with a custom PICACHE_DATA_DIR re-run install.sh " +
+		"(Debian package: `dpkg-reconfigure picache`)"
 	msgInterrupted = "the root helper stopped before it finished (killed or timed out); see `journalctl -u picache-storage` and try again"
 )
 

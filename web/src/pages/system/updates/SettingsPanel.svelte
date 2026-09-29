@@ -2,10 +2,12 @@
   @component
   Update settings (settings.updates): the daily check and the update
   channel (stable releases, also release candidates, or also the nightly
-  builds of main). Choosing nightly asks to confirm its warning; the root
-  helper installs nightlies only on hosts that allow them (install.sh
-  --nightly), and Docker has none. Also names the proxy installs download
-  through (the host's PICACHE_UPDATE_PROXY). Changes apply immediately.
+  builds of main). Choosing nightly asks to confirm its warning (whose way
+  back names apt for a Debian package); the root helper installs nightlies
+  only on hosts that allow them (install.sh --nightly), and Docker has
+  none. Also names the proxy installs download
+  through (the host's PICACHE_UPDATE_PROXY; not for a Debian package, which
+  is downloaded by hand and installed with apt). Changes apply immediately.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -21,6 +23,10 @@
 
   const CHANNELS: UpdateChannel[] = ['stable', 'beta', 'nightly']
   const docker = $derived(info?.mode === 'docker')
+  // A Debian package goes back with apt, not with picache update.
+  const nightlyText = $derived(
+    t(info?.mode === 'package' ? 'system.updates.settings.nightlyTextPackage' : 'system.updates.settings.nightlyText'),
+  )
 
   const channelOptions = $derived(
     CHANNELS.map((c) => ({
@@ -59,7 +65,7 @@
       channel === 'nightly' &&
       !(await confirm({
         title: t('system.updates.settings.nightlyTitle'),
-        message: t('system.updates.settings.nightlyText'),
+        message: nightlyText,
         confirmLabel: t('system.updates.settings.nightlyConfirm'),
       }))
     ) {
@@ -76,7 +82,7 @@
   }
 </script>
 
-<Panel title={t('system.updates.settings.title')} description={t('system.updates.settings.description')}>
+<Panel id="updates-set-check" title={t('system.updates.settings.title')} description={t('system.updates.settings.description')}>
   {#if form.loadError && !form.draft}
     <Notice tone="fail" title={t('system.updates.settings.loadError')}>{form.loadError.message}</Notice>
   {:else if !form.draft}
@@ -95,14 +101,14 @@
         <Select bind:value={() => pick, choose} options={channelOptions} disabled={!session.isAdmin || form.saving} />
       </Field>
       {#if channel === 'nightly'}
-        <Notice tone="warn" title={t('system.updates.settings.nightlyTitle')}>{t('system.updates.settings.nightlyText')}</Notice>
+        <Notice tone="warn" title={t('system.updates.settings.nightlyTitle')}>{nightlyText}</Notice>
         {#if info && info.mode === 'helper' && !info.nightlyAllowed}
           <Notice tone="info" title={t('system.updates.settings.nightlyHostTitle')}>{t('system.updates.settings.nightlyHostText')}</Notice>
         {/if}
       {/if}
       {#if docker}
         <p class="small muted">{t('system.updates.settings.nightlyDocker')}</p>
-      {:else if info}
+      {:else if info && info.mode !== 'package'}
         <p class="small muted">
           {#if info.installProxy}
             {t('system.updates.settings.installProxy', { proxy: info.installProxy })}

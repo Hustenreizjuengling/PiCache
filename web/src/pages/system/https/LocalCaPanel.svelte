@@ -77,7 +77,7 @@
   const formId = $props.id()
 </script>
 
-<Panel title={t('system.https.ca.title')} description={t('system.https.ca.description')}>
+<Panel id="https-set-ca" title={t('system.https.ca.title')} description={t('system.https.ca.description')}>
   {#snippet actions()}
     {#if status.caAvailable}
       <Button variant="primary" icon="download" href={api.tls.caUrl()} download="picache-ca.crt">

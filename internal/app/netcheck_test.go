@@ -446,17 +446,17 @@ func (e *netEnv) waitScanDone(t *testing.T) {
 func TestNetworkCheckCache(t *testing.T) {
 	e := newNetEnv(t, true)
 	ctx := context.Background()
-	nc := e.n.Check(ctx)
+	nc := e.n.Check(ctx, netip.Addr{})
 	if e.computed.Load() != 1 || nc.Router.Name != "fritz.box" || nc.Router.Kind != "fritzbox" || nc.Scan.Running {
 		t.Fatalf("first check: %d computations, %+v", e.computed.Load(), nc.Router)
 	}
 	e.advance(29 * time.Second)
-	e.n.Check(ctx)
+	e.n.Check(ctx, netip.Addr{})
 	if e.computed.Load() != 1 {
 		t.Fatal("a check younger than 30 s must be served from the cache")
 	}
 	e.advance(2 * time.Second)
-	e.n.Check(ctx)
+	e.n.Check(ctx, netip.Addr{})
 	if e.computed.Load() != 2 {
 		t.Fatal("a check older than 30 s must be computed again")
 	}
@@ -469,7 +469,7 @@ func TestNetworkCheckCache(t *testing.T) {
 		t.Fatalf("sent to %d addresses", len(addrs))
 	}
 	e.waitScanDone(t)
-	nc = e.n.Check(ctx)
+	nc = e.n.Check(ctx, netip.Addr{})
 	if e.computed.Load() != 3 || nc.Scan.Running || nc.Scan.Addresses != 253 || !nc.Scan.StartedAt.Equal(netNow.Add(31*time.Second)) ||
 		nc.Scan.FinishedAt.IsZero() {
 		t.Fatalf("after the scan: %d computations, %+v", e.computed.Load(), nc.Scan)
@@ -478,8 +478,8 @@ func TestNetworkCheckCache(t *testing.T) {
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
 	e.advance(time.Minute)
-	e.n.Check(cctx)
-	e.n.Check(ctx)
+	e.n.Check(cctx, netip.Addr{})
+	e.n.Check(ctx, netip.Addr{})
 	if e.computed.Load() != 5 {
 		t.Fatalf("%d computations", e.computed.Load())
 	}
@@ -512,7 +512,7 @@ func TestNetworkScanLimits(t *testing.T) {
 	if _, err := e.n.Scan(); apperr.KindOf(err) != apperr.KindConflict {
 		t.Fatalf("running: %v", err)
 	}
-	if nc := e.n.Check(context.Background()); !nc.Scan.Running || nc.Scan.Addresses != 253 {
+	if nc := e.n.Check(context.Background(), netip.Addr{}); !nc.Scan.Running || nc.Scan.Addresses != 253 {
 		t.Fatalf("running scan state %+v", nc.Scan)
 	}
 	close(block)

@@ -191,7 +191,7 @@
     {@const l = dl.draft}
     {@const c = cache.draft}
 
-    <Panel title={t('cache.settings.downloadCacheTitle')}>
+    <Panel id="cache-set-download" title={t('cache.settings.downloadCacheTitle')}>
       {#snippet actions()}
         {#if enabled}
           <Button icon="power" loading={switching} disabled={readOnly || dl.dirty} onclick={turnOff}>{t('cache.settings.turnOff')}</Button>
@@ -223,11 +223,11 @@
       </div>
     </Panel>
 
-    <Panel title={t('cache.settings.addressTitle')} description={t('cache.settings.addressText')}>
+    <Panel id="cache-set-address" title={t('cache.settings.addressTitle')} description={t('cache.settings.addressText')}>
       <div class="form">
         <ListField
           bind:values={l.cacheIpv4}
-          label={t('cache.settings.ipv4')}
+          id="cache-field-cacheIpv4" label={t('cache.settings.ipv4')}
           help={autoAddress ? t('cache.settings.ipv4HelpAuto', { ip: autoAddress }) : t('cache.settings.ipv4Help')}
           error={dlErr('cacheIpv4')}
           placeholder="192.168.1.10"
@@ -236,14 +236,14 @@
         />
         <ListField
           bind:values={l.cacheIpv6}
-          label={t('cache.settings.ipv6')}
+          id="cache-field-cacheIpv6" label={t('cache.settings.ipv6')}
           help={t('cache.settings.ipv6Help')}
           error={dlErr('cacheIpv6')}
           placeholder="fd00::10"
           rows={2}
           disabled={readOnly}
         />
-        <Field label={t('cache.settings.dnsTtl')} help={t('cache.settings.dnsTtlHelp')} error={dlErr('dnsTtl')}>
+        <Field id="cache-field-dnsTtl" label={t('cache.settings.dnsTtl')} help={t('cache.settings.dnsTtlHelp')} error={dlErr('dnsTtl')}>
           <div class="num-field">
             <Input type="number" min={1} max={86400} disabled={readOnly} bind:value={() => l.dnsTtl, (v) => (l.dnsTtl = toNumber(v))} />
             <span class="unit">{t('cache.settings.seconds')}</span>
@@ -252,18 +252,18 @@
       </div>
     </Panel>
 
-    <Panel title={t('cache.settings.clientsTitle')}>
+    <Panel id="cache-set-clients" title={t('cache.settings.clientsTitle')}>
       <div class="form">
         <ListField
           bind:values={l.nocacheClients}
-          label={t('cache.settings.nocache')}
+          id="cache-field-nocacheClients" label={t('cache.settings.nocache')}
           help={t('cache.settings.nocacheHelp')}
           error={dlErr('nocacheClients')}
           placeholder="192.168.1.50"
           disabled={readOnly}
         />
         <Toggle
-          label={t('cache.settings.privateUpstreams')}
+          id="cache-field-allowPrivateUpstreams" label={t('cache.settings.privateUpstreams')}
           description={t('cache.settings.privateUpstreamsHelp')}
           disabled={readOnly}
           bind:checked={l.allowPrivateUpstreams}
@@ -274,15 +274,15 @@
       </div>
     </Panel>
 
-    <Panel title={t('cache.settings.retentionTitle')} description={t('cache.settings.retentionText')}>
+    <Panel id="cache-set-retention" title={t('cache.settings.retentionTitle')} description={t('cache.settings.retentionText')}>
       <div class="form">
-        <Field label={t('cache.settings.maxAge')} help={t('cache.settings.maxAgeHelp')} error={cacheErr('maxAgeDays')}>
+        <Field id="cache-field-maxAgeDays" label={t('cache.settings.maxAge')} help={t('cache.settings.maxAgeHelp')} error={cacheErr('maxAgeDays')}>
           <div class="num-field">
             <Input type="number" min={1} max={3650} disabled={readOnly} bind:value={() => c.maxAgeDays, (v) => (c.maxAgeDays = toNumber(v))} />
             <span class="unit">{t('cache.settings.days')}</span>
           </div>
         </Field>
-        <Field label={t('cache.settings.maxSize')} help={t('cache.settings.maxSizeHelp')} error={cacheErr('maxSizeBytes')}>
+        <Field id="cache-field-maxSizeBytes" label={t('cache.settings.maxSize')} help={t('cache.settings.maxSizeHelp')} error={cacheErr('maxSizeBytes')}>
           <div class="num-field">
             <Input
               type="number"
@@ -295,7 +295,7 @@
           </div>
         </Field>
         <Field
-          label={t('cache.settings.minFree')}
+          id="cache-field-minFreeBytes" label={t('cache.settings.minFree')}
           help={t('cache.settings.minFreeHelp', { size: formatBytes(appStatus.overview.data?.store.minFreeBytes) })}
           error={cacheErr('minFreeBytes')}
         >
@@ -313,10 +313,10 @@
       </div>
     </Panel>
 
-    <Panel title={t('cache.settings.performanceTitle')} description={t('cache.settings.performanceText')}>
+    <Panel id="cache-set-performance" title={t('cache.settings.performanceTitle')} description={t('cache.settings.performanceText')}>
       <div class="form">
         <Field
-          label={t('cache.settings.sliceSize')}
+          id="cache-field-sliceSizeBytes" label={t('cache.settings.sliceSize')}
           help={activeSliceSize
             ? t('cache.settings.sliceSizeHelpActive', { size: formatBinary(activeSliceSize) })
             : t('cache.settings.sliceSizeHelp')}
@@ -331,7 +331,7 @@
           </div>
         </Field>
         <Field
-          label={t('cache.settings.fills')}
+          id="cache-field-maxConcurrentFills" label={t('cache.settings.fills')}
           help={t('cache.settings.fillsHelp', { memory: formatBinary(Math.max(1, c.maxConcurrentFills) * c.sliceSizeBytes) })}
           error={cacheErr('maxConcurrentFills')}
         >
@@ -345,7 +345,7 @@
             />
           </div>
         </Field>
-        <Field label={t('cache.settings.fillsPerClient')} help={t('cache.settings.fillsPerClientHelp')} error={cacheErr('maxFillsPerClient')}>
+        <Field id="cache-field-maxFillsPerClient" label={t('cache.settings.fillsPerClient')} help={t('cache.settings.fillsPerClientHelp')} error={cacheErr('maxFillsPerClient')}>
           <div class="num-field">
             <Input
               type="number"
@@ -356,7 +356,7 @@
             />
           </div>
         </Field>
-        <Field label={t('cache.settings.readAhead')} help={t('cache.settings.readAheadHelp')} error={cacheErr('readAheadSlices')}>
+        <Field id="cache-field-readAheadSlices" label={t('cache.settings.readAhead')} help={t('cache.settings.readAheadHelp')} error={cacheErr('readAheadSlices')}>
           <div class="num-field">
             <Input
               type="number"
@@ -370,12 +370,12 @@
       </div>
     </Panel>
 
-    <Panel title={t('cache.settings.sourceTitle')} description={t('cache.settings.sourceText')}>
+    <Panel id="cache-set-source" title={t('cache.settings.sourceTitle')} description={t('cache.settings.sourceText')}>
       <div class="form">
-        <Field label={t('cache.source.url')} help={t('cache.settings.sourceUrlHelp')} error={dlErr('domainsSource')}>
+        <Field id="cache-field-domainsSource" label={t('cache.source.url')} help={t('cache.settings.sourceUrlHelp')} error={dlErr('domainsSource')}>
           <Input type="url" mono disabled={readOnly} bind:value={l.domainsSource} />
         </Field>
-        <Field label={t('cache.settings.updateInterval')} help={t('cache.settings.updateIntervalHelp')} error={dlErr('updateIntervalHours')}>
+        <Field id="cache-field-updateIntervalHours" label={t('cache.settings.updateInterval')} help={t('cache.settings.updateIntervalHelp')} error={dlErr('updateIntervalHours')}>
           <div class="num-field">
             <Input
               type="number"

@@ -90,7 +90,7 @@
   </div>
 {/snippet}
 
-<Panel title={t('system.sync.form.title')} description={t('system.sync.form.description')} footer={d && session.isAdmin ? footer : undefined}>
+<Panel id="sync-set-follower" title={t('system.sync.form.title')} description={t('system.sync.form.description')} footer={d && session.isAdmin ? footer : undefined}>
   {#if form.loadError && !d}
     <Notice tone="fail" title={t('system.sync.form.loadError')}>{errorText(form.loadError)}</Notice>
   {:else if !d}

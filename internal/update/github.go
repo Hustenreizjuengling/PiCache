@@ -40,7 +40,14 @@ type Client struct {
 	APIBase      string       // "": DefaultAPIBase (tests: an httptest server)
 	DownloadBase string       // "": DefaultDownloadBase
 	Arch         string       // "": runtime.GOARCH
-	UserAgent    string       // "": PiCache/<version>
+	// GOARM is the ARM version of the binary ("": BuildGOARM(); only read
+	// for Arch arm): 6 selects picache-linux-armv6, 7 or none armv7.
+	GOARM     string
+	UserAgent string // "": PiCache/<version>
+	// Package: PiCache was installed as a Debian package (package mode,
+	// PackageInstalled). A release is then eligible only when its .deb for
+	// this architecture (PackageFile) is attached as well.
+	Package bool
 }
 
 // NewHTTPClient is the download client of the CLI and the root helper: the
@@ -87,15 +94,28 @@ func (c *Client) downloadBase() string {
 
 func (c *Client) arch() string { return cmp.Or(c.Arch, runtime.GOARCH) }
 
-// AssetName returns the release binary for a GOARCH (arm → armv7).
-func AssetName(goarch string) (string, bool) {
-	switch goarch {
-	case "amd64", "arm64":
-		return "picache-linux-" + goarch, true
-	case "arm":
-		return "picache-linux-armv7", true
+func (c *Client) goarm() string { return cmp.Or(c.GOARM, BuildGOARM()) }
+
+// asset returns the release binary of this client's architecture.
+func (c *Client) asset() (string, error) {
+	asset, ok := AssetName(c.arch(), c.goarm())
+	if !ok {
+		return "", fmt.Errorf("no release binaries are built for linux/%s", archLabel(c.arch(), c.goarm()))
 	}
-	return "", false
+	return asset, nil
+}
+
+// debArch returns the Debian architecture of the package mode ("" when
+// the client is not in package mode).
+func (c *Client) debArch() (string, error) {
+	if !c.Package {
+		return "", nil
+	}
+	a, ok := DebianArch(c.arch(), c.goarm())
+	if !ok {
+		return "", fmt.Errorf("no Debian packages are built for linux/%s", archLabel(c.arch(), c.goarm()))
+	}
+	return a, nil
 }
 
 // ghRelease is the part of a GitHub release object PiCache reads.
@@ -114,9 +134,13 @@ type ghRelease struct {
 // a draft, a valid version, and the binary for this architecture,
 // SHA256SUMS and SHA256SUMS.sig attached. nil if there is none.
 func (c *Client) Latest(ctx context.Context, channel string) (*Release, error) {
-	asset, ok := AssetName(c.arch())
-	if !ok {
-		return nil, fmt.Errorf("no release binaries are built for linux/%s", c.arch())
+	asset, err := c.asset()
+	if err != nil {
+		return nil, err
+	}
+	deb, err := c.debArch()
+	if err != nil {
+		return nil, err
 	}
 	var list []ghRelease
 	u := fmt.Sprintf("%s/repos/%s/releases?per_page=%d", c.apiBase(), Repository, listPerPage)
@@ -126,7 +150,7 @@ func (c *Client) Latest(ctx context.Context, channel string) (*Release, error) {
 	var best *Release
 	var bestV Version
 	for _, gr := range list {
-		rel, v, err := c.eligible(gr, asset)
+		rel, v, err := c.eligible(gr, asset, deb)
 		if err != nil || !Offered(channel, v) {
 			continue
 		}
@@ -144,9 +168,13 @@ func (c *Client) Release(ctx context.Context, ver string) (*Release, error) {
 	if _, err := ParseVersion(ver); err != nil {
 		return nil, err
 	}
-	asset, ok := AssetName(c.arch())
-	if !ok {
-		return nil, fmt.Errorf("no release binaries are built for linux/%s", c.arch())
+	asset, err := c.asset()
+	if err != nil {
+		return nil, err
+	}
+	deb, err := c.debArch()
+	if err != nil {
+		return nil, err
 	}
 	var gr ghRelease
 	u := fmt.Sprintf("%s/repos/%s/releases/tags/%s", c.apiBase(), Repository, url.PathEscape(ver))
@@ -159,12 +187,14 @@ func (c *Client) Release(ctx context.Context, ver string) (*Release, error) {
 	if gr.TagName != ver {
 		return nil, fmt.Errorf("GitHub answered with release %q instead of %s", clip(gr.TagName, 40), ver)
 	}
-	rel, _, err := c.eligible(gr, asset)
+	rel, _, err := c.eligible(gr, asset, deb)
 	return rel, err
 }
 
-// eligible converts a GitHub release that PiCache can install.
-func (c *Client) eligible(gr ghRelease, asset string) (*Release, Version, error) {
+// eligible converts a GitHub release that PiCache can install: the binary
+// asset, SHA256SUMS and its signature attached, and in package mode (deb
+// is the Debian architecture) the .deb of that architecture.
+func (c *Client) eligible(gr ghRelease, asset, deb string) (*Release, Version, error) {
 	v, err := ParseVersion(gr.TagName)
 	switch {
 	case err != nil:
@@ -176,7 +206,11 @@ func (c *Client) eligible(gr ghRelease, asset string) (*Release, Version, error)
 	for _, a := range gr.Assets {
 		have[a.Name] = true
 	}
-	for _, name := range []string{asset, SumsFile, SigFile} {
+	need := []string{asset, SumsFile, SigFile}
+	if deb != "" {
+		need = append(need, PackageFile(gr.TagName, deb))
+	}
+	for _, name := range need {
 		if !have[name] {
 			return nil, v, fmt.Errorf("release %s has no %s", gr.TagName, name)
 		}

@@ -2,12 +2,14 @@
   @component
   The signed-in app: pair strip, sidebar (a top drawer below 900 px), top
   bar, the restrictions the host sets for admins (configuration lock,
-  destructive actions off) and the current page (loaded on demand).
+  destructive actions off) and the current page (loaded on demand). It
+  carries out the jumps of the settings search (?jump=&field=).
 -->
 <script lang="ts">
-  import type { Component } from 'svelte'
+  import { untrack, type Component } from 'svelte'
   import { t } from '../i18n/index.svelte'
   import { router, setLeavePrompt } from '../lib/router.svelte'
+  import { SEARCH_ANCHORS, SEARCH_FIELDS } from '../lib/searchIndex'
   import { session } from '../lib/session.svelte'
   import { appStatus, startAppStatus } from '../lib/status.svelte'
   import { Button, EmptyState, Icon, IconButton, Notice, PairStrip, Skeleton, confirm } from '../lib/ui'
@@ -75,6 +77,61 @@
     }
     window.scrollTo(0, 0)
     main?.focus({ preventScroll: true })
+  })
+
+  // ---- ?jump=<anchor>&field=<field> (a settings search hit)
+  //
+  // Only anchors and fields of the search index are accepted. Once the page
+  // shows the anchor (checked every frame, at most 5 s), it is scrolled to
+  // the top below the header, the field is focused (else the anchor), the
+  // target is highlighted for 2 s and both parameters leave the URL.
+
+  const JUMP_WAIT_MS = 5_000
+  const HIGHLIGHT_MS = 2_000
+
+  const jump = $derived(router.param('jump'))
+
+  function land(anchor: HTMLElement, fieldId: string) {
+    anchor.scrollIntoView({ block: 'start' })
+    // The sticky header covers the top of the page.
+    const header = document.querySelector('.topbar')?.getBoundingClientRect().bottom ?? 0
+    const overlap = header + 12 - anchor.getBoundingClientRect().top
+    if (overlap > 0) window.scrollBy(0, -overlap)
+
+    const field = SEARCH_FIELDS.has(fieldId) ? document.getElementById(fieldId) : null
+    field?.focus({ preventScroll: true })
+    // A field that is not rendered or disabled (read-only) leaves the focus on the anchor.
+    const focusedField = !!field && document.activeElement === field
+    if (!focusedField) {
+      if (!anchor.hasAttribute('tabindex')) anchor.setAttribute('tabindex', '-1')
+      anchor.focus({ preventScroll: true })
+    }
+    const mark = focusedField ? (field.closest<HTMLElement>('.field, .toggle, .cb') ?? field) : anchor
+    const box = mark.getBoundingClientRect()
+    if (box.top < header || box.bottom > window.innerHeight) mark.scrollIntoView({ block: 'center' })
+    mark.classList.remove('jump-highlight')
+    void mark.offsetWidth // restarts the fade when the same target is highlighted again
+    mark.classList.add('jump-highlight')
+    setTimeout(() => mark.classList.remove('jump-highlight'), HIGHLIGHT_MS)
+  }
+
+  $effect(() => {
+    const anchor = jump
+    if (!anchor || !SEARCH_ANCHORS.has(anchor)) return
+    const field = untrack(() => router.param('field'))
+    const until = performance.now() + JUMP_WAIT_MS
+    let frame = 0
+    const look = () => {
+      const el = document.getElementById(anchor)
+      if (!el && performance.now() < until) {
+        frame = requestAnimationFrame(look)
+        return
+      }
+      if (el) land(el, field)
+      router.setQuery({ jump: null, field: null })
+    }
+    frame = requestAnimationFrame(look)
+    return () => cancelAnimationFrame(frame)
   })
 
   const strip = $derived(appStatus.strip.data)

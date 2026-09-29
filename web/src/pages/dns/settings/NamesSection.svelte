@@ -92,11 +92,11 @@
   <div class="stack">
     <div class="grid">
       <fieldset class="plain" disabled={synced}>
-        <Field label={t('dns.settings.names.localDomain')} optional help={t('dns.settings.names.localDomainHelp')} error={form.error('localDomain')}>
+        <Field id="dns-field-localDomain" label={t('dns.settings.names.localDomain')} optional help={t('dns.settings.names.localDomainHelp')} error={form.error('localDomain')}>
           <Input bind:value={d.localDomain} mono placeholder="lan" maxlength={253} autocomplete="off" />
         </Field>
       </fieldset>
-      <Field label={t('dns.settings.names.serverNames')} optional help={t('dns.settings.names.serverNamesHelp')} error={lineError(form.saveError, 'dns.serverNames')}>
+      <Field id="dns-field-serverNames" label={t('dns.settings.names.serverNames')} optional help={t('dns.settings.names.serverNamesHelp')} error={lineError(form.saveError, 'dns.serverNames')}>
         <LinesInput bind:value={d.serverNames} rows={2} placeholder="picache" />
       </Field>
     </div>
@@ -105,7 +105,7 @@
       <p class="small muted">{t('dns.settings.names.addressesHelp')}</p>
       <div class="grid">
         <Field
-          label={t('dns.settings.names.addressesV4')}
+          id="dns-field-serverNameAddresses-ipv4" label={t('dns.settings.names.addressesV4')}
           optional
           help={ownV4.length > 0 ? t('dns.settings.names.ownAddresses', { addresses: ownV4.join(', ') }) : undefined}
           error={lineError(form.saveError, 'dns.serverNameAddresses.ipv4')}
@@ -113,7 +113,7 @@
           <LinesInput bind:value={d.serverNameAddresses.ipv4} rows={2} placeholder={t('dns.settings.names.automatic')} />
         </Field>
         <Field
-          label={t('dns.settings.names.addressesV6')}
+          id="dns-field-serverNameAddresses-ipv6" label={t('dns.settings.names.addressesV6')}
           optional
           help={ownV6.length > 0 ? t('dns.settings.names.ownAddresses', { addresses: ownV6.join(', ') }) : undefined}
           error={lineError(form.saveError, 'dns.serverNameAddresses.ipv6')}
@@ -123,7 +123,7 @@
       </div>
     </section>
     <div class="grid">
-      <Field label={t('dns.settings.names.router')} help={statusText ?? t('dns.settings.names.routerHelp')} error={form.error('routerResolver')}>
+      <Field id="dns-field-routerResolver" label={t('dns.settings.names.router')} help={statusText ?? t('dns.settings.names.routerHelp')} error={form.error('routerResolver')}>
         <Select
           bind:value={() => mode, (v) => {
             mode = v === 'manual' || v === 'off' ? v : 'auto'
@@ -142,7 +142,7 @@
       <div class="stack-sm">
         <Toggle
           bind:checked={d.domainNeeded}
-          label={t('dns.settings.names.domainNeeded')}
+          id="dns-field-domainNeeded" label={t('dns.settings.names.domainNeeded')}
           description={d.localDomain.trim()
             ? t('dns.settings.names.domainNeededHelp', { example: `nas.${d.localDomain.trim()}` })
             : t('dns.settings.names.domainNeededHelpNoDomain')}
@@ -150,7 +150,7 @@
         {#if form.error('domainNeeded')}<p class="err">{form.error('domainNeeded')}</p>{/if}
       </div>
       <Field
-        label={t('dns.settings.names.reverse')}
+        id="dns-field-privateReverseNetworks" label={t('dns.settings.names.reverse')}
         optional
         help={t('dns.settings.names.reverseHelp')}
         error={lineError(form.saveError, 'dns.privateReverseNetworks')}

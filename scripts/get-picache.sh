@@ -1,6 +1,7 @@
 #!/bin/sh
-# Installs, upgrades or removes PiCache from a signed GitHub release (Debian
-# 12/13 with systemd: bare metal, VM, Proxmox LXC). Run it as root:
+# Installs, upgrades or removes PiCache from a signed GitHub release (Linux
+# with systemd 247 or later: bare metal, VM, Proxmox LXC; supported are the
+# families Debian/Ubuntu, Fedora/RHEL, Arch and openSUSE). Run it as root:
 #
 #   curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh
 #   ... | sudo sh -s -- --version v0.1.0 --with-host-apply
@@ -13,6 +14,11 @@
 #
 #   curl -fsSLO https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh
 #   less get-picache.sh && sudo sh get-picache.sh
+#
+# It needs OpenSSL 3 (Ed25519) and a CA bundle; when they are missing it
+# installs them with apt-get, dnf or zypper (on Arch it prints the pacman
+# command). It refuses to touch an installation of the Debian package
+# (update that with apt).
 #
 # Everything happens inside main, which is called on the last line, so a
 # download that breaks off runs nothing.
@@ -73,27 +79,88 @@ fetch() {
 
 # arch prints the release name of this machine's architecture.
 arch() {
-	case $(uname -m) in
+	m=$(uname -m)
+	case $m in
 	x86_64 | amd64) echo amd64 ;;
 	aarch64 | arm64) echo arm64 ;;
 	armv7* | armv8l | armhf) echo armv7 ;;
-	*) die "unsupported architecture $(uname -m); PiCache has builds for amd64, arm64 and armv7" ;;
+	armv6l) echo armv6 ;;
+	i386 | i486 | i586 | i686 | x86) echo 386 ;;
+	riscv64) echo riscv64 ;;
+	*) die "unsupported architecture $m; PiCache has builds for amd64, arm64, armv7, armv6, 386 and riscv64" ;;
 	esac
 }
 
-# need_tools installs openssl and the CA certificates with apt when they are
-# missing (minimal LXC templates); the rest is part of every Debian system.
+# CA_BUNDLES are the CA bundles of the supported families: Debian, Ubuntu
+# and Arch; Fedora and RHEL (the classic name, then the file it points to,
+# which newer Fedora releases keep alone); openSUSE.
+CA_BUNDLES="/etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/ca-bundle.pem"
+
+# ca_bundle prints the first CA bundle that exists ("" if none).
+ca_bundle() {
+	for f in $CA_BUNDLES; do
+		if [ -s "$f" ]; then
+			printf '%s' "$f"
+			return 0
+		fi
+	done
+}
+
+# check_openssl dies unless openssl is version 3 or later: the signature of
+# SHA256SUMS is Ed25519, which OpenSSL 1.1 cannot verify with -rawin.
+check_openssl() {
+	v=$(openssl version 2>/dev/null) || v=""
+	major=""
+	case $v in
+	"OpenSSL "*)
+		major=${v#OpenSSL }
+		major=${major%%.*}
+		;;
+	esac
+	case $major in
+	'' | *[!0-9]*) die "needs OpenSSL 3 for the Ed25519 signature check (found: ${v:-none})" ;;
+	esac
+	[ "$major" -ge 3 ] || die "needs OpenSSL 3 for the Ed25519 signature check (found: $v)"
+}
+
+# check_not_packaged dies when the Debian package installed PiCache here:
+# such a host is updated and removed with apt.
+check_not_packaged() {
+	st=""
+	if command -v dpkg-query >/dev/null 2>&1; then
+		st=$(dpkg-query -W -f='${Status}' picache 2>/dev/null) || st=""
+	fi
+	case $st in
+	"" | *" not-installed" | *" config-files") [ ! -e /usr/lib/picache/packaged ] && [ ! -L /usr/lib/picache/packaged ] && return 0 ;;
+	esac
+	die "PiCache is installed as a Debian package here: update it with apt (docs/DEPLOYMENT.md \"Debian package\") or remove it with apt remove picache"
+}
+
+# need_tools installs openssl and the CA certificates when they are missing
+# (minimal LXC templates): with apt-get, dnf or zypper; on Arch it prints the
+# pacman command instead (never -Sy: a partial upgrade). The rest is part of
+# every supported system.
 need_tools() {
 	missing=""
 	command -v openssl >/dev/null 2>&1 || missing="$missing openssl"
-	[ -e /etc/ssl/certs/ca-certificates.crt ] || missing="$missing ca-certificates"
+	[ -n "$(ca_bundle)" ] || missing="$missing ca-certificates"
 	if [ -n "$missing" ]; then
-		command -v apt-get >/dev/null 2>&1 || die "please install:$missing"
 		say "installing:$missing"
-		DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
-		# shellcheck disable=SC2086 # word splitting is intended
-		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing >/dev/null
+		if command -v apt-get >/dev/null 2>&1; then
+			DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
+			# shellcheck disable=SC2086 # word splitting is intended
+			DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing >/dev/null
+		elif command -v dnf >/dev/null 2>&1; then
+			dnf -y install openssl ca-certificates >/dev/null
+		elif command -v zypper >/dev/null 2>&1; then
+			zypper --non-interactive install openssl ca-certificates >/dev/null
+		elif command -v pacman >/dev/null 2>&1; then
+			die "please install them first: pacman -S --needed openssl ca-certificates"
+		else
+			die "please install:$missing"
+		fi
 	fi
+	check_openssl
 	for t in tar gzip sha256sum base64 mktemp; do
 		command -v "$t" >/dev/null 2>&1 || die "$t is missing"
 	done
@@ -142,6 +209,7 @@ main() {
 
 	[ "$(id -u)" -eq 0 ] || die "run as root, for example: curl -fsSL <url> | sudo sh"
 	[ -d /run/systemd/system ] || die "systemd is not running here; use the Docker image instead (docs/DEPLOYMENT.md)"
+	check_not_packaged
 	need_tools
 	a=$(arch)
 
@@ -163,9 +231,13 @@ main() {
 	printf '%s\n' "$RELEASE_KEY" >"$tmp/release-key.pem"
 	base64 -d "$tmp/SHA256SUMS.sig" >"$tmp/SHA256SUMS.sig.bin" 2>/dev/null ||
 		die "SHA256SUMS.sig is not a valid signature file"
-	openssl pkeyutl -verify -pubin -inkey "$tmp/release-key.pem" -rawin \
-		-in "$tmp/SHA256SUMS" -sigfile "$tmp/SHA256SUMS.sig.bin" >/dev/null 2>&1 ||
+	if ! openssl pkeyutl -verify -pubin -inkey "$tmp/release-key.pem" -rawin \
+		-in "$tmp/SHA256SUMS" -sigfile "$tmp/SHA256SUMS.sig.bin" >/dev/null 2>&1; then
+		if [ "$(cat /proc/sys/crypto/fips_enabled 2>/dev/null)" = 1 ]; then
+			die "the signature check failed in FIPS mode, which may refuse Ed25519: verify the release on another machine (docs/DEPLOYMENT.md) and run install.sh"
+		fi
 		die "the signature of SHA256SUMS is not valid: the release files are damaged or were not published by PiCache"
+	fi
 	say "signature of SHA256SUMS verified"
 
 	files="picache-deploy.tar.gz"

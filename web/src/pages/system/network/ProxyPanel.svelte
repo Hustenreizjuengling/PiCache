@@ -30,8 +30,6 @@
   const general = $derived(form.saveError && !form.saveError.field ? form.errorMessage : undefined)
   const anyUse = $derived(!!d && (d.proxyFor.lists || d.proxyFor.updateCheck || d.proxyFor.notifications))
 
-  const PROXY_FOR = ['lists', 'updateCheck', 'notifications'] as const
-
   async function save(e: SubmitEvent) {
     e.preventDefault()
     const draft = form.draft
@@ -80,15 +78,16 @@
     <form id="proxy-{formId}" onsubmit={save} novalidate>
       <fieldset class="stack" disabled={!session.isAdmin}>
         {#if general}<Notice tone="fail">{general}</Notice>{/if}
-        <Field label={t('system.network.proxy.url')} optional help={t('system.network.proxy.urlHelp')} error={form.error('proxy.url')}>
+        <Field id="net-field-proxy-url" label={t('system.network.proxy.url')} optional help={t('system.network.proxy.urlHelp')} error={form.error('proxy.url')}>
           <Input bind:value={d.proxy.url} mono maxlength={255} autocomplete="off" placeholder="http://192.168.1.2:3128" inputmode="url" />
         </Field>
         <div class="grid">
-          <Field label={t('system.network.proxy.username')} optional error={form.error('proxy.username')}>
+          <Field id="net-field-proxy-username" label={t('system.network.proxy.username')} optional error={form.error('proxy.username')}>
             <Input bind:value={d.proxy.username} maxlength={255} autocomplete="off" />
           </Field>
           <div class="stack-sm">
             <Field
+              id="net-field-proxy-password"
               label={t('system.network.proxy.password')}
               optional
               error={form.error('proxy.password')}
@@ -111,9 +110,10 @@
 
         <section class="stack-sm" aria-labelledby="proxy-for-{formId}">
           <h3 id="proxy-for-{formId}">{t('system.network.proxy.useFor')}</h3>
-          {#each PROXY_FOR as k (k)}
-            <Toggle bind:checked={d.proxyFor[k]} label={t(`system.network.proxy.for.${k}`)} description={t(`system.network.proxy.for.${k}Help`)} />
-          {/each}
+          <!-- One literal id per switch: the settings search jumps to them. -->
+          <Toggle id="net-field-proxyFor-lists" bind:checked={d.proxyFor.lists} label={t('system.network.proxy.for.lists')} description={t('system.network.proxy.for.listsHelp')} />
+          <Toggle id="net-field-proxyFor-updateCheck" bind:checked={d.proxyFor.updateCheck} label={t('system.network.proxy.for.updateCheck')} description={t('system.network.proxy.for.updateCheckHelp')} />
+          <Toggle id="net-field-proxyFor-notifications" bind:checked={d.proxyFor.notifications} label={t('system.network.proxy.for.notifications')} description={t('system.network.proxy.for.notificationsHelp')} />
           {#if form.error('proxyFor')}<p class="err">{form.error('proxyFor')}</p>{/if}
         </section>
 

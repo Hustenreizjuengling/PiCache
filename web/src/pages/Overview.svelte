@@ -1,7 +1,8 @@
 <!--
   @component
-  Overview (docs/DESIGN.md "Layout"): health warnings, the status sentence,
-  then one band per product half (DNS, Cache). Not a card grid.
+  Overview (docs/DESIGN.md "Layout"): health warnings, the getting-started
+  checklist (admins of a fresh installation, until hidden), the status
+  sentence, then one band per product half (DNS, Cache). Not a card grid.
   Query: ?range=15m|1h|24h|7d|30d|90d|180d|365d or ?from=&to= (unix seconds,
   a custom window of at most 400 days) for the charts and top lists
   (default 24h). "More" offers the longer presets the statistics retention
@@ -12,11 +13,13 @@
   import { api, resource, type RangePreset } from '../lib/api'
   import { DAY, isCustom, rangeParams, readRange, withinRetention, type Range } from '../lib/range'
   import { router } from '../lib/router.svelte'
+  import { session } from '../lib/session.svelte'
   import { appStatus } from '../lib/status.svelte'
   import { CustomRangeDialog, Notice, Skeleton, TimeRangePicker } from '../lib/ui'
   import { errorText } from '../lib/errors'
   import CacheBand from './overview/CacheBand.svelte'
   import DnsBand from './overview/DnsBand.svelte'
+  import GetStarted from './overview/GetStarted.svelte'
   import HealthBanner from './overview/HealthBanner.svelte'
   import StatusSentence from './overview/StatusSentence.svelte'
 
@@ -44,6 +47,11 @@
 
 <div class="page">
   <HealthBanner {overview} />
+
+  <!-- Admins of a fresh installation until they hide it (web.onboardingDone). -->
+  {#if session.isAdmin && settings.data?.web.onboardingDone === false}
+    <GetStarted onhidden={(all) => settings.set(all)} />
+  {/if}
 
   {#if appStatus.overview.error && !overview}
     <Notice tone="fail" title={t('overview.loadError')}>{errorText(appStatus.overview.error)}</Notice>

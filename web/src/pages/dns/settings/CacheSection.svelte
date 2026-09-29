@@ -82,22 +82,22 @@
         {/if}
       </div>
     {/if}
-    <Toggle bind:checked={d.cacheEnabled} label={t('dns.settings.cache.enabled')} description={t('dns.settings.cache.enabledHelp')} />
+    <Toggle bind:checked={d.cacheEnabled} id="dns-field-cacheEnabled" label={t('dns.settings.cache.enabled')} description={t('dns.settings.cache.enabledHelp')} />
     {#if d.cacheEnabled}
       <div class="grid">
-        <Field label={t('dns.settings.cache.size')} error={form.error('cacheSize')}>
+        <Field id="dns-field-cacheSize" label={t('dns.settings.cache.size')} error={form.error('cacheSize')}>
           <NumberInput bind:value={d.cacheSize} min={0} max={10000000} unit={t('dns.shared.unit.entries')} />
         </Field>
-        <Field label={t('dns.settings.cache.minTtl')} help={t('dns.settings.cache.minTtlHelp')} error={form.error('cacheMinTtl')}>
+        <Field id="dns-field-cacheMinTtl" label={t('dns.settings.cache.minTtl')} help={t('dns.settings.cache.minTtlHelp')} error={form.error('cacheMinTtl')}>
           <NumberInput bind:value={d.cacheMinTtl} min={0} max={86400} unit={t('dns.shared.unit.seconds')} />
         </Field>
-        <Field label={t('dns.settings.cache.maxTtl')} help={t('dns.settings.cache.maxTtlHelp')} error={form.error('cacheMaxTtl')}>
+        <Field id="dns-field-cacheMaxTtl" label={t('dns.settings.cache.maxTtl')} help={t('dns.settings.cache.maxTtlHelp')} error={form.error('cacheMaxTtl')}>
           <NumberInput bind:value={d.cacheMaxTtl} min={0} max={604800} unit={t('dns.shared.unit.seconds')} />
         </Field>
       </div>
-      <Toggle bind:checked={d.serveStale} label={t('dns.settings.cache.serveStale')} description={t('dns.settings.cache.serveStaleHelp')} />
+      <Toggle bind:checked={d.serveStale} id="dns-field-serveStale" label={t('dns.settings.cache.serveStale')} description={t('dns.settings.cache.serveStaleHelp')} />
       {#if d.serveStale}
-        <Field label={t('dns.settings.cache.staleAge')} error={form.error('serveStaleMaxAgeSec')}>
+        <Field id="dns-field-serveStaleMaxAgeSec" label={t('dns.settings.cache.staleAge')} error={form.error('serveStaleMaxAgeSec')}>
           <NumberInput bind:value={d.serveStaleMaxAgeSec} min={0} max={604800} unit={t('dns.shared.unit.seconds')} />
         </Field>
       {/if}

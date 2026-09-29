@@ -1,5 +1,7 @@
 # PiCache updates from the web UI: starts the root helper whenever the web
-# UI queues an update. Installed by install.sh unless --without-updater.
+# UI queues an update. Installed by deploy/install.sh to
+# /usr/local/lib/systemd/system unless --without-updater (never by the Debian
+# package, which is updated with apt).
 [Unit]
 Description=Watch for PiCache update requests
 Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md

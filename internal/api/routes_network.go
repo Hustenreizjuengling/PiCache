@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -13,8 +14,9 @@ import (
 type Network interface {
 	// Check returns the network check; it is computed at most every 30 s
 	// (every 2 s while a scan runs), and starting or finishing a scan
-	// invalidates it.
-	Check(ctx context.Context) NetworkCheck
+	// invalidates it. With a valid client it adds Requester, computed for
+	// every call (never from the cached check).
+	Check(ctx context.Context, client netip.Addr) NetworkCheck
 	// Scan starts a discovery scan in the background and returns the number
 	// of addresses it probes: apperr.Conflict while a scan runs,
 	// apperr.TooMany within 60 s after the previous start,
@@ -82,6 +84,32 @@ type NetworkCheck struct {
 	// not apply while it serves; its router advertisements announce it as
 	// IPv6 DNS server).
 	DHCP NetworkDHCP `json:"dhcp"`
+	// Requester is the effective client of this request (v0.16.0; the
+	// trusted-proxy rules of the web ACL), present for every authenticated
+	// request.
+	Requester *NetworkRequester `json:"requester,omitempty"`
+}
+
+// NetworkRequester describes the device that asked for the network check
+// (the getting-started checklist: "Test from a device").
+type NetworkRequester struct {
+	Address string `json:"address"`
+	// Local: loopback or one of this machine's addresses (also a reverse
+	// proxy on this machine that is not trusted).
+	Local bool `json:"local"`
+	// MAC, Name and ClientID of the entry of devices whose ips contain
+	// the address.
+	MAC      string `json:"mac,omitempty"`
+	Name     string `json:"name,omitempty"`
+	ClientID int64  `json:"clientId,omitzero"`
+	// Queries24h and LastQuery are those the device list shows for that
+	// entry (every address of its MAC), without one the activity of the
+	// address (statistics, else the in-memory activity); both absent while
+	// client addresses are anonymised (Privacy). LastQuery also looks back
+	// 30 days.
+	Queries24h *int64    `json:"queries24h,omitempty"`
+	LastQuery  time.Time `json:"lastQuery,omitzero"`
+	Privacy    bool      `json:"privacy,omitzero"`
 }
 
 // NetworkDHCP describes PiCache's own DHCP server for the network check.
@@ -100,12 +128,22 @@ type NetworkRouter struct {
 	Kind string   `json:"kind"`           // fritzbox | generic | unknown
 }
 
-// NetworkSelf are this machine's addresses (no loopback, no virtual bridges).
+// NetworkSelf are this machine's addresses (no loopback, no virtual bridges,
+// no Tailscale addresses except on a default route's interface); those of
+// the interfaces of the default routes first (the addresses LAN devices
+// use), then by value.
 type NetworkSelf struct {
 	IPv4    []string `json:"ipv4"`
 	ULA     []string `json:"ula"`
 	Global  []string `json:"global"`
 	DNSIPv6 bool     `json:"dnsIpv6"` // a DNS listener serves IPv6
+	// Dynamic4 (v0.16.0): an IPv4 address of the interface of the IPv4
+	// default route (lowest metric) has a finite valid lifetime, i.e. a
+	// DHCP client configured it (independent of PiCache's own DHCP
+	// server). Absent in a container bridge network, on systems other than
+	// Linux and without an IPv4 default route (or an IPv4 address on its
+	// interface).
+	Dynamic4 *bool `json:"dynamic4,omitempty"`
 }
 
 // NetworkQueries counts the DNS queries of the last 24 h from other devices
@@ -227,7 +265,7 @@ func (s *Server) networkCheck(w http.ResponseWriter, r *http.Request) error {
 	if s.d.Network == nil {
 		return errNoNetwork
 	}
-	return ok(w, s.d.Network.Check(r.Context()))
+	return ok(w, s.d.Network.Check(r.Context(), requestClient(r).client))
 }
 
 func (s *Server) networkScan(w http.ResponseWriter, r *http.Request) error {

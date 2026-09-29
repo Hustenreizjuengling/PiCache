@@ -86,6 +86,9 @@ export const REPO = 'https://github.com/hustenreizjuengling/picache'
 export const DOCS: { label: MessageKey; url: string }[] = [
   { label: 'system.health.docs.readme', url: `${REPO}#readme` },
   { label: 'system.health.docs.deployment', url: `${REPO}/blob/main/docs/DEPLOYMENT.md` },
+  { label: 'system.health.docs.devices', url: `${REPO}/blob/main/docs/DEVICES.md` },
+  { label: 'system.health.docs.routers', url: `${REPO}/blob/main/docs/ROUTERS.md` },
+  { label: 'system.health.docs.guides', url: `${REPO}/blob/main/docs/GUIDES.md` },
   { label: 'system.health.docs.troubleshooting', url: `${REPO}/blob/main/docs/DEPLOYMENT.md#troubleshooting` },
   { label: 'system.health.docs.security', url: `${REPO}/blob/main/docs/SECURITY.md` },
   { label: 'system.health.docs.api', url: `${REPO}/blob/main/docs/API.md` },

@@ -212,13 +212,13 @@ func renderSnippets(t Target, c Capabilities, cfg *config.Config) Snippets {
 		s.HostApply = "sudo picache storage apply " + t.ID
 	}
 
-	pkg := "cifs-utils"
+	client := smbClientHint
 	if t.Kind == KindNFS {
-		pkg = "nfs-common"
+		client = nfsClientHint
 	}
 	s.Notes = append(s.Notes,
 		"Use the NAS's IP address: the kernel does not resolve host names when mounting, and PiCache may be the DNS server itself.",
-		"Install "+pkg+" on the machine that mounts the share (apt install "+pkg+").",
+		"On the machine that mounts the share, "+client+".",
 		"Keep the mount below "+cfg.MountRoot+" (PICACHE_MOUNT_ROOT): it is the only NAS location PiCache writes to.",
 	)
 	if credPath != "" {

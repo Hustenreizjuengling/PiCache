@@ -28,7 +28,7 @@
       <Toggle
         bind:checked={d.disableAAAA}
         disabled={d.dns64.enabled}
-        label={t('dns.settings.ipv6.disableAaaa')}
+        id="dns-field-disableAAAA" label={t('dns.settings.ipv6.disableAaaa')}
         description={t('dns.settings.ipv6.disableAaaaHelp')}
       />
       {#if d.dns64.enabled}<p class="sub small muted">{t('dns.settings.ipv6.exclusiveAaaa')}</p>{/if}
@@ -39,7 +39,7 @@
       <Toggle
         bind:checked={d.dns64.enabled}
         disabled={d.disableAAAA}
-        label={t('dns.settings.ipv6.dns64')}
+        id="dns-field-dns64-enabled" label={t('dns.settings.ipv6.dns64')}
         description={t('dns.settings.ipv6.dns64Help')}
       />
       {#if d.disableAAAA}<p class="sub small muted">{t('dns.settings.ipv6.exclusiveDns64')}</p>{/if}
@@ -48,7 +48,7 @@
 
     {#if d.dns64.enabled}
       <div class="grid">
-        <Field label={t('dns.settings.ipv6.prefix')} help={t('dns.settings.ipv6.prefixHelp')} error={prefixError}>
+        <Field id="dns-field-dns64-prefix" label={t('dns.settings.ipv6.prefix')} help={t('dns.settings.ipv6.prefixHelp')} error={prefixError}>
           <Input bind:value={d.dns64.prefix} mono placeholder={defaultPrefix} maxlength={64} autocomplete="off" />
         </Field>
       </div>

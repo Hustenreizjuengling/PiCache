@@ -2,8 +2,9 @@
 # starts. systemd does this itself on bare metal and in VMs, but not inside
 # a container, and then NAS mounts that the root helper starts later never
 # reach picache.service's own mount namespace (PiCache would only see them
-# after a restart). Installed by `install.sh --with-host-apply` only in a
-# container whose / is not shared.
+# after a restart). Installed by deploy/install.sh --with-host-apply to
+# /usr/local/lib/systemd/system only in a container whose / is not shared
+# (the Debian package: /usr/lib/systemd/system, enabled likewise).
 [Unit]
 Description=Make / a shared mount for PiCache host-apply (container)
 Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md

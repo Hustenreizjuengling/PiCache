@@ -1,0 +1,64 @@
+# PiCache on TrueNAS SCALE 24.10 or later: Apps -> Discover Apps -> ⋮ ->
+# Install via YAML, paste this file (docs/DEPLOYMENT.md "NAS").
+#
+# The container gets its own LAN address (macvlan), so the TrueNAS web UI
+# keeps 80/443 and nothing on the NAS clashes with PiCache's port 53.
+#
+#   1. Set parent (the NAS's LAN interface, Network -> Interfaces), subnet,
+#      gateway and ipv4_address below. The app does not start while parent
+#      is CHANGE_ME. The address must be outside the router's DHCP pool.
+#   2. Create the datasets or directories, owned by the apps user 568:568
+#      (Docker would create missing paths owned by root, which PiCache
+#      refuses), in the TrueNAS shell:
+#        install -d -o 568 -g 568 -m 0750 /mnt/CHANGE_ME/apps/picache/data /mnt/CHANGE_ME/apps/picache/cache
+#      and replace CHANGE_ME below with your pool.
+#   3. After the start, the setup token: sudo docker exec -u 568:568 picache /picache setup-token
+#      then open http://<ipv4_address>:8080/.
+#
+# The NAS itself cannot reach the container's address over macvlan: keep
+# another DNS server in the NAS's own network settings. Alternative (DNS
+# only): host networking with PICACHE_DNS_LISTEN=<NAS-IP>:53,
+# PICACHE_CACHE_LISTEN=off, PICACHE_SNI_LISTEN=off (DEPLOYMENT).
+#
+# Security: PiCache starts as root only to bind its ports, then runs as
+# PICACHE_RUN_AS (never empty or 0); never add SYS_ADMIN or privileged.
+name: picache
+
+services:
+  picache:
+    image: ghcr.io/hustenreizjuengling/picache:latest
+    container_name: picache
+    restart: unless-stopped
+    networks:
+      picache-lan:
+        # PiCache's own LAN address: outside the router's DHCP pool.
+        ipv4_address: 192.0.2.53
+    privileged: false
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID]
+    # cap_add: [NET_BIND_SERVICE, SETUID, SETGID, NET_RAW] # only for IPv6 router advertisements
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m
+    stop_grace_period: 30s
+    environment:
+      # The TrueNAS apps user owns the app's data.
+      PICACHE_RUN_AS: "568:568"
+      TZ: "Etc/UTC"
+    volumes:
+      - /mnt/CHANGE_ME/apps/picache/data:/data
+      - /mnt/CHANGE_ME/apps/picache/cache:/cache
+
+networks:
+  picache-lan:
+    driver: macvlan
+    driver_opts:
+      # The NAS's LAN interface, e.g. enp1s0 or br0.
+      parent: CHANGE_ME
+    ipam:
+      config:
+        # Your LAN and its router (192.0.2.0/24 is a documentation
+        # placeholder).
+        - subnet: 192.0.2.0/24
+          gateway: 192.0.2.1

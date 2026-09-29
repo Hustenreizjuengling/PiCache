@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -20,9 +21,14 @@ type fakeNetwork struct {
 	scans   int
 }
 
-func (f *fakeNetwork) Check(context.Context) NetworkCheck {
+func (f *fakeNetwork) Check(_ context.Context, client netip.Addr) NetworkCheck {
 	at := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	var req *NetworkRequester
+	if client.IsValid() {
+		req = &NetworkRequester{Address: client.String(), Local: client.IsLoopback()}
+	}
 	return NetworkCheck{
+		Requester: req,
 		CheckedAt: at, Mode: "host", StatsAvailable: true,
 		Router:     &NetworkRouter{IPv4: "192.168.178.1", IPv6: []string{"fe80::1"}, MAC: "3c:a6:2f:00:00:01", Name: "fritz.box", Kind: "fritzbox"},
 		Self:       NetworkSelf{IPv4: []string{"192.168.178.10"}, ULA: []string{}, Global: []string{}, DNSIPv6: true},

@@ -54,6 +54,7 @@ type Options struct {
 	DataDir string // PICACHE_DATA_DIR: update lock and pre-upgrade database copies
 	Current string // version of the installed binary
 	Arch    string // "": runtime.GOARCH
+	GOARM   string // "": BuildGOARM() (see Client.GOARM)
 
 	// Confirm, if set, is called when the target version is known and the
 	// binary verified, before anything is changed; an error aborts.
@@ -143,9 +144,10 @@ func newApplier(o Options) (*applier, error) {
 	if o.BinPath == "" || o.DataDir == "" || o.Files == nil || o.Host.Systemctl == nil || o.Host.Health == nil {
 		return nil, errors.New("update: incomplete options")
 	}
-	asset, ok := AssetName(cmp.Or(o.Arch, runtime.GOARCH))
+	arch, goarm := cmp.Or(o.Arch, runtime.GOARCH), cmp.Or(o.GOARM, BuildGOARM())
+	asset, ok := AssetName(arch, goarm)
 	if !ok {
-		return nil, fmt.Errorf("no release binaries are built for linux/%s", cmp.Or(o.Arch, runtime.GOARCH))
+		return nil, fmt.Errorf("no release binaries are built for linux/%s", archLabel(arch, goarm))
 	}
 	h := o.Host
 	if h.CheckPrivileges == nil {

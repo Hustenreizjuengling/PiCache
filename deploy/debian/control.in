@@ -1,0 +1,19 @@
+Package: picache
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: @MAINTAINER@
+Installed-Size: @INSTALLED_SIZE@
+Depends: systemd (>= 247), init-system-helpers, passwd, ca-certificates
+Suggests: cifs-utils, nfs-common
+Section: net
+Priority: optional
+Homepage: https://github.com/Hustenreizjuengling/PiCache
+Description: filtering DNS server and download cache for the home network
+ PiCache filters DNS for every device of the network with blocklists and
+ rules, adds parental controls, local DNS records, encrypted DNS and an
+ optional DHCP server, and caches game and operating system downloads for
+ the whole network. One static program with an embedded web UI; it runs
+ unprivileged as the system user picache in a hardened systemd unit.
+ .
+ The web UI listens on port 8080 (HTTPS: 8443). The one-time setup token of
+ the first start: sudo picache setup-token

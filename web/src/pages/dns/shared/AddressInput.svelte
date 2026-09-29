@@ -19,9 +19,11 @@
     error?: string
     required?: boolean
     optional?: boolean
+    /** Id of the address input (e.g. for the settings search). */
+    id?: string
   }
 
-  let { value = $bindable(), label, placeholder, help, error, required = false, optional = false }: Props = $props()
+  let { value = $bindable(), label, placeholder, help, error, required = false, optional = false, id }: Props = $props()
 
   const self = $derived(value === SELF_ADDRESS)
   /** The address typed before "this server" was chosen (restored when it is unchecked). */
@@ -38,7 +40,7 @@
 </script>
 
 <div class="addr">
-  <Field {label} {help} {error} {required} {optional}>
+  <Field {id} {label} {help} {error} {required} {optional}>
     <Input
       bind:value={() => (self ? '' : value), (v) => (value = String(v ?? ''))}
       mono

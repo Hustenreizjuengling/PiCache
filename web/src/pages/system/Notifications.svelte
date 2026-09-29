@@ -192,7 +192,7 @@
     <Notice tone="info">{t('system.notifications.adminOnly')}</Notice>
   {:else}
     <Panel
-      title={t('system.notifications.channels.title')}
+      id="notify-set-channels" title={t('system.notifications.channels.title')}
       description={t('system.notifications.channels.description')}
       flush
       footer={full ? limitNote : undefined}

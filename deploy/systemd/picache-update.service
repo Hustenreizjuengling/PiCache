@@ -18,7 +18,9 @@
 #
 # Local changes belong in a drop-in (`systemctl edit picache-update`); with
 # a custom PICACHE_DATA_DIR install.sh writes
-# picache-update.service.d/50-picache-paths.conf.
+# picache-update.service.d/50-picache-paths.conf. Installed by
+# deploy/install.sh to /usr/local/lib/systemd/system (never by the Debian
+# package).
 [Unit]
 Description=PiCache update helper (install an update queued in the web UI)
 Documentation=https://github.com/hustenreizjuengling/picache/blob/main/docs/DEPLOYMENT.md

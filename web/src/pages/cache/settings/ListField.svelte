@@ -17,9 +17,11 @@
     placeholder?: string
     rows?: number
     disabled?: boolean
+    /** Id of the text area (e.g. for the settings search). */
+    id?: string
   }
 
-  let { values = $bindable([]), label, help, error, placeholder, rows = 3, disabled = false }: Props = $props()
+  let { values = $bindable([]), label, help, error, placeholder, rows = 3, disabled = false, id }: Props = $props()
 
   let text = $state(untrack(() => values.join('\n')))
 
@@ -37,6 +39,6 @@
   }
 </script>
 
-<Field {label} {help} {error} optional>
+<Field {id} {label} {help} {error} optional>
   <Textarea bind:value={() => text, set} {rows} mono {placeholder} {disabled} />
 </Field>

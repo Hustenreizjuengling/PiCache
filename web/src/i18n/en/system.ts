@@ -219,6 +219,8 @@ export default {
   'tokens.description':
     'For scripts, monitoring and automated backups (Authorization: Bearer …). Tokens can never manage tokens, accounts, passwords, two-factor authentication, sessions or HTTPS certificates, nor restore backups.',
   'tokens.create': 'Create token',
+  'tokens.apiDocs': 'docs/API.md describes every route with its access level; the same in machine-readable form:',
+  'tokens.openapi': 'OpenAPI description (JSON)',
   'tokens.createTitle': 'Create API token',
   'tokens.createdTitle': 'Token created',
   'tokens.created': 'Token created',
@@ -365,7 +367,7 @@ export default {
     'Firefox has its own list: Settings > Privacy & Security > Certificates > View Certificates > Authorities > Import, choose picache-ca.crt and tick “Trust this CA to identify websites”.',
   'https.trust.linux.title': 'Linux',
   'https.trust.linux.text':
-    'Debian and Ubuntu add it to the system store with the command below. Chrome and Chromium use their own list: Settings > Privacy and security > Security > Manage certificates > Authorities > Import.',
+    'Add it to the system store with the command of your distribution below. Chrome and Chromium use their own list: Settings > Privacy and security > Security > Manage certificates > Authorities > Import.',
   'https.trust.riskTitle': 'What trusting the CA means',
   'https.trust.riskText':
     'The CA can only vouch for PiCache’s own names and addresses. Its key stays in PiCache’s data directory so renewals need no new trust: whoever can read that directory could issue such certificates too. Remove the CA from your devices when you retire PiCache or its data directory was exposed, and create a new CA after a compromise.',
@@ -933,6 +935,10 @@ export default {
   'health.docs.security': 'Security model',
   'health.docs.api': 'REST API',
   'health.docs.issues': 'Report a problem',
+  'health.docs.devices': 'Setting up devices',
+  'health.docs.routers': 'Setting up routers',
+  'health.docs.guides': 'Guides (Unbound, VPN, Home Assistant, firewall)',
+  'health.start.show': 'Show the getting-started checklist',
 
   // notifications
   'notifications.adminOnly': 'Only admins can see and change the notification channels and the delivery log.',
@@ -1134,6 +1140,8 @@ export default {
   'updates.mode.helper': 'From this page (update helper)',
   'updates.mode.docker': 'New Docker image',
   'updates.mode.manual': 'Command on the host',
+  'updates.mode.package': 'Installed as a Debian package (apt)',
+  'updates.current.arch': 'Package architecture',
   'updates.runState.running': 'running',
   'updates.runState.succeeded': 'installed',
   'updates.runState.failed': 'failed',
@@ -1166,6 +1174,13 @@ export default {
   'updates.how.manualHint':
     'The command shows the start of the release notes and asks before it installs. It checks the signature and goes back to the current version if the new one does not start.',
   'updates.how.copy': 'Copy command',
+  'updates.how.package': 'PiCache was installed as a Debian package. Update it on the PiCache host:',
+  'updates.how.packageDownload': 'Download {file} and, from the same release, {sums} and {sig}.',
+  'updates.how.packageVerify': 'Verify the download as the deployment guide shows: {guide}.',
+  'updates.how.packageGuide': 'Debian package',
+  'updates.how.packageInstall': 'Install it as root in the directory of the download:',
+  'updates.how.packageHint':
+    'apt install checks no signature itself, so verify the file first. Your settings and data stay; DNS and the cache are unavailable for a few seconds while PiCache restarts.',
 
   'updates.install.button': 'Install update',
   'updates.install.title': 'Install PiCache {version}?',
@@ -1255,6 +1270,8 @@ export default {
   'updates.settings.nightlyTitle': 'Nightly builds are untested',
   'updates.settings.nightlyText':
     'They are built every day from the development branch without a release test and signed with their own key. Going back to stable means waiting for the next stable release, which is newer than the nightly, or “sudo picache update --version vX.Y.Z --allow-downgrade” with the copy of the database from before the upgrade.',
+  'updates.settings.nightlyTextPackage':
+    'They are built every day from the development branch without a release test and signed with their own key. Going back to stable means waiting for the next stable release, which is newer than the nightly, or installing the stable package with “sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_<version>_<arch>.deb” and putting back the copy of the database from before the upgrade (docs/DEPLOYMENT.md “Going back to an earlier version”).',
   'updates.settings.nightlyConfirm': 'Use nightly builds',
   'updates.settings.nightlyHostTitle': 'This host does not install nightly builds yet',
   'updates.settings.nightlyHostText':

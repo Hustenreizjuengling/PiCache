@@ -216,7 +216,7 @@
 {/snippet}
 
 <Panel
-  title={t('system.backup.scheduled.title')}
+  id="backup-set-scheduled" title={t('system.backup.scheduled.title')}
   description={t('system.backup.scheduled.description')}
   footer={session.isAdmin && form.draft ? formFooter : undefined}
 >

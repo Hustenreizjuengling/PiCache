@@ -193,6 +193,46 @@ bare metal, VMs and LXC containers the installer adds a root helper
   are installed only by an administrator with `sudo picache update`, which
   runs the same checks.
 
+### The Debian package
+
+- **`apt install ./file` checks no signature**, and the checksum GitHub
+  shows for a release asset is not a signature either. Verify the package
+  against the signed `SHA256SUMS` before installing it
+  ([below](#verifying-a-release-by-hand);
+  [DEPLOYMENT.md](DEPLOYMENT.md#debian-package)). There is no apt repository
+  (yet), so apt never fetches a PiCache package by itself.
+- **No update helper.** The package never installs `picache-update.path` or
+  `picache-update.service`: no root process ever replaces the program on a
+  request of the service. The web UI only shows the steps
+  (`POST /system/update/apply` answers 409), and `sudo picache update`
+  refuses. Package mode is recognised by `/usr/lib/picache/packaged`, a
+  regular file owned by root with the content `deb`; the service cannot
+  create it.
+- The maintainer scripts never ask anything and never print the setup token
+  (apt keeps their output in `/var/log/apt/term.log`, readable by the group
+  `adm`). They refuse to install over an `install.sh` installation, next to a
+  login account named `picache` and, without `PICACHE_ALLOW_DOWNGRADE=1`, an
+  older version over a newer one (an older version cannot open a database
+  the newer one migrated). `install.sh` and `get-picache.sh` refuse to touch
+  a host with the package.
+- The host-apply units come with the package but stay off until the root-owned
+  marker `/etc/picache/host-apply.enabled` exists.
+
+### Removing PiCache and the account
+
+`install.sh --uninstall --purge` and `apt purge picache` delete the default
+paths (`/etc/picache`, `/var/lib/picache`, `/var/cache/picache` and the log
+directory `/var/log/picache`) and the `picache` account and group only when
+no directory they keep (a custom data or cache directory and the default
+one next to it, a mount point, a directory with something mounted below
+it) holds a file owned by them and every path setting could be read (the
+package's purge keeps the account for a path in the env file that is not a
+plain absolute path, which it cannot search). Otherwise the account is kept
+and **locked** (`usermod -L`, expired with `usermod -e 1`, the shell stays
+`nologin`) and the output names the directories: a later `useradd --system`
+could otherwise reuse the uid or gid and inherit PiCache's database, master
+key, backups and logs. Delete those files, then the account.
+
 ### The update check
 
 - The service asks `https://api.github.com/repos/Hustenreizjuengling/PiCache/releases`
@@ -285,6 +325,84 @@ the release.
   publish a security advisory. Every version that still trusts the old key
   accepts anything signed with it, so affected installations must be updated
   by hand, with the files checked against the new `docs/release-key.pem`.
+
+## Containers, NAS templates and distributions
+
+- **`PICACHE_RUN_AS` is never root or empty.** The container starts as root
+  only to bind its ports and then switches to `PICACHE_RUN_AS`
+  (`config.ParseRunAs` refuses uid or gid 0). The NAS templates set the
+  platform's app user (Unraid `99:100` = nobody:users, TrueNAS `568:568`,
+  Synology the image's `65532:65532`); a test checks every template. Never
+  "fix" an ownership error by running PiCache as root: create the data
+  directories owned by that user instead ([DEPLOYMENT.md](DEPLOYMENT.md#nas)).
+  On Unraid PiCache runs as `nobody:users` like most containers there: keep
+  its appdata directory `0750` and unshared, or other containers of that
+  user and network shares could read its database and keys.
+- Every template keeps the hardening of the default compose file:
+  `cap_drop: [ALL]`, only `NET_BIND_SERVICE`, `SETUID` and `SETGID`
+  (`NET_RAW` only for IPv6 router advertisements, as a commented line in the
+  NAS templates), `no-new-privileges`, a read-only root filesystem, a small
+  `/tmp` tmpfs and `privileged: false`; never `SYS_ADMIN` or host networking
+  by default. With macvlan the container has its own address; the NAS host
+  cannot reach it.
+- **SELinux**: the installer and the package only restore the default
+  labels (`restorecon`); they never run `chcon`, `setenforce` or make a
+  domain permissive.
+- **systemd 247** or later is required: older versions silently ignore some
+  of the unit's protections (`ProtectProc=invisible`), so the installer
+  refuses them instead of installing a weaker sandbox.
+
+## Firewalls
+
+- The installer and the package never change a firewall; while firewalld or
+  ufw is active they print the commands (rich rules in the zone of the LAN
+  interface, never a zone change that would change the rules of ssh).
+- The rules of [GUIDES.md](GUIDES.md#firewall-rules) use their own table or
+  chain: never `nft flush ruleset`, which also removes the rules of Docker,
+  firewalld and libvirt. They keep loopback, established connections and ssh
+  open before anything is dropped, and are applied with an automatic undo
+  (`at`, `iptables-apply`, firewalld runtime rules), so a mistake does not
+  lock you out.
+- Ports that Docker publishes in bridge mode bypass the `INPUT` rules of ufw
+  and firewalld: restrict them in `DOCKER-USER`, matching only new
+  connections that arrive on the LAN interface (the chain also sees the
+  containers' own outgoing traffic, PiCache's upstream queries included).
+- Keeping **children's devices** from bypassing PiCache is a job for the
+  router (block outgoing 53 and 853 except PiCache), not for rules on the
+  PiCache machine, which such devices never pass. DoH cannot be blocked by
+  port: the parental category *Bypass* blocks the known providers.
+
+## Home Assistant and other automation
+
+- Give an integration a **read** token wherever it only reads (sensors). An
+  **admin** token is needed for switches (blocking pause, parental
+  overrides), and there is no narrower scope: an admin token can change every
+  setting. Keep tokens in the integration's secrets store, give them an
+  expiry, and revoke them when the integration goes.
+- Never switch off certificate checks (`verify_ssl: false`). Use a
+  certificate the integration trusts, or plain HTTP inside the LAN only,
+  knowing that the token then crosses the LAN in clear text.
+- A webhook id in a notification URL is a secret: PiCache shows the URL
+  path in the channel and in the audit log to admins.
+
+## Away from home
+
+PiCache never serves the Internet: do not forward 53, 853, 443, 8080 or
+8443, do not switch on *Allow all networks*, and keep the web UI restricted
+to your networks. Use a VPN ([GUIDES.md](GUIDES.md#filtering-away-from-home)).
+With Tailscale, `100.64.0.0/10` is allowed by default, so every node that can
+reach PiCache in the tailnet (devices shared in from other tailnets
+included) can use its DNS and reach the sign-in page: restrict PiCache's
+ports to your own devices with a tailnet access rule.
+
+## Translations
+
+Translated texts are part of the UI. `npm run check` refuses translations
+whose commands, paths, options and variable names differ from the English
+text, but a maintainer still reviews the code-like parts of every
+translation pull request ([TRANSLATING.md](TRANSLATING.md)): a wrong command
+in a translated text would be copied by users. Translations never use
+`{@html}`.
 
 ## Devices and names
 
@@ -748,6 +866,9 @@ the database itself and delete copies you no longer need.
       network is shared with others (cloud servers, VPS).
 - [ ] The machine has a static address, and routers do not hand out another
       resolver (DHCP or IPv6 RA) that bypasses the filter.
+- [ ] A host firewall (if any) opens PiCache's ports only to the LAN
+      ([GUIDES.md](GUIDES.md#firewall-rules)); devices that must not bypass
+      PiCache are held by rules on the router.
 - [ ] DNS rebinding protection stays on (`dns.rebindProtection`), and only
       domains that really answer with LAN addresses are allowed. Trusted EDNS
       forwarders (`dns.ednsClientTrusted`) strip the ECS and MAC options of
@@ -783,7 +904,11 @@ the database itself and delete copies you no longer need.
       `X-Forwarded-Proto: https` makes the session cookie `Secure`), or
       `PICACHE_WEB_SECURE_COOKIES=true` is set.
 - [ ] API tokens use scope `read` wherever possible and have an expiry.
-      Unused tokens and sessions are revoked.
+      Unused tokens and sessions are revoked. Integrations (Home Assistant)
+      get a read token for their sensors and an admin token only for their
+      switches.
+- [ ] A Debian package was verified against the signed `SHA256SUMS` before
+      `apt install`; containers never run with `PICACHE_RUN_AS` of root.
 - [ ] A follower syncs only from a primary you trust as much as the follower,
       with the primary's CA certificate in `sync.caPem`; its sync token is used
       for nothing else. `host:` identifiers are used only for devices whose

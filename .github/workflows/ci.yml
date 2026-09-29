@@ -58,10 +58,18 @@ jobs:
           out=$(gofmt -l cmd internal)
           if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
       - run: go vet ./...
-      - name: go vet (linux/arm)
+      - name: go vet (linux/arm, arm GOARM=6, 386, riscv64)
         if: runner.os == 'Linux'
-        run: GOOS=linux GOARCH=arm GOARM=7 go vet ./...
+        run: |
+          GOOS=linux GOARCH=arm GOARM=7 go vet ./...
+          GOOS=linux GOARCH=arm GOARM=6 go vet ./...
+          GOOS=linux GOARCH=386 go vet ./...
+          GOOS=linux GOARCH=riscv64 go vet ./...
       - run: go test ./...
+      # 32-bit: the tests run natively on the amd64 runner.
+      - name: go test (linux/386)
+        if: runner.os == 'Linux'
+        run: GOARCH=386 go test ./...
 
   govulncheck:
     name: govulncheck
@@ -83,6 +91,9 @@ jobs:
           - { name: linux-amd64, goarch: amd64, goarm: "" }
           - { name: linux-arm64, goarch: arm64, goarm: "" }
           - { name: linux-armv7, goarch: arm, goarm: "7" }
+          - { name: linux-armv6, goarch: arm, goarm: "6" }
+          - { name: linux-386, goarch: "386", goarm: "" }
+          - { name: linux-riscv64, goarch: riscv64, goarm: "" }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -98,6 +109,7 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
+          GO386: sse2
         run: |
           pkg=github.com/hustenreizjuengling/picache/internal/version
           date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -115,28 +127,34 @@ jobs:
           retention-days: 7
 
   deploy:
-    name: Deploy artefacts
+    name: Deploy artefacts (${{ matrix.image }})
     needs: [build]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:13", "fedora:latest", "archlinux:latest", "opensuse/tumbleweed:latest"]
     steps:
       - uses: actions/checkout@v7
       - name: Lint shell scripts
         run: |
-          sh -n deploy/install.sh
-          sh -n scripts/test-install.sh
-          sh -n scripts/release-notes.sh
-          sh -n scripts/get-picache.sh
-          shellcheck -s sh deploy/install.sh scripts/test-install.sh scripts/release-notes.sh scripts/get-picache.sh
+          for f in deploy/install.sh scripts/*.sh; do sh -n "$f"; done
+          shellcheck -s sh deploy/install.sh scripts/*.sh
+          # The fragments of the maintainer scripts use install.sh's
+          # functions and variables and override some of its constants.
+          shellcheck -s sh -e SC2154 -e SC2034 deploy/debian/*.sh
       - name: Validate compose files
         run: |
-          docker compose -f deploy/docker/docker-compose.yml config -q
-          docker compose -f deploy/docker/docker-compose.bridge.yml config -q
+          for f in deploy/docker/docker-compose.yml deploy/docker/docker-compose.bridge.yml \
+              deploy/docker/docker-compose.macvlan.yml deploy/truenas/docker-compose.yml deploy/synology/docker-compose.yml; do
+            docker compose -f "$f" config -q
+          done
       - uses: actions/download-artifact@v8
         with:
           name: picache-linux-amd64
           path: bin/
-      - name: Installer smoke test
-        run: sh scripts/test-install.sh bin/picache-linux-amd64
+      - name: Installer test
+        run: sh scripts/test-install.sh bin/picache-linux-amd64 "${{ matrix.image }}"
 
   dist:
     name: Release assets (make dist)
@@ -159,15 +177,25 @@ jobs:
               echo "make dist accepted VERSION=\"$v\""; exit 1
             fi
           done
+      - name: make dist refuses a pre-release with a hyphen (Debian versions)
+        run: |
+          if make dist VERSION=v1.2.3-beta-2 >/dev/null 2>&1; then
+            echo "make dist accepted VERSION=v1.2.3-beta-2"; exit 1
+          fi
       - name: make dist
         run: make dist VERSION=v0.0.0-ci
       - name: Check the assets
         run: |
-          cd dist
-          sha256sum --check --strict SHA256SUMS
-          ./picache-linux-amd64 version | grep -q '^picache v0\.0\.0-ci '
-          tar -tzf picache-deploy.tar.gz | grep -qx deploy/install.sh
-          cmp get-picache.sh ../scripts/get-picache.sh
+          sh scripts/check-dist.sh dist v0.0.0-ci
+          ./dist/picache-linux-amd64 version | grep -q '^picache v0\.0\.0-ci '
+          tar -tzf dist/picache-deploy.tar.gz | grep -qx deploy/install.sh
+          cmp dist/get-picache.sh scripts/get-picache.sh
+      - name: get-picache.sh unit test
+        run: sh scripts/test-get-picache.sh
+      - name: Debian package test (debian:13)
+        run: sh scripts/test-deb.sh dist debian:13
+      - name: Debian package test (debian:12)
+        run: sh scripts/test-deb.sh dist debian:12
       - name: Release notes script
         run: |
           latest=$(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md | head -n 1)
@@ -180,12 +208,45 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
+      # The platforms of gcr.io/distroless/static-debian13 that PiCache
+      # builds for (release.yml; no arm/v6 and no 386 there).
       - uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64
           push: false
           build-args: |
             VERSION=${{ github.sha }}
             COMMIT=${{ github.sha }}
+
+  # The best-effort architectures under QEMU: the binary starts and the
+  # tests of the privilege and capability drops pass (not tested on
+  # hardware; a failure here does not fail CI). On riscv64 and arm/v6,
+  # QEMU's own threads (user-mode emulation) keep CAP_NET_RAW, so
+  # TestDropNetRaw's check that no thread of the process holds it after the
+  # drop cannot pass there; it is skipped on those two.
+  emulated:
+    name: Emulated ${{ matrix.platform }}
+    needs: [go]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/386, linux/riscv64, linux/arm/v6]
+        include:
+          - platform: linux/riscv64
+            skip: TestDropNetRaw
+          - platform: linux/arm/v6
+            skip: TestDropNetRaw
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - name: picache version and the app and netutil tests
+        env:
+          SKIP: ${{ matrix.skip }}
+        run: |
+          docker run --rm --platform "${{ matrix.platform }}" -v "$PWD:/src" -w /src \
+            -e CGO_ENABLED=0 -e GOTOOLCHAIN=local -e SKIP golang:1.27-alpine sh -c \
+            'go build -o /tmp/picache ./cmd/picache && /tmp/picache version && go test ${SKIP:+-skip "$SKIP"} ./internal/app/... ./internal/netutil/...'

@@ -52,7 +52,7 @@
   }
 </script>
 
-<Panel title={t('system.sync.status.title')}>
+<Panel id="sync-set-status" title={t('system.sync.status.title')}>
   {#snippet actions()}
     {#if s?.running}
       <Chip size="sm" tone="info" label={t('system.sync.status.running')} />

@@ -5,7 +5,8 @@
   version and how to install it here. With the root helper (mode `helper`)
   admins install it from this page after confirming their password and
   follow its progress through the restart; Docker and manual installations
-  get the commands to run. Also the update check settings and the channel.
+  get the commands to run, a Debian package the steps for apt. Also the
+  update check settings and the channel.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'

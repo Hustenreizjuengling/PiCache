@@ -86,7 +86,7 @@ class Session {
       const st = await api.auth.status()
       this.status = st
       this.error = undefined
-      applyServerLocale(st.language)
+      await applyServerLocale(st.language)
       this.phase = st.setupRequired ? 'setup' : st.authenticated ? 'ready' : 'login'
     } catch (err) {
       const e = toApiError(err)
