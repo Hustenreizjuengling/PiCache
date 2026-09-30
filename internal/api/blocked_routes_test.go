@@ -47,11 +47,11 @@ func TestBlockedClientRoutes(t *testing.T) {
 		entry string
 		added bool
 	}{
-		{`{"client":"192.168.1.77"}`, "192.168.1.77", true},
-		{`{"client":"::ffff:192.168.1.77"}`, "192.168.1.77", false},
-		{`{"client":"192.168.1.9/24"}`, "192.168.1.0/24", true},
-		{`{"client":"192.168.1.5"}`, "192.168.1.0/24", false}, // inside the CIDR
-		{`{"client":"192.168.1.128/25"}`, "192.168.1.0/24", false},
+		{`{"client":"198.51.100.77"}`, "198.51.100.77", true},
+		{`{"client":"::ffff:198.51.100.77"}`, "198.51.100.77", false},
+		{`{"client":"198.51.100.9/24"}`, "198.51.100.0/24", true},
+		{`{"client":"198.51.100.5"}`, "198.51.100.0/24", false}, // inside the CIDR
+		{`{"client":"198.51.100.128/25"}`, "198.51.100.0/24", false},
 		{`{"client":"192.168.2.9","device":true}`, "aa:bb:cc:dd:ee:02", true},
 		{`{"client":"192.168.2.10","device":true}`, "aa:bb:cc:dd:ee:02", false}, // the same device
 		{`{"client":"192.168.2.11","device":true}`, "192.168.2.11", true},       // MAC unknown: the address
@@ -62,7 +62,7 @@ func TestBlockedClientRoutes(t *testing.T) {
 			t.Errorf("%s: %d %+v %+v", tc.body, code, res, eb)
 		}
 	}
-	if got := s.d.Settings.Get().DNS.BlockedClients; !slices.Equal(got, []string{"192.168.1.77", "192.168.1.0/24", "aa:bb:cc:dd:ee:02", "192.168.2.11", "aa:bb:cc:dd:ee:03"}) {
+	if got := s.d.Settings.Get().DNS.BlockedClients; !slices.Equal(got, []string{"198.51.100.77", "198.51.100.0/24", "aa:bb:cc:dd:ee:02", "192.168.2.11", "aa:bb:cc:dd:ee:03"}) {
 		t.Errorf("stored %v", got)
 	}
 	// Syntax and lockouts: field client.
@@ -100,16 +100,16 @@ func TestBlockedClientRoutes(t *testing.T) {
 	if code, _, _ := post(`{"client":"172.16.0.1"}`); code != http.StatusConflict {
 		t.Errorf("257th entry: %d", code)
 	}
-	if code, res, _ := post(`{"client":"192.168.1.8"}`); code != http.StatusOK || res.Added {
+	if code, res, _ := post(`{"client":"198.51.100.8"}`); code != http.StatusOK || res.Added {
 		t.Errorf("matching entry when full: %d %+v", code, res)
 	}
 	// DELETE by query parameter (CIDRs contain "/").
-	rec := e.call(t, s.dnsUnblockClient, "DELETE", "/api/v1/dns/blocked-clients?entry=192.168.1.9%2F24", "")
+	rec := e.call(t, s.dnsUnblockClient, "DELETE", "/api/v1/dns/blocked-clients?entry=198.51.100.9%2F24", "")
 	dnsExpect(t, rec, http.StatusOK)
-	if got := dnsDecode[blockedClientsResult](t, rec); slices.Contains(got.BlockedClients, "192.168.1.0/24") || len(got.BlockedClients) != 255 {
+	if got := dnsDecode[blockedClientsResult](t, rec); slices.Contains(got.BlockedClients, "198.51.100.0/24") || len(got.BlockedClients) != 255 {
 		t.Errorf("after delete: %d entries", len(got.BlockedClients))
 	}
-	dnsExpect(t, e.call(t, s.dnsUnblockClient, "DELETE", "/api/v1/dns/blocked-clients?entry=192.168.1.0%2F24", ""), http.StatusNotFound)
+	dnsExpect(t, e.call(t, s.dnsUnblockClient, "DELETE", "/api/v1/dns/blocked-clients?entry=198.51.100.0%2F24", ""), http.StatusNotFound)
 	rec = e.call(t, s.dnsUnblockClient, "DELETE", "/api/v1/dns/blocked-clients?entry=bad", "")
 	dnsExpect(t, rec, http.StatusBadRequest)
 	if eb := dnsDecode[errorBody](t, rec); eb.Error.Field != "entry" {
@@ -146,15 +146,15 @@ func TestBlockedClientsSettingsAndKnown(t *testing.T) {
 		}
 		return rec.Code, eb
 	}
-	if code, eb := patch(`{"blockedClients":["10.1.1.1"," ","10.1.1.1","127.0.0.0/8"]}`); code != http.StatusBadRequest ||
+	if code, eb := patch(`{"blockedClients":["203.0.113.1"," ","203.0.113.1","127.0.0.0/8"]}`); code != http.StatusBadRequest ||
 		eb.Error.Field != "dns.blockedClients[1]" || eb.Error.Message != "127.0.0.0/8 contains loopback addresses (127.0.0.0/8)" {
 		t.Errorf("loopback: %d %+v", code, eb)
 	}
-	if code, eb := patch(`{"blockedClients":["10.1.1.0/24"],"ednsClientTrusted":["10.1.1.53"]}`); code != http.StatusBadRequest ||
-		eb.Error.Field != "dns.blockedClients[0]" || !strings.Contains(eb.Error.Message, "trusted EDNS forwarder 10.1.1.53") {
+	if code, eb := patch(`{"blockedClients":["203.0.113.0/24"],"ednsClientTrusted":["203.0.113.53"]}`); code != http.StatusBadRequest ||
+		eb.Error.Field != "dns.blockedClients[0]" || !strings.Contains(eb.Error.Message, "trusted EDNS forwarder 203.0.113.53") {
 		t.Errorf("trusted: %d %+v", code, eb)
 	}
-	if code, eb := patch(`{"blockedClients":["192.168.1.0/24","aa:bb:cc:dd:ee:07"]}`); code != http.StatusOK {
+	if code, eb := patch(`{"blockedClients":["198.51.100.0/24","aa:bb:cc:dd:ee:07"]}`); code != http.StatusOK {
 		t.Fatalf("valid list: %d %+v", code, eb)
 	}
 	// An unchanged list is not checked again (e.g. after the router moved).
@@ -174,7 +174,7 @@ func TestBlockedClientsSettingsAndKnown(t *testing.T) {
 			t.Errorf("%s: %d %+v", body, code, eb)
 		}
 	}
-	s.d.Clients.Seen(netip.MustParseAddr("192.168.1.31"))
+	s.d.Clients.Seen(netip.MustParseAddr("198.51.100.31"))
 	s.d.Clients.Seen(netip.MustParseAddr("192.168.2.31"))
 	rec := e.call(t, s.clientsKnown, "GET", "/api/v1/clients/known", "")
 	dnsExpect(t, rec, http.StatusOK)
@@ -184,14 +184,14 @@ func TestBlockedClientsSettingsAndKnown(t *testing.T) {
 	}
 	for _, k := range rows {
 		want := ""
-		if k.IP == "192.168.1.31" {
-			want = "192.168.1.0/24"
+		if k.IP == "198.51.100.31" {
+			want = "198.51.100.0/24"
 		}
 		if k.BlockedBy != want {
 			t.Errorf("%s blockedBy %q, want %q", k.IP, k.BlockedBy, want)
 		}
 	}
-	if !strings.Contains(rec.Body.String(), `"blockedBy":"192.168.1.0/24"`) || strings.Count(rec.Body.String(), "blockedBy") != 1 {
+	if !strings.Contains(rec.Body.String(), `"blockedBy":"198.51.100.0/24"`) || strings.Count(rec.Body.String(), "blockedBy") != 1 {
 		t.Errorf("body %s", rec.Body)
 	}
 }
@@ -238,8 +238,8 @@ func TestBlockedClientRoutesNeedAdmin(t *testing.T) {
 	session := e.provisionAndLogin(t)
 	readTok := e.createToken(t, session, "read")
 	for _, rt := range []struct{ method, target, body string }{
-		{"POST", "/api/v1/dns/blocked-clients", `{"client":"10.1.1.1"}`},
-		{"DELETE", "/api/v1/dns/blocked-clients?entry=10.1.1.1", ""},
+		{"POST", "/api/v1/dns/blocked-clients", `{"client":"203.0.113.1"}`},
+		{"DELETE", "/api/v1/dns/blocked-clients?entry=203.0.113.1", ""},
 		{"POST", "/api/v1/dns/forwarders/import", `{"text":"","dryRun":true}`},
 	} {
 		coreWantError(t, e.do(rt.method, rt.target, rt.body, readTok), http.StatusForbidden, "forbidden", "")
