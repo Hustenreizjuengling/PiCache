@@ -317,6 +317,9 @@ type Forwarder struct {
 	Comment   string    `json:"comment"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// legacy are the stored targets read with the meaning of a version
+	// before 1.0.0 (settings.LegacyUpstream): stored, used.
+	legacy [][2]string
 }
 
 // ForwarderInput creates or updates a forwarder: Domains (1–16) wins,
@@ -447,6 +450,10 @@ type Server struct {
 
 	qpsMu      sync.Mutex
 	qpsSamples []qpsSample // the last 7 (time, queries) samples, 10 s apart
+
+	// legacyLogged are the forwarder targets read with their pre-1.0.0
+	// meaning that are logged already (domain, stored; under writeMu).
+	legacyLogged map[[2]string]bool
 }
 
 type qpsSample struct {

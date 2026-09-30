@@ -153,7 +153,12 @@ func queryForwarders(ctx context.Context, q queryer, id int64) ([]Forwarder, err
 		}
 		// Targets an earlier version stored with text after "#" that this
 		// version refuses: read as that version did (the next save stores
-		// them so).
+		// them so; reloadConfig logs them).
+		for _, u := range f.Upstreams {
+			if used, ok := settings.LegacyUpstream(u); ok {
+				f.legacy = append(f.legacy, [2]string{u, used})
+			}
+		}
 		f.Upstreams = settings.LegacyUpstreams(f.Upstreams)
 		f.CreatedAt, f.UpdatedAt = db.Time(created), db.Time(updated)
 		out = append(out, f)
@@ -308,7 +313,9 @@ func (rules forwarderRules) validateForwarder(in ForwarderInput) (ForwarderInput
 				return in, apperr.Invalid(fmt.Sprintf("upstreams[%d]", i), "a host name needs dns.bootstrap servers")
 			}
 		}
-		ups = append(ups, u)
+		// host#port is stored as host:port (versions before 1.0.0 ignore
+		// "#port").
+		ups = append(ups, settings.CanonicalUpstream(u))
 	}
 	in.Upstreams = ups
 	if err := rules.checkValidate(in); err != nil {

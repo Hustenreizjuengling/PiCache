@@ -148,7 +148,9 @@ pkg_summary() {
 	if [ -n "$web_listen" ]; then
 		say "                 (PICACHE_WEB_LISTEN=$web_listen is set; adjust the address)"
 	fi
-	say "  Setup token:   sudo picache setup-token  (first start only)"
+	if [ "$was_set_up" -eq 0 ]; then
+		say "  Setup token:   sudo picache setup-token  (first start only)"
+	fi
 	say "  Updates:       with apt: download picache_<version>_$arch.deb of the next release, verify it"
 	say "                 (docs/DEPLOYMENT.md \"Debian package\") and: sudo apt install ./picache_<version>_$arch.deb"
 	say "  Removal:       sudo apt remove picache (keeps the configuration and the data),"
@@ -168,6 +170,12 @@ postinst_configure() {
 	install -d -m 0750 -o root -g picache "$CONF_DIR"
 	write_env_file
 	read_paths
+	# Before anything is (re)started: the summary names the setup token
+	# until the setup is done (setup_done).
+	was_set_up=0
+	if setup_done; then
+		was_set_up=1
+	fi
 	install -d -m 0750 -o root -g picache "$MOUNT_ROOT"
 	cleanup_dhcp
 	if [ "$legacy_dhcp_on" -eq 1 ]; then

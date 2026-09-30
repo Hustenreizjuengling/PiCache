@@ -203,9 +203,10 @@ func TestUnreachableUpstreamFailsFast(t *testing.T) {
 }
 
 // An upstream written as host#port (as other DNS software writes local
-// resolvers) is asked on that port, as a default upstream and as a
-// forwarder target (ResolveVia). The URL parser made the port a fragment
-// that was dropped, so such an upstream was asked on port 53.
+// resolvers) is asked on that port, as a default upstream (saved as
+// host:port, its name from then on) and as a forwarder target stored as
+// typed by a release candidate (ResolveVia). The URL parser made the port
+// a fragment that was dropped, so such an upstream was asked on port 53.
 func TestHashPortUpstreamReachesItsPort(t *testing.T) {
 	var udp, tcp atomic.Int32
 	addr := startDNS(t, func(w dns.ResponseWriter, q *dns.Msg) {
@@ -225,7 +226,7 @@ func TestHashPortUpstreamReachesItsPort(t *testing.T) {
 			r.Close()
 			t.Fatalf("%s: %v", up, err)
 		}
-		if ip, _ := firstA(t, m); ip != "192.0.2.53" || info.Upstream != up {
+		if ip, _ := firstA(t, m); ip != "192.0.2.53" || info.Upstream != strings.Replace(up, "#", ":", 1) {
 			t.Errorf("%s: answer %s from %q", up, ip, info.Upstream)
 		}
 		if i == 0 {

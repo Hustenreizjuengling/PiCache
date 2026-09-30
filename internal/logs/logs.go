@@ -514,6 +514,7 @@ type Store struct {
 	// written; damaged is why logs.db is damaged (noteDamage).
 	writeFailed atomic.Uint64
 	damaged     atomic.Pointer[string]
+	onDamage    atomic.Pointer[func()] // called once the damage is recorded (OnDamage)
 	// clearedTo: the query rows with an id up to it are cleared
 	// (ClearQueries) and left out of every read until the writer deleted
 	// them (clearStep); 0: none.
@@ -738,7 +739,15 @@ func (s *Store) noteDamage(err error) {
 	}
 	s.log.Error("logs.db is damaged: restart PiCache to check it, move it aside and start a fresh one "+
 		"(the query log and the statistics start over)", slog.Any("err", err))
+	if fn := s.onDamage.Load(); fn != nil {
+		(*fn)()
+	}
 }
+
+// OnDamage sets fn to be called (once, without blocking) when the damage
+// of logs.db is first recorded: the app evaluates the health checks again
+// at once instead of at the next minute.
+func (s *Store) OnDamage(fn func()) { s.onDamage.Store(&fn) }
 
 // defaultLogs is used when no settings store is wired (tests, tools).
 var defaultLogs = settings.Defaults().Logs

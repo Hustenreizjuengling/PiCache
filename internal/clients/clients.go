@@ -105,6 +105,9 @@ type Group struct {
 	Upstreams      []string  `json:"upstreams"`
 	UpstreamPreset string    `json:"upstreamPreset"`
 	DeviceClientID *int64    `json:"deviceClientId,omitempty"`
+	// legacy are the stored upstreams read with the meaning of a version
+	// before 1.0.0 (settings.LegacyUpstream): stored, used.
+	legacy [][2]string
 }
 
 // GroupInput creates or updates a group. Upstreams nil (absent or null)
@@ -250,6 +253,9 @@ type Registry struct {
 	zoneIface func(zone string) string
 	// cfg is what the registry reads from the settings (ApplyConfig).
 	cfg atomic.Pointer[Config]
+	// legacyLogged are the group upstreams read with their pre-1.0.0
+	// meaning that are logged already (group name, stored; under writeMu).
+	legacyLogged map[[2]string]bool
 	// hosts are the names of /etc/hosts (clients.nameSources.hostsFile).
 	hosts     atomic.Pointer[hostsTable]
 	hostsPath string

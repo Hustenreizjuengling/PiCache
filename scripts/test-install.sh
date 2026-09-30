@@ -1,5 +1,7 @@
 #!/bin/sh
-# Smoke test for deploy/install.sh. It installs, re-installs, enables
+# Smoke test for deploy/install.sh. It installs, re-installs, checks the
+# summary (the setup token and the next steps only until the setup is
+# done, the versions of an update), enables
 # host-apply, checks the update helper (default, custom data directory,
 # --without-updater), the nightly marker (--nightly), the unit files
 # (CAP_NET_RAW, capset, adjtimex, no ProtectClock, the log directory, the
@@ -227,6 +229,31 @@ echo "== re-install keeps the configuration"
 echo 'PICACHE_LOG_LEVEL=debug' >>/etc/picache/picache.env
 sh /src/deploy/install.sh --binary /tmp/picache
 grep -q '^PICACHE_LOG_LEVEL=debug' /etc/picache/picache.env || fail "env file overwritten"
+
+echo "== the summary names the setup token until the setup is done"
+first_install_summary() {
+	echo "$1" | grep -qx 'PiCache is running\.' || fail "$2: no running line: $1"
+	echo "$1" | grep -q '^  Setup token:   sudo picache setup-token  (first start only)$' || fail "$2: no setup token line: $1"
+	echo "$1" | grep -q '^Next: finish the setup in the web UI' || fail "$2: no next steps: $1"
+}
+# A fresh installation (the stand-in start creates picache.db).
+rm -f /var/lib/picache/picache.db /var/lib/picache/setup-token
+first_install_summary "$(sh /src/deploy/install.sh --binary /tmp/picache 2>&1)" "fresh install"
+# PiCache ran, but the setup is not done: its token file is there.
+echo ABCDEFGHIJKLMNOPQRSTUVWXYZ >/var/lib/picache/setup-token
+first_install_summary "$(sh /src/deploy/install.sh --binary /tmp/picache 2>&1)" "setup not done"
+# The setup is done (PiCache deleted the token file): an update.
+rm -f /var/lib/picache/setup-token
+out=$(sh /src/deploy/install.sh --binary /tmp/picache 2>&1)
+echo "$out" | grep -qx 'PiCache is updated and running\.' || fail "update: no update line: $out"
+if echo "$out" | grep -q 'Setup token\|first start only\|Next: finish the setup\|PiCache is running\.'; then
+	fail "update: first-install lines: $out"
+fi
+echo "$out" | grep -q '^  Web UI:  ' || fail "update: no web UI line: $out"
+printf '#!/bin/sh\necho "picache v0.0.0-0 (commit stand-in)"\n' >/usr/local/bin/picache
+out=$(sh /src/deploy/install.sh --binary /tmp/picache 2>&1)
+new=$(/usr/local/bin/picache version | sed -n '1s/^picache \([^ ]*\).*/\1/p')
+echo "$out" | grep -qxF "PiCache was updated from v0.0.0-0 to $new and is running." || fail "update from v0.0.0-0: $out"
 
 echo "== nightly marker"
 sh /src/deploy/install.sh --binary /tmp/picache --nightly >/dev/null

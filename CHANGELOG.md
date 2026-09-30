@@ -5,6 +5,44 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`host#port` upstreams are saved as `host:port`** (upstreams, fallbacks,
+  local PTR upstreams, forwarder targets and their import, group upstreams,
+  the follower sync; IPv6 in brackets, the scheme kept). 0.17.0 ignores
+  `#port`: after going back, `127.0.0.1#5335` saved by a release candidate
+  asked `127.0.0.1:53`, possibly PiCache itself, without a warning. An
+  entry a release candidate saved as typed keeps working and is saved as
+  `host:port` at the next save; save it once before going back to 0.17.0.
+- **A signed-in browser stays signed in on a full data disk** while it is
+  used: the idle time counts from the last use kept in memory while it
+  cannot be written, instead of expiring the session after the idle time
+  however often it was used. The absolute limit still applies.
+- **Forwarder targets and group upstreams** that an earlier version saved
+  with other text after `#` are logged when they are loaded (once per
+  forwarder or group, naming it), as the upgrade notes promise; only the
+  DNS settings were.
+- **Signing in on a full data disk** says what is wrong: "cannot sign in:
+  PiCache's data disk is full (a sign-in stores a session); free space on
+  the host — signed-in browsers and API tokens keep working" (the setup
+  has its own message).
+- **A damaged `logs.db`:** query-log and statistics reads that hit a
+  damaged page answer 503 "logs.db is damaged: restart PiCache; it moves
+  the file aside" instead of 500 "internal error", and the health check
+  `logs` warns at once.
+- **Pre-upgrade copy after going back to 0.17.x:** upgrading again made no
+  copy and warned that the previous version had not migrated the database,
+  so the changes made under 0.17.x were in no copy. 0.17.x opens the
+  database of 1.0.0 (no schema step): the copy is named after it, logged at
+  INFO.
+- **`install.sh`** prints "PiCache is updated and running" (with the
+  versions) instead of the setup token and the first-install steps when
+  it updates an installation that is set up; the Debian package no longer
+  names the setup token then.
+- **Local PTR upstreams** with text after `#` get the message of the
+  upstream syntax ("write the port as host:port") instead of "must be a
+  plain DNS server IP".
+
 ## [1.0.0-rc.2] - 2026-09-30
 
 ### Upgrade notes

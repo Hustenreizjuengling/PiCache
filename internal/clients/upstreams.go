@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -46,14 +47,55 @@ func encodeUpstreams(list []string) string {
 // decodeUpstreams decodes a stored upstream list (never nil; a value that
 // does not decode, e.g. from an edited database, is empty).
 func decodeUpstreams(s string) []string {
+	list, _ := decodeStoredUpstreams(s)
+	return list
+}
+
+// decodeStoredUpstreams is decodeUpstreams that also returns the entries
+// an earlier version stored with text after "#" that this version refuses
+// (stored, used): they are read as that version did (the next save stores
+// them so; the registry logs them when it loads the group).
+func decodeStoredUpstreams(s string) (list []string, legacy [][2]string) {
 	var out []string
 	if err := json.Unmarshal([]byte(s), &out); err != nil || out == nil {
-		return []string{}
+		return []string{}, nil
 	}
-	// Upstreams an earlier version stored with text after "#" that this
-	// version refuses: read as that version did (the next save stores them
-	// so).
-	return settings.LegacyUpstreams(out)
+	for _, u := range out {
+		if used, ok := settings.LegacyUpstream(u); ok {
+			legacy = append(legacy, [2]string{u, used})
+		}
+	}
+	return settings.LegacyUpstreams(out), legacy
+}
+
+// logLegacyUpstreams logs each group upstream read with the meaning of a
+// version before 1.0.0 (Group.legacy) once, naming the group: at the
+// start, and when a restore or sync brings such an upstream (again).
+// Called under writeMu or before the registry is shared.
+func (r *Registry) logLegacyUpstreams(groups []Group) {
+	logged := map[[2]string]bool{}
+	for _, g := range groups {
+		for _, c := range g.legacy {
+			key := [2]string{g.Name, c[0]}
+			if !r.legacyLogged[key] && !logged[key] {
+				settings.LogLegacyUpstream(r.log, "Clients & groups", c[0], c[1], slog.String("group", g.Name))
+			}
+			logged[key] = true
+		}
+	}
+	r.legacyLogged = logged
+}
+
+// canonicalUpstreams stores every valid host#port of list as host:port
+// (settings.CanonicalUpstream), duplicates removed; never nil.
+func canonicalUpstreams(list []string) []string {
+	out := make([]string, 0, len(list))
+	for _, u := range list {
+		if u = settings.CanonicalUpstream(u); !slices.Contains(out, u) {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 // groupUpstreamsOf reads the stored upstream settings of group id.
@@ -82,7 +124,8 @@ const errDefaultUpstreams = "the Default group uses the DNS upstreams (DNS setti
 // fit (a preset once upstreams are given) is reset unless the input names
 // it.
 func resolveGroupUpstreams(id int64, ups []string, preset *string, old groupUpstreams) (groupUpstreams, error) {
-	out := groupUpstreams{Upstreams: slices.Clone(old.Upstreams), Preset: old.Preset}
+	// A kept stored list is saved in the stored form too.
+	out := groupUpstreams{Upstreams: canonicalUpstreams(old.Upstreams), Preset: old.Preset}
 	if ups != nil {
 		if len(ups) > maxGroupUpstreams {
 			return out, apperr.Invalid("upstreams", "at most %d upstreams", maxGroupUpstreams)
@@ -93,6 +136,9 @@ func resolveGroupUpstreams(id int64, ups []string, preset *string, old groupUpst
 			if _, err := settings.ParseUpstream(u); err != nil {
 				return out, apperr.Invalid(fmt.Sprintf("upstreams[%d]", i), "%v", err)
 			}
+			// host#port is stored as host:port (versions before 1.0.0
+			// ignore "#port").
+			u = settings.CanonicalUpstream(u)
 			if !slices.Contains(list, u) {
 				list = append(list, u)
 			}

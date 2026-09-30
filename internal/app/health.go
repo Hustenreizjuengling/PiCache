@@ -62,7 +62,18 @@ func (a *App) healthLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			eval()
+		case <-a.healthKick:
+			eval()
 		}
+	}
+}
+
+// kickHealth asks the health loop to evaluate the checks now (a damaged
+// logs.db was found); it never blocks.
+func (a *App) kickHealth() {
+	select {
+	case a.healthKick <- struct{}{}:
+	default:
 	}
 }
 

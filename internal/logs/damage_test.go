@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
 )
 
@@ -60,6 +62,8 @@ func TestDamagedLogsDBReported(t *testing.T) {
 	if m := s.Metrics(); m.Damaged != "" {
 		t.Fatalf("damaged before a read: %q", m.Damaged)
 	}
+	var kicked atomic.Int32
+	s.OnDamage(func() { kicked.Add(1) })
 	_, err = s.QueryLog(context.Background(), QueryFilter{Domain: "nomatch-zzz", Limit: 100})
 	if err == nil {
 		t.Skip("the damaged page was not read")
@@ -67,8 +71,20 @@ func TestDamagedLogsDBReported(t *testing.T) {
 	if !db.Corrupt(err) {
 		t.Fatalf("read error %v is not SQLITE_CORRUPT", err)
 	}
+	// R3: the read answers 503 with what to do, not a bare 500.
+	if e, ok := apperr.As(err); !ok || e.Kind != apperr.KindUnavailable ||
+		e.Message != "logs.db is damaged: restart PiCache; it moves the file aside (System → Health & about)" {
+		t.Fatalf("read error %v is not the damage message", err)
+	}
 	if m := s.Metrics(); !strings.Contains(m.Damaged, "malformed") {
 		t.Fatalf("metrics %+v", m)
+	}
+	// The health checks are evaluated again at once, once.
+	if _, err := s.QueryLog(context.Background(), QueryFilter{Domain: "nomatch-zzz", Limit: 100}); apperr.KindOf(err) != apperr.KindUnavailable {
+		t.Fatalf("second read: %v", err)
+	}
+	if n := kicked.Load(); n != 1 {
+		t.Fatalf("OnDamage called %d times, want 1", n)
 	}
 	if _, err := os.Stat(DamagedMarker(filepath.Join(dir, "logs.db"))); err != nil {
 		t.Fatalf("no marker: %v", err)

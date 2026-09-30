@@ -152,9 +152,31 @@ func (s *Server) authSetup(w http.ResponseWriter, r *http.Request) error {
 	}
 	sess, err := s.d.Auth.Setup(r.Context(), in.SetupToken, in.Username, in.Password, authReqMeta(r))
 	if err != nil {
-		return err
+		return s.signInDiskFull(r, err, errSetupDiskFull)
 	}
 	return s.startSession(w, r, sess)
+}
+
+// The messages of a sign-in and of the setup on a full data disk: both
+// store rows (the account, a session), while requests of signed-in
+// browsers and API tokens only read (their last use is recorded when it
+// can be).
+const (
+	errLoginDiskFull = "cannot sign in: PiCache's data disk is full (a sign-in stores a session); " +
+		"free space on the host — signed-in browsers and API tokens keep working"
+	errSetupDiskFull = "cannot finish the setup: PiCache's data disk is full (the setup stores the account and a session); " +
+		"free space on the host"
+)
+
+// signInDiskFull returns msg as 503 when err is an internal error of a
+// full data disk (writeError's generic message does not say that the
+// sign-in itself needs to write), else err.
+func (s *Server) signInDiskFull(r *http.Request, err error, msg string) error {
+	if apperr.KindOf(err) != apperr.KindInternal || !diskFull(err) {
+		return err
+	}
+	s.log.Error("data disk full", slog.String("method", r.Method), slog.String("path", logPath(r)), slog.Any("err", err))
+	return apperr.Unavailable("%s", msg)
 }
 
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) error {
@@ -168,7 +190,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) error {
 	}
 	sess, err := s.d.Auth.Login(r.Context(), in.Username, in.Password, in.TOTP, authReqMeta(r))
 	if err != nil {
-		return err
+		return s.signInDiskFull(r, err, errLoginDiskFull)
 	}
 	return s.startSession(w, r, sess)
 }

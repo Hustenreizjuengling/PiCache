@@ -77,8 +77,8 @@ func UpstreamDisplay(s string) string {
 // callers. A DNS stamp (sdns://, parseStamp) is recognised before the URL
 // is parsed and kept byte for byte. udp, tcp, tls and quic also take the
 // port as "#port" (127.0.0.1#5335, as other DNS software writes it; the URL
-// parser would make it a fragment and drop it); any other text after "#"
-// is refused.
+// parser would make it a fragment and drop it; every save path stores it
+// as host:port, CanonicalUpstream); any other text after "#" is refused.
 //
 //	9.9.9.9 | 9.9.9.9:53 | 9.9.9.9#53 | [2620:fe::fe]:53 | dns.example | udp://… | tcp://… | tls://dns.quad9.net[:853] |
 //	https://dns.quad9.net/dns-query | quic://dns.example[:853] | h3://dns.example/dns-query | sdns://…
@@ -176,6 +176,35 @@ func hashPort(u *url.URL) (int, error) {
 		return 0, errors.New(`only a port between 1 and 65535 may follow "#"; write the port as host:port`)
 	}
 	return n, nil
+}
+
+// CanonicalUpstream returns the form in which an upstream is stored: a
+// valid upstream written as host#port becomes host:port, an IPv6 address
+// in brackets, the scheme kept as typed (127.0.0.1#5335 → 127.0.0.1:5335,
+// [fd00::53]#5335 → [fd00::53]:5335, tls://dns.example#8853 →
+// tls://dns.example:8853). A version before 1.0.0 ignores the text after
+// "#" and would ask the default port after going back (127.0.0.1#5335
+// would reach 127.0.0.1:53, possibly PiCache itself); host:port means the
+// same to every version. Every other string, an invalid one included, is
+// returned as it is (Validate reports an invalid one; LegacyUpstream reads
+// a stored one).
+func CanonicalUpstream(s string) string {
+	t := strings.TrimSpace(s)
+	i := strings.IndexByte(t, '#')
+	if i < 0 || isStamp(t) {
+		return s
+	}
+	spec, err := ParseUpstream(t)
+	if err != nil {
+		return s
+	}
+	// hashPort refused a port after ":" too, so the text before "#" is
+	// [scheme://]host with at most a "/" as the path.
+	out := strings.TrimSuffix(t[:i], "/") + ":" + strconv.Itoa(spec.Port)
+	if c, err := ParseUpstream(out); err != nil || c.Proto != spec.Proto || c.Host != spec.Host || c.Port != spec.Port {
+		return s
+	}
+	return out
 }
 
 // LegacyUpstream returns the meaning a version before 1.0.0 gave a stored
@@ -279,8 +308,9 @@ func (a *All) normalize() {
 		return out
 	}
 	d := &a.DNS
-	d.Upstreams = clean(d.Upstreams, false)
-	d.FallbackUpstreams = clean(d.FallbackUpstreams, false)
+	// A valid host#port is stored as host:port (CanonicalUpstream).
+	d.Upstreams = normalizeList(d.Upstreams, CanonicalUpstream)
+	d.FallbackUpstreams = normalizeList(d.FallbackUpstreams, CanonicalUpstream)
 	d.Bootstrap = clean(d.Bootstrap, true)
 	d.RebindAllow = normalizeList(d.RebindAllow, func(s string) string { return strings.Trim(strings.ToLower(s), ".") })
 	d.PrivateReverseNetworks = normalizeList(d.PrivateReverseNetworks, normalizePrefix)
@@ -298,7 +328,7 @@ func (a *All) normalize() {
 		d.ECS.Mode = ECSOff
 	}
 	d.ECS.CustomSubnet = normalizePrefix(strings.TrimSpace(d.ECS.CustomSubnet))
-	d.LocalPTRUpstreams = clean(d.LocalPTRUpstreams, false)
+	d.LocalPTRUpstreams = normalizeList(d.LocalPTRUpstreams, CanonicalUpstream)
 	d.ServerNames = clean(d.ServerNames, true)
 	d.AllowedNetworks = clean(d.AllowedNetworks, true)
 	d.RateLimitExempt = clean(d.RateLimitExempt, true)
@@ -440,9 +470,15 @@ func (a *All) Validate() error {
 		return err
 	}
 	for i, u := range d.LocalPTRUpstreams {
+		field := "dns.localPtrUpstreams[" + strconv.Itoa(i) + "]"
 		spec, err := ParseUpstream(u)
-		if err != nil || !spec.IsIPLit || (spec.Proto != "udp" && spec.Proto != "tcp") {
-			return apperr.Invalid("dns.localPtrUpstreams["+strconv.Itoa(i)+"]", "must be a plain DNS server IP")
+		if err != nil {
+			// The parse error says what is wrong ("write the port as
+			// host:port" after "#").
+			return apperr.Invalid(field, "%v", err)
+		}
+		if !spec.IsIPLit || (spec.Proto != "udp" && spec.Proto != "tcp") {
+			return apperr.Invalid(field, "must be a plain DNS server IP")
 		}
 	}
 	switch d.UpstreamMode {

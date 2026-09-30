@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
@@ -730,11 +731,30 @@ func (s *Server) reloadConfig(ctx context.Context) error {
 	}
 	s.zone.Store(newZone(recs))
 	s.fwd.Store(newFwdTable(fwds))
+	s.logLegacyTargets(fwds)
 	s.reconfigureLimiter()
 	if s.d.ValidatingForwarders != nil {
 		s.d.ValidatingForwarders(validatingTargets(fwds))
 	}
 	return nil
+}
+
+// logLegacyTargets logs each forwarder target read with the meaning of a
+// version before 1.0.0 (Forwarder.legacy) once, naming the forwarder: at
+// the start, and when a restore or sync brings such a target (again).
+// Called under writeMu or before the server is shared.
+func (s *Server) logLegacyTargets(fwds []Forwarder) {
+	logged := map[[2]string]bool{}
+	for _, f := range fwds {
+		for _, c := range f.legacy {
+			key := [2]string{f.Domain, c[0]}
+			if !s.legacyLogged[key] && !logged[key] {
+				settings.LogLegacyUpstream(s.log, "Local DNS → Conditional forwarders", c[0], c[1], slog.String("forwarder", f.Domain))
+			}
+			logged[key] = true
+		}
+	}
+	s.legacyLogged = logged
 }
 
 // --- answering ---

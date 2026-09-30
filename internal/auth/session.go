@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -203,6 +204,76 @@ func (a *Service) createSession(ctx context.Context, userID int64, passwordHash 
 	return &Session{ID: id, Token: tok, UserID: userID, ExpiresAt: now.Add(maxAge)}, nil
 }
 
+// maxSeenMemory bounds seenMemory (sessions whose last_seen could not be
+// written at once); beyond it a session falls back to its stored value.
+const maxSeenMemory = 1024
+
+// seenMemory keeps the last use of the sessions whose best-effort
+// last_seen update failed (a full data disk): their idle limit counts from
+// the later of it and the stored value, so a signed-in browser keeps
+// working while nothing can be written. An entry is dropped once a later
+// update succeeds (that update writes it back), when its session ends or
+// expires, and when it is older than the idle limit (a session deleted
+// otherwise); the absolute limit always counts from the stored created_at.
+type seenMemory struct {
+	mu sync.Mutex
+	m  map[string]time.Time // session id → last use
+}
+
+// get returns the kept last use of session id (zero if none).
+func (s *seenMemory) get(id string) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.m[id]
+}
+
+// set keeps at as the last use of session id, after dropping the entries
+// older than idle.
+func (s *seenMemory) set(id string, at time.Time, idle time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.m == nil {
+		s.m = map[string]time.Time{}
+	}
+	for k, t := range s.m {
+		if !at.Before(t.Add(idle)) {
+			delete(s.m, k)
+		}
+	}
+	if _, ok := s.m[id]; ok || len(s.m) < maxSeenMemory {
+		s.m[id] = at
+	}
+}
+
+// drop forgets session id.
+func (s *seenMemory) drop(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, id)
+}
+
+// len returns the number of kept sessions (tests).
+func (s *seenMemory) len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.m)
+}
+
+// lastSeen returns the last use of session id: the later of the stored
+// last_seen and the one kept in memory (seenMemory).
+func (a *Service) lastSeen(id string, stored time.Time) time.Time {
+	if m := a.seen.get(id); m.After(stored) {
+		return m
+	}
+	return stored
+}
+
+// sessionIDOf returns the id of the session with the cookie token tok.
+func sessionIDOf(tok string) string {
+	h := hashSecret(tok)
+	return hex.EncodeToString(h[:8])
+}
+
 // sessionExpiry is when a session ends: the earlier of the absolute and the
 // idle limit (current settings, so lowering them affects existing sessions).
 func (a *Service) sessionExpiry(created, lastSeen time.Time) time.Time {
@@ -220,6 +291,7 @@ func (a *Service) Logout(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
+	a.seen.drop(sessionIDOf(token))
 	_, err := deleteVerified(ctx, a.db.W, "auth_sessions", "hash = ?", hashSecret(token))
 	return err
 }
@@ -284,21 +356,29 @@ func (a *Service) authSession(ctx context.Context, tok string) (*Principal, erro
 		FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id WHERE s.hash = ?`, hashSecret(tok)).
 		Scan(&p.SessionID, &p.UserID, &created, &lastSeen, &p.Username, &p.Role)
 	if errors.Is(err, sql.ErrNoRows) {
+		a.seen.drop(sessionIDOf(tok))
 		return nil, errNotAuthenticated
 	}
 	if err != nil {
 		return nil, err
 	}
 	now := a.now()
-	if !now.Before(a.sessionExpiry(db.Time(created), db.Time(lastSeen))) {
+	// The last use kept in memory while last_seen could not be written
+	// counts too (seenMemory); the absolute limit counts from created_at.
+	seen := a.lastSeen(p.SessionID, db.Time(lastSeen))
+	if !now.Before(a.sessionExpiry(db.Time(created), seen)) {
+		a.seen.drop(p.SessionID)
 		if _, err := a.db.W.ExecContext(ctx, `DELETE FROM auth_sessions WHERE id = ?`, p.SessionID); err != nil {
 			a.log.Warn("delete expired session", slog.Any("err", err))
 		}
 		return nil, apperr.Unauthorized("session expired; please sign in again")
 	}
-	if now.Sub(db.Time(lastSeen)) >= lastSeenGranularity {
+	if now.Sub(seen) >= lastSeenGranularity {
 		if _, err := a.db.W.ExecContext(ctx, `UPDATE auth_sessions SET last_seen = ? WHERE id = ?`, now.UnixMilli(), p.SessionID); err != nil {
 			a.touchFailed("session", err) // best effort (a full disk)
+			a.seen.set(p.SessionID, now, time.Duration(a.set.Get().Web.SessionIdleMinutes)*time.Minute)
+		} else {
+			a.seen.drop(p.SessionID) // written back
 		}
 	}
 	p.Scope = scopeOf(p.Role)
@@ -320,7 +400,10 @@ func (a *Service) Valid(ctx context.Context, p *Principal) bool {
 	var created, lastSeen int64
 	err := a.db.R.QueryRowContext(ctx, `SELECT created_at, last_seen FROM auth_sessions WHERE id = ? AND user_id = ?`,
 		p.SessionID, p.UserID).Scan(&created, &lastSeen)
-	return err == nil && now.Before(a.sessionExpiry(db.Time(created), db.Time(lastSeen)))
+	if errors.Is(err, sql.ErrNoRows) {
+		a.seen.drop(p.SessionID)
+	}
+	return err == nil && now.Before(a.sessionExpiry(db.Time(created), a.lastSeen(p.SessionID, db.Time(lastSeen))))
 }
 
 // Me returns the user of a principal.
@@ -505,7 +588,7 @@ func (a *Service) Sessions(ctx context.Context, p *Principal) ([]SessionInfo, er
 		if err := rows.Scan(&s.ID, &created, &lastSeen, &s.IP, &s.UserAgent); err != nil {
 			return nil, err
 		}
-		s.CreatedAt, s.LastSeen = db.Time(created), db.Time(lastSeen)
+		s.CreatedAt, s.LastSeen = db.Time(created), a.lastSeen(s.ID, db.Time(lastSeen))
 		s.ExpiresAt = a.sessionExpiry(s.CreatedAt, s.LastSeen)
 		if !now.Before(s.ExpiresAt) {
 			continue
@@ -528,6 +611,7 @@ func (a *Service) RevokeSession(ctx context.Context, p *Principal, id string) er
 	if n == 0 {
 		return apperr.NotFound("session", id)
 	}
+	a.seen.drop(id)
 	return nil
 }
 

@@ -93,6 +93,7 @@ func (r *Registry) reload(ctx context.Context) error {
 	}
 	r.snap.Store(newSnapshot(groups, cl))
 	r.rebuildLearned() // callers invalidate the identity cache afterwards
+	r.logLegacyUpstreams(groups)
 	return nil
 }
 
@@ -143,7 +144,7 @@ func scanGroup(sc interface{ Scan(...any) error }) (Group, error) {
 		return g, err
 	}
 	g.CreatedAt = db.Time(created)
-	g.Upstreams = decodeUpstreams(ups)
+	g.Upstreams, g.legacy = decodeStoredUpstreams(ups)
 	if device.Valid {
 		g.DeviceClientID = &device.Int64
 	}

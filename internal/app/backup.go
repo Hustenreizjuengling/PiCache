@@ -21,6 +21,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
+	"github.com/hustenreizjuengling/picache/internal/update"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
 
@@ -612,12 +613,19 @@ func PreUpgradeBackup(ctx context.Context, d *db.DB, dataDir string, log *slog.L
 // a copy of the same schema named after cur exists already: such an older
 // version copies the database under cur's name itself before it fails, so
 // another copy would only fill a place of the three that version keeps and
-// get the one copy it can open pruned sooner.
+// get the one copy it can open pruned sooner. A previous version that
+// opens the database's schema (0.17.x on the database of 1.0.x, which
+// added no schema step) ran on it and may have changed it: the copy is
+// named after that version, as after every upgrade.
 func copyBeforeUpgrade(ctx context.Context, d *db.DB, dir, prev, cur string, log *slog.Logger) error {
-	owner := copyVersion(ctx, d, prev)
-	if owner != prev {
+	owner, schemaOf := copyVersion(ctx, d, prev)
+	switch {
+	case owner != prev:
 		log.Warn("the previous version recorded itself without migrating this database; the copy is named after the version that wrote its schema",
 			slog.String("previous", prev), slog.String("schemaOf", owner))
+	case schemaOf != "" && schemaOf != prev:
+		log.Info("the previous version ran on this database with the schema of a later version (going back needed no copy); "+
+			"the copy is named after the previous version", slog.String("previous", prev), slog.String("schemaOf", schemaOf))
 	}
 	if owner == cur {
 		if existing := copyOfSchema(ctx, d, dir, owner); existing != "" {
@@ -727,22 +735,55 @@ func recordSchema(ctx context.Context, d *db.DB) error {
 // database's current schema (metaBinarySchema) and prev did not: a version
 // before 1.0.0 started on a newer database records itself before it fails,
 // and a copy named after it would not open with it (going back picks the
-// copy by its name). The schema's version is then named; at worst a copy
-// that prev could open too is named after that newer version.
-func copyVersion(ctx context.Context, d *db.DB, prev string) string {
+// copy by its name). The schema's version is then named, unless prev opens
+// that schema (openedBy: 0.17.x on the database of 1.0.x); at worst a copy
+// that prev could open too is named after that newer version. schemaOf is
+// the version that recorded the database's current schema ("" if none
+// did).
+func copyVersion(ctx context.Context, d *db.DB, prev string) (owner, schemaOf string) {
 	var raw string
 	if err := d.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = ?`, metaBinarySchema).Scan(&raw); err != nil {
-		return prev
+		return prev, ""
 	}
 	var rec binarySchema
-	if json.Unmarshal([]byte(raw), &rec) != nil || rec.Version == "" || rec.Version == prev {
-		return prev
+	if json.Unmarshal([]byte(raw), &rec) != nil || rec.Version == "" {
+		return prev, ""
 	}
 	cur, err := schemaVersions(ctx, d.R)
 	if err != nil || !maps.Equal(cur, rec.Schema) {
-		return prev
+		return prev, ""
 	}
-	return rec.Version
+	if rec.Version == prev || openedBy(prev, cur) {
+		return prev, rec.Version
+	}
+	return rec.Version, rec.Version
+}
+
+// schemaV017 is the picache.db schema of 0.17.x (component → version),
+// the last release before 1.0.0. 1.0.0 added no step: 0.17.x opens the
+// database of 1.0.x (DEPLOYMENT "Going back to an earlier version").
+var schemaV017 = map[string]int{"app": 1, "auth": 3, "clients": 4, "dhcp": 2, "dns": 4, "filter": 3, "notify": 1,
+	"parental": 2, "proxy": 1, "services": 1, "settings": 7, "storage": 1}
+
+// openedBy reports whether version v, recorded as binary_version while
+// another version recorded the database's schema, opens a database with
+// schema: a version before 1.0.0 records itself before it checks the
+// schema, so its record alone does not say whether it ran. Of those only
+// 0.17.x opens a later version's database, and only while no component it
+// knows has a newer schema than its own (a component it does not know is
+// left alone). Versions from 1.0.0 on refuse a newer schema before they
+// record themselves.
+func openedBy(v string, schema map[string]int) bool {
+	pv, err := update.ParseVersion(v)
+	if err != nil || pv.Major != 0 || pv.Minor != 17 {
+		return false
+	}
+	for c, n := range schema {
+		if own, known := schemaV017[c]; known && n > own {
+			return false
+		}
+	}
+	return true
 }
 
 // refuseNewerSchema returns db.Migrate's downgrade refusal when a component

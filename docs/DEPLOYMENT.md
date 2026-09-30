@@ -271,8 +271,10 @@ installation. It never downloads anything. It:
    systemd-resolved or other services. While firewalld or ufw is active it
    prints the commands that open PiCache's ports to your LAN and never
    changes the firewall itself ([Distributions](#distributions));
-11. enables and (re)starts `picache.service` and prints the web UI address and
-   the setup-token command.
+11. enables and (re)starts `picache.service` and prints the web UI address and,
+   until the setup is done, the setup-token command and the next steps; an
+   installation that is set up gets "PiCache was updated from X to Y and is
+   running" instead.
 
 `/var/lib/picache` and `/var/cache/picache` are created by systemd
 (`StateDirectory=`/`CacheDirectory=`) on the first start.
@@ -425,8 +427,8 @@ never ask anything. On the first installation they:
    neither started nor, on an upgrade, restarted; start it yourself;
 4. print the firewall commands ([Distributions](#distributions)) and the web
    UI address. The setup token is never printed (apt keeps its output in
-   `/var/log/apt/term.log`, readable by the group `adm`): get it with
-   `sudo picache setup-token`.
+   `/var/log/apt/term.log`, readable by the group `adm`): until the setup
+   is done, the summary names the command, `sudo picache setup-token`.
 
 In a chroot or an image build (systemd not running) the service is only
 enabled and starts at the next boot.
@@ -1491,6 +1493,8 @@ queries never start going to another operator; turn the fallback on in
   than 53 as `192.168.1.5:5335` or, as other DNS filters write it,
   `192.168.1.5#5335` (IPv6 in brackets: `[fd00::53]:5335` or
   `[fd00::53]#5335`; `tcp://`, `tls://` and `quic://` take both forms too).
+  PiCache saves `host#port` as `host:port` (`192.168.1.5:5335`), which
+  every version reads the same way.
   Plain DNS upstreams may also be given by name (`dns.example.com`,
   `tcp://dns.example.com:5353`), but only public names: PiCache resolves
   them through the bootstrap servers and dials only public addresses.
@@ -2161,12 +2165,16 @@ Rules:
 
 - The databases must live on a local disk. PiCache refuses to open a database
   on NFS or CIFS. Only cache slice files may live on a NAS.
-- A broken `logs.db` is moved aside (`logs.db.broken-<timestamp>`) and
-  recreated; DNS keeps running. Only the newest broken copy is kept. A
+- A broken `logs.db` is moved aside (`logs.db.broken-<timestamp>`, with
+  `logs.db-wal.broken-<timestamp>` and `logs.db-shm.broken-<timestamp>`)
+  and recreated; DNS keeps running. Only the newest broken copy is kept. A
   `logs.db` that opens but is damaged inside (SQLite reports "database
   disk image is malformed" on a read or a write) makes the health check
-  `logs` warn "logs.db is damaged: …": restart PiCache, which checks the
-  file (`PRAGMA quick_check`) and moves it aside when the check fails.
+  `logs` warn "logs.db is damaged: …" (evaluated at once), and a query-log
+  or statistics read that hits a damaged part answers 503 "logs.db is
+  damaged: restart PiCache; it moves the file aside": restart PiCache,
+  which checks the file (`PRAGMA quick_check`) and moves it aside when the
+  check fails.
   A `logs.db` PiCache may not write (owned by root after a copy without
   `chown`, a read-only disk) is kept as it is: logging is off and the
   health check names the owner; `chown` it (as for `picache.db`) and
@@ -2451,7 +2459,11 @@ afterwards if they must go (**Clear data**; admins, needs
 the raw data (query log, cache requests, sessions) and the statistics
 separately. *Ignored domains* are answered and filtered as usual but never
 logged or counted (for noisy names such as a time server; unlike *dropped
-domains*, which get no answer at all).
+domains*, which get no answer at all). While the data disk has less than
+1 GiB free, the raw rows (the query log, the cache requests and sessions,
+pass-through connections and evictions) are not stored; the statistics go
+on, the live view too, and the health check `logs` warns "raw log inserts
+are paused" until space is freed.
 
 **Retention and a wrong clock.** The query log, the cache events, the
 download sessions and the statistics are deleted once they are older than
@@ -3042,7 +3054,12 @@ version's next start names its copy after the version whose schema the
 database has, not after the older version that recorded itself; when that
 is its own version and the older version already made such a copy, it
 makes none (another one would only use up one of the three places the
-older version keeps). Its pruning keeps the newest copy of every schema
+older version keeps). An older version that opens the newer database
+(0.17.x on the database of 1.0.x, which has no schema step) ran on it:
+after going back to it and upgrading again, the copy is named after it,
+as after any upgrade, and holds the changes made meanwhile (the log says
+"the previous version ran on this database with the schema of a later
+version …"). Its pruning keeps the newest copy of every schema
 beyond the newest three, but the older version prunes by its own rule
 before it fails: copy the file you need out of `backups/` before going
 back. The
@@ -3129,8 +3146,9 @@ changes:
   "nothing to do" instead of going back to 0.17.0 when it is run without
   `--version`.
 - **Upstreams with text after `#`:** 1.0.0 reads `host#port` as the port
-  (`10.0.0.53#5353`, as other DNS filters write it); 0.17 and earlier
-  ignored everything after `#`. An upstream, fallback, local PTR upstream,
+  (`10.0.0.53#5353`, as other DNS filters write it) and saves it as
+  `host:port` (`10.0.0.53:5353`); 0.17 and earlier ignored everything
+  after `#`. An upstream, fallback, local PTR upstream,
   conditional-forwarder target or group upstream that an earlier version
   saved with other text after `#` (a name such as
   `tls://1.1.1.1#cloudflare-dns.com`, a port after `:` as well) keeps its
@@ -3201,7 +3219,14 @@ and `--version`: it checks first, then runs the older release's installer. Read 
 the versions you go back across first: when they say that the older
 version opens the database (1.0.0 → 0.17.0, 0.16.0 → 0.15.0), install it
 with `PICACHE_ALLOW_DOWNGRADE=1` and keep the database with the changes
-made since the upgrade. Otherwise put the copy named after the older
+made since the upgrade. Going back to 0.17.0 this way, check the
+upstreams for a port written after `#` (**DNS settings**, **Local DNS →
+Conditional forwarders**, **Clients & groups**): 0.17.0 ignores it and
+asks port 53 (`127.0.0.1#5335` would reach PiCache itself). 1.0.0 saves
+such an entry as `host:port`, which 0.17.0 reads correctly, but an entry
+a release candidate of 1.0.0 saved as typed stays so until it is saved
+again: save it once (or write it as `host:port`) before going back.
+Otherwise put the copy named after the older
 version back **before** it starts: a version before 1.0.0 started on the
 newer database copies it, keeps only the newest three copies (it may
 delete the one you need) and records its own version before it fails, and
@@ -3689,8 +3714,12 @@ restart requested from the web UI (systemd and Docker restart the process).
 - **"the data disk is full"** (503 when saving a setting): DNS keeps
   answering, and a signed-in browser and API tokens keep reading (the
   health page, the statistics, monitoring), but no setting can be saved.
-  Signing in needs a little free space too (it writes the new session), so
-  keep the browser session you have. Free space on the data disk
+  A session that is used does not expire after the idle time meanwhile
+  (PiCache keeps its last use in memory until it can write it; the
+  absolute limit still applies, and a restart forgets it). Signing in
+  needs a little free space too (it writes the new session: "cannot sign
+  in: PiCache's data disk is full …"), so keep the browser session you
+  have. Free space on the data disk
   (**System → Health & about** shows it; an old `logs.db.broken-*` file and
   old copies in `<data>/backups/` can go).
 - **`bind … permission denied`:** PiCache was started without

@@ -114,7 +114,8 @@ type App struct {
 	verify   api.VerifyState
 
 	health     atomic.Pointer[api.Health]
-	restoredAt time.Time // set when a staged full restore was applied at this start
+	healthKick chan struct{} // evaluate the health checks now (kickHealth)
+	restoredAt time.Time     // set when a staged full restore was applied at this start
 	// restoreSections are the sections a staged restore applied at this
 	// start (nil: none); restoreBy is "cli" for `picache restore` (the
 	// audit row system.restore is written after the start).
@@ -240,7 +241,7 @@ func (a *App) deployment() string {
 func newApp(cfg *config.Config, log *slog.Logger) *App {
 	return &App{cfg: cfg, paths: cfg.Paths(), log: log, started: time.Now(),
 		storeKick: make(chan struct{}, 1), evictKick: make(chan struct{}, 1), evictSem: make(chan struct{}, 1),
-		restart: make(chan struct{}, 1)}
+		healthKick: make(chan struct{}, 1), restart: make(chan struct{}, 1)}
 }
 
 // dropNetRawFn is dropNetRaw (tests replace it).
@@ -620,6 +621,7 @@ func (a *App) openLogs(ctx context.Context) {
 			d.Close()
 			return nil, nil, err
 		}
+		st.OnDamage(a.kickHealth) // the check "logs" warns at once
 		return d, st, nil
 	}
 	moveAside := func() {

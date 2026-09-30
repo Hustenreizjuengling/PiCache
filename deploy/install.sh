@@ -291,8 +291,28 @@ install_binary() {
 		;;
 	esac
 	check_downgrade "$out"
+	# The versions for the summary ("" when the old binary does not run).
+	previous_version=""
+	if [ -x "$BIN" ]; then
+		previous_version=$(version_word "$("$BIN" version 2>/dev/null)")
+	fi
+	current_version=$(version_word "$out")
 	mv -f "$tmp" "$BIN"
 	say "installed $BIN: $out"
+}
+
+# version_word OUTPUT prints the version in the output of `picache version`
+# ("picache v1.2.3 (commit …)" → v1.2.3), development builds included.
+version_word() {
+	printf '%s\n' "$1" | sed -n '1s/^picache \([^ ]*\).*/\1/p'
+}
+
+# setup_done succeeds when this installation is set up: PiCache has run
+# here (picache.db exists) and its setup token file is gone (PiCache writes
+# it at every start while no account exists and deletes it once the first
+# one does). Checked before PiCache is (re)started.
+setup_done() {
+	[ -f "$DATA_DIR/picache.db" ] && [ ! -e "$DATA_DIR/setup-token" ]
 }
 
 # release_version OUTPUT prints the version in the output of `picache
@@ -986,15 +1006,26 @@ nesting feature (pct set <ctid> --features nesting=1) and restart it." >&2
 	fi
 }
 
+# print_summary prints where to find PiCache and, until the setup is done
+# ($was_set_up, setup_done before the start), the setup token and the next
+# steps; an installation that is set up gets the versions of the update.
 print_summary() {
 	web_listen=$(env_value PICACHE_WEB_LISTEN)
 	say ""
-	say "PiCache is running."
+	if [ "$was_set_up" -eq 0 ]; then
+		say "PiCache is running."
+	elif [ -n "$previous_version" ] && [ -n "$current_version" ] && [ "$previous_version" != "$current_version" ]; then
+		say "PiCache was updated from $previous_version to $current_version and is running."
+	else
+		say "PiCache is updated and running."
+	fi
 	say "  Web UI:        http://$host_ip:8080/  (HTTPS: https://$host_ip:8443/, PiCache's local CA)"
 	if [ -n "$web_listen" ]; then
 		say "                 (PICACHE_WEB_LISTEN=$web_listen is set; adjust the address)"
 	fi
-	say "  Setup token:   sudo picache setup-token  (first start only)"
+	if [ "$was_set_up" -eq 0 ]; then
+		say "  Setup token:   sudo picache setup-token  (first start only)"
+	fi
 	if [ "$updater_active" -eq 1 ]; then
 		say "  Updates:       in the web UI (System), or: sudo picache update"
 	else
@@ -1002,6 +1033,7 @@ print_summary() {
 	fi
 	say "  Logs:          journalctl -u picache -f"
 	say "  Configuration: $ENV_FILE (then: systemctl restart picache)"
+	[ "$was_set_up" -eq 0 ] || return 0
 	say ""
 	say "Next: finish the setup in the web UI, give this machine a static address and"
 	say "point your router's DHCP DNS server option to $host_ip."
@@ -1351,6 +1383,12 @@ main() {
 	install -d -m 0750 -o root -g picache "$CONF_DIR"
 	write_env_file
 	read_paths
+	# Before anything is (re)started: the summary names the setup token and
+	# the next steps until the setup is done.
+	was_set_up=0
+	if setup_done; then
+		was_set_up=1
+	fi
 	# Root-owned (group picache may enter): the service must not be able to swap
 	# a mount point for a symbolic link that the root helper would then use.
 	install -d -m 0750 -o root -g picache "$MOUNT_ROOT"
@@ -1424,8 +1462,10 @@ remove it unless you maintain it on purpose (use drop-ins for local changes)."
 		say ""
 		say "PiCache is installed and enabled but NOT started because port 53 is in use."
 		say "After fixing that, run: systemctl start picache"
-		say "Then open http://$host_ip:8080/ and get the one-time setup token with:"
-		say "    sudo picache setup-token"
+		if [ "$was_set_up" -eq 0 ]; then
+			say "Then open http://$host_ip:8080/ and get the one-time setup token with:"
+			say "    sudo picache setup-token"
+		fi
 		exit 0
 	fi
 	start_service

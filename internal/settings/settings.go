@@ -710,9 +710,7 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 		}
 		cur.DNS.storedDNSSEC()
 		for _, c := range cur.DNS.legacyUpstreams() {
-			s.log.Warn(`an upstream saved by an earlier version has text after "#" that this version refuses; `+
-				`it is used without that text, as that version did (fix it under DNS settings → Upstreams)`,
-				slog.String("stored", strconv.QuoteToASCII(c[0])), slog.String("used", strconv.QuoteToASCII(c[1])))
+			LogLegacyUpstream(s.log, "DNS settings → Upstreams", c[0], c[1])
 		}
 		cur.normalize()
 		if lang, ok := cur.Web.forgetUnknownLanguage(); ok {
@@ -762,6 +760,18 @@ func DecodeStored(doc []byte) (*All, error) {
 	cur.Web.forgetUnknownLanguage()
 	cur.Sync.Token, cur.Network.Proxy.Password = nil, nil
 	return &cur, nil
+}
+
+// LogLegacyUpstream logs at WARN that the stored upstream stored is used
+// as used, the meaning a version before 1.0.0 gave it (LegacyUpstream),
+// and where to fix it; attrs name the entry (a forwarder, a group). The
+// default upstreams, fallbacks and local PTR upstreams are logged when the
+// document is loaded, forwarder targets and group upstreams when their
+// rows are loaded.
+func LogLegacyUpstream(log *slog.Logger, fix, stored, used string, attrs ...any) {
+	log.Warn(`an upstream saved by an earlier version has text after "#" that this version refuses; `+
+		`it is used without that text, as that version did (fix it under `+fix+`)`,
+		append(attrs, slog.String("stored", strconv.QuoteToASCII(stored)), slog.String("used", strconv.QuoteToASCII(used)))...)
 }
 
 // legacyUpstreams reads the upstreams, fallbacks and local PTR upstreams

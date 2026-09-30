@@ -3,7 +3,8 @@
 # throwaway container: fresh install (files, modes, units, marker, account,
 # no update helper, no token in the output, not even from the journal),
 # `picache update` refused, a reinstall that keeps the configuration, an
-# upgrade (restart, healthy), a failed restart (the rollback steps, exit 0),
+# upgrade (restart, healthy; the summary names the setup token only until
+# the setup is done), a failed restart (the rollback steps, exit 0),
 # a downgrade refused and then allowed with PICACHE_ALLOW_DOWNGRADE=1, a
 # failed start and a port-53 conflict on a fresh install (the package stays
 # installed), a policy-rc.d that forbids services (neither started nor
@@ -235,12 +236,17 @@ repack 99.0.0 /tmp/up.deb
 out=$(install_deb /tmp/up.deb) || { echo "$out"; fail "upgrade"; }
 grep -q '^invoke restart picache.service' /tmp/systemctl.log || fail "not restarted on upgrade"
 echo "$out" | grep -q 'PiCache was restarted and is healthy.' || fail "no health message: $out"
+echo "$out" | grep -q 'Setup token:   sudo picache setup-token' || fail "the setup is not done, but the summary lacks the setup token command: $out"
 
 echo "== upgrade with a failed restart: the rollback steps, the package stays installed"
 repack 99.0.1 /tmp/up2.deb
 touch /tmp/fail-start
+# The setup is done (PiCache deleted its token file): the summary no longer
+# names the setup token.
+rm -f /var/lib/picache/setup-token
 out=$(install_deb /tmp/up2.deb) || { echo "$out"; fail "a failed restart failed the upgrade"; }
 rm -f /tmp/fail-start
+if echo "$out" | grep -q 'Setup token'; then fail "the summary names the setup token after the setup: $out"; fi
 echo "$out" | grep -q 'PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_99.0.0_amd64.deb' || fail "no rollback steps: $out"
 echo "$out" | grep -q '/var/lib/picache/backups/picache-v99.0.0-<timestamp>.db' || fail "no database step: $out"
 echo "$out" | grep -q 'stand-in journal of' || fail "no log lines: $out"

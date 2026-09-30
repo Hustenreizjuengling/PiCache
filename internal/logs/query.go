@@ -54,14 +54,21 @@ func (s *Store) acquire(ctx context.Context) (context.Context, func(), error) {
 // readerStore is the context key of the store of a read (acquire).
 type readerStore struct{}
 
-// queryErr turns a timeout into a user-facing error; an error of a read of
-// acquire tells its store when the file is damaged.
+// errDamaged is the message of a read that hit a damaged page of logs.db.
+const errDamaged = "logs.db is damaged: restart PiCache; it moves the file aside (System → Health & about)"
+
+// queryErr turns a timeout and a damaged file into user-facing errors
+// (503); an error of a read of acquire tells its store when the file is
+// damaged.
 func queryErr(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
 	if s, ok := ctx.Value(readerStore{}).(*Store); ok {
 		s.noteDamage(err)
+	}
+	if db.Corrupt(err) {
+		return apperr.Wrap(apperr.KindUnavailable, err, "%s", errDamaged)
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return apperr.Wrap(apperr.KindUnavailable, err, "the log query took longer than %s; narrow the time range or the filters", queryTimeout)

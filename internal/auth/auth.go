@@ -211,6 +211,7 @@ type Service struct {
 	setupDone  atomic.Bool // a user exists (never becomes false again)
 
 	touchLogged atomic.Int64 // when a failed last-use update was last logged (UnixNano; touchFailed)
+	seen        seenMemory   // the last use of sessions whose last_seen could not be written
 
 	// onPasswordChecked is a test hook: it runs after a password was
 	// verified and before the transaction that relies on it.
