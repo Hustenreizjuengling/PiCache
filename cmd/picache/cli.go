@@ -715,7 +715,9 @@ func renderLookup(a *lookupAnswer) string {
 		b.WriteString("\n")
 	}
 	for _, ans := range a.Answers {
-		fmt.Fprintf(&b, "  %s\n", escapeControls(ans))
+		// The records come in zone-file form, whose fields are separated by
+		// tabs: a space each, the other controls escaped.
+		fmt.Fprintf(&b, "  %s\n", escapeControls(strings.ReplaceAll(ans, "\t", " ")))
 	}
 	if len(a.Steps) > 0 {
 		b.WriteString("steps:\n")

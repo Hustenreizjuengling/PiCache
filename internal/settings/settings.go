@@ -702,9 +702,18 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 		// and dns.dnssec always follows the mode.
 		cur.DNS.DNSSECMode, cur.DNS.DNSSEC = "", false
 		if err := json.Unmarshal([]byte(doc), &cur); err != nil {
-			return nil, fmt.Errorf("settings: decode stored document: %w", err)
+			// SQLite's integrity check does not see a damaged document (a
+			// bit flip inside the row): name the way back.
+			return nil, fmt.Errorf("settings: decode stored document: %w; the stored settings are damaged: restore a backup "+
+				"with `picache restore <backup file>` (it keeps the accounts), then start PiCache "+
+				"(docs/DEPLOYMENT.md \"Recovering a damaged picache.db\")", err)
 		}
 		cur.DNS.storedDNSSEC()
+		for _, c := range cur.DNS.legacyUpstreams() {
+			s.log.Warn(`an upstream saved by an earlier version has text after "#" that this version refuses; `+
+				`it is used without that text, as that version did (fix it under DNS settings → Upstreams)`,
+				slog.String("stored", strconv.QuoteToASCII(c[0])), slog.String("used", strconv.QuoteToASCII(c[1])))
+		}
 		cur.normalize()
 		if lang, ok := cur.Web.forgetUnknownLanguage(); ok {
 			s.log.Warn("the stored web.language is not a language of this version; using the browser's language",
@@ -726,7 +735,9 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 // this version's migrations: on top of Defaults, with web.restrictToNetworks
 // off when the document lacks it (migration v5), updates.channel and
 // dns.dnssecMode derived from their aliases when it lacks them (v6, v7),
-// normalised, and a web.language this version does not know read as ""
+// upstreams an earlier version stored with text after "#" read as that
+// version did (legacyUpstreams), normalised, and a web.language this
+// version does not know read as ""
 // (like Open, without its log line). The API judges the settings of a
 // staged restore with it before they are applied, and a partial restore
 // of the section settings uses it.
@@ -739,6 +750,7 @@ func DecodeStored(doc []byte) (*All, error) {
 		return nil, fmt.Errorf("settings: decode stored document: %w", err)
 	}
 	cur.DNS.storedDNSSEC() // migration v7
+	cur.DNS.legacyUpstreams()
 	if cur.Updates.Channel == "" {
 		// Migration v6: the channel of includePrereleases.
 		cur.Updates.Channel = ChannelStable
@@ -750,6 +762,27 @@ func DecodeStored(doc []byte) (*All, error) {
 	cur.Web.forgetUnknownLanguage()
 	cur.Sync.Token, cur.Network.Proxy.Password = nil, nil
 	return &cur, nil
+}
+
+// legacyUpstreams reads the upstreams, fallbacks and local PTR upstreams
+// an earlier version stored with text after "#" that this version refuses
+// as that version did (LegacyUpstream; before 1.0.0 the text was
+// ignored). Every such
+// entry used to be dropped, so a default set of only such entries was
+// empty and every query failed after the upgrade, and every settings save
+// was refused. It returns the changed entries (stored, used); the next
+// save stores the used ones.
+func (d *DNS) legacyUpstreams() [][2]string {
+	var changed [][2]string
+	for _, list := range []*[]string{&d.Upstreams, &d.FallbackUpstreams, &d.LocalPTRUpstreams} {
+		for _, u := range *list {
+			if fixed, ok := LegacyUpstream(u); ok {
+				changed = append(changed, [2]string{u, fixed})
+			}
+		}
+		*list = LegacyUpstreams(*list)
+	}
+	return changed
 }
 
 // Normalize applies the normalisation of Update to a candidate document

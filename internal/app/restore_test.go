@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -408,6 +409,39 @@ func TestBackupScrubsSettingsSecrets(t *testing.T) {
 		d.Close()
 		if err != nil || (n == 1) != include {
 			t.Errorf("includeSecrets %v: %d rows, %v", include, n, err)
+		}
+	}
+}
+
+// The built-in cache target keeps the live store id through a full and a
+// partial (storage) restore: its store lives in this machine's cache
+// directory. A backup of another machine names that machine's store, and
+// the local cache stayed offline ("a different cache store") until an
+// admin adopted it by hand.
+func TestRestoreKeepsLocalStoreID(t *testing.T) {
+	ctx := context.Background()
+	for _, sections := range [][]string{nil, {settings.SectionStorage}} {
+		a, up := restoreFixture(t)
+		insert := `INSERT INTO storage_targets (id, name, kind, mode, path, store_id, created_at, updated_at)
+			VALUES ('local', 'Local disk', 'local', 'external', '', '%s', 1, 1)`
+		if _, err := a.cdb.W.ExecContext(ctx, fmt.Sprintf(insert, "live-store")); err != nil {
+			t.Fatal(err)
+		}
+		execFile(t, up, fmt.Sprintf(insert, "other-machine"))
+		if _, err := a.StageRestore(ctx, bytes.NewReader(readFile(t, up)), sections); err != nil {
+			t.Fatal(err)
+		}
+		closeLive(a)
+		if restored, err := a.applyStagedRestore(); err != nil || !restored {
+			t.Fatalf("%v: applyStagedRestore = %v, %v", sections, restored, err)
+		}
+		d, set, _ := openRestored(t, a)
+		var id string
+		if err := d.R.QueryRow(`SELECT store_id FROM storage_targets WHERE id = 'local'`).Scan(&id); err != nil || id != "live-store" {
+			t.Fatalf("%v: local store id %q %v", sections, id, err)
+		}
+		if sections == nil && set.Get().Web.Language != "de" {
+			t.Fatal("not restored")
 		}
 	}
 }

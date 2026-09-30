@@ -53,3 +53,15 @@ func TestQueryPrintsDNSSEC(t *testing.T) {
 		t.Fatalf("output %q", got)
 	}
 }
+
+// The answer records (zone-file form, tab-separated) are printed with a
+// space between the fields, not with escaped tabs; other controls stay
+// escaped.
+func TestQueryPrintsAnswerFields(t *testing.T) {
+	got := renderLookup(&lookupAnswer{Name: "example.org", Type: "A", Status: "forwarded",
+		Answers: []string{"example.org.\t69\tIN\tA\t172.66.157.237", "x.example.\t300\tIN\tTXT\t\"a\x1b[31m\""}})
+	if !strings.Contains(got, "\n  example.org. 69 IN A 172.66.157.237\n") || strings.Contains(got, `\u0009`) ||
+		!strings.Contains(got, "\n  x.example. 300 IN TXT \"a\\u001b[31m\"\n") {
+		t.Fatalf("output %q", got)
+	}
+}

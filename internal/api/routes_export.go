@@ -188,11 +188,15 @@ func (s *Server) logsExport(w http.ResponseWriter, r *http.Request) error {
 		return err // nothing sent yet: an ordinary error answer
 	}
 	if err != nil {
-		// Abort the connection: a cut file must not look complete.
-		s.audit(r, "logs.export", "", map[string]any{"format": format, "rows": rows, "truncated": "disconnected"})
+		// Abort the connection: a cut file must not look complete. The
+		// client left ("disconnected"), or the export failed here ("error":
+		// a read timed out, the database failed).
+		reason := "disconnected"
 		if ctx.Err() == nil {
+			reason = "error"
 			s.log.Error("query-log export failed", slog.Any("err", err))
 		}
+		s.audit(r, "logs.export", "", map[string]any{"format": format, "rows": rows, "truncated": reason})
 		panic(http.ErrAbortHandler)
 	}
 	if !started {

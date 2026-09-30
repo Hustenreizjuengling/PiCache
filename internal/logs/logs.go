@@ -80,6 +80,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -476,6 +477,7 @@ type GroupRef struct {
 // Metrics are internal counters (for /metrics and health).
 type Metrics struct {
 	Dropped     uint64    `json:"dropped"`
+	WriteFailed uint64    `json:"writeFailed"` // of Dropped: events of batches that could not be written (not load)
 	QueueLength int       `json:"queueLength"`
 	LastFlush   time.Time `json:"lastFlush,omitzero"`
 	DBSizeBytes int64     `json:"dbSizeBytes"`
@@ -483,6 +485,9 @@ type Metrics struct {
 	LiveDropped uint64    `json:"liveDropped"`         // live-feed events not delivered to slow subscribers
 	TopOverflow uint64    `json:"topOverflow"`         // events not counted in the hourly top lists (key limit of the hour reached)
 	RawPaused   bool      `json:"rawPaused,omitempty"` // raw inserts paused: the data disk has < 1 GiB free
+	// Damaged is why logs.db is damaged (SQLite reported it on a write, a
+	// read or pruning); "" while no damage was seen.
+	Damaged string `json:"damaged,omitempty"`
 }
 
 // Store is the logs.db owner.
@@ -504,6 +509,18 @@ type Store struct {
 	paused    atomic.Bool // raw inserts paused (data disk low)
 	started   atomic.Bool
 	closed    atomic.Bool
+
+	// writeFailed counts the dropped events of batches that could not be
+	// written; damaged is why logs.db is damaged (noteDamage).
+	writeFailed atomic.Uint64
+	damaged     atomic.Pointer[string]
+	// clearedTo: the query rows with an id up to it are cleared
+	// (ClearQueries) and left out of every read until the writer deleted
+	// them (clearStep); 0: none.
+	clearedTo atomic.Int64
+	// clock reads the host clock state (synced, known): a synchronised clock
+	// ends a hold of the retention (SetClockReader; nil: unknown).
+	clock atomic.Pointer[func() (bool, bool)]
 
 	sem     chan struct{} // bounds concurrent read queries
 	live    hub
@@ -547,11 +564,13 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, log *slog.Logger) (
 	if err := d.Migrate(ctx, "logs", migrations); err != nil {
 		return nil, err
 	}
+	s.clearedTo.Store(loadClearedMark(ctx, d)) // a clear whose rows are not deleted yet
 	now := time.Now()
 	if err := s.loadTop(ctx, hourStart(now.UnixMilli())); err != nil {
 		return nil, fmt.Errorf("logs: load hourly top lists: %w", err)
 	}
 	s.w = newWriter(s, now)
+	s.w.checkLastWritten(lastWrittenRaw(ctx, d)) // a clock that went back since the last run
 	if _, _, err := s.refreshSize(ctx); err != nil {
 		return nil, fmt.Errorf("logs: database size: %w", err)
 	}
@@ -682,7 +701,43 @@ func (s *Store) Metrics() Metrics {
 	m.LiveDropped = s.live.dropped.Load()
 	m.TopOverflow = s.top.overflow.Load()
 	m.RawPaused = s.paused.Load()
+	m.WriteFailed = s.writeFailed.Load()
+	if d := s.damaged.Load(); d != nil {
+		m.Damaged = *d
+	}
 	return m
+}
+
+// SetClockReader sets the reader of the host clock state (synchronised,
+// readable): a synchronised clock ends a hold of the retention pruning
+// after a clock jump (retentionHeld); an unsynchronised one alone holds
+// nothing.
+func (s *Store) SetClockReader(fn func() (synced, known bool)) { s.clock.Store(&fn) }
+
+// DamagedMarker is the file next to the logs.db at path that records damage
+// found while PiCache ran: the next start checks logs.db (PRAGMA
+// quick_check) and moves it aside when the check fails, then removes the
+// marker.
+func DamagedMarker(path string) string { return path + ".damaged" }
+
+// noteDamage records that logs.db is damaged when err is SQLite's
+// SQLITE_CORRUPT or SQLITE_NOTADB (a write, a read or pruning): the health
+// check warns and the next start checks the file (DamagedMarker). Before,
+// such errors only counted as dropped events, the health check said ok,
+// and a restart kept the damaged file.
+func (s *Store) noteDamage(err error) {
+	if s.d == nil || !db.Corrupt(err) {
+		return
+	}
+	msg := err.Error()
+	if !s.damaged.CompareAndSwap(nil, &msg) {
+		return
+	}
+	if werr := os.WriteFile(DamagedMarker(s.d.Path), []byte(time.Now().UTC().Format(time.RFC3339)+" "+msg+"\n"), 0o600); werr != nil {
+		s.log.Warn("cannot write the marker of the damaged logs.db", slog.Any("err", werr))
+	}
+	s.log.Error("logs.db is damaged: restart PiCache to check it, move it aside and start a fresh one "+
+		"(the query log and the statistics start over)", slog.Any("err", err))
 }
 
 // defaultLogs is used when no settings store is wired (tests, tools).

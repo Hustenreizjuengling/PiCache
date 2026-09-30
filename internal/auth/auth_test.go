@@ -761,6 +761,37 @@ func TestAPITokens(t *testing.T) {
 	}
 }
 
+// Recording the last use of a session or a token is best effort: when the
+// write fails (a full data disk), the request is still authenticated.
+// Before, every authenticated request, the health page included, failed
+// with 503 once the minute of the last recorded use had passed.
+func TestAuthenticateWhileWritesFail(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	s := e.login(t)
+	p := &Principal{UserID: s.UserID, Username: "admin", SessionID: s.ID, Scope: ScopeAdmin}
+	secret, _, err := e.a.CreateToken(ctx, p, testPassword, "monitoring", ScopeRead, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TRIGGER full_tokens BEFORE UPDATE ON auth_tokens BEGIN SELECT RAISE(FAIL, 'database or disk is full'); END`,
+		`CREATE TRIGGER full_sessions BEFORE UPDATE ON auth_sessions BEGIN SELECT RAISE(FAIL, 'database or disk is full'); END`,
+	} {
+		if _, err := e.d.W.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.clock.Advance(2 * lastSeenGranularity)
+	if tp, err := e.a.Authenticate(bearerRequest(secret)); err != nil || tp.Scope != ScopeRead {
+		t.Fatalf("token while writes fail: %+v %v", tp, err)
+	}
+	if sp, err := e.a.Authenticate(cookieRequest(s.Token)); err != nil || sp.SessionID != s.ID {
+		t.Fatalf("session while writes fail: %+v %v", sp, err)
+	}
+}
+
 func TestTOTP(t *testing.T) {
 	e := newEnv(t)
 	e.withAdmin(t)

@@ -274,6 +274,9 @@
   {#if appStatus.overview.data && !appStatus.overview.data.blocking.enabled}
     <Notice tone="warn">{t('dns.queryLog.blockingOff')}</Notice>
   {/if}
+  {#if !live && log.data?.partial}
+    <Notice>{t('dns.queryLog.partial')}</Notice>
+  {/if}
 
   <Panel flush>
     <div class="head">

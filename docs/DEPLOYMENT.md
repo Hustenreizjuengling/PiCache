@@ -163,6 +163,16 @@ older than the installed one, because the older version cannot open a
 database the newer one migrated: go back as [Going back to an earlier
 version](#going-back-to-an-earlier-version) describes, with
 `sudo PICACHE_ALLOW_DOWNGRADE=1 sh -s -- --version vX.Y.Z` after the pipe.
+The check is in the script of 1.0.0 and later: the script of an earlier
+release installs any release. So while `releases/latest` still serves an
+earlier release's script (during the 1.0.0 release candidates, 0.17.0's),
+release-candidate testers run the script of the release they installed,
+for example
+`https://github.com/Hustenreizjuengling/PiCache/releases/download/v1.0.0-rc.1/get-picache.sh`.
+Without `--version`, when the latest release is older than the installed
+one (a release candidate newer than the latest stable release), it says
+"the installed … is newer than the latest release …; nothing to do" and
+changes nothing.
 It runs the downloaded program once in a directory below `$TMPDIR`
 (default `/var/tmp`); on a host that mounts that directory `noexec` it
 says so: set `TMPDIR` to a directory that allows running programs, for
@@ -461,8 +471,11 @@ first start of a new version makes that copy before it migrates anything
 **Downgrade.** The package refuses to replace a newer installed version
 ("picache <new> is older than the installed <old>. <old> may have migrated
 the database, which <new> then refuses …"), because an older version cannot
-open a database a newer one migrated. Stop PiCache and restore the matching
-copy first ([Going back to an earlier
+open a database a newer one migrated. The installed package refuses first;
+dpkg then tries the older package's scripts, whose preinst refuses too
+(before 1.0.0 with "… or run: sudo PICACHE_ALLOW_DOWNGRADE=1 apt install
+…", which is not an alternative). Copy the matching pre-upgrade file out of
+`backups/`, stop PiCache and restore it first ([Going back to an earlier
 version](#going-back-to-an-earlier-version)), then allow it once:
 
 ```sh
@@ -499,6 +512,13 @@ delete those files and then the account (`sudo userdel picache`).
   `install.sh` and `get-picache.sh` refuse while dpkg knows the package
   (removed with only its configuration left is fine) or its marker exists:
   "PiCache is installed as a Debian package here: update it with apt …".
+  Purging the removed package later (`sudo apt purge picache`, or a purge
+  of all removed packages such as `sudo apt purge '~c'`) never touches
+  `install.sh`'s installation: while `/usr/local/bin/picache` or its unit
+  exists, the purge only forgets the package's unit state and deletes
+  neither `/etc/picache`, the data, the cache and the logs nor the account
+  ("PiCache is installed with install.sh here: its configuration and data
+  were kept").
 
 ---
 
@@ -602,6 +622,17 @@ container does not know it, so browsers keep warning for
 publishes `853:853/tcp` for DNS over TLS. Use host networking whenever you
 can.
 
+**A fixed host name.** Without host networking, Docker gives a container
+its ID as host name, a new one whenever the container is recreated (every
+image update with `docker compose pull && docker compose up -d`). The
+bridge, macvlan and NAS templates therefore set `hostname: picache`
+(`--hostname=picache` in the Unraid template), the name the local CA
+covers anyway. Add it to a compose file of your own too. PiCache never
+puts such a container-ID host name into the local CA or its certificate:
+before, the `tls` health check warned after every update that the local CA
+does not cover the new name and suggested a new CA, which every device
+would have to trust again. Do not create a new CA for that warning.
+
 **This server's names** (`picache`, `picache.<local domain>`) are answered
 with PiCache's address on the client's network. In a bridge network PiCache
 uses the configured cache addresses (`downloadCache.cacheIpv4`/`cacheIpv6`)
@@ -675,7 +706,9 @@ outside the router's DHCP pool. Every template keeps the hardening:
 `cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE, SETUID, SETGID]` (`NET_RAW`
 only as a commented line, for IPv6 router advertisements),
 `no-new-privileges`, `read_only`, a `/tmp` tmpfs of 64 MB and
-`privileged: false`. Every template also restarts PiCache and gives it 30 s
+`privileged: false`, and a fixed host name (`hostname: picache`, in the
+Unraid template `--hostname=picache`; [bridge
+networking](#docker) explains why). Every template also restarts PiCache and gives it 30 s
 to stop: `restart: unless-stopped` and `stop_grace_period: 30s` in the
 compose files, `--restart=unless-stopped --stop-timeout=30` in the Unraid
 template's *Extra Parameters* (Unraid's Docker manager sets no restart
@@ -692,8 +725,9 @@ is stopped the network has no DNS.
 
 **Create the data directories first**, owned by the user PiCache runs as:
 Docker creates missing host paths owned by root, which PiCache refuses
-("chown it to …"). Never set `PICACHE_RUN_AS` to root or leave it empty as a
-"fix": PiCache must not run as root ([SECURITY.md](SECURITY.md)).
+("… is owned by … but PiCache runs as …"). Never set `PICACHE_RUN_AS` to
+root or leave it empty as a "fix": PiCache refuses both in a container
+([SECURITY.md](SECURITY.md)).
 
 ```sh
 # Unraid (a pool path: SQLite's write-ahead log does not work reliably on the /mnt/user FUSE layer)
@@ -2129,10 +2163,25 @@ Rules:
   on NFS or CIFS. Only cache slice files may live on a NAS.
 - A broken `logs.db` is moved aside (`logs.db.broken-<timestamp>`) and
   recreated; DNS keeps running. Only the newest broken copy is kept. A
-  broken cache index is rebuilt from the slice files.
+  `logs.db` that opens but is damaged inside (SQLite reports "database
+  disk image is malformed" on a read or a write) makes the health check
+  `logs` warn "logs.db is damaged: …": restart PiCache, which checks the
+  file (`PRAGMA quick_check`) and moves it aside when the check fails.
+  A `logs.db` PiCache may not write (owned by root after a copy without
+  `chown`, a read-only disk) is kept as it is: logging is off and the
+  health check names the owner; `chown` it (as for `picache.db`) and
+  restart. A broken cache index is rebuilt from the slice files.
 - `keys/master.key` encrypts the stored secrets: NAS passwords, TOTP
   secrets, notification tokens, the sync token, the outbound proxy's
   password and the browsers' device cookies. Backups never contain it.
+  When it is missing at a start, PiCache creates a new key; if the
+  configuration holds secrets sealed with the old one, it logs an error
+  and the health check `master-key` warns until they are entered again or
+  deleted (or put the old key back with PiCache stopped). The check tries
+  to decrypt every stored secret, so saving a notification channel or a
+  NAS target without entering its secret again does not end the warning.
+  Two-factor sign-in of an account then fails: `sudo picache
+  reset-password <user>`.
 - `tls/` holds PiCache's local CA (`ca.key`, `ca.crt`) and an uploaded
   certificate. Backups never contain it either. Without it PiCache creates
   a new CA at its next start.
@@ -2316,8 +2365,17 @@ sudo sh -e -c '
 
 - `picache db check` reads `picache.db` read-only and may run while PiCache
   runs. It prints the first 100 lines of SQLite's integrity check and of the
-  foreign key check and compares the schema versions with the program. Exit
-  code `0` no problems, `3` problems found, `1` error, `2` usage.
+  foreign key check, compares the schema versions with the program and
+  decodes the settings document as the service does. Exit code `0` no
+  problems, `3` problems found, `1` error, `2` usage.
+- **Damaged settings.** A settings document that cannot be decoded (a bit
+  flip inside the row, which SQLite's integrity check does not see) stops
+  the start: "settings: decode stored document: …; the stored settings are
+  damaged: restore a backup …", and `picache db check` reports it under
+  `settings`. Salvage cannot repair it: restore a backup with `sudo picache
+  restore <backup file>` (it keeps the accounts; a copy in
+  `<data>/backups/`, pre-upgrade or scheduled, works too), then start
+  PiCache.
 - `picache db salvage --out <file>` refuses while PiCache answers on this
   machine (the checks of `picache healthcheck`; `--force` skips this) and when
   the database was written by another PiCache version ("salvage with the
@@ -2326,20 +2384,36 @@ sudo sh -e -c '
   directory), builds this version's schema in it, copies every table this
   version knows column by column (rows that cannot be read are skipped and
   counted), leaves out unknown tables, triggers and views, and checks the new
-  file. It prints what was copied and lost per table. Exit code `0` every row
-  copied, `3` rows lost or skipped, `1` error, `2` usage.
+  file. It prints what was copied and lost per table (`?` for a table that
+  cannot be read at all, whose number of lost rows is unknown). Exit code
+  `0` every row copied, `3` rows lost or skipped, `1` error, `2` usage.
 - The new file holds the accounts with their password hashes, TOTP secrets,
   sealed secrets and API token hashes: keep it private. If accounts were
   lost, run `sudo picache reset-password --admin` after the start.
-- Docker: check while it runs with
-  `docker exec -u 65532:65532 <container> /picache db check`; salvage with
-  the container stopped:
+- Docker: a damaged `picache.db` keeps the container restarting, and
+  `docker exec` cannot run in it then. Stop it and check with a one-off
+  container of the image:
+  `docker stop <container>`, then
+  `docker run --rm --user 65532:65532 -v <data volume>:/data --entrypoint /picache <image> db check`
+  (`docker exec -u 65532:65532 <container> /picache db check` only checks a
+  running instance). Salvage the same way, with the container stopped:
   `docker run --rm --user 65532:65532 -v <data volume>:/data --entrypoint /picache <image> db salvage --out /data/picache.db.salvaged`,
   then move the files in the volume as above (the same block in
   `docker run --rm -v <data volume>:/data alpine sh -e -c '…'` with
   `d=/data` and without the `systemctl` line) and start the container.
 - A backup (**System → Backup & restore**, scheduled backups) is the better
   way back when a recent one exists.
+- **A missing or empty `picache.db`** (a file restore that failed on a full
+  disk, a file system check, a mistake) in the data directory of an
+  existing installation (its `instance-id` exists) stops the start: "…
+  picache.db is missing (or empty), but … belongs to an existing
+  installation …". Before, PiCache silently started a new installation
+  with the default filtering and offered first-run setup. Put a copy back
+  as `picache.db` with PiCache stopped, as for a restore from files above:
+  a pre-upgrade copy from `<data>/backups/` (a full copy with the accounts)
+  or a scheduled or downloaded backup (without accounts: set up an account
+  again, then restore it in the web UI if you like). To start a new
+  installation on purpose, delete `<data>/instance-id` too.
 
 **Moving to a new machine:** install PiCache there, stop it, copy
 `picache.db`, `keys/master.key` and `tls/` into the data directory with the
@@ -2349,7 +2423,15 @@ complete setup on the new machine and restore a downloaded backup in the
 UI: the account created there stays. Then also stop PiCache, copy
 `keys/master.key` and `tls/` from the old machine and start it again, or
 enter the secrets again and let your devices trust the new CA. The cache
-can be copied too, or it simply fills again.
+can be copied too, or it simply fills again: a restore keeps the new
+machine's own local cache store (the backup names the old machine's), and
+a start adopts the store in the new machine's cache directory when the
+copied `picache.db` names a store that was never used there while the
+directory's own store was (a copy into an installation that ran once).
+If **Cache → Storage** still shows the local disk offline ("a different
+cache store … was found" or "the store marker … is missing", for example
+after a copy into a cache directory PiCache never used), initialise the
+local disk there, or adopt the store you copied.
 A NAS store is adopted by initialising the target with *adopt* in
 **Cache → Storage**.
 
@@ -2370,6 +2452,24 @@ the raw data (query log, cache requests, sessions) and the statistics
 separately. *Ignored domains* are answered and filtered as usual but never
 logged or counted (for noisy names such as a time server; unlike *dropped
 domains*, which get no answer at all).
+
+**Retention and a wrong clock.** The query log, the cache events, the
+download sessions and the statistics are deleted once they are older than
+their retention, measured by the host clock. So that a clock set far ahead
+(by hand, or a VM whose clock jumps) cannot delete them all at once, the
+retention waits after evidence of a clock problem: the clock jumped by more
+than an hour (ahead or back) while PiCache ran (a VM whose clock catches up
+after it was paused for longer, for example while the host slept, counts
+too), or the log was last written more than an hour after the time PiCache
+starts with. It waits until the host reports its clock as synchronised, or
+at most a day after the latest jump; the log says "log retention waits …"
+with the reason, and "log retention applies again". The size limit still
+applies meanwhile. A clock
+that is only reported as not synchronised (a host without an NTP client,
+Docker Desktop's VM) holds nothing: rows older than the retention are
+deleted as usual. A clock that is already wrong when PiCache starts, with
+nothing logged after that time, cannot be told from a right one: keep the
+host's time synchronised.
 
 **Fewer writes on SD cards:** *Write interval* (`logs.flushSeconds`, 5 to
 300 seconds, default 5) sets how often PiCache writes the query log and the
@@ -2937,7 +3037,15 @@ the version that can open them. A version before 1.0.0 still copies such a
 database under the newer version's name, keeps only the newest three
 copies (it may delete the one you need) and records its own version before
 it fails: put the copy back before you start it ([Going back to an earlier
-version](#going-back-to-an-earlier-version)). The
+version](#going-back-to-an-earlier-version)). If that happened, the newer
+version's next start names its copy after the version whose schema the
+database has, not after the older version that recorded itself; when that
+is its own version and the older version already made such a copy, it
+makes none (another one would only use up one of the three places the
+older version keeps). Its pruning keeps the newest copy of every schema
+beyond the newest three, but the older version prunes by its own rule
+before it fails: copy the file you need out of `backups/` before going
+back. The
 rollback of a failed update restores the first copy of that run, only when
 the service could be stopped and the copy fits into the free space. The version
 comes from the build: releases report their tag, `make` reports
@@ -3009,9 +3117,34 @@ newer configuration schema: update this follower"); a 0.17 follower of a
 to 0.17.0 needs no database copy) and no change of the units. What
 changes:
 
-- `install.sh` and `get-picache.sh` refuse to install a release older
-  than the installed one; `PICACHE_ALLOW_DOWNGRADE=1` allows it ([Going
-  back to an earlier version](#going-back-to-an-earlier-version)).
+- `install.sh`, `get-picache.sh` and the Debian package refuse to install
+  a release older than the installed one; `PICACHE_ALLOW_DOWNGRADE=1`
+  allows it ([Going back to an earlier
+  version](#going-back-to-an-earlier-version)). The refusal needs the
+  scripts of 1.0.0: an earlier release's `get-picache.sh` or `install.sh`
+  has no check, and until 1.0.0 is the latest release
+  `releases/latest/download/get-picache.sh` is 0.17.0's. Testers of the
+  release candidates therefore use the pinned script
+  (`releases/download/v1.0.0-rc.N/get-picache.sh`), which also says
+  "nothing to do" instead of going back to 0.17.0 when it is run without
+  `--version`.
+- **Upstreams with text after `#`:** 1.0.0 reads `host#port` as the port
+  (`10.0.0.53#5353`, as other DNS filters write it); 0.17 and earlier
+  ignored everything after `#`. An upstream, fallback, local PTR upstream,
+  conditional-forwarder target or group upstream that an earlier version
+  saved with other text after `#` (a name such as
+  `tls://1.1.1.1#cloudflare-dns.com`, a port after `:` as well) keeps its
+  old meaning: PiCache uses it without that text (the log says "an upstream
+  saved by an earlier version has text after "#" …") and the next save
+  stores it so. New input with such text is refused ("write the port as
+  host:port"). To check before the update, look for `#` in the upstreams
+  under **DNS settings**, **Local DNS → Conditional forwarders** and
+  **Clients & groups**. If no configured upstream can be used at all, the
+  health check `upstreams` fails ("no usable upstream DNS server is
+  configured"). A 1.0.0 follower reads such entries in the configuration
+  of a 0.17 or 0.16 primary the same way (the log says "the primary sent
+  an upstream with text after "#" …"), so followers can still be upgraded
+  before their primary; fix the entries on the primary.
 - `/metrics` accepts an API token of scope read: give Prometheus a read
   token instead of an admin token ([GUIDES.md](GUIDES.md#home-assistant)).
 - The web listeners accept at most 64 connections per client address (256
@@ -3024,6 +3157,12 @@ changes:
   *Advanced View* at the top right: the basic view does not show the
   field), or PiCache stays stopped after **System → Restart**, a restore or
   switching the DHCP server on, and the network has no DNS.
+- **Docker without host networking and the NAS templates** set a fixed
+  host name (`hostname: picache`; Unraid `--hostname=picache` in *Extra
+  Parameters*): add it to your own compose file or container. PiCache no
+  longer names a container-ID host name in its local CA; if the `tls`
+  health check warned after an update that the local CA does not cover
+  such a name, no new CA is needed.
 
 ### Going back to an earlier version
 
@@ -3051,8 +3190,14 @@ Debian package, install the older package with
 switching to `install.sh`: `sudo apt remove picache`, then the installer of
 that release).
 
-`install.sh` and `get-picache.sh` refuse a release older than the
-installed one and name the copy to restore. Read the upgrade notes above of
+The `install.sh` and `get-picache.sh` of 1.0.0 and later refuse a release
+older than the installed one and name the copy to restore. The scripts of
+an earlier release have no such check: the older release's own
+`deploy/install.sh`, and the `get-picache.sh` that `releases/latest`
+serves while an earlier release is the latest one, install it at once. So
+go back with the **installed** release's `get-picache.sh`
+(`https://github.com/Hustenreizjuengling/PiCache/releases/download/<installed version>/get-picache.sh`)
+and `--version`: it checks first, then runs the older release's installer. Read the upgrade notes above of
 the versions you go back across first: when they say that the older
 version opens the database (1.0.0 → 0.17.0, 0.16.0 → 0.15.0), install it
 with `PICACHE_ALLOW_DOWNGRADE=1` and keep the database with the changes
@@ -3060,25 +3205,48 @@ made since the upgrade. Otherwise put the copy named after the older
 version back **before** it starts: a version before 1.0.0 started on the
 newer database copies it, keeps only the newest three copies (it may
 delete the one you need) and records its own version before it fails, and
-the network has no DNS until the copy is back. So stop PiCache, restore the
-copy, then install:
+the network has no DNS until the copy is back.
+
+**First copy the pre-upgrade file out of `backups/`** (to `/root`, or off
+the machine): every start of a version before 1.0.0 on the newer database
+adds a copy and prunes `backups/` to the newest three, so after two such
+starts by mistake (the older release's own installer run twice, an older
+image started twice) the one copy it can open is gone, and no newer
+version can prevent that pruning. (1.0.0 and later at least add no copy
+of their own after such a start when the older version already copied the
+same database under their name.) Then stop PiCache, restore the copy, and
+install:
 
 ```sh
-sudo systemctl stop picache
 sudo ls /var/lib/picache/backups/          # picache-<version>-<timestamp>.db
+sudo cp -p /var/lib/picache/backups/picache-v0.16.1-20260925T101500.db /root/
+sudo systemctl stop picache
 sudo install -m 0600 -o picache -g picache \
-  /var/lib/picache/backups/picache-v0.16.1-20260925T101500.db /var/lib/picache/picache.db
+  /root/picache-v0.16.1-20260925T101500.db /var/lib/picache/picache.db
 sudo rm -f /var/lib/picache/picache.db-wal /var/lib/picache/picache.db-shm
-sudo PICACHE_ALLOW_DOWNGRADE=1 sh deploy/install.sh --binary ./picache-linux-amd64   # of v0.16.1
+# the script of the installed release (here v1.0.0), then the older release:
+curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/download/v1.0.0/get-picache.sh | sudo PICACHE_ALLOW_DOWNGRADE=1 sh -s -- --version v0.16.1
 ```
 
-With `get-picache.sh` the last line is
-`curl -fsSL <url> | sudo PICACHE_ALLOW_DOWNGRADE=1 sh -s -- --version v0.16.1`,
+Without network access the last line is
+`sudo PICACHE_ALLOW_DOWNGRADE=1 sh deploy/install.sh --binary ./picache-linux-amd64`
+with `deploy/` and the binary of v0.16.1 (its `install.sh` has no check:
+run it only once the copy is back),
 with the Debian package
 `sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_0.16.1_<arch>.deb`; it
 starts the older version on its own database. Give the installer the
 options of the installation again: a run without `--without-updater`
 installs the update helper again.
+
+Installing an older Debian package without `PICACHE_ALLOW_DOWNGRADE=1`
+prints two refusals, and the package stays as it is. First the installed
+package's prerm gives the order above ("… first stop PiCache … then run:
+sudo PICACHE_ALLOW_DOWNGRADE=1 apt install …"). dpkg does not stop there:
+it reports that the old pre-removal script failed, tries the older
+package's scripts instead ("it looks like that went OK") and then shows
+the older package's own refusal. A package before 1.0.0 words it as
+"Restore the copy … or run: sudo PICACHE_ALLOW_DOWNGRADE=1 apt install …":
+that "or" is not an alternative; follow the order above.
 
 After a successful update **in the web UI or with `sudo picache update`**,
 the previous program stays in `/usr/local/bin/picache.prev` (and the
@@ -3196,6 +3364,12 @@ sudo mount /srv/picache/ssd && sudo chown picache:picache /srv/picache/ssd
 - Use a power supply that can also feed the SSD.
 - If the databases stay on the SD card, a longer *Write interval* under
   **System → Logs & privacy** saves writes ([Logs and privacy](#logs-and-privacy)).
+  As a guide: with the query log on, a home network with about 20 queries
+  per second made PiCache write roughly 5 GiB a day to the data disk at the
+  default interval of 5 s, and about 2 GiB a day at 60 s (measured for
+  1.0.0; SQLite writes whole pages and its journal, so this is well above
+  the size of the stored rows). Switching the query log off or shortening
+  its retention lowers it further.
 - The Pi has no battery-backed clock. While its clock is still before the
   binary's build date (after a boot, until NTP has set the time), PiCache
   uses plain DNS to its bootstrap servers instead of DoH/DoT (health warning).
@@ -3396,7 +3570,7 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_DESTRUCTIVE_API` | `on` | `off`: restores, resets, purges and other bulk deletions are refused through the API, for sessions and tokens. |
 | `PICACHE_WEB_SECURE_COOKIES` | `false` | Not needed when the proxy is in the trusted proxies ([Behind a reverse proxy](#behind-a-reverse-proxy)). Set to `true` when a TLS-terminating reverse proxy that is not trusted forwards to the plain-HTTP listener: the session and device cookies then get the `Secure` flag although the request reaches PiCache over HTTP. Requests on PiCache's own HTTPS listener always get `Secure` cookies named `__Host-picache_session` and `__Host-picache_device`. With this set, signing in directly over plain HTTP no longer works (browsers drop `Secure` cookies there). |
 | `PICACHE_DHCP` | – | Unset: the DHCP server is switched on under DNS → DHCP ([DHCP server](#dhcp-server)); PiCache holds no DHCP port while it is off. `off` (`no`, `0`, `false`): prevents it; the server cannot be switched on (for hosts that run another DHCP server; `install.sh --without-dhcp` sets it). `on` (`yes`, `1`, `true`) is the opt-in of versions before 0.8.0: still accepted (every DHCP socket opens at start and PiCache closes what the settings do not need), and removed by the installer. Anything else: PiCache refuses to start. |
-| `PICACHE_RUN_AS` | – · `65532:65532` | Numeric non-root `uid:gid`. When PiCache starts as root it binds the listeners and then switches to this user before touching files. Linux only. Not needed with the systemd unit. |
+| `PICACHE_RUN_AS` | – · `65532:65532` | Numeric non-root `uid:gid`. When PiCache starts as root it binds the listeners and then switches to this user before touching files. Linux only. Not needed with the systemd unit. Started as root in a Docker or Podman container, `picache serve` refuses an empty value. |
 | `PICACHE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `PICACHE_LOG_FORMAT` | `text` | `text` or `json` (logs go to stderr / the journal; also the format of `PICACHE_LOG_FILE`). |
 | `PICACHE_LOG_FILE` | – | Also write the log to this file: a `<name>.log` file below `/var/log/picache`, directly in the data directory or below its `logs/`; rotated at 10 MiB, 5 compressed generations ([Log file and syslog](#log-file-and-syslog)). |
@@ -3453,7 +3627,7 @@ flag or a `PICACHE_*_LISTEN` variable wins over them.
 | `picache config get [section]` / `config set <section> <file\|->` / `config apply <file\|->` `[--dry-run]` | Print, change one section of, or apply the settings as JSON ([Command line and automation](#command-line-and-automation)). Read token for `get`, admin token otherwise. |
 | `picache restore <file> [--sections a,b] [--force]` | Stage a backup (or selected sections of it) for the next start ([From the host](#from-the-host-picache-restore)). Root or the service user. |
 | `picache listeners --reset` | Forget the listeners saved in the web UI; the next start uses the `PICACHE_*_LISTEN` variables and the defaults ([Listeners](#saved-listeners)). Root or the service user. |
-| `picache db check` | Check `picache.db` read-only (also while PiCache runs): integrity, foreign keys, schema versions. Exit code `3` when problems are found ([Recovering a damaged picache.db](#recovering-a-damaged-picachedb)). Root or the service user. |
+| `picache db check` | Check `picache.db` read-only (also while PiCache runs): integrity, foreign keys, schema versions, the settings document. Exit code `3` when problems are found ([Recovering a damaged picache.db](#recovering-a-damaged-picachedb)). Root or the service user. |
 | `picache db salvage --out FILE [--force]` | Copy every readable row of a damaged `picache.db` into the new file `FILE` (PiCache stopped; the source is never modified). Exit code `3` when rows were lost or skipped. Root or the service user. |
 | `picache help` | Print the usage. |
 
@@ -3476,7 +3650,8 @@ restart requested from the web UI (systemd and Docker restart the process).
   `cache-store` (download cache), `tls` (the HTTPS certificate, see [HTTPS
   certificates](#https-certificates)), `encrypted-dns`, `dhcp` (see [DHCP
   server](#dhcp-server) for its troubleshooting), `logging` (log file or
-  syslog), `ntp` and `sync`.
+  syslog), `ntp`, `sync` and `master-key` (stored secrets sealed with a
+  master key that was replaced).
 - **Locked out of the web UI** ("PiCache does not allow the web UI from
   <address>", or HTTPS no longer works after requiring TLS 1.3 or a broken
   upload): run `sudo picache web-access --reset` on the PiCache host
@@ -3512,14 +3687,21 @@ restart requested from the web UI (systemd and Docker restart the process).
   failing SD card often does: check `dmesg` and replace the card (restore
   a backup onto the new one).
 - **"the data disk is full"** (503 when saving a setting): DNS keeps
-  answering, but no setting can be saved; free space on the data disk
+  answering, and a signed-in browser and API tokens keep reading (the
+  health page, the statistics, monitoring), but no setting can be saved.
+  Signing in needs a little free space too (it writes the new session), so
+  keep the browser session you have. Free space on the data disk
   (**System → Health & about** shows it; an old `logs.db.broken-*` file and
   old copies in `<data>/backups/` can go).
 - **`bind … permission denied`:** PiCache was started without
   `CAP_NET_BIND_SERVICE`. Use the systemd unit or the compose file from
   `deploy/`.
-- **`… is owned by … but PiCache runs as …` (Docker):** a bind-mounted
-  directory has the wrong owner; `chown -R 65532:65532` it on the host.
+- **`… is owned by … but PiCache runs as …` (Docker):** a data or cache
+  directory has the wrong owner. A bind mount: `chown -R 65532:65532` it on
+  the host. A named volume (it became root-owned, e.g. after copying files
+  into it as root): `docker run --rm -v <volume>:/data alpine chown -R
+  65532:65532 /data` with the container stopped (`/cache` for the cache
+  volume).
 - **`status=226/NAMESPACE` (LXC):** enable the container's nesting feature.
 - **NAS mount (host-apply) fails or stays queued:** the UI shows the mount
   program's message; see [Host-apply](#host-apply-root-helper) for the

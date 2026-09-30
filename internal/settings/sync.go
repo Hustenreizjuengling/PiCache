@@ -405,11 +405,15 @@ func pruneSyncable(path string, v jsontext.Value) (jsontext.Value, bool) {
 // sections with those of raw ({"dns":{…}, "filter":{…}}, as
 // SyncableSettings builds it); the other members stay a's. A member that
 // is not syncable or unknown to this version is an error (a newer
-// primary), as is an unknown section.
-func ApplySyncable(a *All, raw jsontext.Value) error {
+// primary), as is an unknown section. The synced upstreams, fallbacks and
+// local PTR upstreams are read like stored ones (legacyUpstreams): a
+// primary before 1.0.0 exports entries with text after "#" that this
+// version refuses, and they keep that version's meaning instead of failing
+// the sync. legacy returns those entries (sent, used) for the log.
+func ApplySyncable(a *All, raw jsontext.Value) (legacy [][2]string, err error) {
 	var in map[string]map[string]jsontext.Value
 	if err := json.Unmarshal(raw, &in, json.RejectUnknownMembers(true)); err != nil {
-		return fmt.Errorf("dns-settings: %w", err)
+		return nil, fmt.Errorf("dns-settings: %w", err)
 	}
 	for name, members := range in {
 		var dst any
@@ -419,32 +423,35 @@ func ApplySyncable(a *All, raw jsontext.Value) error {
 		case "filter":
 			dst = &a.Filter
 		default:
-			return fmt.Errorf("dns-settings: unknown section %q", name)
+			return nil, fmt.Errorf("dns-settings: unknown section %q", name)
 		}
 		cur, err := json.Marshal(dst)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		var curMembers map[string]jsontext.Value
 		if err := json.Unmarshal(cur, &curMembers); err != nil {
-			return err
+			return nil, err
 		}
 		for k, v := range members {
 			merged, err := overlaySyncable(name+"."+k, curMembers[k], v)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			curMembers[k] = merged
 		}
 		b, err := json.Marshal(curMembers)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := json.Unmarshal(b, dst, json.RejectUnknownMembers(true)); err != nil {
-			return fmt.Errorf("dns-settings: %s: %w", name, err)
+			return nil, fmt.Errorf("dns-settings: %s: %w", name, err)
+		}
+		if name == "dns" {
+			legacy = a.DNS.legacyUpstreams()
 		}
 	}
-	return nil
+	return legacy, nil
 }
 
 // overlaySyncable merges the synced value v of the member at path over

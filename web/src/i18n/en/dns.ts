@@ -178,6 +178,8 @@ export default {
   'queryLog.emptyText': 'Point a device’s DNS at PiCache and its queries show up here. Queries of clients set to "Don’t log" are not stored.',
   'queryLog.emptyFiltered': 'No queries match these filters',
   'queryLog.emptyFilteredText': 'Widen the time range or clear the filters.',
+  'queryLog.partial':
+    'This search stopped early to stay fast, so older entries may match too: the next page searches further back.',
   'queryLog.filter.range': 'Time range of the query log',
   'queryLog.filter.domainPlaceholder': 'Part of a domain',
   'queryLog.filter.domainTitle': 'Part of a domain name, or the full name in double quotes for an exact match, e.g. "example.com"',

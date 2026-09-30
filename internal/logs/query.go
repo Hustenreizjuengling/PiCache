@@ -47,13 +47,21 @@ func (s *Store) acquire(ctx context.Context) (context.Context, func(), error) {
 		cancel()
 		return nil, nil, queryErr(ctx, ctx.Err())
 	}
-	return ctx, func() { <-s.sem; cancel() }, nil
+	// queryErr reports damage of the file to the store (noteDamage).
+	return context.WithValue(ctx, readerStore{}, s), func() { <-s.sem; cancel() }, nil
 }
 
-// queryErr turns a timeout into a user-facing error.
+// readerStore is the context key of the store of a read (acquire).
+type readerStore struct{}
+
+// queryErr turns a timeout into a user-facing error; an error of a read of
+// acquire tells its store when the file is damaged.
 func queryErr(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
+	}
+	if s, ok := ctx.Value(readerStore{}).(*Store); ok {
+		s.noteDamage(err)
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return apperr.Wrap(apperr.KindUnavailable, err, "the log query took longer than %s; narrow the time range or the filters", queryTimeout)
@@ -61,10 +69,13 @@ func queryErr(ctx context.Context, err error) error {
 	return err
 }
 
-// where collects SQL conditions and their arguments.
+// where collects SQL conditions and their arguments. from and top are the
+// ts range of a query-log read (queryWhere, cursorFilter): ts >= from and
+// ts <= top.
 type where struct {
-	conds []string
-	args  []any
+	conds     []string
+	args      []any
+	from, top int64
 }
 
 func (w *where) add(cond string, args ...any) {
@@ -189,6 +200,9 @@ func cursorFilter(w *where, cursor string) error {
 		return err
 	}
 	w.add("(ts < ? OR (ts = ? AND id < ?))", ts, ts, id)
+	if ts < w.top || w.top == 0 {
+		w.top = ts
+	}
 	return nil
 }
 
@@ -312,6 +326,7 @@ func queryWhere(f *QueryFilter) (where, error) {
 	if err := timeRange(&w, "ts", from, to); err != nil {
 		return w, err
 	}
+	w.from, w.top = from.UnixMilli(), to.UnixMilli()-1
 	if err := clientFilter(&w, "client_ip", "client_name", f.Clients...); err != nil {
 		return w, err
 	}
@@ -445,7 +460,8 @@ func scanQuery(r *sql.Rows) (QueryEvent, int64, int64, error) {
 	return e, e.ID, ts, err
 }
 
-// QueryLog returns a page of query events.
+// QueryLog returns a page of query events (queryPage: a page may end
+// early with Partial and a cursor at the scan position).
 func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) {
 	w, err := queryWhere(&f)
 	if err != nil {
@@ -454,67 +470,138 @@ func (s *Store) QueryLog(ctx context.Context, f QueryFilter) (QueryPage, error) 
 	if err := cursorFilter(&w, f.Cursor); err != nil {
 		return QueryPage{}, err
 	}
-	return cursorPage(ctx, s, `SELECT `+queryColumns+` FROM logs_queries`, &w, listing.Clamp(f.Limit, 100, 1000), scanQuery)
+	s.hideCleared(&w)
+	return s.queryPage(ctx, &w, listing.Clamp(f.Limit, 100, 1000))
 }
 
 // ExportChunk is the size of the chunks ExportQueries reads.
 const ExportChunk = 5000
 
 // ExportQueries reads the query log of f (Cursor and Limit are ignored)
-// newest first in keyset chunks of at most ExportChunk rows: every chunk is
-// its own bounded read (a query slot with the normal timeout), so no read
-// transaction spans chunks. fn receives each chunk and returns false to
-// stop; ExportQueries returns when the rows are exhausted, fn stops or an
-// error occurs.
+// newest first in chunks of at most ExportChunk rows: every chunk is its
+// own bounded read (queryPage: a query slot with the normal timeout), so
+// no read transaction spans chunks, and a chunk whose filters matched
+// nothing within its budget moves on instead of failing. fn receives each
+// non-empty chunk and returns false to stop; ExportQueries returns when
+// the rows are exhausted, fn stops or an error occurs.
 func (s *Store) ExportQueries(ctx context.Context, f QueryFilter, fn func([]QueryEvent) (bool, error)) error {
 	base, err := queryWhere(&f)
 	if err != nil {
 		return err
 	}
-	var lastTS, lastID int64
-	for first := true; ; first = false {
-		w := where{conds: slices.Clone(base.conds), args: slices.Clone(base.args)}
-		if !first {
-			w.add("(ts, id) < (?, ?)", lastTS, lastID)
+	s.hideCleared(&base)
+	cursor := ""
+	for {
+		w := where{conds: slices.Clone(base.conds), args: slices.Clone(base.args), from: base.from, top: base.top}
+		if err := cursorFilter(&w, cursor); err != nil {
+			return err
 		}
-		chunk, err := s.exportChunk(ctx, &w)
+		page, err := s.queryPage(ctx, &w, ExportChunk)
 		if err != nil {
 			return err
 		}
-		if len(chunk) == 0 {
+		if len(page.Items) > 0 {
+			more, err := fn(page.Items)
+			if err != nil || !more {
+				return err
+			}
+		}
+		if page.Next == "" {
 			return nil
 		}
-		last := chunk[len(chunk)-1]
-		lastTS, lastID = last.Time.UnixMilli(), last.ID
-		more, err := fn(chunk)
-		if err != nil || !more || len(chunk) < ExportChunk {
-			return err
-		}
+		cursor = page.Next
 	}
 }
 
-// exportChunk reads one chunk of ExportQueries.
-func (s *Store) exportChunk(ctx context.Context, w *where) ([]QueryEvent, error) {
+// Windows of a query-log read (queryPage). A search whose filters match
+// few rows (a domain that does not occur, a rare type or response code)
+// walked the whole time range in one read and failed after the query
+// timeout on a large log. The rows are read in windows of queryScanRows
+// entries of the ts index (the bound is found with an OFFSET on the index
+// alone); no window starts after queryScanBudget, and the page then ends
+// with the rows found so far, a cursor at the scan position and Partial.
+var (
+	queryScanRows   = 200_000
+	queryScanBudget = 4 * time.Second
+)
+
+// queryPage reads at most limit rows of logs_queries matching w (with its
+// ts range from..top), newest first, window by window. A window whose read
+// fails after an earlier one completed ends the page there (Partial); a
+// failure of the first window is the error (a timeout: 503).
+func (s *Store) queryPage(ctx context.Context, w *where, limit int) (QueryPage, error) {
+	page := QueryPage{Items: []QueryEvent{}, Total: -1}
 	ctx, release, err := s.acquire(ctx)
+	if err != nil {
+		return page, err
+	}
+	defer release()
+	start := time.Now()
+	top, hi := w.top, int64(-1) // hi: the exclusive upper ts bound of the next window (none for the first)
+	partial := func() (QueryPage, error) {
+		page.Next, page.Partial = encodeCursor(hi, 1), true // continue below hi (ids start at 1)
+		return page, nil
+	}
+	for window := 0; ; window++ {
+		if window > 0 && time.Since(start) >= queryScanBudget {
+			return partial()
+		}
+		lo, last := w.from, true
+		var t int64
+		switch err := s.d.R.QueryRowContext(ctx, `SELECT ts FROM logs_queries WHERE ts <= ? AND ts >= ?
+			ORDER BY ts DESC LIMIT 1 OFFSET ?`, top, w.from, queryScanRows).Scan(&t); {
+		case err == nil:
+			lo, last = t, false
+		case errors.Is(err, sql.ErrNoRows):
+		case window > 0:
+			return partial()
+		default:
+			return page, queryErr(ctx, err)
+		}
+		ww := where{conds: slices.Clone(w.conds), args: slices.Clone(w.args)}
+		ww.add("ts >= ?", lo)
+		if hi >= 0 {
+			ww.add("ts < ?", hi)
+		}
+		items, err := s.readWindow(ctx, &ww, limit-len(page.Items)+1)
+		if err != nil {
+			if window > 0 {
+				return partial()
+			}
+			return page, queryErr(ctx, err)
+		}
+		for _, e := range items {
+			if len(page.Items) == limit {
+				prev := page.Items[len(page.Items)-1]
+				page.Next = encodeCursor(prev.Time.UnixMilli(), prev.ID)
+				return page, nil
+			}
+			page.Items = append(page.Items, e)
+		}
+		if last {
+			return page, nil
+		}
+		hi, top = lo, lo-1
+	}
+}
+
+// readWindow reads at most n rows of one window of queryPage.
+func (s *Store) readWindow(ctx context.Context, w *where, n int) ([]QueryEvent, error) {
+	rows, err := s.d.R.QueryContext(ctx, `SELECT `+queryColumns+` FROM logs_queries`+w.sql()+
+		` ORDER BY ts DESC, id DESC LIMIT ?`, append(w.args, n)...)
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-	rows, err := s.d.R.QueryContext(ctx, `SELECT `+queryColumns+` FROM logs_queries`+w.sql()+
-		` ORDER BY ts DESC, id DESC LIMIT ?`, append(w.args, ExportChunk)...)
-	if err != nil {
-		return nil, queryErr(ctx, err)
-	}
 	defer rows.Close()
-	out := make([]QueryEvent, 0, 256)
+	var items []QueryEvent
 	for rows.Next() {
 		e, _, _, err := scanQuery(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, e)
+		items = append(items, e)
 	}
-	return out, queryErr(ctx, rows.Err())
+	return items, rows.Err()
 }
 
 func anySlice(ss []string) []any {

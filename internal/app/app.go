@@ -303,6 +303,9 @@ func (a *App) build(ctx context.Context) (err error) {
 	a.storeMu.Lock()
 	a.storeClosed = false // Run builds again after a failed restore (closeState ran)
 	a.storeMu.Unlock()
+	if err := checkExistingInstallation(a.paths.ConfigDB, a.cfg.DataDir); err != nil {
+		return err
+	}
 	if a.cdb, err = db.Open(a.paths.ConfigDB, 4); err != nil {
 		return err
 	}
@@ -329,6 +332,9 @@ func (a *App) build(ctx context.Context) (err error) {
 	if a.box, err = secrets.Open(a.paths.MasterKeyFile); err != nil {
 		return err
 	}
+	if a.box.Created {
+		a.checkReplacedKey(ctx)
+	}
 	// The sync token and the proxy password are sealed with the master
 	// key (settings_secrets).
 	a.set.SetSealer(a.box.Seal, a.box.Open)
@@ -346,6 +352,8 @@ func (a *App) build(ctx context.Context) (err error) {
 	a.webTLS = newWebTLS(a.cfg.DataDir, a.cfg.WebTLSCertFile, a.cfg.WebTLSKeyFile, a.ln.tlsBound(), a.cfg.WebHosts,
 		a.instanceID, a.set, func() bool { return a.dns != nil && a.dns.BridgeNetwork() }, log)
 	a.webTLS.onSwap = a.refreshEncrypted // the first snapshot is built when the listeners serve
+	// The storage (container detection) exists before the listeners serve.
+	a.webTLS.container = func() bool { return a.deployment() == dhcp.DeploymentDocker }
 	a.set.Subscribe(func(_, _ *settings.All) { a.refreshEncrypted() })
 	host, _ := os.Hostname()
 	if a.notify, err = notify.New(ctx, a.cdb, a.box,
@@ -355,6 +363,13 @@ func (a *App) build(ctx context.Context) (err error) {
 	}
 
 	a.openLogs(ctx)
+	// After a clock jump the retention waits, so a clock set far ahead
+	// cannot empty the logs; a synchronised host clock (the NTP server's
+	// reader) ends the wait.
+	a.logs.SetClockReader(func() (bool, bool) {
+		st := ntp.ReadClock()
+		return st.Synced, st.Err == nil
+	})
 
 	if a.up, err = upstream.New(a.set, log); err != nil {
 		return fmt.Errorf("upstream: %w", err)
@@ -544,6 +559,11 @@ func (a *App) build(ctx context.Context) (err error) {
 		UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
+	// Every component migrated: record the schema with this version, so
+	// the next upgrade names its copy after the version that can open it.
+	if err := recordSchema(ctx, a.cdb); err != nil {
+		log.Warn("could not record the schema versions of the configuration database", slog.Any("err", err))
+	}
 	return nil
 }
 
@@ -602,9 +622,7 @@ func (a *App) openLogs(ctx context.Context) {
 		}
 		return d, st, nil
 	}
-	d, st, err := open()
-	if err != nil {
-		a.log.Error("logs.db cannot be opened; moving it aside and starting a fresh one", slog.Any("err", err))
+	moveAside := func() {
 		ts := time.Now().UTC().Format("20060102T150405")
 		for _, sfx := range []string{"", "-wal", "-shm"} {
 			older, _ := filepath.Glob(a.paths.LogsDB + sfx + ".broken-*")
@@ -613,6 +631,33 @@ func (a *App) openLogs(ctx context.Context) {
 			}
 			_ = os.Rename(a.paths.LogsDB+sfx, a.paths.LogsDB+sfx+".broken-"+ts)
 		}
+	}
+	// A file PiCache may not write (owned by root after a copy without
+	// chown, a read-only file system) is intact: keep it and say why, as
+	// for picache.db, instead of moving it aside as broken (or opening it
+	// read-only, so that every write fails). Only a file that cannot be
+	// opened for other reasons (damaged, newer) is moved aside.
+	if hint := writableHint(a.paths.LogsDB); hint != "" {
+		a.log.Error("logging disabled: logs.db is kept as it is: " + hint)
+		a.logs = logs.Discard("logs.db cannot be written: "+hint, a.log)
+		return
+	}
+	// Damage found while PiCache ran: check the file now, move it aside
+	// when the check fails.
+	marker := logs.DamagedMarker(a.paths.LogsDB)
+	if _, err := os.Stat(marker); err == nil {
+		if res := quickCheck(ctx, a.paths.LogsDB); res != "ok" {
+			a.log.Error("logs.db is damaged; moving it aside and starting a fresh one", slog.String("check", res))
+			moveAside()
+		} else {
+			a.log.Info("logs.db was reported damaged, but its check passes; keeping it")
+		}
+		_ = os.Remove(marker)
+	}
+	d, st, err := open()
+	if err != nil {
+		a.log.Error("logs.db cannot be opened; moving it aside and starting a fresh one", slog.Any("err", err))
+		moveAside()
 		d, st, err = open()
 	}
 	if err != nil {
@@ -621,6 +666,26 @@ func (a *App) openLogs(ctx context.Context) {
 		return
 	}
 	a.ldb, a.logs = d, st
+}
+
+// logsCheckTimeout bounds the check of a logs.db that was reported damaged.
+var logsCheckTimeout = 5 * time.Minute
+
+// quickCheck returns the first line of PRAGMA quick_check of the database
+// at path ("ok" when it passes, else the problem or the error), read-only.
+func quickCheck(ctx context.Context, path string) string {
+	d, err := db.OpenReadOnly(path)
+	if err != nil {
+		return err.Error()
+	}
+	defer d.Close()
+	ctx, cancel := context.WithTimeout(ctx, logsCheckTimeout)
+	defer cancel()
+	var res string
+	if err := d.R.QueryRowContext(ctx, `PRAGMA quick_check(1)`).Scan(&res); err != nil {
+		return err.Error()
+	}
+	return res
 }
 
 // proxyStore returns the active store as the proxy interface (nil stays nil).
@@ -739,11 +804,15 @@ func (a *App) startServers(ctx context.Context, goRun func(string, func() error)
 	} {
 		bg.Go(func() { fn(ctx) })
 	}
+	// Nothing answers DNS (plain, DoT, DoH) before the cached blocklists
+	// are compiled, so they never fail open after a restart; the sockets
+	// are bound, so queries wait in them.
+	a.waitFilterReady(ctx)
 
 	aclFn := a.acl.Get
 	var dnsTCP []netListener
 	for _, ln := range a.ln.dnsTCP {
-		dnsTCP = append(dnsTCP, netutil.LimitListener(ln, aclFn, 32, 1024))
+		dnsTCP = append(dnsTCP, netutil.LimitDNSListener(ln, aclFn, 32, 1024))
 	}
 	// DoT and the dedicated DoH listeners (docs/ARCHITECTURE.md 19).
 	a.refreshEncrypted()
@@ -774,6 +843,26 @@ func (a *App) startServers(ctx context.Context, goRun func(string, func() error)
 	servers = append(servers, a.serveWeb(goRun, a.api.Handler())...)
 	a.log.Info("PiCache is running", slog.Any("listeners", a.Listeners()), slog.String("instance", a.instanceID))
 	return servers, cacheSrv
+}
+
+// filterReadyWait bounds how long the listeners wait for the first
+// compile of the cached blocklists (a very large set on a slow host).
+var filterReadyWait = 30 * time.Second
+
+// waitFilterReady waits until the filter compiled the cached copies of the
+// enabled lists, at most filterReadyWait.
+func (a *App) waitFilterReady(ctx context.Context) {
+	start := time.Now()
+	t := time.NewTimer(filterReadyWait)
+	defer t.Stop()
+	select {
+	case <-a.filter.Ready():
+		a.log.Debug("blocklists ready before the DNS listeners serve", slog.Duration("waited", time.Since(start).Round(time.Millisecond)))
+	case <-t.C:
+		a.log.Warn("the blocklists were not compiled in time; DNS answers without them until they are",
+			slog.Duration("waited", filterReadyWait))
+	case <-ctx.Done():
+	}
 }
 
 // serveWeb starts the web servers with handler on the HTTP and HTTPS web

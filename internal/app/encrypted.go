@@ -89,7 +89,7 @@ func (a *App) serveEncrypted(goRun func(string, func() error)) (dot []net.Listen
 	aclFn := a.acl.Get
 	var dotSw, dohSw []*netutil.SwitchListener
 	for _, ln := range a.ln.dot {
-		sw := netutil.NewSwitchListener(netutil.LimitListener(ln, aclFn, encPerClient, encTotal),
+		sw := netutil.NewSwitchListener(netutil.LimitDNSListener(ln, aclFn, encPerClient, encTotal),
 			func() bool { return a.set.Get().DNS.Encrypted.DoT }, encTotal)
 		dotSw = append(dotSw, sw)
 		dot = append(dot, tls.NewListener(sw, a.webTLS.tlsConfigFor("dot")))
@@ -108,7 +108,7 @@ func (a *App) serveEncrypted(goRun func(string, func() error)) (dot []net.Listen
 		}
 		servers = append(servers, srv)
 		for _, ln := range a.ln.doh {
-			sw := netutil.NewSwitchListener(netutil.LimitListener(ln, aclFn, encPerClient, encTotal),
+			sw := netutil.NewSwitchListener(netutil.LimitDNSListener(ln, aclFn, encPerClient, encTotal),
 				func() bool { return a.set.Get().DNS.Encrypted.DoH }, encTotal)
 			dohSw = append(dohSw, sw)
 			goRun("doh", func() error { return srv.ServeTLS(sw, "", "") })

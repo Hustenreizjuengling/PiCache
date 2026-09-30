@@ -158,10 +158,10 @@ func TestChannelSecret(t *testing.T) {
 	if !strings.HasPrefix(stored, "v1:") || strings.Contains(stored, "s3cr3t") {
 		t.Fatalf("stored %q", stored)
 	}
-	if pt, err := testBox(t).Open(stored, secretAAD(c.ID)); err != nil || string(pt) != secret {
+	if pt, err := testBox(t).Open(stored, SecretAAD(c.ID)); err != nil || string(pt) != secret {
 		t.Fatalf("open = %q, %v", pt, err)
 	}
-	if _, err := testBox(t).Open(stored, secretAAD(newID())); err == nil {
+	if _, err := testBox(t).Open(stored, SecretAAD(newID())); err == nil {
 		t.Fatal("the secret must be bound to its channel")
 	}
 
@@ -219,7 +219,7 @@ func TestChannelSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, ns := s.worker(n.ID).snapshot()
-	if pt, _ := testBox(t).Open(ns, secretAAD(n.ID)); string(pt) != "tk_abc" {
+	if pt, _ := testBox(t).Open(ns, SecretAAD(n.ID)); string(pt) != "tk_abc" {
 		t.Fatalf("ntfy token %q", pt)
 	}
 

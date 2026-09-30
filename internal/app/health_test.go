@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,6 +73,34 @@ func TestUpstreamHealth(t *testing.T) {
 	}
 }
 
+// No usable default upstream (every configured one was ignored, as after
+// an upgrade that refused them) is no healthy state: it fails without a
+// healthy fallback and warns with one. Before, an empty default set
+// counted as healthy while every query got SERVFAIL, so the update helper
+// kept the update. Every upstream failing on its certificate's validity
+// names the clock (a clock far ahead; one behind is the clock guard's).
+func TestUpstreamHealthNoneUsableAndClock(t *testing.T) {
+	fbUp := []upstream.UpstreamStat{{Upstream: "f", Healthy: true}}
+	if st, msg, hint := upstreamHealth(false, []upstream.UpstreamStat{}, []upstream.UpstreamStat{}, 0, nil); st != "fail" ||
+		msg != "no usable upstream DNS server is configured" || hint == "" {
+		t.Errorf("none usable: %s %q %q", st, msg, hint)
+	}
+	if st, msg, _ := upstreamHealth(false, nil, fbUp, 0, nil); st != "warn" || msg != "fallback DNS in use: no usable upstream DNS server is configured" {
+		t.Errorf("none usable, fallback: %s %q", st, msg)
+	}
+	const certErr = "tls: failed to verify certificate: x509: certificate has expired or is not yet valid: current time 2031-06-01T12:00:08Z is after 2027-01-31T23:59:59Z"
+	expired := []upstream.UpstreamStat{{Upstream: "tls://a", LastError: certErr}, {Upstream: "https://b", LastError: certErr}}
+	st, msg, hint := upstreamHealth(false, expired, []upstream.UpstreamStat{{Upstream: "f", LastError: certErr}}, 0, nil)
+	if st != "fail" || !strings.HasPrefix(msg, "no upstream DNS server is answering: the system clock (") ||
+		!strings.Contains(msg, "is outside the validity of the upstreams' certificates") || !strings.Contains(hint, "fix the host time") {
+		t.Errorf("clock ahead: %s %q %q", st, msg, hint)
+	}
+	mixed := append(slices.Clone(expired), upstream.UpstreamStat{Upstream: "9.9.9.9", LastError: "i/o timeout"})
+	if _, msg, _ := upstreamHealth(false, mixed, nil, 0, nil); msg != "no upstream DNS server is answering" {
+		t.Errorf("not only certificate errors: %q", msg)
+	}
+}
+
 func TestBlocklistsHealth(t *testing.T) {
 	for _, tc := range []struct {
 		enabled bool
@@ -104,5 +133,10 @@ func TestBlocklistsHealth(t *testing.T) {
 	}
 	if st, _, _ := blocklistsHealth(true, filter.Stats{Entries: 2_000_000}, 2_000_000); st != "ok" {
 		t.Errorf("at the budget: %s", st)
+	}
+	// A stored copy that cannot be read is named, not the network.
+	if st, _, hint := blocklistsHealth(true, filter.Stats{FailedLists: 1, CacheErrors: 1}, filter.MaxEntryBudget); st != "fail" ||
+		!strings.Contains(hint, "the stored copy of 1 list(s) cannot be read") || strings.Contains(hint, "internet connection") {
+		t.Errorf("unreadable copy: %s %q", st, hint)
 	}
 }

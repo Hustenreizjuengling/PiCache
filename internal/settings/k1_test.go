@@ -465,8 +465,8 @@ func TestSyncableSettingsRoundTrip(t *testing.T) {
 	}
 	fol := Defaults()
 	fol.DNS.ServerNames = []string{"follower"}
-	if err := ApplySyncable(&fol, raw); err != nil {
-		t.Fatal(err)
+	if legacy, err := ApplySyncable(&fol, raw); err != nil || legacy != nil {
+		t.Fatal(legacy, err)
 	}
 	if !slices.Equal(fol.DNS.Upstreams, prim.DNS.Upstreams) || fol.DNS.ECS.Mode != ECSClient || fol.Filter.BlockingMode != "nxdomain" {
 		t.Fatalf("synced members not applied: %+v", fol.DNS)
@@ -481,9 +481,41 @@ func TestSyncableSettingsRoundTrip(t *testing.T) {
 	for _, bad := range []string{`{"dns":{"allowAllNetworks":true}}`, `{"dns":{"newThing":1}}`, `{"web":{}}`,
 		`{"dns":{"encrypted":{"dot":true}}}`} {
 		f := Defaults()
-		if err := ApplySyncable(&f, jsontext.Value(bad)); err == nil {
+		if _, err := ApplySyncable(&f, jsontext.Value(bad)); err == nil {
 			t.Fatalf("%s accepted", bad)
 		}
+	}
+}
+
+// REV-3: a primary before 1.0.0 exports upstreams with text after "#" that
+// this version refuses (it ignored that text); the follower reads them with
+// that meaning, as its own stored settings, and reports each one. The
+// result validates, so the sync is not refused.
+func TestApplySyncableLegacyUpstreams(t *testing.T) {
+	raw := jsontext.Value(`{"dns":{"upstreams":["9.9.9.9#dns.quad9.net","tls://1.1.1.1#cloudflare-dns.com","9.9.9.9"],` +
+		`"fallbackUpstreams":["8.8.8.8#google"],"localPtrUpstreams":["192.168.1.1#router"]},"filter":{}}`)
+	fol := Defaults()
+	legacy, err := ApplySyncable(&fol, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fol.DNS.Upstreams, []string{"9.9.9.9", "tls://1.1.1.1"}) || !slices.Equal(fol.DNS.FallbackUpstreams, []string{"8.8.8.8"}) ||
+		!slices.Equal(fol.DNS.LocalPTRUpstreams, []string{"192.168.1.1"}) {
+		t.Fatalf("read as: %v %v %v", fol.DNS.Upstreams, fol.DNS.FallbackUpstreams, fol.DNS.LocalPTRUpstreams)
+	}
+	want := [][2]string{{"9.9.9.9#dns.quad9.net", "9.9.9.9"}, {"tls://1.1.1.1#cloudflare-dns.com", "tls://1.1.1.1"},
+		{"8.8.8.8#google", "8.8.8.8"}, {"192.168.1.1#router", "192.168.1.1"}}
+	if !slices.Equal(legacy, want) {
+		t.Fatalf("legacy %v", legacy)
+	}
+	if err := fol.Validate(); err != nil {
+		t.Fatalf("the synced settings do not validate: %v", err)
+	}
+	// A port after "#" is this version's meaning and is kept as it is.
+	fol = Defaults()
+	if legacy, err := ApplySyncable(&fol, jsontext.Value(`{"dns":{"upstreams":["10.0.0.53#5353"]}}`)); err != nil || legacy != nil ||
+		!slices.Equal(fol.DNS.Upstreams, []string{"10.0.0.53#5353"}) {
+		t.Fatalf("a port after #: %v %v %v", fol.DNS.Upstreams, legacy, err)
 	}
 }
 

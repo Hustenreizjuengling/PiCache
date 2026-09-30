@@ -180,6 +180,8 @@ const de: Messages<typeof en> = {
   'queryLog.emptyText': 'Stelle das DNS eines Geräts auf PiCache um, dann erscheinen seine Abfragen hier. Abfragen von Clients mit „Nicht protokollieren“ werden nicht gespeichert.',
   'queryLog.emptyFiltered': 'Keine Abfragen passen zu diesen Filtern',
   'queryLog.emptyFilteredText': 'Vergrößere den Zeitraum oder setze die Filter zurück.',
+  'queryLog.partial':
+    'Diese Suche hat früher angehalten, um schnell zu bleiben, deshalb können auch ältere Einträge passen: Die nächste Seite sucht weiter zurück.',
   'queryLog.filter.range': 'Zeitraum des Abfrageprotokolls',
   'queryLog.filter.domainPlaceholder': 'Teil einer Domain',
   'queryLog.filter.domainTitle': 'Teil eines Domainnamens oder der ganze Name in doppelten Anführungszeichen für eine exakte Suche, z. B. "example.com"',

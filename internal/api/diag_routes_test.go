@@ -492,6 +492,59 @@ func TestExportRoute(t *testing.T) {
 	e.srv.exporting.Store(false)
 }
 
+// closingWriter closes a database after the first write: the next chunk of
+// the export fails on the server while the client stays connected.
+type closingWriter struct {
+	*httptest.ResponseRecorder
+	close func()
+}
+
+func (w *closingWriter) Write(p []byte) (int, error) {
+	if w.close != nil {
+		w.close()
+		w.close = nil
+	}
+	return w.ResponseRecorder.Write(p)
+}
+
+// An export that fails on the server (a chunk cannot be read) is audited
+// as "error", not as "disconnected" as if the client had gone away.
+func TestExportServerErrorAudited(t *testing.T) {
+	e := newCoreEnv(t)
+	ldb, err := db.Open(filepath.Join(t.TempDir(), "logs.db"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ldb.Close()
+	st, err := logs.New(context.Background(), ldb, e.set, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.d.Logs = st
+	admin := e.provisionAndLogin(t)
+	ts := time.Now().Add(-time.Minute).UnixMilli()
+	if _, err := ldb.W.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+		INSERT INTO logs_queries (ts, client_ip, qname, qtype, status) SELECT ? - i, '10.0.0.1', 'q' || i || '.example', 'A', 'forwarded' FROM n`,
+		logs.ExportChunk+10, ts); err != nil {
+		t.Fatal(err)
+	}
+	r := coreRequest("GET", "/api/v1/logs/queries/export?format=ndjson&range=1h", "")
+	r.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: admin})
+	w := &closingWriter{ResponseRecorder: httptest.NewRecorder(), close: func() { ldb.R.Close() }}
+	func() {
+		defer func() {
+			if p := recover(); p != nil && p != http.ErrAbortHandler {
+				panic(p)
+			}
+		}()
+		e.srv.Handler().ServeHTTP(w, r)
+	}()
+	entries := e.auditEntries(t)
+	if len(entries) == 0 || entries[0].Action != "logs.export" || !strings.Contains(entries[0].Details, `"truncated":"error"`) {
+		t.Fatalf("audit %+v", entries)
+	}
+}
+
 // The time limit of the export (lowered; synctest).
 func TestExportTimeLimit(t *testing.T) {
 	dir := t.TempDir()

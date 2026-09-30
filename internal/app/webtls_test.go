@@ -750,3 +750,122 @@ func TestLocalCAEndOfLife(t *testing.T) {
 		t.Fatal("a new CA must be created in the old one's last day")
 	}
 }
+
+// In a container, Docker's default host name (the container ID) is never
+// one of PiCache's names: a recreated container (an image update) gets a
+// new ID, and the tls check warned after every update that the local CA
+// does not cover it. Outside a container such a name is kept.
+func TestLocalCAIgnoresContainerIDHostname(t *testing.T) {
+	e := newTLSEnv(t, "", "")
+	host := "03c101214b38"
+	e.m.hostname = func() (string, error) { return host, nil }
+	e.m.container = func() bool { return true }
+	e.m.start()
+	info := e.m.Status().LocalCA
+	if info == nil || slices.Contains(info.PermittedNames, host) || slices.Contains(e.served(t).chain[0].DNSNames, host) {
+		t.Fatalf("the container ID is named: %+v", info)
+	}
+	host = "fe595f89fe72" // recreated
+	e.advance(2 * time.Hour)
+	e.m.tick()
+	if status, msg, _, _ := e.m.health(e.m.now()); status != "ok" {
+		t.Fatalf("after a recreate: %s %q", status, msg)
+	}
+	e.m.container = func() bool { return false }
+	if names := e.m.identity().names; !slices.Contains(names, host) {
+		t.Fatalf("outside a container the host name is named: %v", names)
+	}
+	for hn, want := range map[string]bool{"03c101214b38": true, "03C101214B38": false, "picache": false, "03c101214b3": false,
+		"03c101214b38a": false, "03c101214b3g": false} {
+		if dockerIDHostname(hn) != want {
+			t.Errorf("dockerIDHostname(%q) = %v", hn, !want)
+		}
+	}
+}
+
+// A certificate issued while the clock was far ahead is not valid when the
+// clock is right again. It is re-issued (a CA that is not valid yet is
+// replaced too) instead of being served for years because only its
+// expiry was checked; the health check names it meanwhile.
+func TestLocalCAReissuedAfterClockAhead(t *testing.T) {
+	e := newTLSEnv(t, "", "")
+	e.m.start()
+	real := e.m.now()
+	e.advance(5 * 365 * 24 * time.Hour) // the leaf (825 days) expired: renewed with the clock ahead
+	e.m.tick()
+	ahead := e.served(t).chain[0]
+	if !ahead.NotBefore.After(real.Add(time.Hour)) {
+		t.Fatalf("test setup: the leaf starts at %v", ahead.NotBefore)
+	}
+	e.mu.Lock()
+	e.clock = real.Add(time.Hour)
+	e.mu.Unlock()
+	if status, msg, _, _ := e.m.health(e.m.now()); status != "warn" || !strings.HasPrefix(msg, "the web certificate is not valid until ") {
+		t.Fatalf("health before the next tick: %s %q", status, msg)
+	}
+	e.m.tick()
+	leaf := e.served(t).chain[0]
+	if e.m.now().Before(leaf.NotBefore) || leaf.SerialNumber.Cmp(ahead.SerialNumber) == 0 {
+		t.Fatalf("not re-issued: notBefore %v, now %v", leaf.NotBefore, e.m.now())
+	}
+	if err := verifyLeaf(leaf, e.m.ca.cert, "picache.lan"); err != nil {
+		t.Fatal(err)
+	}
+	if status, msg, _, _ := e.m.health(e.m.now()); status != "ok" {
+		t.Fatalf("health after the re-issue: %s %q", status, msg)
+	}
+
+	// Beyond the CA's end the clock ahead makes a new CA, which is not
+	// valid yet when the clock is right again: a new one again.
+	e.advance(11 * 365 * 24 * time.Hour)
+	e.m.tick()
+	future := e.m.ca.cert
+	if !future.NotBefore.After(real.Add(24 * time.Hour)) {
+		t.Fatalf("test setup: the CA starts at %v", future.NotBefore)
+	}
+	e.mu.Lock()
+	e.clock = real.Add(2 * time.Hour)
+	e.mu.Unlock()
+	e.m.tick()
+	if e.m.ca.cert.Equal(future) || e.m.now().Before(e.m.ca.cert.NotBefore) {
+		t.Fatalf("the CA that is not valid yet was kept: %v", e.m.ca.cert.NotBefore)
+	}
+	if err := verifyLeaf(e.served(t).chain[0], e.m.ca.cert, "picache.lan"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Without an address of this machine (the network is not up at the start)
+// the certificate keeps its addresses; an address that appears is added at
+// the next tick, not after the hourly limit.
+func TestLocalCAAddressesWithoutNetwork(t *testing.T) {
+	hasIP := func(leaf *x509.Certificate, ip string) bool {
+		return slices.ContainsFunc(leaf.IPAddresses, func(a net.IP) bool { return a.String() == ip })
+	}
+	e := newTLSEnv(t, "", "")
+	e.m.start()
+	if !hasIP(e.served(t).chain[0], "192.168.1.10") {
+		t.Fatal("test setup: no LAN address")
+	}
+	e.setAddrs() // the network went away (a restart without it)
+	e.advance(2 * time.Hour)
+	e.m.tick()
+	if !hasIP(e.served(t).chain[0], "192.168.1.10") {
+		t.Fatal("the LAN address was dropped while the machine had none")
+	}
+
+	// An address the CA covers that the certificate lacks (it was gone for
+	// a while) is added at the next tick.
+	e.setAddrs(hostAddr("eth0", "fd00::10/64"))
+	e.advance(2 * time.Hour)
+	e.m.tick()
+	if hasIP(e.served(t).chain[0], "192.168.1.10") {
+		t.Fatal("test setup: the address that went away is still named")
+	}
+	e.setAddrs(hostAddr("eth0", "192.168.1.10/24"), hostAddr("eth0", "fd00::10/64"))
+	e.advance(time.Minute)
+	e.m.tick()
+	if !hasIP(e.served(t).chain[0], "192.168.1.10") {
+		t.Fatal("the returning LAN address waits for the hourly limit")
+	}
+}

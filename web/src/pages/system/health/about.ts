@@ -45,6 +45,7 @@ export const CHECKS: Record<string, CheckInfo> = {
   ntp: { label: 'system.health.check.ntp', path: '/system/network', page: 'common.nav.systemNetwork', query: { section: 'ntp' } },
   sync: { label: 'system.health.check.sync', path: '/system/sync', page: 'common.nav.sync' },
   dnssec: { label: 'system.health.check.dnssec', path: '/dns/settings', page: 'common.nav.dnsSettings', query: { section: 'dnssec' } },
+  'master-key': { label: 'system.health.check.master-key' },
 }
 
 const ORDER: Record<HealthStatus, number> = { fail: 0, warn: 1, ok: 2 }

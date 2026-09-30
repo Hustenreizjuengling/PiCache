@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/dhcp"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
+	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/ntp"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
@@ -71,11 +73,18 @@ func (a *App) healthLoop(ctx context.Context) {
 // lists with entries that the TLD guard ignores warn (a list that blocks
 // whole TLDs needs the category abused-tlds).
 func blocklistsHealth(blockingEnabled bool, fs filter.Stats, budget int) (status, msg, hint string) {
+	failHint, warnHint := "check the list URLs and the internet connection", "see Filtering → Blocklists"
+	if fs.CacheErrors > 0 {
+		// The downloaded copy on disk is the problem, not the network.
+		failHint = fmt.Sprintf("the stored copy of %d list(s) cannot be read (see the error of the list under Filtering → Blocklists: "+
+			"a damaged file, or <data>/lists not owned by the PiCache user); PiCache downloads it again", fs.CacheErrors)
+		warnHint = failHint
+	}
 	switch {
 	case blockingEnabled && fs.FailedLists > 0 && fs.Entries == 0:
-		return "fail", "no blocklist could be loaded; nothing is blocked", "check the list URLs and the internet connection"
+		return "fail", "no blocklist could be loaded; nothing is blocked", failHint
 	case fs.FailedLists > 0:
-		return "warn", fmt.Sprintf("%d list(s) failed to update", fs.FailedLists), "see Filtering → Blocklists"
+		return "warn", fmt.Sprintf("%d list(s) failed to update", fs.FailedLists), warnHint
 	case fs.StaleLists > 0:
 		return "warn", fmt.Sprintf("%d list(s) not updated for a long time", fs.StaleLists), "see Filtering → Blocklists"
 	case fs.Entries > budget:
@@ -101,8 +110,11 @@ const (
 )
 
 // upstreamHealth evaluates the health check "upstreams" (first match): the
-// clock guard warns; no default upstream healthy and no healthy fallback
-// (or none configured) fails; no default upstream healthy warns; the
+// clock guard warns; no usable default upstream (none could be built from
+// the settings) and no healthy fallback fails; no default upstream healthy
+// and no healthy fallback (or none configured) fails, naming the clock when
+// every failing upstream failed on a certificate that is not valid at the
+// host's time; no usable or no healthy default upstream warns; the
 // fallbacks having answered at least fallbackWarnAnswers fetches within
 // the last 5 minutes (recentFallbacks) warns; a group set that could not
 // be built or has no healthy upstream warns (its clients get SERVFAIL:
@@ -118,12 +130,22 @@ func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, r
 		}
 		return n
 	}
-	primaryDown := len(stats) > 0 && healthy(stats) == 0
+	const noneMsg, noneHint = "no usable upstream DNS server is configured",
+		"check the upstreams under DNS settings and the warnings in the log (an upstream PiCache cannot use is ignored)"
+	none := len(stats) == 0
+	primaryDown := none || healthy(stats) == 0
 	switch {
 	case clockGuard:
 		return "warn", "system clock is not set; using unencrypted DNS to the bootstrap servers", "enable NTP (e.g. systemd-timesyncd) on the host"
+	case none && healthy(fallbacks) == 0:
+		return "fail", noneMsg, noneHint
+	case primaryDown && healthy(fallbacks) == 0 && certTimeFailures(slices.Concat(stats, fallbacks)):
+		return "fail", fmt.Sprintf("no upstream DNS server is answering: the system clock (%s) is outside the validity of the upstreams' certificates",
+			time.Now().UTC().Format(time.DateOnly)), "fix the host time (enable NTP, e.g. systemd-timesyncd)"
 	case primaryDown && healthy(fallbacks) == 0:
 		return "fail", "no upstream DNS server is answering", "check the internet connection and the upstream settings"
+	case none:
+		return "warn", "fallback DNS in use: " + noneMsg, noneHint
 	case primaryDown:
 		return "warn", "fallback DNS in use: the upstream DNS servers are not answering", "check the internet connection and the upstream settings"
 	case recentFallbacks >= fallbackWarnAnswers:
@@ -137,6 +159,50 @@ func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, r
 		}
 	}
 	return "ok", "", ""
+}
+
+// logsHealth evaluates the check "logs": logging disabled (logs.db could
+// not be opened) warns, and so do a damaged logs.db (SQLite reported it
+// while running; a restart checks the file and moves it aside) and paused
+// raw inserts; dropped events are reported as load drops and, apart, as
+// events of batches that could not be written.
+func logsHealth(m logs.Metrics) (status, msg, hint string) {
+	switch {
+	case m.Disabled != "":
+		return "warn", "logging disabled: " + m.Disabled, "check the data directory (the owner of logs.db, free space) and the log, then restart PiCache"
+	case m.Damaged != "":
+		return "warn", "logs.db is damaged: " + m.Damaged,
+			"restart PiCache: it checks logs.db and moves a damaged one aside (the query log and the statistics start over)"
+	case m.RawPaused:
+		return "warn", "raw log inserts are paused: the data disk has less than 1 GiB free", "free space on the data disk"
+	}
+	var parts []string
+	if load := m.Dropped - min(m.WriteFailed, m.Dropped); load > 0 {
+		parts = append(parts, fmt.Sprintf("%d events dropped under load", load))
+	}
+	if m.WriteFailed > 0 {
+		parts = append(parts, fmt.Sprintf("%d events could not be written (see the log)", m.WriteFailed))
+	}
+	return "ok", strings.Join(parts, "; "), ""
+}
+
+// certTimeFailures reports whether every unhealthy upstream of list (at
+// least one) last failed on a certificate that is not valid at the host's
+// time (x509: "certificate has expired or is not yet valid"): with every
+// encrypted upstream failing so, the host clock is wrong (far ahead; a
+// clock behind the build date is the clock guard's case).
+func certTimeFailures(list []upstream.UpstreamStat) bool {
+	n := 0
+	for _, s := range list {
+		if s.Healthy {
+			continue
+		}
+		if !strings.Contains(s.LastError, "certificate has expired or is not yet valid") {
+			return false
+		}
+		n++
+	}
+	return n > 0
 }
 
 // listenersHealth evaluates the check "listeners": a role of the saved
@@ -245,17 +311,8 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	}
 
 	// Logs / data disk
-	m := a.logs.Metrics()
-	switch {
-	case m.Disabled != "":
-		add("logs", "warn", "logging disabled: "+m.Disabled, "check the data directory; logs.db was moved aside")
-	case m.RawPaused:
-		add("logs", "warn", "raw log inserts are paused: the data disk has less than 1 GiB free", "free space on the data disk")
-	case m.Dropped > 0:
-		add("logs", "ok", fmt.Sprintf("%d events dropped under load", m.Dropped), "")
-	default:
-		add("logs", "ok", "", "")
-	}
+	st, msg, hint = logsHealth(a.logs.Metrics())
+	add("logs", st, msg, hint)
 	if free, ok := diskFree(a.cfg.DataDir); ok && free < 1<<30 {
 		add("data-disk", "fail", fmt.Sprintf("only %d MiB free in %s", free>>20, a.cfg.DataDir), "free space on the data disk")
 	}
@@ -264,6 +321,12 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	if a.webTLS != nil {
 		if st, msg, hint, show := a.webTLS.health(time.Now()); show {
 			add("tls", st, msg, hint)
+		}
+	}
+	// Secrets sealed with a master key that was replaced (only then)
+	if a.cdb != nil {
+		if st, msg, hint, show := a.masterKeyHealth(ctx); show {
+			add("master-key", st, msg, hint)
 		}
 	}
 

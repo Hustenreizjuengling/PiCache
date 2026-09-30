@@ -31,7 +31,7 @@ refuse_downgrade() {
 	data=$(purge_path_of PICACHE_DATA_DIR "$DEFAULT_DATA_DIR")
 	arch=${DPKG_MAINTSCRIPT_ARCH:-$(dpkg --print-architecture)}
 	file=picache_$(deb_tag "$2" | sed 's/^v//')_$arch.deb
-	die "picache $2 is older than the installed $1. $1 may have migrated the database, which $2 then refuses. Restore the copy made before that upgrade (${data:-$DEFAULT_DATA_DIR}/backups/picache-$(deb_tag "$2")-*.db, DEPLOYMENT \"Going back to an earlier version\") or run: sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./$file"
+	die "picache $2 is older than the installed $1. $1 may have migrated the database, which $2 then refuses: PiCache would not start. To go back anyway (docs/DEPLOYMENT.md \"Going back to an earlier version\"): unless the upgrade notes say that $2 opens this database, first stop PiCache (sudo systemctl stop picache) and put the copy made before the upgrade (${data:-$DEFAULT_DATA_DIR}/backups/picache-$(deb_tag "$2")-*.db) in place as picache.db, deleting picache.db-wal and picache.db-shm; then run: sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./$file"
 }
 
 case ${1:-} in

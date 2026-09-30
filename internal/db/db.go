@@ -18,8 +18,23 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite" // driver "sqlite"
+	"modernc.org/sqlite" // driver "sqlite"
 )
+
+// Corrupt reports SQLite's SQLITE_CORRUPT ("database disk image is
+// malformed") or SQLITE_NOTADB ("file is not a database"): the file is
+// damaged.
+func Corrupt(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.Code() & 0xff {
+	case 11, 26: // SQLITE_CORRUPT, SQLITE_NOTADB
+		return true
+	}
+	return false
+}
 
 // DB bundles the writer and reader pools of one SQLite file.
 //

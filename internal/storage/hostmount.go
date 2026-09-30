@@ -394,7 +394,7 @@ func (h *helper) password(ctx context.Context, t Target, stdin []byte) ([]byte, 
 				"sudo picache storage apply %s --password-stdin (%w)", t.ID, err)
 		}
 	}
-	pw, err := h.box.Open(sealed, passwordAAD(t.ID))
+	pw, err := h.box.Open(sealed, PasswordAAD(t.ID))
 	if err != nil {
 		return nil, err
 	}

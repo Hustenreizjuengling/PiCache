@@ -298,7 +298,7 @@ func (a *Service) authSession(ctx context.Context, tok string) (*Principal, erro
 	}
 	if now.Sub(db.Time(lastSeen)) >= lastSeenGranularity {
 		if _, err := a.db.W.ExecContext(ctx, `UPDATE auth_sessions SET last_seen = ? WHERE id = ?`, now.UnixMilli(), p.SessionID); err != nil {
-			return nil, err
+			a.touchFailed("session", err) // best effort (a full disk)
 		}
 	}
 	p.Scope = scopeOf(p.Role)

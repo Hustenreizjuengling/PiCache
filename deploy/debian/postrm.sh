@@ -5,7 +5,10 @@
 # it deletes, then runs install.sh's purge in its package mode (default
 # paths only, never a mount point; never asks and never fails: whatever it
 # cannot or may not delete is kept and listed) and purges the units' enable
-# state. Never prompts.
+# state. After a switch to install.sh (its binary or unit exists, the test of
+# the preinst's refusal) the purge of the removed package deletes nothing of
+# that installation and only forgets the package's unit state. Never
+# prompts.
 
 ME=picache.postrm
 BIN=/usr/bin/picache
@@ -32,7 +35,30 @@ postrm_remove() {
 	print_kept
 }
 
+# forget_units drops deb-systemd-helper's record of the package's units
+# without `deb-systemd-helper purge`, which also deletes the links it
+# recorded: install.sh's units have the same names, so after a switch those
+# links enable install.sh's PiCache.
+forget_units() {
+	state=/var/lib/systemd/deb-systemd-helper-enabled
+	for unit in $PKG_UNITS; do
+		if [ -f "$state/$unit.dsh-also" ]; then
+			while IFS= read -r link; do
+				case $link in /etc/systemd/system/?*) rm -f -- "$state/${link#/etc/systemd/system/}" ;; esac
+			done <"$state/$unit.dsh-also"
+			rm -f -- "$state/$unit.dsh-also"
+		fi
+		rm -f -- "/var/lib/systemd/deb-systemd-helper-masked/$unit"
+	done
+}
+
 postrm_purge() {
+	if [ -e /usr/local/bin/picache ] || [ -L /usr/local/bin/picache ] || [ -e /usr/local/lib/systemd/system/picache.service ]; then
+		forget_units
+		say "PiCache is installed with install.sh here: its configuration and data were kept (the purge of the"
+		say "removed package deletes nothing of that installation)."
+		return 0
+	fi
 	pkg_paths
 	say "Purging PiCache: deleting $CONF_DIR, the data, the local cache and the log files in their default"
 	say "paths ($DEFAULT_DATA_DIR, $DEFAULT_CACHE_DIR, $DEFAULT_LOG_DIR), the empty mount points below"

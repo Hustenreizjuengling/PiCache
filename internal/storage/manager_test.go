@@ -137,7 +137,7 @@ func TestCRUD(t *testing.T) {
 		if v == nil {
 			return ""
 		}
-		pw, err := box.Open(*v, passwordAAD(s.ID))
+		pw, err := box.Open(*v, PasswordAAD(s.ID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -517,5 +517,48 @@ func TestAppliedButNotMountedHint(t *testing.T) {
 	writeResult(r, testID, nil, false, componentLog(nil))
 	if res := check(t, m, testID); res.st.Hint != appliedNotMountedHint || res.st.ApplyState != applyApplied {
 		t.Fatalf("applied: %+v", res.st)
+	}
+}
+
+// A picache.db copied from another machine names that machine's store for
+// the built-in target. The start adopts the store of this machine's cache
+// directory when the named store was never opened here (no index) and the
+// directory's was; otherwise (the named store's index exists, as with a
+// disk that is not mounted yet or a store another disk holds) nothing
+// changes.
+func TestNewAdoptsLocalStoreOfAMovedDatabase(t *testing.T) {
+	const here, moved = "fedcba9876543210fedcba9876543210", "00112233445566778899aabbccddeeff"
+	for _, tc := range []struct {
+		name        string
+		indexes     []string
+		wantStoreID string
+	}{
+		{"moved here", []string{here}, here},
+		{"named store used here", []string{here, moved}, moved},
+		{"neither used here", nil, moved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			if _, err := cachestore.InitRoot(cfg.CacheDir, here, 1<<20); err != nil {
+				t.Fatal(err)
+			}
+			_, d, box := newTestManager(t, cfg)
+			if _, err := d.W.Exec(`UPDATE storage_targets SET store_id = ? WHERE id = ?`, moved, LocalTargetID); err != nil {
+				t.Fatal(err)
+			}
+			idx := mkdir(t, cfg.Paths().CacheIndexDir)
+			for _, id := range tc.indexes {
+				if err := os.WriteFile(filepath.Join(idx, id+".db"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m2, err := New(context.Background(), d, box, cfg, func() int64 { return 1 << 20 }, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if local, _ := m2.Target(context.Background(), LocalTargetID); local.StoreID != tc.wantStoreID {
+				t.Fatalf("store id %q, want %q", local.StoreID, tc.wantStoreID)
+			}
+		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -16,6 +17,24 @@ func LimitListener(ln net.Listener, acl func() *ACL, perClient, total int) net.L
 	return &limitListener{Listener: ln, acl: acl, perClient: perClient, total: int64(total), per: map[netip.Prefix]int{}}
 }
 
+// DNSLoopbackReserve is how many connections loopback (this machine's
+// resolver and tools, the health check) may open beyond the total of a
+// DNS listener (LimitDNSListener).
+const DNSLoopbackReserve = 64
+
+// LimitDNSListener is LimitListener for DNS over TCP and DoT/DoH: at the
+// total, a newcomer is not refused while another client key holds more
+// connections than the newcomer would: the oldest connection of the client
+// key holding the most is closed instead. So one host with many source
+// addresses (each key up to perClient) cannot keep every other client,
+// which then could not fetch answers truncated over UDP, off the listener
+// for as long as it trickles queries. Loopback may use DNSLoopbackReserve
+// connections beyond the total and is never closed for a newcomer.
+func LimitDNSListener(ln net.Listener, acl func() *ACL, perClient, total int) net.Listener {
+	return &limitListener{Listener: ln, acl: acl, perClient: perClient, total: int64(total), per: map[netip.Prefix]int{},
+		evict: true, conns: map[netip.Prefix][]*limitConn{}}
+}
+
 type limitListener struct {
 	net.Listener
 	acl       func() *ACL
@@ -25,6 +44,11 @@ type limitListener struct {
 	mu        sync.Mutex
 	per       map[netip.Prefix]int
 	Refused   atomic.Uint64
+	// evict (LimitDNSListener): the connections of every client key,
+	// oldest first, to close the oldest of the heaviest key at the total.
+	evict bool
+	conns map[netip.Prefix][]*limitConn
+	seq   uint64 // admission order (limitConn.seq)
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
@@ -41,7 +65,8 @@ func (l *limitListener) Accept() (net.Conn, error) {
 		}
 		key := ClientKey(ip)
 		l.mu.Lock()
-		if l.active.Load() >= l.total || l.per[key] >= l.perClient {
+		ok, victim := l.admit(ip, key)
+		if !ok {
 			l.mu.Unlock()
 			l.Refused.Add(1)
 			_ = c.Close()
@@ -49,17 +74,73 @@ func (l *limitListener) Accept() (net.Conn, error) {
 		}
 		l.per[key]++
 		l.active.Add(1)
+		l.seq++
+		lc := &limitConn{Conn: c, l: l, key: key, seq: l.seq}
+		if l.evict {
+			l.conns[key] = append(l.conns[key], lc)
+		}
 		l.mu.Unlock()
-		return &limitConn{Conn: c, l: l, key: key}, nil
+		if victim != nil {
+			l.Refused.Add(1)
+			_ = victim.Close() // releases its slot
+		}
+		return lc, nil
 	}
 }
 
-func (l *limitListener) release(key netip.Prefix) {
+// admit decides about a connection from ip (its client key key) with l.mu
+// held: whether it is admitted, and the connection to close for it
+// (LimitDNSListener at the total).
+func (l *limitListener) admit(ip netip.Addr, key netip.Prefix) (bool, *limitConn) {
+	switch {
+	case l.per[key] >= l.perClient:
+		return false, nil
+	case l.active.Load() < l.total:
+		return true, nil
+	case !l.evict:
+		return false, nil
+	case ip.IsLoopback():
+		return l.active.Load() < l.total+DNSLoopbackReserve, nil
+	}
+	v := l.heaviest(l.per[key] + 1)
+	return v != nil, v
+}
+
+// heaviest returns the oldest connection of the client key (not loopback)
+// holding the most connections (of several, the one with the oldest
+// connection), when that is more than n (what the newcomer's key would
+// hold); nil otherwise. Called with l.mu held.
+func (l *limitListener) heaviest(n int) *limitConn {
+	var best *limitConn
+	most := n
+	for k, c := range l.per {
+		list := l.conns[k]
+		if len(list) == 0 || k.Addr().IsLoopback() || c < most || c == most && (best == nil || list[0].seq > best.seq) {
+			continue
+		}
+		best, most = list[0], c
+	}
+	return best
+}
+
+func (l *limitListener) release(c *limitConn) {
+	key := c.key
 	l.mu.Lock()
 	if n := l.per[key] - 1; n > 0 {
 		l.per[key] = n
 	} else {
 		delete(l.per, key)
+	}
+	if l.evict {
+		list := l.conns[key]
+		if i := slices.Index(list, c); i >= 0 {
+			list = slices.Delete(list, i, i+1)
+		}
+		if len(list) > 0 {
+			l.conns[key] = list
+		} else {
+			delete(l.conns, key)
+		}
 	}
 	l.active.Add(-1)
 	l.mu.Unlock()
@@ -69,12 +150,13 @@ type limitConn struct {
 	net.Conn
 	l    *limitListener
 	key  netip.Prefix
+	seq  uint64
 	once sync.Once
 }
 
 func (c *limitConn) Close() error {
 	err := c.Conn.Close()
-	c.once.Do(func() { c.l.release(c.key) })
+	c.once.Do(func() { c.l.release(c) })
 	return err
 }
 

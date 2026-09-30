@@ -84,7 +84,7 @@ fixes; please test against it or a current build of `main`.
 | Network discovery scan | Admins only, audited, at most one per minute: one empty UDP datagram per address of this machine's private IPv4 subnets (at most 512, at most 200 per second) from an unprivileged socket; no raw sockets or capabilities. Details in [Parental controls and the network check](#parental-controls-and-the-network-check). |
 | DHCP server (optional) | Off by default; switched on in the web UI by an admin (`PICACHE_DHCP=off` prevents it); no DHCP port is open while it is off. Serves one chosen interface, never relayed requests, never while its own address is dynamic or another DHCP server was detected. Every DHCPv4, DHCPv6 and ICMPv6 packet is parsed with strict bounds checks, rate limited and dropped when malformed; replies cannot be aimed at hosts outside the LAN. Router advertisements never make PiCache a router. `CAP_NET_RAW` is used only at start (while router advertisements are on) and then dropped on every thread; PiCache refuses to run if that fails. Details in [DHCP server](#dhcp-server). |
 | Privilege escalation | The service runs unprivileged and never holds `CAP_SYS_ADMIN`. NAS mounts are done by systemd on request of a separate root helper that re-validates every request and never trusts the database: it opens it read-only as a regular file (no links, FIFOs or devices) with an untrusted schema, touches only names derived from the target id, never follows links in the service-owned request directory, and runs sandboxed with a memory limit. |
-| Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total on every TCP listener (the web UI: 64 per client address, 256 for the IPv6 addresses of one on-link, ULA or link-local /64 together, and 1024 in total; trusted reverse proxies count only toward the total, and this machine has a reserve of 64 beyond it, so a host that fills the total cannot fail the health check and roll back an update), so idle connections from one host cannot grow PiCache until the kernel stops it. A DNS reply over TCP or DoT that the client does not read within 10 s ends its wait (over TCP the connection is closed). Dials to DoH upstreams end with the 3 s attempt, at most 4 connections per upstream, so a black-holed upstream leaves nothing pending. |
+| Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total on every TCP listener (the web UI: 64 per client address, 256 for the IPv6 addresses of one on-link, ULA or link-local /64 together, and 1024 in total; trusted reverse proxies count only toward the total, and this machine has a reserve of 64 beyond it, so a host that fills the total cannot fail the health check and roll back an update), so idle connections from one host cannot grow PiCache until the kernel stops it. DNS over TCP, DoT and DoH (32 per client, 1024 in total per listener) give way at the total: a client that would hold fewer connections than the client holding the most gets a slot, and the oldest connection of that client is closed; this machine has a reserve of 64. A host with many source addresses therefore cannot keep other clients off TCP DNS by holding every slot. Residual risk: an attacker with more addresses than there are slots, each holding one connection, keeps newcomers out (they would hold as many as it); many IPv6 addresses of one on-link /64 are separate clients here. A DNS reply over TCP or DoT that the client does not read within 10 s ends its wait (over TCP the connection is closed). Dials to DoH upstreams end with the 3 s attempt, at most 4 connections per upstream, so a black-holed upstream leaves nothing pending. |
 | Malicious or tampered update | A release is installed only if its `SHA256SUMS` carries an Ed25519 signature by a key compiled into the running binary, the binary matches its checksum and reports the expected version. The web UI can only queue a version number; the root helper installs exactly that release from the fixed GitHub repository and never an older one. Starting an update needs a browser session and the password. Details in [Updates](#updates). |
 
 Known residual risks:
@@ -232,7 +232,12 @@ plain absolute path, which it cannot search). Otherwise the account is kept
 and **locked** (`usermod -L`, expired with `usermod -e 1`, the shell stays
 `nologin`) and the output names the directories: a later `useradd --system`
 could otherwise reuse the uid or gid and inherit PiCache's database, master
-key, backups and logs. Delete those files, then the account.
+key, backups and logs. Delete those files, then the account. When `userdel`
+fails (a process of the account still runs), the purge warns and says to
+delete the account later; it never reports it as deleted. After a switch
+from the package to `install.sh`, purging the removed package deletes
+nothing: the paths and the account belong to the `install.sh` installation
+now (`/usr/local/bin/picache` or its unit exists).
 
 ### The update check
 
@@ -331,7 +336,9 @@ the release.
 
 - **`PICACHE_RUN_AS` is never root or empty.** The container starts as root
   only to bind its ports and then switches to `PICACHE_RUN_AS`
-  (`config.ParseRunAs` refuses uid or gid 0). The NAS templates set the
+  (`config.ParseRunAs` refuses uid or gid 0, and `picache serve` started as
+  root in a Docker or Podman container refuses an empty value with the same
+  message, exit code 2). The NAS templates set the
   platform's app user (Unraid `99:100` = nobody:users, TrueNAS `568:568`,
   Synology the image's `65532:65532`); a test checks every template. Never
   "fix" an ownership error by running PiCache as root: create the data
@@ -888,7 +895,14 @@ name, answers removed, no top lists of domains) and the DNS statistics.
 Clients can be excluded from the raw data and from the statistics
 separately, and domains can be ignored. A switch applies from the change
 on: stored rows are not rewritten; clear the query log or the statistics
-(admins, destructive, audited) when older data must go. None of the
+(admins, destructive, audited) when older data must go. The retention
+deletes rows older than it by the host clock. It waits only after evidence
+of a clock problem (the clock jumped by more than an hour, ahead or back,
+or the log was last written more than an hour after the time of the
+start), until the host reports its clock synchronised and at most a day
+after the latest jump, so a clock set far ahead cannot delete the whole
+log; a clock that is merely not synchronised (no NTP client, Docker
+Desktop) does not delay it (DEPLOYMENT "Logs and privacy"). None of the
 switches covers stderr/journald: keep `PICACHE_LOG_LEVEL=info` (the default)
 on hosts whose journal others can read.
 

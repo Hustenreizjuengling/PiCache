@@ -40,8 +40,7 @@ func (a *App) dropPrivileges() error {
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
 		if ok && (int(st.Uid) != uid) {
-			return fmt.Errorf("%s is owned by %d:%d but PiCache runs as %d:%d; run `chown -R %d:%d <host directory>` "+
-				"for this bind mount (named Docker volumes get the right owner automatically)", dir, st.Uid, st.Gid, uid, gid, uid, gid)
+			return ownerError(dir, st.Uid, st.Gid, uid, gid)
 		}
 	}
 	if err := syscall.Setgroups([]int{}); err != nil {
@@ -61,6 +60,17 @@ func (a *App) dropPrivileges() error {
 	}
 	a.log.Info("dropped privileges", slog.Int("uid", uid), slog.Int("gid", gid))
 	return nil
+}
+
+// ownerError is the refusal of a data or cache directory dir owned by
+// ouid:ogid instead of the run-as user uid:gid, with the command for a bind
+// mount and for a named volume (which can become root-owned too, e.g.
+// after a copy into it as root).
+func ownerError(dir string, ouid, ogid uint32, uid, gid int) error {
+	return fmt.Errorf("%s is owned by %d:%d but PiCache runs as %d:%d; give it to that user: for a bind mount "+
+		"`chown -R %d:%d <host directory>` on the host, for a named volume "+
+		"`docker run --rm -v <volume>:%s alpine chown -R %d:%d %s` (with the container stopped)",
+		dir, ouid, ogid, uid, gid, uid, gid, dir, uid, gid, dir)
 }
 
 // ownerOf names the owner of path for a hint (", it belongs to uid:gid"), ""

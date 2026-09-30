@@ -73,8 +73,27 @@ func restoreCmd(args []string) int {
 		}
 		return fail(err)
 	}
-	fmt.Println("restore staged: restart PiCache to apply it (systemctl restart picache)")
+	fmt.Println(restoreStaged(inContainer()))
 	return 0
+}
+
+// restoreStaged is the message after a staged restore: a container has no
+// systemctl, the container is restarted instead.
+func restoreStaged(container bool) string {
+	if container {
+		return "restore staged: restart PiCache to apply it (docker restart <container>, or System → Restart in the web UI)"
+	}
+	return "restore staged: restart PiCache to apply it (sudo systemctl restart picache, or System → Restart in the web UI)"
+}
+
+// inContainer reports a Docker or Podman container (their marker files).
+func inContainer() bool {
+	for _, f := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(f); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // restorePermissionHint explains a refused file access of restore (the

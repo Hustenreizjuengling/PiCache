@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,6 +66,139 @@ func TestRetentionPruning(t *testing.T) {
 	}
 	if !s.w.nextPrune.After(now.Add(time.Minute)) {
 		t.Fatalf("next prune = %v", s.w.nextPrune)
+	}
+}
+
+// fakeClock replaces the writer's clock watch with a wall clock and a
+// monotonic clock the test moves (step: both advance; jump: the wall
+// clock alone).
+type fakeClock struct {
+	wall time.Time
+	mono time.Duration
+}
+
+func (c *fakeClock) install(w *writer) {
+	w.clk = clockWatch{read: func() (time.Time, time.Duration) { return c.wall, c.mono }, wall: c.wall, mono: c.mono}
+}
+func (c *fakeClock) step(d time.Duration) { c.wall, c.mono = c.wall.Add(d), c.mono+d }
+func (c *fakeClock) jump(d time.Duration) { c.wall = c.wall.Add(d) }
+
+// REV-1: a host clock that is merely not synchronised (a host without an
+// NTP client, Docker Desktop) no longer holds the retention: rows older
+// than it go at the first prune, also right after a start.
+func TestRetentionNotHeldByUnsyncedClock(t *testing.T) {
+	s, _ := newTestStore(t)
+	now := time.Now()
+	s.w.addQuery(query(now.Add(-200*time.Hour), "10.0.0.1", "old.example", "forwarded")) // retention 168 h
+	s.w.addQuery(query(now.Add(-time.Hour), "10.0.0.1", "new.example", "forwarded"))
+	s.w.flush(now)
+	s.SetClockReader(func() (bool, bool) { return false, true })
+	s.w.checkLastWritten(lastWrittenRaw(context.Background(), s.d)) // as at a start
+	s.w.prune(now)
+	if n := count(t, s, "logs_queries"); n != 1 || s.w.clk.held {
+		t.Fatalf("an unsynchronised clock held the retention: %d rows, held %v", n, s.w.clk.held)
+	}
+}
+
+// A jump of the wall clock against the monotonic clock holds the
+// retention (a clock set years ahead deleted the whole query log and the
+// statistics), ahead or back, until a day passed after the latest jump or
+// the host reports the clock synchronised; a jump while it is synchronised
+// holds nothing. Small corrections are no jump.
+func TestRetentionHeldAfterClockJump(t *testing.T) {
+	s, _ := newTestStore(t)
+	now := time.Now()
+	s.w.addQuery(query(now.Add(-time.Hour), "10.0.0.1", "a.example", "forwarded"))
+	s.w.flush(now)
+	var synced atomic.Bool
+	s.SetClockReader(func() (bool, bool) { return synced.Load(), true })
+	c := &fakeClock{wall: now.Round(0)}
+	c.install(s.w)
+	year := 365 * 24 * time.Hour
+
+	c.step(5 * time.Minute)
+	c.jump(-30 * time.Second) // a correction
+	s.w.prune(c.wall)
+	if s.w.clk.held {
+		t.Fatal("a correction of 30 s held the retention")
+	}
+	c.step(5 * time.Minute)
+	c.jump(2 * year)
+	s.w.prune(c.wall)
+	if n := count(t, s, "logs_queries"); n != 1 || !s.w.clk.held {
+		t.Fatalf("after a jump ahead: %d rows, held %v", n, s.w.clk.held)
+	}
+	c.step(maxRetentionHold - time.Minute)
+	s.w.prune(c.wall)
+	if n := count(t, s, "logs_queries"); n != 1 {
+		t.Fatalf("within the day after the jump: %d rows", n)
+	}
+	c.step(2 * time.Minute)
+	s.w.prune(c.wall)
+	if n := count(t, s, "logs_queries"); n != 0 || s.w.clk.held {
+		t.Fatalf("a day after the jump: %d rows, held %v", n, s.w.clk.held)
+	}
+
+	// Back to the real time: held again, until the clock is synchronised.
+	s.w.addQuery(query(now.Add(-200*time.Hour), "10.0.0.1", "b.example", "forwarded"))
+	s.w.flush(now)
+	c.step(5 * time.Minute)
+	c.jump(-2*year - maxRetentionHold)
+	s.w.prune(c.wall)
+	if n := count(t, s, "logs_queries"); n != 1 || !s.w.clk.held {
+		t.Fatalf("after a jump back: %d rows, held %v", n, s.w.clk.held)
+	}
+	synced.Store(true)
+	c.step(5 * time.Minute)
+	s.w.prune(c.wall)
+	if n := count(t, s, "logs_queries"); n != 0 || s.w.clk.held {
+		t.Fatalf("synchronised: %d rows, held %v", n, s.w.clk.held)
+	}
+
+	// A jump of a synchronised clock (NTP stepping it) holds nothing.
+	s.w.addQuery(query(now.Add(-200*time.Hour), "10.0.0.1", "c.example", "forwarded"))
+	s.w.flush(now)
+	c.step(5 * time.Minute)
+	c.jump(3 * time.Hour)
+	s.w.prune(c.wall)
+	if n := count(t, s, "logs_queries"); n != 0 || s.w.clk.held {
+		t.Fatalf("a synchronised jump: %d rows, held %v", n, s.w.clk.held)
+	}
+}
+
+// A start whose clock is more than an hour before the raw log row written
+// last (the clock was ahead then, or went back since) holds the retention
+// like a jump. Once this run has written rows, the next start holds
+// nothing, although the rows written ahead are still stored.
+func TestRetentionHeldForRowsWrittenAfterNow(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestStore(t)
+	now := time.Now()
+	s.w.addQuery(query(now.Add(-200*time.Hour), "10.0.0.1", "old.example", "forwarded"))
+	s.w.flush(now)
+	// Events from the future are stored as now, so the row written while the
+	// clock was two years ahead is inserted directly.
+	ahead := now.Add(2 * 365 * 24 * time.Hour).UnixMilli()
+	if _, err := s.d.W.Exec(`INSERT INTO logs_queries (ts, client_ip, qname, qtype, status) VALUES (?, '10.0.0.1', 'ahead.example', 'A', 'forwarded')`,
+		ahead); err != nil {
+		t.Fatal(err)
+	}
+	s.SetClockReader(func() (bool, bool) { return false, true })
+	s.w.startClockWatch()
+	s.w.checkLastWritten(lastWrittenRaw(ctx, s.d))
+	s.w.prune(now)
+	if n := count(t, s, "logs_queries"); n != 2 || !s.w.clk.held {
+		t.Fatalf("a start before the last written row: %d rows, held %v", n, s.w.clk.held)
+	}
+	s.w.addQuery(query(now, "10.0.0.1", "now.example", "forwarded"))
+	s.w.flush(now)
+	s.w.startClockWatch() // the next start
+	s.w.checkLastWritten(lastWrittenRaw(ctx, s.d))
+	s.w.prune(now)
+	var old int
+	_ = s.d.R.QueryRow(`SELECT COUNT(*) FROM logs_queries WHERE qname = 'old.example'`).Scan(&old)
+	if n := count(t, s, "logs_queries"); n != 2 || old != 0 || s.w.clk.held {
+		t.Fatalf("the next start: %d rows (old %d), held %v", n, old, s.w.clk.held)
 	}
 }
 

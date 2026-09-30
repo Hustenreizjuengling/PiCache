@@ -62,7 +62,7 @@ func (a *Service) authToken(ctx context.Context, tok string) (*Principal, error)
 	}
 	if now.Sub(db.Time(lastUsed)) >= lastSeenGranularity {
 		if _, err := a.db.W.ExecContext(ctx, `UPDATE auth_tokens SET last_used = ? WHERE id = ?`, now.UnixMilli(), p.TokenID); err != nil {
-			return nil, err
+			a.touchFailed("token", err) // best effort (a full disk)
 		}
 	}
 	return &p, nil

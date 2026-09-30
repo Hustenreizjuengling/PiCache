@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +20,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/settings"
+	"github.com/hustenreizjuengling/picache/internal/storage"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
 
@@ -461,7 +464,46 @@ func (a *App) prepareRestore(ctx context.Context, staged string) error {
 	if err := auth.CarryOverAccounts(ctx, &db.DB{W: sdb, R: sdb, Path: staged}, a.paths.ConfigDB); err != nil {
 		return err
 	}
+	if err := keepLocalStore(ctx, sdb, a.paths.ConfigDB); err != nil {
+		return fmt.Errorf("keep the local cache store: %w", err)
+	}
 	return sdb.Close()
+}
+
+// keepLocalStore gives the built-in cache target (storage.LocalTargetID)
+// of the restored database staged the store id of the live database ("" if
+// it has none): that store lives in this machine's cache directory, not in
+// the backup. A backup of another machine (a move, a full restore on a new
+// instance) names that machine's store, and the local cache stayed offline
+// ("a different cache store … was found") until an admin adopted it.
+func keepLocalStore(ctx context.Context, staged *sql.DB, livePath string) error {
+	conn, err := staged.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var has bool
+	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'storage_targets')`).
+		Scan(&has); err != nil || !has {
+		return err // a backup from before storage targets: storage.New creates the row
+	}
+	if _, err := conn.ExecContext(ctx, `ATTACH DATABASE ? AS live`, livePath); err != nil { // as CarryOverAccounts (only read)
+		return err
+	}
+	defer conn.ExecContext(context.WithoutCancel(ctx), `DETACH DATABASE live`)
+	storeID := ""
+	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM live.sqlite_master WHERE type = 'table' AND name = 'storage_targets')`).
+		Scan(&has); err != nil {
+		return err
+	}
+	if has {
+		err := conn.QueryRowContext(ctx, `SELECT store_id FROM live.storage_targets WHERE id = ?`, storage.LocalTargetID).Scan(&storeID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	_, err = conn.ExecContext(ctx, `UPDATE main.storage_targets SET store_id = ? WHERE id = ?`, storeID, storage.LocalTargetID)
+	return err
 }
 
 // liveSchemaNames reads the tables and indexes of the (not yet opened) live
@@ -548,17 +590,9 @@ func PreUpgradeBackup(ctx context.Context, d *db.DB, dataDir string, log *slog.L
 	_ = d.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = 'binary_version'`).Scan(&prev)
 	cur := version.Version
 	if hadSchema > 0 && prev != "" && prev != cur && cur != "dev" {
-		dir := filepath.Join(dataDir, "backups")
-		name := fmt.Sprintf("picache-%s-%s.db", sanitizeFile(prev), time.Now().UTC().Format("20060102T150405"))
-		err := os.MkdirAll(dir, 0o750) // the CLI may run before the service ever created it
-		if err == nil {
-			_, err = d.W.ExecContext(ctx, `VACUUM INTO ?`, filepath.Join(dir, name))
+		if err := copyBeforeUpgrade(ctx, d, filepath.Join(dataDir, "backups"), prev, cur, log); err != nil {
+			return err
 		}
-		if err != nil {
-			return fmt.Errorf("copy picache.db to %s before the upgrade from %s (is the disk full?): %w", dir, prev, err)
-		}
-		log.Info("saved configuration backup before upgrade", slog.String("file", filepath.Join(dir, name)))
-		pruneBackups(dir, 3)
 	}
 	if err := d.Migrate(ctx, "app", appMigrations); err != nil {
 		return err
@@ -569,6 +603,146 @@ func PreUpgradeBackup(ctx context.Context, d *db.DB, dataDir string, log *slog.L
 	_, err := d.W.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES ('binary_version', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, cur)
 	return err
+}
+
+// copyBeforeUpgrade makes the pre-upgrade copy of d in dir, named after the
+// version whose schema the database has (copyVersion), and prunes the
+// copies. It makes none when that version is cur itself (a version before
+// 1.0.0 was started on this database and failed without migrating it) and
+// a copy of the same schema named after cur exists already: such an older
+// version copies the database under cur's name itself before it fails, so
+// another copy would only fill a place of the three that version keeps and
+// get the one copy it can open pruned sooner.
+func copyBeforeUpgrade(ctx context.Context, d *db.DB, dir, prev, cur string, log *slog.Logger) error {
+	owner := copyVersion(ctx, d, prev)
+	if owner != prev {
+		log.Warn("the previous version recorded itself without migrating this database; the copy is named after the version that wrote its schema",
+			slog.String("previous", prev), slog.String("schemaOf", owner))
+	}
+	if owner == cur {
+		if existing := copyOfSchema(ctx, d, dir, owner); existing != "" {
+			log.Info("no configuration backup before this start: a copy of this database's schema named after this version exists",
+				slog.String("file", existing), slog.String("previous", prev))
+			return nil
+		}
+	}
+	name := fmt.Sprintf("picache-%s-%s.db", sanitizeFile(owner), time.Now().UTC().Format(copyTimeLayout))
+	err := os.MkdirAll(dir, 0o750) // the CLI may run before the service ever created it
+	if err == nil {
+		_, err = d.W.ExecContext(ctx, `VACUUM INTO ?`, filepath.Join(dir, name))
+	}
+	if err != nil {
+		return fmt.Errorf("copy picache.db to %s before the upgrade from %s (is the disk full?): %w", dir, prev, err)
+	}
+	log.Info("saved configuration backup before upgrade", slog.String("file", filepath.Join(dir, name)))
+	pruneBackups(dir, 3)
+	return nil
+}
+
+// copyTimeLayout is the time in the name of a pre-upgrade copy
+// (picache-<version>-<time>.db, UTC).
+const copyTimeLayout = "20060102T150405"
+
+// copyOfSchema returns a pre-upgrade copy in dir named after version
+// (exactly picache-<version>-<time>.db) whose schema equals d's ("" if
+// there is none).
+func copyOfSchema(ctx context.Context, d *db.DB, dir, version string) string {
+	v, err := schemaVersions(ctx, d.R)
+	if err != nil {
+		return ""
+	}
+	want := schemaKey(v)
+	entries, err := os.ReadDir(dir)
+	if want == "" || err != nil {
+		return ""
+	}
+	prefix := "picache-" + sanitizeFile(version) + "-"
+	for _, e := range entries {
+		ts, named := strings.CutPrefix(e.Name(), prefix)
+		ts, isDB := strings.CutSuffix(ts, ".db")
+		if !named || !isDB || !e.Type().IsRegular() {
+			continue
+		}
+		if _, err := time.Parse(copyTimeLayout, ts); err != nil {
+			continue // another version's name that starts the same (v1.0.0-rc.2 for v1.0.0)
+		}
+		if p := filepath.Join(dir, e.Name()); copySchema(p) == want {
+			return p
+		}
+	}
+	return ""
+}
+
+// metaBinarySchema is the app_meta key with the schema versions of
+// picache.db and the version that brought it there
+// ({"version":…,"schema":{component: version}}), written once every
+// migration of a start succeeded (recordSchema). A version before 1.0.0
+// started on a newer database records itself as binary_version before it
+// fails, but never this key.
+const metaBinarySchema = "binary_schema"
+
+type binarySchema struct {
+	Version string         `json:"version"`
+	Schema  map[string]int `json:"schema"`
+}
+
+// schemaVersions returns the schema version of every component of a
+// picache.db (schema_migrations).
+func schemaVersions(ctx context.Context, q rowsQuerier) (map[string]int, error) {
+	rows, err := q.QueryContext(ctx, `SELECT component, MAX(version) FROM schema_migrations GROUP BY component`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var c string
+		var v int
+		if err := rows.Scan(&c, &v); err != nil {
+			return nil, err
+		}
+		out[c] = v
+	}
+	return out, rows.Err()
+}
+
+// recordSchema writes metaBinarySchema for this version after every
+// migration of the start succeeded.
+func recordSchema(ctx context.Context, d *db.DB) error {
+	schema, err := schemaVersions(ctx, d.R)
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(binarySchema{Version: version.Version, Schema: schema}, json.Deterministic(true))
+	if err != nil {
+		return err
+	}
+	_, err = d.W.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, metaBinarySchema, string(b))
+	return err
+}
+
+// copyVersion returns the version a pre-upgrade copy is named after: the
+// recorded previous version prev, unless another version recorded the
+// database's current schema (metaBinarySchema) and prev did not: a version
+// before 1.0.0 started on a newer database records itself before it fails,
+// and a copy named after it would not open with it (going back picks the
+// copy by its name). The schema's version is then named; at worst a copy
+// that prev could open too is named after that newer version.
+func copyVersion(ctx context.Context, d *db.DB, prev string) string {
+	var raw string
+	if err := d.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = ?`, metaBinarySchema).Scan(&raw); err != nil {
+		return prev
+	}
+	var rec binarySchema
+	if json.Unmarshal([]byte(raw), &rec) != nil || rec.Version == "" || rec.Version == prev {
+		return prev
+	}
+	cur, err := schemaVersions(ctx, d.R)
+	if err != nil || !maps.Equal(cur, rec.Schema) {
+		return prev
+	}
+	return rec.Version
 }
 
 // refuseNewerSchema returns db.Migrate's downgrade refusal when a component
@@ -606,6 +780,12 @@ func sanitizeFile(s string) string {
 	return string(b)
 }
 
+// pruneBackups keeps the newest keep pre-upgrade copies and, beyond them,
+// the newest copy of every other schema (the component versions of the
+// copy): the copy an older version can open is never pruned only because
+// newer copies of other schemas were made, such as copies a version before
+// 1.0.0 made of a newer database before it failed. A copy whose schema
+// cannot be read counts as none.
 func pruneBackups(dir string, keep int) {
 	matches, _ := filepath.Glob(filepath.Join(dir, "picache-*.db"))
 	if len(matches) <= keep {
@@ -622,7 +802,37 @@ func pruneBackups(dir string, keep int) {
 		}
 	}
 	slices.SortFunc(files, func(x, y fi) int { return y.mod.Compare(x.mod) })
-	for _, f := range files[min(keep, len(files)):] {
+	seen := map[string]bool{}
+	for i, f := range files {
+		schema := copySchema(f.path)
+		if i < keep || (schema != "" && !seen[schema]) {
+			seen[schema] = true
+			continue
+		}
 		_ = os.Remove(f.path)
 	}
+}
+
+// copySchema returns the component versions of a database copy as one
+// string ("" when they cannot be read).
+func copySchema(path string) string {
+	d, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)&_pragma=trusted_schema(0)")
+	if err != nil {
+		return ""
+	}
+	defer d.Close()
+	v, err := schemaVersions(context.Background(), d)
+	if err != nil {
+		return ""
+	}
+	return schemaKey(v)
+}
+
+// schemaKey returns component versions as one string ("" for none).
+func schemaKey(v map[string]int) string {
+	if len(v) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(v, json.Deterministic(true))
+	return string(b)
 }

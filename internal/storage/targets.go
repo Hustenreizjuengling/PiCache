@@ -432,7 +432,7 @@ func (m *Manager) passwordFor(t Target, in *string) (sealed string, set bool, er
 	if m.box == nil {
 		return "", false, errors.New("storage: no master key to seal the password")
 	}
-	s, err := m.box.Seal([]byte(*in), passwordAAD(t.ID))
+	s, err := m.box.Seal([]byte(*in), PasswordAAD(t.ID))
 	if err != nil {
 		return "", false, fmt.Errorf("storage: seal password: %w", err)
 	}

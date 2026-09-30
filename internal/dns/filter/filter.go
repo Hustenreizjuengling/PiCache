@@ -273,6 +273,7 @@ type Stats struct {
 	MemoryBytes     int64     `json:"memoryBytes"`
 	Updating        bool      `json:"updating"`
 	FailedLists     int       `json:"failedLists"`   // enabled lists in failed-* state
+	CacheErrors     int       `json:"cacheErrors"`   // enabled lists whose cached copy cannot be read or parsed
 	StaleLists      int       `json:"staleLists"`    // last success older than 3× update interval
 	TLDGuardLists   int       `json:"tldGuardLists"` // enabled own lists (no catalogue key) with entries the TLD guard ignores
 	IPGuardLists    int       `json:"ipGuardLists"`  // enabled own lists of format ips with blocks the IP guard ignores
@@ -314,6 +315,11 @@ type listRT struct {
 	jitter                   float64 // factor in [0.9, 1.1] for the next scheduled update
 	wantDownload             bool
 	wantReparse              bool
+	// cacheBad: the cached copy could not be read or parsed (a damaged
+	// file, another owner). The next download asks without the stored
+	// validators and replaces the copy even when the server says it did
+	// not change (304 or the same hash).
+	cacheBad bool
 }
 
 // Engine owns lists, rules and the compiled matcher.
@@ -344,6 +350,8 @@ type Engine struct {
 	explain   chan struct{} // bounds concurrent Explain rescans
 
 	compileCh chan struct{} // cap 1: coalesced recompile request
+	ready     chan struct{} // closed once the cached copies are compiled (Ready)
+	readyOnce sync.Once
 	wake      chan struct{} // cap 1: list work is pending
 	busy      atomic.Int32  // running downloads, parses and compiles
 	budget    atomic.Int64  // the entry budget (SetEntryBudget; 0 = MaxEntryBudget)
@@ -389,7 +397,7 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client,
 		db: d, set: set, log: log.With(slog.String("component", "filter")),
 		fetch: fetch, dir: dir, localDir: localDir, maxBytes: maxListBytes, now: utcNow,
 		lists:     map[int64]*listRT{},
-		compileCh: make(chan struct{}, 1), wake: make(chan struct{}, 1), dlSem: make(chan struct{}, 1),
+		compileCh: make(chan struct{}, 1), ready: make(chan struct{}), wake: make(chan struct{}, 1), dlSem: make(chan struct{}, 1),
 		explain: make(chan struct{}, maxConcurrentExplains),
 		base:    base, cancel: cancel,
 	}
@@ -416,17 +424,30 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client,
 
 func newJitter() float64 { return 0.9 + rand.Float64()*0.2 }
 
-// Start loads cached list files, compiles and schedules updates (±10 %
-// jitter). Blocks until ctx is done and its goroutines have exited.
+// Start loads cached list files, compiles them (then Ready is closed) and
+// schedules updates (±10 % jitter). Blocks until ctx is done and its
+// goroutines have exited.
 func (e *Engine) Start(ctx context.Context) {
 	defer e.stop()
+	defer e.markReady() // also when ctx ended before the first compile
 	e.loadCached(ctx)
-	e.requestCompile()
+	if ctx.Err() == nil {
+		e.compile()
+	}
+	e.markReady()
 	var wg sync.WaitGroup
 	wg.Go(func() { e.compileLoop(ctx) })
 	wg.Go(func() { e.updateLoop(ctx) })
 	wg.Wait()
 }
+
+// Ready is closed once Start compiled the cached copies of the enabled
+// lists (or ended before): until then Check knows only the rules, so the
+// DNS listeners wait for it (bounded), and blocklists never fail open
+// after a restart.
+func (e *Engine) Ready() <-chan struct{} { return e.ready }
+
+func (e *Engine) markReady() { e.readyOnce.Do(func() { close(e.ready) }) }
 
 // stop ends in-flight synchronous operations (RefreshList) and waits for them.
 func (e *Engine) stop() {
@@ -513,6 +534,9 @@ func (e *Engine) Stats() Stats {
 		}
 		if rt.Status == statusFailedCached || rt.Status == statusFailedEmpty {
 			st.FailedLists++
+		}
+		if rt.cacheBad {
+			st.CacheErrors++
 		}
 		if rt.CatalogKey == "" && rt.tldBlocksIgnored() > 0 {
 			st.TLDGuardLists++

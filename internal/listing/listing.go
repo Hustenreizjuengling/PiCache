@@ -8,6 +8,10 @@ type Page[T any] struct {
 	Items []T    `json:"items"`
 	Total int    `json:"total"`
 	Next  string `json:"next,omitempty"`
+	// Partial: the listing stopped early (a query-log search ran out of its
+	// time budget): Items may be fewer than asked for, and Next continues
+	// where the search stopped.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // Clamp limits a requested page size to [1, max], using def for <= 0.

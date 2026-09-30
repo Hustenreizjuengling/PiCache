@@ -55,6 +55,9 @@ func TestComposeTemplatesHardening(t *testing.T) {
 			"      - /tmp:size=64m",
 			"    driver: macvlan",
 			"      parent: CHANGE_ME",
+			// A fixed host name: the local CA names it; Docker's default is
+			// the container ID, new with every recreated container.
+			"    hostname: picache",
 		}
 		if netRaw {
 			want = append(want, "    cap_add: [NET_BIND_SERVICE, SETUID, SETGID, NET_RAW]")
@@ -97,6 +100,20 @@ func TestComposeTemplatesHardening(t *testing.T) {
 	}
 }
 
+// The bridge compose file (and every other file without host networking)
+// sets a fixed host name: the local CA is created for the host name, and
+// Docker's default, the container ID, changes with every recreated
+// container (docker compose pull && docker compose up -d), so the tls
+// health check warned after every update.
+func TestComposeTemplatesHostname(t *testing.T) {
+	for _, path := range []string{"../../deploy/docker/docker-compose.bridge.yml", "../../deploy/docker/docker-compose.macvlan.yml",
+		"../../deploy/truenas/docker-compose.yml", "../../deploy/synology/docker-compose.yml"} {
+		if !slices.Contains(activeLines(t, path), "    hostname: picache") {
+			t.Errorf("%s sets no fixed hostname", path)
+		}
+	}
+}
+
 // unraidTemplate is the part of an Unraid template the test reads.
 type unraidTemplate struct {
 	XMLName     xml.Name `xml:"Container"`
@@ -130,7 +147,8 @@ func TestUnraidTemplate(t *testing.T) {
 	// OPS-1: restarted like the compose files (restart: unless-stopped,
 	// stop_grace_period: 30s); dockerMan sets no restart policy itself, so an
 	// in-app restart (exit 75) or a crash would leave the network without DNS.
-	if c.ExtraParams != "--restart=unless-stopped --stop-timeout=30 --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID "+
+	// A fixed host name, as in the compose files (the local CA names it).
+	if c.ExtraParams != "--restart=unless-stopped --stop-timeout=30 --hostname=picache --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID "+
 		"--security-opt=no-new-privileges:true --read-only --tmpfs=/tmp:size=64m" {
 		t.Fatalf("ExtraParams %q", c.ExtraParams)
 	}

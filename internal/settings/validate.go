@@ -178,6 +178,54 @@ func hashPort(u *url.URL) (int, error) {
 	return n, nil
 }
 
+// LegacyUpstream returns the meaning a version before 1.0.0 gave a stored
+// upstream whose text after "#" this version refuses (a name such as
+// "tls://1.1.1.1#cloudflare-dns.com", a port after ":" as well, 0 or a
+// number over 65535): those versions ignored that text, so the upstream
+// was asked on its default port or the port after ":". ok is false for
+// every other upstream, and for DoH (a fragment was always refused there).
+// Only stored values are read this way; new input with such text is
+// refused (ParseUpstream).
+func LegacyUpstream(s string) (fixed string, ok bool) {
+	t := strings.TrimSpace(s)
+	i := strings.IndexByte(t, '#')
+	if i < 0 || isStamp(t) {
+		return s, false
+	}
+	if _, err := ParseUpstream(t); err == nil {
+		return s, false
+	}
+	spec, err := ParseUpstream(t[:i])
+	if err != nil || spec.Proto == "https" || spec.Proto == "h3" {
+		return s, false
+	}
+	return t[:i], true
+}
+
+// LegacyUpstreams applies LegacyUpstream to a stored list (the default
+// upstreams and fallbacks, a forwarder's, a group's): a copy with the
+// changed entries (a duplicate the change makes is dropped), or list
+// itself when nothing changes.
+func LegacyUpstreams(list []string) []string {
+	var out []string
+	for i, u := range list {
+		fixed, ok := LegacyUpstream(u)
+		if out == nil {
+			if !ok {
+				continue
+			}
+			out = slices.Clone(list[:i])
+		}
+		if !slices.Contains(out, fixed) {
+			out = append(out, fixed)
+		}
+	}
+	if out == nil {
+		return list
+	}
+	return out
+}
+
 // escapeZone percent-encodes the zone of a bracketed IPv6 literal
 // ("[fe80::1%eth0]:53", e.g. a router resolver on a link-local address) as
 // URLs require ("%25eth0").

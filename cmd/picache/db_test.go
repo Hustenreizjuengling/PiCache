@@ -179,6 +179,29 @@ func TestDBCheck(t *testing.T) {
 	}
 }
 
+// A settings document the service cannot decode (a bit flip inside the
+// row, which SQLite's integrity check does not see) stops the start; check
+// reports it and names the way back.
+func TestDBCheckDamagedSettings(t *testing.T) {
+	path := dbEnv(t)
+	for _, q := range []string{`UPDATE settings SET doc = substr(doc, 1, length(doc) / 2) WHERE id = 1`,
+		`UPDATE settings SET doc = '{"dns":{"rateLimitQps":"abc"}}' WHERE id = 1`} {
+		d, err := db.Open(path, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.W.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+		d.Close()
+		code, out, errOut := capture(t, func() int { return run([]string{"db", "check"}) })
+		if code != exitProblems || !strings.Contains(out, "integrity: ok") || !strings.Contains(out, "settings: 1 problem") ||
+			!strings.Contains(out, "decode stored document") || !strings.Contains(out, "picache restore <backup file>") {
+			t.Fatalf("%s: %d %q %q", q, code, out, errOut)
+		}
+	}
+}
+
 // A damaged copy: check finds the damage; salvage copies every readable
 // row into a new file (never touching the source), reports what was lost
 // and skipped, and the new file passes the checks.
@@ -270,6 +293,46 @@ func TestDBSalvageDamagedCopy(t *testing.T) {
 	if _, err := os.Lstat(target); err == nil {
 		t.Fatal("a file was created through the link")
 	}
+}
+
+// A table whose root page cannot be read (here an empty one) is reported
+// with an unknown number of lost rows, not with the rowids salvage probed
+// (1000000 before).
+func TestDBSalvageUnreadableRoot(t *testing.T) {
+	path := dbEnv(t)
+	d, err := db.Open(path, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root int64
+	err = d.R.QueryRow(`SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'dhcp_static'`).Scan(&root)
+	d.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteAt(bytes.Repeat([]byte{0xff}, 4096), (root-1)*4096)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(filepath.Dir(path), "picache.db.salvaged")
+	code, stdout, errOut := capture(t, func() int { return run([]string{"db", "salvage", "--out", out}) })
+	if code != exitProblems {
+		t.Fatalf("salvage: %d %q %q", code, stdout, errOut)
+	}
+	for _, l := range strings.Split(stdout, "\n") {
+		if f := strings.Fields(l); len(f) >= 3 && f[0] == "dhcp_static" {
+			if f[1] != "0" || f[2] != "?" || !strings.Contains(l, "how many rows were lost is unknown") {
+				t.Fatalf("dhcp_static: %q", l)
+			}
+			return
+		}
+	}
+	t.Fatalf("no line for dhcp_static in %q", stdout)
 }
 
 // salvage refuses while PiCache answers (unless --force) and when the

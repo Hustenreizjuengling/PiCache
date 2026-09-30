@@ -210,9 +210,24 @@ type Service struct {
 	setupToken string      // "" once setup is done (guarded by setupMu)
 	setupDone  atomic.Bool // a user exists (never becomes false again)
 
+	touchLogged atomic.Int64 // when a failed last-use update was last logged (UnixNano; touchFailed)
+
 	// onPasswordChecked is a test hook: it runs after a password was
 	// verified and before the transaction that relies on it.
 	onPasswordChecked func()
+}
+
+// touchFailed logs a failed update of a session's last_seen or a token's
+// last_used, at most once a minute. The update is best effort: a full data
+// disk (SQLITE_FULL) or an I/O error must not turn every authenticated
+// read, the health page and monitoring included, into an error.
+func (a *Service) touchFailed(what string, err error) {
+	now := time.Now().UnixNano()
+	last := a.touchLogged.Load()
+	if now-last < int64(time.Minute) || !a.touchLogged.CompareAndSwap(last, now) {
+		return
+	}
+	a.log.Warn("could not record the last use of a "+what+" (is the data disk full?); the request goes on", slog.Any("err", err))
 }
 
 // passwordChecked runs the test hook onPasswordChecked.

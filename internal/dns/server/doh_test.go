@@ -160,6 +160,17 @@ func TestDoHErrors(t *testing.T) {
 		{"outside the DNS ACL", func() (*http.Response, []byte) {
 			return d.post(t, "/dns-query", good, map[string]string{"X-Test-Source": "203.0.113.9"})
 		}, 403, "this address may not use DNS"},
+		// A source outside the ACL learns nothing about its request, and
+		// nothing of it is parsed (400 and 413 before).
+		{"outside the DNS ACL, garbage", func() (*http.Response, []byte) {
+			return d.post(t, "/dns-query", []byte("garbage"), map[string]string{"X-Test-Source": "203.0.113.9"})
+		}, 403, "this address may not use DNS"},
+		{"outside the DNS ACL, too large", func() (*http.Response, []byte) {
+			return d.post(t, "/dns-query", make([]byte, 70000), map[string]string{"X-Test-Source": "203.0.113.9"})
+		}, 403, "this address may not use DNS"},
+		{"outside the DNS ACL, invalid ClientID", func() (*http.Response, []byte) {
+			return d.post(t, "/dns-query/-bad-", good, map[string]string{"X-Test-Source": "203.0.113.9"})
+		}, 403, "this address may not use DNS"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res, body := tc.req()

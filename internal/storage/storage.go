@@ -308,7 +308,11 @@ func (m *Manager) load(ctx context.Context) error {
 // id for it (for example after the configuration database was recreated).
 func (m *Manager) autoInitLocal(ctx context.Context) {
 	t, ok := m.get(LocalTargetID)
-	if !ok || t.StoreID != "" {
+	if !ok {
+		return
+	}
+	if t.StoreID != "" {
+		m.adoptMovedLocal(ctx, t)
 		return
 	}
 	dir := t.Path
@@ -330,6 +334,31 @@ func (m *Manager) autoInitLocal(ctx context.Context) {
 	if err := m.setStoreID(ctx, LocalTargetID, mk.StoreID); err != nil {
 		m.log.Warn("cannot record the built-in store id", slog.Any("err", err))
 	}
+}
+
+// adoptMovedLocal adopts the store in the cache directory when picache.db
+// names a store that was never opened on this machine (no
+// cache-index/<id>.db) while the directory holds one that was (its index
+// exists): picache.db came from another machine, copied by hand (DEPLOYMENT
+// "Moving to a new machine"), and names that machine's store. Anything
+// else (no marker, a disk not mounted yet, both or neither index present)
+// is left to the admin (Cache → Storage).
+func (m *Manager) adoptMovedLocal(ctx context.Context, t Target) {
+	mk, err := cachestore.ReadMarker(t.Path)
+	if err != nil || mk.StoreID == t.StoreID || !cachestore.ValidStoreID(mk.StoreID) || !cachestore.ValidStoreID(t.StoreID) {
+		return
+	}
+	idx := m.cfg.Paths().CacheIndexDir
+	if fileExists(filepath.Join(idx, t.StoreID+".db")) || !fileExists(filepath.Join(idx, mk.StoreID+".db")) {
+		return
+	}
+	if err := m.setStoreID(ctx, LocalTargetID, mk.StoreID); err != nil {
+		m.log.Warn("cannot record the built-in store id", slog.Any("err", err))
+		return
+	}
+	m.log.Warn("the configuration names a cache store that was never used on this machine (copied from another one?); "+
+		"adopted the store of this machine's cache directory", slog.String("dir", t.Path), slog.String("store", mk.StoreID),
+		slog.String("previous", t.StoreID))
 }
 
 // Capabilities returns the detected environment capabilities.
@@ -497,5 +526,6 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// passwordAAD binds a sealed password to its target.
-func passwordAAD(id string) string { return "picache/storage/" + id + "/password" }
+// PasswordAAD binds a sealed password to its target (the app opens every
+// stored one for the health check "master-key").
+func PasswordAAD(id string) string { return "picache/storage/" + id + "/password" }

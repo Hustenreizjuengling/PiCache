@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"strconv"
 	"time"
+
+	"github.com/hustenreizjuengling/picache/internal/db"
 )
 
 const (
@@ -64,8 +66,11 @@ func (w *writer) retentions() []retention {
 // starts after the next flush.
 func (w *writer) prune(now time.Time) {
 	deadline := time.Now().Add(pruneBudget)
-	w.s.events.prune(now) // the warning history keeps its own retention and is never size-trimmed
-	done := w.pruneRetention(now, deadline)
+	done := true
+	if !w.retentionHeld() {
+		w.s.events.prune(now) // the warning history keeps its own retention and is never size-trimmed
+		done = w.pruneRetention(now, deadline)
+	}
 	if done {
 		done = w.enforceSize(now, int64(w.s.cfg().MaxDBSizeMiB)<<20, deadline)
 	}
@@ -75,6 +80,131 @@ func (w *writer) prune(now time.Time) {
 	} else {
 		w.nextPrune = now.Add(tickInterval)
 	}
+}
+
+const (
+	// maxRetentionHold bounds how long the retention waits after the latest
+	// evidence of a clock problem, measured on the monotonic clock: a clock
+	// that stays wrong lets the retention apply a day late instead of never.
+	maxRetentionHold = 24 * time.Hour
+	// clockJumpMargin is how far the wall clock may move against the
+	// monotonic clock between two prune runs (or a stored row may lie
+	// after the start) before it counts as a clock problem; the corrections
+	// of a running clock are far smaller.
+	clockJumpMargin = time.Hour
+)
+
+// clockWatch is the evidence of a clock problem that makes the retention
+// wait (retentionHeld).
+type clockWatch struct {
+	// read returns the wall clock (without its monotonic reading) and the
+	// monotonic time since the watch started (tests replace it).
+	read  func() (wall time.Time, mono time.Duration)
+	wall  time.Time     // the previous reading
+	mono  time.Duration // of the previous reading
+	held  bool          // the retention waits
+	since time.Duration // monotonic time of the latest evidence while held
+}
+
+// startClockWatch starts the watch of the wall clock against the monotonic
+// clock (newWriter).
+func (w *writer) startClockWatch() {
+	base := time.Now()
+	w.clk = clockWatch{read: func() (time.Time, time.Duration) {
+		t := time.Now()
+		return t.Round(0), t.Sub(base)
+	}}
+	w.clk.wall, w.clk.mono = w.clk.read()
+}
+
+// checkLastWritten is the evidence of the start (New): the raw log row
+// written last before it (lastWritten, unix ms; 0: none) lies more than
+// clockJumpMargin after the current time, so the clock went back since
+// then, or was ahead then. Either reading may be the wrong one, so the
+// retention waits as after a jump.
+func (w *writer) checkLastWritten(lastWritten int64) {
+	if lastWritten > w.clk.wall.Add(clockJumpMargin).UnixMilli() {
+		w.clockEvidence(fmt.Sprintf("the log was last written at %s, after the current time",
+			time.UnixMilli(lastWritten).UTC().Format(time.RFC3339)))
+	}
+}
+
+// clockEvidence records evidence of a clock problem: the retention waits
+// for maxRetentionHold from now, unless the host reports its clock
+// synchronised (the current time can then be trusted).
+func (w *writer) clockEvidence(why string) {
+	if w.clockSynced() {
+		w.s.log.Info("the host clock changed, but it is synchronised: log retention goes on", slog.String("reason", why))
+		return
+	}
+	w.s.log.Warn("log retention waits (at most a day, or until the host clock is synchronised), so a wrong clock "+
+		"cannot delete the query log and the statistics", slog.String("reason", why))
+	w.clk.held, w.clk.since = true, w.clk.mono
+}
+
+// clockSynced reports whether the host reports its clock as synchronised
+// (SetClockReader; false when that is unknown).
+func (w *writer) clockSynced() bool {
+	fn := w.s.clock.Load()
+	if fn == nil {
+		return false
+	}
+	synced, known := (*fn)()
+	return known && synced
+}
+
+// retentionHeld reports whether the retention pruning waits. The cutoff is
+// the wall clock minus the retention, so a clock set far ahead would delete
+// the whole query log and the statistics. It waits only on evidence of a
+// clock problem: the wall clock moved more than clockJumpMargin against
+// the monotonic clock since the last run (ahead or back), or the log was
+// last written after the start's current time (checkLastWritten). It waits
+// until maxRetentionHold passed after the latest evidence or the host
+// reports its clock synchronised. An unsynchronised clock alone (a host
+// without an NTP client, Docker Desktop) holds nothing: the retention is a
+// privacy setting. The size cap always applies.
+func (w *writer) retentionHeld() bool {
+	c := &w.clk
+	if c.read == nil {
+		return false
+	}
+	wall, mono := c.read()
+	skew := wall.Sub(c.wall) - (mono - c.mono)
+	c.wall, c.mono = wall, mono
+	if skew > clockJumpMargin || skew < -clockJumpMargin {
+		dir := "ahead"
+		if skew < 0 {
+			dir, skew = "back", -skew
+		}
+		w.clockEvidence(fmt.Sprintf("the host clock jumped %s by %s", dir, skew.Round(time.Minute)))
+	}
+	if !c.held {
+		return false
+	}
+	switch {
+	case w.clockSynced():
+		w.s.log.Info("the host clock is synchronised: log retention applies again")
+	case mono-c.since >= maxRetentionHold:
+		w.s.log.Info("log retention applies again: the host clock showed no further jump for a day")
+	default:
+		return true
+	}
+	c.held = false
+	return false
+}
+
+// lastWrittenRaw returns the time (unix ms) of the raw log row written last
+// (the query log and the cache requests: the highest id, not the latest
+// time); 0 when there is none or it cannot be read.
+func lastWrittenRaw(ctx context.Context, d *db.DB) int64 {
+	var last int64
+	for _, table := range []string{"logs_queries", "logs_cache_requests"} {
+		var ts int64
+		if err := d.R.QueryRowContext(ctx, `SELECT ts FROM `+table+` ORDER BY id DESC LIMIT 1`).Scan(&ts); err == nil {
+			last = max(last, ts)
+		}
+	}
+	return last
 }
 
 // pruneRetention deletes expired rows; false if the budget ran out first.

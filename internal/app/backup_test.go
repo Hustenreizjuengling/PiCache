@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
@@ -681,6 +682,166 @@ func TestPreUpgradeBackupRefusesNewerSchema(t *testing.T) {
 	}
 }
 
+// A version before 1.0.0 started on a newer database records itself as
+// binary_version before it fails. The next start of the newer version
+// names its copy after the version that wrote the schema (binary_schema),
+// not after the older one, which could not open it; when the schema
+// changed since that record, the copy keeps the previous version's name.
+func TestPreUpgradeCopyNamedAfterSchemaOwner(t *testing.T) {
+	ctx := context.Background()
+	a := newRestoreApp(t)
+	makeConfigDB(t, a.paths.ConfigDB, "owner", "owner password", "en")
+	openLive(t, a)
+	oldVersion := version.Version
+	t.Cleanup(func() { version.Version = oldVersion })
+	version.Version = "v1.0.0"
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordSchema(ctx, a.cdb); err != nil {
+		t.Fatal(err)
+	}
+	backups := filepath.Join(a.cfg.DataDir, "backups")
+	// 0.16.1 was installed without the copy: it recorded itself and failed.
+	if _, err := a.cdb.W.ExecContext(ctx, `UPDATE app_meta SET value = 'v0.16.1' WHERE key = 'binary_version'`); err != nil {
+		t.Fatal(err)
+	}
+	version.Version = "v1.0.1"
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := filepath.Glob(filepath.Join(backups, "picache-v0.16.1-*.db")); len(c) != 0 {
+		t.Fatalf("the database of v1.0.0 was copied under the name of v0.16.1: %v", c)
+	}
+	if c, _ := filepath.Glob(filepath.Join(backups, "picache-v1.0.0-*.db")); len(c) != 1 {
+		t.Fatalf("copies named after v1.0.0: %v", c)
+	}
+	// The recorded schema is not the database's (the previous version
+	// migrated it): the copy is named after the previous version.
+	if err := recordSchema(ctx, a.cdb); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.cdb.W.ExecContext(ctx, `UPDATE app_meta SET value = json_set(value, '$.schema.settings', 1) WHERE key = ?`,
+		metaBinarySchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.cdb.W.ExecContext(ctx, `UPDATE app_meta SET value = 'v1.0.2' WHERE key = 'binary_version'`); err != nil {
+		t.Fatal(err)
+	}
+	version.Version = "v1.0.3"
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := filepath.Glob(filepath.Join(backups, "picache-v1.0.2-*.db")); len(c) != 1 {
+		t.Fatalf("copies named after v1.0.2: %v", c)
+	}
+}
+
+// REV-4: a version before 1.0.0 started on this version's database by
+// mistake copies it under this version's name, records itself and fails;
+// it keeps only its newest three copies. The next start of this version
+// adds no second copy of the same schema under its own name, so a second
+// mistaken start of the older version does not prune the one copy it can
+// open. Without such a copy (or with only a copy of a version whose name
+// merely starts the same) the copy is made as before.
+func TestPreUpgradeCopySkipsRedundantCopy(t *testing.T) {
+	ctx := context.Background()
+	a := newRestoreApp(t)
+	makeConfigDB(t, a.paths.ConfigDB, "owner", "owner password", "en")
+	openLive(t, a)
+	oldVersion := version.Version
+	t.Cleanup(func() { version.Version = oldVersion })
+	version.Version = "v1.0.0-rc.2"
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordSchema(ctx, a.cdb); err != nil {
+		t.Fatal(err)
+	}
+	backups := filepath.Join(a.cfg.DataDir, "backups")
+	if err := os.MkdirAll(backups, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	genuine := filepath.Join(backups, "picache-v0.16.1-20260930T124855.db") // the copy 0.16.1 can open
+	execFile(t, genuine, `CREATE TABLE schema_migrations (component TEXT, version INTEGER, applied_at INTEGER)`,
+		`INSERT INTO schema_migrations VALUES ('settings', 6, 1), ('dns', 3, 1)`)
+	copies := func(pattern string) []string {
+		t.Helper()
+		c, _ := filepath.Glob(filepath.Join(backups, pattern))
+		return c
+	}
+	// 0.16.1 started by mistake: its copy under rc.2's name, then it records
+	// itself and fails.
+	olderStart := func(ts string) string {
+		t.Helper()
+		p := filepath.Join(backups, "picache-v1.0.0-rc.2-"+ts+".db")
+		if _, err := a.cdb.W.ExecContext(ctx, `VACUUM INTO ?`, p); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.cdb.W.ExecContext(ctx, `UPDATE app_meta SET value = 'v0.16.1' WHERE key = 'binary_version'`); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	byOlder := olderStart("20260930T125112")
+	if got := copyOfSchema(ctx, a.cdb, backups, "v1.0.0"); got != "" {
+		t.Fatalf("the copy of v1.0.0-rc.2 counts for v1.0.0: %s", got)
+	}
+	if err := a.preUpgradeBackup(ctx); err != nil { // rc.2 again
+		t.Fatal(err)
+	}
+	if c := copies("picache-*.db"); len(c) != 2 || !slices.Contains(c, genuine) || !slices.Contains(c, byOlder) {
+		t.Fatalf("a redundant copy was made: %v", c)
+	}
+	var bin string
+	if err := a.cdb.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = 'binary_version'`).Scan(&bin); err != nil || bin != "v1.0.0-rc.2" {
+		t.Fatalf("binary_version %q %v", bin, err)
+	}
+	// Without the older version's copy, this start makes one (named after
+	// the version whose schema it is).
+	if err := os.Remove(byOlder); err != nil {
+		t.Fatal(err)
+	}
+	olderStart("20260930T125131")
+	if err := os.Remove(filepath.Join(backups, "picache-v1.0.0-rc.2-20260930T125131.db")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c := copies("picache-v1.0.0-rc.2-*.db"); len(c) != 1 || !slices.Contains(copies("picache-*.db"), genuine) {
+		t.Fatalf("no copy without the older version's: %v", copies("picache-*.db"))
+	}
+}
+
+// Pruning keeps the newest three copies and the newest copy of every other
+// schema: a genuine copy of an older schema is never pruned for newer
+// copies of another schema.
+func TestPruneBackupsKeepsEverySchema(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().Add(-time.Hour)
+	mk := func(name string, settingsV int, age time.Duration) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		execFile(t, p, `CREATE TABLE schema_migrations (component TEXT, version INTEGER, applied_at INTEGER)`,
+			fmt.Sprintf(`INSERT INTO schema_migrations VALUES ('settings', %d, 1), ('dns', 3, 1)`, settingsV))
+		if err := os.Chtimes(p, base.Add(age), base.Add(age)); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	older := mk("picache-v0.16.1-1.db", 6, 0)               // the genuine copy of 0.16.1
+	olderDup := mk("picache-v0.15.0-0.db", 6, -time.Minute) // an older copy of the same schema
+	mk("picache-v1.0.0-2.db", 7, time.Minute)
+	mk("picache-v0.16.1-3.db", 7, 2*time.Minute)
+	mk("picache-v1.0.0-4.db", 7, 3*time.Minute)
+	pruneBackups(dir, 3)
+	left, _ := filepath.Glob(filepath.Join(dir, "picache-*.db"))
+	if len(left) != 4 || !slices.Contains(left, older) || slices.Contains(left, olderDup) {
+		t.Fatalf("left %v: want the newest three and the newest copy of settings v6", left)
+	}
+}
+
 // OPS-6: a damaged picache.db or one PiCache cannot write names the cause
 // and the fix instead of a bare SQLite message.
 func TestExplainConfigDBError(t *testing.T) {
@@ -786,5 +947,37 @@ func TestPreUpgradeCopyKeepsV010Schema(t *testing.T) {
 	users, err := auth.ListUsers(ctx, a.cdb)
 	if err != nil || len(users) != 1 || users[0].Role != auth.RoleAdmin {
 		t.Fatalf("existing accounts become admins: %+v %v", users, err)
+	}
+}
+
+// A missing or empty picache.db in the data directory of an existing
+// installation (instance-id exists) is refused instead of silently
+// starting a new installation; without instance-id (a first start, or
+// deleted on purpose) it is not.
+func TestCheckExistingInstallation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "picache.db")
+	if err := checkExistingInstallation(path, dir); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "instance-id"), []byte("picache-0123456789ab\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	err := checkExistingInstallation(path, dir)
+	if err == nil || !strings.Contains(err.Error(), path+" is missing") || !strings.Contains(err.Error(), "backups") ||
+		!strings.Contains(err.Error(), "delete "+filepath.Join(dir, "instance-id")) {
+		t.Fatalf("missing: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkExistingInstallation(path, dir); err == nil || !strings.Contains(err.Error(), path+" is empty") {
+		t.Fatalf("empty: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("SQLite format 3\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkExistingInstallation(path, dir); err != nil {
+		t.Fatalf("present: %v", err)
 	}
 }

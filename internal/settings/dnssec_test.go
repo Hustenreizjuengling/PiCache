@@ -157,7 +157,7 @@ func TestDNSSECDefaultsAndSync(t *testing.T) {
 		{`{"dns":{"dnssec":false},"filter":{}}`, DNSSECOff},
 		{`{"dns":{"dnssec":true,"dnssecMode":"validate"},"filter":{}}`, DNSSECValidate},
 	} {
-		a, err := s.Update(ctx, func(a *All) error { return ApplySyncable(a, jsontext.Value(tc.payload)) })
+		a, err := s.Update(ctx, func(a *All) error { _, err := ApplySyncable(a, jsontext.Value(tc.payload)); return err })
 		if err != nil || a.DNS.DNSSECMode != tc.want {
 			t.Fatalf("%s: %q %v", tc.payload, a.DNS.DNSSECMode, err)
 		}

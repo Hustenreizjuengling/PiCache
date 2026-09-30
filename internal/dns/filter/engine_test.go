@@ -564,6 +564,54 @@ func TestStartLoadsCachedLists(t *testing.T) {
 	}
 }
 
+// Ready is closed only once Start compiled the cached copies: from then on
+// Check blocks their entries. The DNS listeners wait for it, so a list
+// never fails open after a restart (before, DNS answered while the
+// compile ran in the background).
+func TestReadyAfterCachedListsCompiled(t *testing.T) {
+	dir := t.TempDir()
+	d := openTestDB(t, dir)
+	defer d.Close()
+	e := newEngineAt(t, dir, d, testClient())
+	if err := e.DeleteList(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	l := addLocalList(t, e, "l.txt", "||cached.example^\n", ListInput{})
+	if _, err := e.RefreshList(context.Background(), l.ID); err != nil {
+		t.Fatal(err)
+	}
+	e2 := newEngineAt(t, dir, d, testClient())
+	select {
+	case <-e2.Ready():
+		t.Fatal("ready before Start")
+	default:
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e2.Start(ctx); close(done) }()
+	select {
+	case <-e2.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("not ready after Start")
+	}
+	if !e2.Check("cached.example", qtypeA, []int64{1}).Blocked() {
+		t.Fatal("ready, but the cached list is not compiled")
+	}
+	cancel()
+	<-done
+	// An engine stopped before its first compile is ready too (the
+	// listeners never wait for a stopped engine).
+	e3 := newEngineAt(t, dir, d, testClient())
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	e3.Start(stopped)
+	select {
+	case <-e3.Ready():
+	default:
+		t.Fatal("a stopped engine is not ready")
+	}
+}
+
 func TestStats(t *testing.T) {
 	e := newTestEngine(t)
 	ctx := context.Background()
@@ -611,6 +659,10 @@ func TestDue(t *testing.T) {
 		{"jitter -10%", listRT{List: List{LastChecked: t0, Status: statusOK}, jitter: 0.9}, t0.Add(22 * time.Hour), day, true},
 		{"jitter +10%", listRT{List: List{LastChecked: t0, Status: statusOK}, jitter: 1.1}, t0.Add(26 * time.Hour), day, false},
 		{"failed retries hourly", listRT{List: List{LastChecked: t0, Status: statusFailedCached}, jitter: 1}, t0.Add(time.Hour), day, true},
+		// Checked while the clock was years ahead: due now, not in years.
+		{"checked in the future", listRT{List: List{LastChecked: t0.Add(5 * 365 * day), Status: statusFailedCached}, jitter: 1}, t0, day, true},
+		{"checked a moment ahead", listRT{List: List{LastChecked: t0.Add(30 * time.Second), Status: statusOK}, jitter: 1}, t0, day, false},
+		{"manual, checked in the future", listRT{List: List{LastChecked: t0.Add(5 * 365 * day)}, jitter: 1}, t0, 0, false},
 	}
 	for _, c := range cases {
 		if got := due(&c.rt, c.now, c.interval); got != c.want {

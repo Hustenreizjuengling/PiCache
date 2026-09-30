@@ -196,6 +196,90 @@ func TestParseUpstreamHashPort(t *testing.T) {
 	}
 }
 
+// Upstreams that 0.16 and 0.17 accepted with other text after "#" (and
+// ignored it) keep working after the upgrade: a stored document, a
+// document of a restore and the stored targets of forwarders and groups
+// read them as those versions did (the text dropped, the default port or
+// the port after ":"). Before, every such entry was dropped: a default set
+// of only such entries was empty (every query SERVFAIL) and every settings
+// save was refused. New input with such text is still refused.
+func TestLegacyHashUpstreams(t *testing.T) {
+	for in, want := range map[string]string{
+		"tls://1.1.1.1#cloudflare-dns.com": "tls://1.1.1.1",
+		"9.9.9.9#dns.quad9.net":            "9.9.9.9",
+		" 8.8.8.8#google ":                 "8.8.8.8",
+		"1.1.1.1:53#5353":                  "1.1.1.1:53",
+		"10.0.0.53#0":                      "10.0.0.53",
+		"quic://dns.example#x":             "quic://dns.example",
+		"[fd00::53]:53#5335":               "[fd00::53]:53",
+	} {
+		if got, ok := LegacyUpstream(in); !ok || got != want {
+			t.Errorf("LegacyUpstream(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"10.0.0.53#5353", "9.9.9.9", "https://dns.example/dns-query#x", "h3://dns.example/dns-query#x",
+		"#x", "not an upstream#x"} {
+		if got, ok := LegacyUpstream(in); ok || got != in {
+			t.Errorf("LegacyUpstream(%q) = %q, %v; want it unchanged", in, got, ok)
+		}
+	}
+	if got := LegacyUpstreams([]string{"9.9.9.9", "9.9.9.9#dns.quad9.net", "1.1.1.1#x"}); !slices.Equal(got, []string{"9.9.9.9", "1.1.1.1"}) {
+		t.Errorf("LegacyUpstreams = %v", got)
+	}
+
+	ctx := context.Background()
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.Migrate(ctx, "settings", migrations); err != nil {
+		t.Fatal(err)
+	}
+	doc := `{"dns":{"upstreams":["tls://1.1.1.1#cloudflare-dns.com","9.9.9.9#dns.quad9.net"],"fallbackUpstreams":["8.8.8.8#google"],` +
+		`"localPtrUpstreams":["192.168.1.1#router"]}}`
+	if _, err := d.W.ExecContext(ctx, `INSERT INTO settings (id, doc, updated_at) VALUES (1, ?, 0)`, doc); err != nil {
+		t.Fatal(err)
+	}
+	var logBuf strings.Builder
+	s, err := Open(ctx, d, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(what string, a *All) {
+		t.Helper()
+		if !slices.Equal(a.DNS.Upstreams, []string{"tls://1.1.1.1", "9.9.9.9"}) || !slices.Equal(a.DNS.FallbackUpstreams, []string{"8.8.8.8"}) ||
+			!slices.Equal(a.DNS.LocalPTRUpstreams, []string{"192.168.1.1"}) {
+			t.Fatalf("%s: %v %v %v", what, a.DNS.Upstreams, a.DNS.FallbackUpstreams, a.DNS.LocalPTRUpstreams)
+		}
+		if err := a.Validate(); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	check("Open", s.Get())
+	if !strings.Contains(logBuf.String(), `has text after \"#\" that this version refuses`) || !strings.Contains(logBuf.String(), "cloudflare-dns.com") {
+		t.Fatalf("no warning: %s", logBuf.String())
+	}
+	decoded, err := DecodeStored([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("DecodeStored", decoded)
+	// Other settings can be saved again; the save stores the used values.
+	if _, err := s.Update(ctx, func(a *All) error { a.Logs.QueryLogRetentionHours = 48; return nil }); err != nil {
+		t.Fatalf("a settings save after the upgrade: %v", err)
+	}
+	var stored string
+	if err := d.R.QueryRowContext(ctx, `SELECT json_extract(doc, '$.dns.upstreams') FROM settings`).Scan(&stored); err != nil ||
+		stored != `["tls://1.1.1.1","9.9.9.9"]` {
+		t.Fatalf("stored %s %v", stored, err)
+	}
+	// New input with such text is still refused.
+	if _, err := s.Update(ctx, func(a *All) error { a.DNS.Upstreams = []string{"9.9.9.9#dns.quad9.net"}; return nil }); err == nil {
+		t.Fatal("new input with a name after # was accepted")
+	}
+}
+
 // A document stored by a version without the updates section gets its
 // defaults: daily checks on, stable releases only.
 func TestUpdatesDefaultsForOlderDocuments(t *testing.T) {
@@ -289,6 +373,24 @@ func TestMigrateDownloadCacheSection(t *testing.T) {
 			want: DownloadCache{CacheIPv4: []string{}, DisabledServices: []string{"test"}}},
 		{name: "not JSON", doc: `{"` + oldKey + `": {`, openFail: "decode stored document"},
 	}
+	// A document that cannot be decoded stops the start: the error names
+	// the way back (SQLite's integrity check does not see such damage).
+	t.Run("damaged names the fix", func(t *testing.T) {
+		d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		if err := d.Migrate(ctx, "settings", migrations); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.W.ExecContext(ctx, `INSERT INTO settings (id, doc, updated_at) VALUES (1, '{"dns":{"rateLimitQps":"abc"}}', 0)`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(ctx, d, log); err == nil || !strings.Contains(err.Error(), "picache restore <backup file>") {
+			t.Fatalf("Open = %v", err)
+		}
+	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)

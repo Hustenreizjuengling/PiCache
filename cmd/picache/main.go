@@ -311,11 +311,27 @@ func closeLogSinks(log *slog.Logger) {
 	}
 }
 
+// checkRunAsInContainer refuses to serve as root without PICACHE_RUN_AS in
+// a Docker or Podman container: an empty value (-e PICACHE_RUN_AS=) kept
+// PiCache running as root with the container's capabilities, writing
+// root-owned files into the data volume, while uid 0 was refused. Outside
+// a container the systemd unit runs PiCache as its own user, and root only
+// warns.
+func checkRunAsInContainer(runAs string, root, container bool) error {
+	if root && container && strings.TrimSpace(runAs) == "" {
+		return errors.New(`PICACHE_RUN_AS must be numeric non-root uid:gid, got "" (in a container PiCache switches from root to it after binding its ports; the image sets 65532:65532)`)
+	}
+	return nil
+}
+
 func serve(args []string) int {
 	cfg, err := config.Load(args, os.Getenv)
 	if errors.Is(err, flag.ErrHelp) { // picache serve -h
 		fmt.Println(strings.TrimSpace(usage))
 		return 0
+	}
+	if err == nil {
+		err = checkRunAsInContainer(cfg.RunAs, os.Geteuid() == 0, inContainer())
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "picache: configuration error:", err)

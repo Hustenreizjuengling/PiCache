@@ -532,4 +532,11 @@ func TestRestoreCommandArgs(t *testing.T) {
 	if h := restorePermissionHint(err, false); !strings.Contains(h, "sudo picache restore") || !strings.Contains(h, "permission denied") {
 		t.Errorf("user hint %q", h)
 	}
+	// In a container there is no systemctl: the container is restarted.
+	if m := restoreStaged(true); strings.Contains(m, "systemctl") || !strings.Contains(m, "docker restart <container>") {
+		t.Errorf("container message %q", m)
+	}
+	if m := restoreStaged(false); !strings.Contains(m, "systemctl restart picache") {
+		t.Errorf("host message %q", m)
+	}
 }

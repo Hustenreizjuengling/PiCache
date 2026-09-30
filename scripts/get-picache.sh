@@ -240,6 +240,23 @@ check_downgrade() {
 	die "picache $new_version is older than the installed $installed_version. $installed_version may have migrated the database, which $new_version then refuses: PiCache would not start. To go back anyway (docs/DEPLOYMENT.md \"Going back to an earlier version\"): unless the upgrade notes say that $new_version opens this database, first stop PiCache (sudo systemctl stop picache) and put the copy made before the upgrade ($data/backups/picache-$new_version-*.db) in place as $data/picache.db, deleting picache.db-wal and picache.db-shm; then run get-picache.sh again with PICACHE_ALLOW_DOWNGRADE=1 (... | sudo PICACHE_ALLOW_DOWNGRADE=1 sh -s -- --version $new_version${pass:-})"
 }
 
+# check_latest NEWOUT stops without an error when no --version was given
+# and the latest release (the `version` output NEWOUT of its binary) is
+# older than the installed one (a release candidate or nightly build newer
+# than the latest stable release): nobody asked for a downgrade, so
+# check_downgrade's steps to go back do not apply. PICACHE_ALLOW_DOWNGRADE=1
+# installs the latest release anyway.
+check_latest() {
+	[ -z "${version:-}" ] && [ "${PICACHE_ALLOW_DOWNGRADE:-}" != 1 ] || return 0
+	[ -x "$INSTALLED_BIN" ] || return 0
+	new_version=$(release_version "$1")
+	installed_version=$(release_version "$("$INSTALLED_BIN" version 2>/dev/null)")
+	[ -n "$new_version" ] && [ -n "$installed_version" ] || return 0
+	semver_lt "$new_version" "$installed_version" || return 0
+	say "the installed $installed_version is newer than the latest release $new_version; nothing to do (use --version $installed_version to reinstall it)"
+	exit 0
+}
+
 # need_tools installs openssl and the CA certificates when they are missing
 # (minimal LXC templates): with apt-get, dnf or zypper; on Arch it prints the
 # pacman command instead (never -Sy: a partial upgrade). The rest is part of
@@ -371,6 +388,7 @@ main() {
 	chmod 0755 "$tmp/picache-linux-$a"
 	run_binary "$tmp/picache-linux-$a"
 	check_version "$v"
+	check_latest "$v"
 	check_downgrade "$v"
 	say "installing $v"
 	# Without --version nothing binds the download to a release: name the

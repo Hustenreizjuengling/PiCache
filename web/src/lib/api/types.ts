@@ -34,6 +34,8 @@ export interface Page<T> {
   items: T[]
   total: number
   next?: string
+  /** The search stopped early (its time budget): `next` continues where it stopped. */
+  partial?: boolean
 }
 
 /** Time range presets accepted by `range=` (docs/API.md "Lists"). */

@@ -254,7 +254,7 @@ func TestSendErrors(t *testing.T) {
 	// configuration error.
 	c, _ := s.Create(t.Context(), ChannelInput{Name: "f", Kind: KindGotify, URL: cp.srv.URL, Secret: strp("t")})
 	ch, _ := s.worker(c.ID).snapshot()
-	sealed, _ := testBox(t).Seal([]byte("t"), secretAAD("other"))
+	sealed, _ := testBox(t).Seal([]byte("t"), SecretAAD("other"))
 	if _, err := s.send(t.Context(), ch, sealed, testMessage); err == nil || retryable(0, err) || !strings.Contains(err.Error(), "enter it again") {
 		t.Fatalf("undecryptable secret: %v", err)
 	}

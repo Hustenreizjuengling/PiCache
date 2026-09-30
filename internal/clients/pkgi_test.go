@@ -97,6 +97,25 @@ func TestGroupUpstreams(t *testing.T) {
 	}
 }
 
+// A group upstream that 0.16 and 0.17 accepted with other text after "#"
+// (and ignored it) is read as they did, not dropped (the group's clients
+// got SERVFAIL after the upgrade).
+func TestGroupUpstreamsLegacyHash(t *testing.T) {
+	r := newTestRegistry(t, false)
+	ctx := context.Background()
+	kids, err := r.CreateGroup(ctx, GroupInput{Name: "Kids", Enabled: true, Upstreams: []string{"1.1.1.3"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.db.W.ExecContext(ctx, `UPDATE client_groups SET upstreams = '["1.1.1.1#family","1.1.1.3"]' WHERE id = ?`, kids.ID); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := r.GroupUpstreamConfigs(ctx)
+	if err != nil || len(cfg) != 1 || !slices.Equal(cfg[0].Upstreams, []string{"1.1.1.1", "1.1.1.3"}) {
+		t.Fatalf("configs %+v %v", cfg, err)
+	}
+}
+
 // At most 16 distinct group upstream lists (a preset counts as its list)
 // and 64 distinct upstreams across them (409).
 func TestGroupUpstreamBounds(t *testing.T) {

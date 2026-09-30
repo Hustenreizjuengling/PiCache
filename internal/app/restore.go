@@ -18,6 +18,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/settings"
+	"github.com/hustenreizjuengling/picache/internal/storage"
 )
 
 // Partial restores (docs/ARCHITECTURE.md 15.3): a backup
@@ -278,6 +279,16 @@ func mergeSections(ctx context.Context, tx *sql.Tx, sections []string) error {
 			return err
 		}
 	}
+	// The built-in cache target keeps the live store id: its store lives
+	// in this machine's cache directory, not in the backup
+	// (keepLocalStore).
+	var localStore sql.NullString
+	if slices.Contains(sections, settings.SectionStorage) {
+		err := tx.QueryRowContext(ctx, `SELECT store_id FROM main.storage_targets WHERE id = ?`, storage.LocalTargetID).Scan(&localStore)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 	// Delete the parents of every selected section first (clients and
 	// groups last: their deletion cascades into the links of the other
 	// sections, which are restored too by the dependency rule).
@@ -309,6 +320,12 @@ func mergeSections(ctx context.Context, tx *sql.Tx, sections []string) error {
 			if err := copyTable(ctx, tx, t); err != nil {
 				return err
 			}
+		}
+	}
+	if slices.Contains(sections, settings.SectionStorage) {
+		if _, err := tx.ExecContext(ctx, `UPDATE main.storage_targets SET store_id = ? WHERE id = ?`, localStore.String,
+			storage.LocalTargetID); err != nil {
+			return fmt.Errorf("restore storage_targets: %w", err)
 		}
 	}
 	return mergeSettings(ctx, tx, sections)

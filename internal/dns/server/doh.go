@@ -111,10 +111,10 @@ func DoHClientID(path string) (id string, found, valid bool) {
 
 // ServeDoH answers one DoH request from source (docs/ARCHITECTURE.md 19):
 // DoH off → 404; method GET or POST (405); cross-site browser requests
-// (Sec-Fetch-Site, Origin) → 403; the path's ClientID (400); the message
-// (GET ?dns= base64url, POST application/dns-message ≤ 64 KiB; 400, 413,
-// 415); the DNS ACL on the source (403); then the pipeline with protocol
-// doh. A dropped query resets the stream (panic http.ErrAbortHandler);
+// (Sec-Fetch-Site, Origin) → 403; the DNS ACL on the source (403, before
+// anything of the request is read or parsed); the path's ClientID (400);
+// the message (GET ?dns= base64url, POST application/dns-message ≤ 64 KiB;
+// 400, 413, 415); then the pipeline with protocol doh. A dropped query resets the stream (panic http.ErrAbortHandler);
 // more than 64 requests of the source's client key in flight → 429,
 // overload → 503. The reply keeps the query's ID and question case and
 // is cached privately for its smallest TTL. An IPv6 link-local source
@@ -147,6 +147,20 @@ func (s *Server) serveDoH(w http.ResponseWriter, r *http.Request, source netip.A
 		dohError(w, http.StatusForbidden, "cross-site DoH requests are refused")
 		return
 	}
+	zone := "" // of a link-local transport peer (iface:), never of a forwarded client
+	if !forwarded {
+		zone = netutil.LinkLocalZone(source)
+	}
+	source = netutil.Canon(source)
+	// The ACL first: a source outside the allowed networks learns nothing
+	// about the request (400/413 said that DoH is on) and makes PiCache
+	// parse nothing for it.
+	if !s.allowed(source) {
+		s.refused.Add(1)
+		s.refusedSrc.add(source, time.Now())
+		dohError(w, http.StatusForbidden, "this address may not use DNS")
+		return
+	}
 	if !valid {
 		dohError(w, http.StatusBadRequest, "invalid ClientID")
 		return
@@ -154,17 +168,6 @@ func (s *Server) serveDoH(w http.ResponseWriter, r *http.Request, source netip.A
 	req, status, msg := readDoHQuery(w, r)
 	if status != 0 {
 		dohError(w, status, msg)
-		return
-	}
-	zone := "" // of a link-local transport peer (iface:), never of a forwarded client
-	if !forwarded {
-		zone = netutil.LinkLocalZone(source)
-	}
-	source = netutil.Canon(source)
-	if !s.allowed(source) {
-		s.refused.Add(1)
-		s.refusedSrc.add(source, time.Now())
-		dohError(w, http.StatusForbidden, "this address may not use DNS")
 		return
 	}
 	release, status := s.doh.acquire(netutil.ClientKey(source))

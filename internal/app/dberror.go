@@ -33,13 +33,43 @@ func explainConfigDBError(path string, err error) error {
 	switch se.Code() & 0xff {
 	case sqliteCorrupt, sqliteNotADB:
 		return fmt.Errorf("%w; %s is damaged: stop PiCache and run `picache db check` "+
-			"(docs/DEPLOYMENT.md \"Recovering a damaged picache.db\")", err, path)
+			"(Docker, with the container stopped: `docker run --rm --user 65532:65532 -v <data volume>:/data --entrypoint /picache <image> db check`; "+
+			"docs/DEPLOYMENT.md \"Recovering a damaged picache.db\")", err, path)
 	case sqliteCantOpen, sqliteReadOnly, sqlitePerm:
 		if hint := writableHint(path); hint != "" {
 			return fmt.Errorf("%w; %s", err, hint)
 		}
 	}
 	return err
+}
+
+// checkExistingInstallation refuses to start with a new, empty picache.db
+// (dbPath) in the data directory of an existing installation: its
+// instance-id exists, which the first start writes. A missing or empty
+// file (a file restore that failed on a full disk, fsck, a mistake) would
+// otherwise silently become a new installation: first-run setup offered,
+// the accounts, rules and parental controls gone, filtering on the
+// defaults. Deleting instance-id starts a new installation deliberately.
+func checkExistingInstallation(dbPath, dataDir string) error {
+	what := "missing"
+	fi, err := os.Stat(dbPath)
+	switch {
+	case err == nil && fi.Size() > 0:
+		return nil
+	case err == nil:
+		what = "empty"
+	case !errors.Is(err, os.ErrNotExist):
+		return nil // db.Open reports it
+	}
+	id := filepath.Join(dataDir, "instance-id")
+	if _, err := os.Stat(id); err != nil {
+		return nil // a new installation
+	}
+	return fmt.Errorf("%s is %s, but %s belongs to an existing installation (%s exists): PiCache does not start a new, "+
+		"empty configuration there. Put the configuration back as picache.db with PiCache stopped: a pre-upgrade copy in %s, "+
+		"a scheduled or downloaded backup (docs/DEPLOYMENT.md \"Backup and restore\", restore from files). "+
+		"To start a new installation deliberately, delete %s",
+		dbPath, what, dataDir, id, filepath.Join(dataDir, "backups"), id)
 }
 
 // writableHint probes the directory of path, then path and its -wal and

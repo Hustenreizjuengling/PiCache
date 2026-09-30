@@ -318,6 +318,31 @@ func TestScheduledRunsSameSecond(t *testing.T) {
 	}
 }
 
+// A last run "in the future" (made while the clock was years ahead)
+// counts as missed, and the next run is named after its own time, not
+// after that date plus a second.
+func TestScheduledAfterClockAhead(t *testing.T) {
+	e := newSchedEnv(t)
+	now := time.Date(2026, 9, 25, 15, 10, 3, 0, time.UTC)
+	ahead := now.Add(2 * 365 * 24 * time.Hour)
+	e.b.now = func() time.Time { return ahead }
+	if err := e.b.RunNow(); err != nil {
+		t.Fatal(err)
+	}
+	e.b.runs.Wait()
+	e.b.now = func() time.Time { return now }
+	if !e.b.missed(daily("03:30"), now) {
+		t.Fatal("a last run in the future is not missed")
+	}
+	if err := e.b.RunNow(); err != nil {
+		t.Fatal(err)
+	}
+	e.b.runs.Wait()
+	if o := e.b.Overview(t.Context()); o.Last == nil || !o.Last.Time.Equal(now) {
+		t.Fatalf("last run %+v, want at %v", o.Last, now)
+	}
+}
+
 // touch creates a file in dir with content.
 func touch(t *testing.T, dir, name, content string) {
 	t.Helper()

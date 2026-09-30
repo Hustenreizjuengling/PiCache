@@ -113,8 +113,9 @@ var channelIDRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // ValidChannelID reports whether id has the form of a channel id.
 func ValidChannelID(id string) bool { return channelIDRE.MatchString(id) }
 
-// secretAAD binds a sealed secret to its channel.
-func secretAAD(id string) string { return "picache/notify/" + id + "/secret" }
+// SecretAAD binds a sealed secret to its channel (the app opens every
+// stored one for the health check "master-key").
+func SecretAAD(id string) string { return "picache/notify/" + id + "/secret" }
 
 // storedChannel is a row with its sealed secret.
 type storedChannel struct {
@@ -423,7 +424,7 @@ func (s *Service) secretFor(c Channel, cur *storedChannel, in *string) (string, 
 			return "", errors.New("notify: no master key to seal the secret")
 		}
 		var err error
-		if sealed, err = s.box.Seal([]byte(v), secretAAD(c.ID)); err != nil {
+		if sealed, err = s.box.Seal([]byte(v), SecretAAD(c.ID)); err != nil {
 			return "", fmt.Errorf("notify: seal secret: %w", err)
 		}
 	}

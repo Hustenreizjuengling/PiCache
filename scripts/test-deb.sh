@@ -10,7 +10,9 @@
 # restarted, and no failure reported), remove and purge (/var/log/picache
 # deleted too; the account kept and locked for a custom PICACHE_DATA_DIR and
 # for a PICACHE_CACHE_DIR that is not a plain absolute path; a mount below
-# /srv/picache kept and listed), the refusals between the package,
+# /srv/picache kept and listed; after a switch to install.sh its
+# configuration, data, account and enable link kept; a failed userdel warned
+# about, not reported as done), the refusals between the package,
 # install.sh and get-picache.sh and of a login account named picache,
 # scripts/deb-version.sh against dpkg's version order and
 # `systemd-analyze verify` of the installed units.
@@ -249,6 +251,18 @@ echo "== downgrade refused, then allowed"
 out=$(install_deb "$deb") && fail "downgraded without PICACHE_ALLOW_DOWNGRADE"
 echo "$out" | grep -q "picache $version is older than the installed 99.0.1" || fail "no downgrade message: $out"
 echo "$out" | grep -q "sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_" || fail "no downgrade command: $out"
+# The installed package's prerm refuses first, in the safe order, and says
+# that dpkg goes on with the older package's scripts (whose preinst refuses
+# as well; one before 1.0.0 offers PICACHE_ALLOW_DOWNGRADE=1 as an
+# alternative there).
+echo "$out" | grep -q "picache.prerm: error: picache $version is older than the installed 99.0.1.* first stop PiCache (sudo systemctl stop picache) and put the copy made before the upgrade (/var/lib/picache/backups/picache-v.*-\*.db) in place as /var/lib/picache/picache.db.*; then run: sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_.*dpkg now tries the older package's own scripts, which refuse it as well; a package before 1.0.0 then suggests PICACHE_ALLOW_DOWNGRADE=1 as an alternative: follow the order given here instead." ||
+	fail "no refusal of the prerm in the safe order: $out"
+# dpkg does not stop there: the older package's preinst refuses too, after
+# the prerm's message.
+echo "$out" | grep -q "picache.preinst: error: picache $version is older than the installed 99.0.1" ||
+	fail "the older package's preinst did not refuse: $out"
+[ "$(echo "$out" | grep -n 'picache.prerm: error' | head -n 1 | cut -d: -f1)" -lt "$(echo "$out" | grep -n 'picache.preinst: error' | head -n 1 | cut -d: -f1)" ] ||
+	fail "the prerm's refusal is not the first: $out"
 [ "$(dpkg-query -W -f='${Version}' picache)" = 99.0.1 ] || fail "the version changed"
 PICACHE_ALLOW_DOWNGRADE=1 install_deb "$deb" >/dev/null || fail "PICACHE_ALLOW_DOWNGRADE=1 was refused"
 [ "$(dpkg-query -W -f='${Version}' picache)" = "$version" ] || fail "not downgraded"
@@ -270,6 +284,49 @@ for p in /etc/picache /var/lib/picache /var/cache/picache /var/log/picache /srv/
 done
 if getent passwd picache >/dev/null; then fail "account left after purge"; fi
 if getent group picache >/dev/null; then fail "group left after purge"; fi
+
+echo "== purge after a switch to install.sh: its configuration, data and account kept"
+install_deb "$deb" >/tmp/out || { cat /tmp/out; fail "install"; }
+wait_healthy
+apt-get remove -y -qq picache >/dev/null
+# install.sh's unit (the preinst's test); its enable link is the package's.
+install -d /usr/local/lib/systemd/system /etc/systemd/system/multi-user.target.wants
+touch /usr/local/lib/systemd/system/picache.service
+ln -sf /usr/local/lib/systemd/system/picache.service /etc/systemd/system/multi-user.target.wants/picache.service
+install -d /var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants
+echo /etc/systemd/system/multi-user.target.wants/picache.service >/var/lib/systemd/deb-systemd-helper-enabled/picache.service.dsh-also
+touch /var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/picache.service
+: >/tmp/systemctl.log
+out=$(apt-get purge -y picache 2>&1) || { echo "$out"; fail "purge"; }
+echo "$out" | grep -q "PiCache is installed with install.sh here: its configuration and data were kept" ||
+	fail "no install.sh message: $out"
+[ -e /etc/picache/picache.env ] && [ -e /var/lib/picache/picache.db ] && [ -d /var/lib/picache/keys ] ||
+	fail "install.sh's configuration or data deleted: $out"
+getent passwd picache >/dev/null || fail "account deleted: $out"
+if grep -q '^helper purge' /tmp/systemctl.log; then fail "deb-systemd-helper purge ran (it deletes install.sh's enable link)"; fi
+[ -L /etc/systemd/system/multi-user.target.wants/picache.service ] || fail "install.sh's enable link deleted"
+[ ! -e /var/lib/systemd/deb-systemd-helper-enabled/picache.service.dsh-also ] &&
+	[ ! -e /var/lib/systemd/deb-systemd-helper-enabled/multi-user.target.wants/picache.service ] ||
+	fail "the package's unit state was kept"
+[ "$(status)" = "" ] || [ "$(status)" = "unknown ok not-installed" ] || fail "status after purge: $(status)"
+rm -rf /usr/local/lib/systemd/system/picache.service /etc/systemd/system/multi-user.target.wants/picache.service \
+	/etc/picache /var/lib/picache /var/cache/picache /var/log/picache /srv/picache
+userdel picache
+groupdel picache 2>/dev/null || true
+
+echo "== purge while the account is in use: warned, not reported as deleted"
+install_deb "$deb" >/tmp/out || { cat /tmp/out; fail "install"; }
+apt-get remove -y -qq picache >/dev/null
+mv /usr/sbin/userdel /usr/sbin/userdel.real
+printf '#!/bin/sh\necho "userdel: user picache is currently used by process 1" >&2\nexit 8\n' >/usr/sbin/userdel
+chmod 0755 /usr/sbin/userdel
+out=$(apt-get purge -y picache 2>&1) || { mv /usr/sbin/userdel.real /usr/sbin/userdel; echo "$out"; fail "purge"; }
+mv /usr/sbin/userdel.real /usr/sbin/userdel
+echo "$out" | grep -q "could not delete the account picache (still in use?); delete it later with userdel picache" ||
+	fail "no userdel warning: $out"
+if echo "$out" | grep -q "Deleted the account picache"; then fail "a failed userdel was reported as done: $out"; fi
+userdel picache
+groupdel picache 2>/dev/null || true
 
 echo "== fresh install with a failed start"
 touch /tmp/fail-start

@@ -200,7 +200,7 @@ func (s *Service) buildRequest(ctx context.Context, c Channel, sealed string, m 
 		if s.box == nil {
 			return nil, &permanentError{"no master key to open the stored secret"}
 		}
-		b, err := s.box.Open(sealed, secretAAD(c.ID))
+		b, err := s.box.Open(sealed, SecretAAD(c.ID))
 		if err != nil {
 			return nil, &permanentError{"the stored secret cannot be decrypted (was the master key replaced?); enter it again"}
 		}

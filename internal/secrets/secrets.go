@@ -30,6 +30,9 @@ const prefix = "v1:"
 type Box struct {
 	key    []byte
 	Source string // where the key came from (for the UI; never the key itself)
+	// Created: Open generated the key file (none existed): secrets sealed
+	// before cannot be opened with it.
+	Created bool
 }
 
 // Open loads the master key, generating keyFile if no key exists anywhere.
@@ -65,6 +68,7 @@ func Open(keyFile string) (*Box, error) {
 		if err := f.Close(); err != nil {
 			return nil, fmt.Errorf("secrets: write key file: %w", err)
 		}
+		return &Box{key: key, Source: keyFile, Created: true}, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("secrets: %s: %w", keyFile, err)
 	}

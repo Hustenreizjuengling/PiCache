@@ -166,3 +166,19 @@ func dropNetRawChild(t *testing.T, c string) {
 		t.Fatalf("second drop: %v %v", unverified, err)
 	}
 }
+
+// The ownership refusal names the fix for a bind mount and for a named
+// volume: before, it said that named volumes get the right owner
+// automatically, which is wrong for a volume that became root-owned.
+func TestOwnerErrorNamesVolumeFix(t *testing.T) {
+	err := ownerError("/data", 0, 0, 65532, 65532).Error()
+	for _, want := range []string{"/data is owned by 0:0 but PiCache runs as 65532:65532", "`chown -R 65532:65532 <host directory>`",
+		"`docker run --rm -v <volume>:/data alpine chown -R 65532:65532 /data`"} {
+		if !strings.Contains(err, want) {
+			t.Errorf("%q lacks %q", err, want)
+		}
+	}
+	if strings.Contains(err, "get the right owner automatically") {
+		t.Errorf("%q", err)
+	}
+}

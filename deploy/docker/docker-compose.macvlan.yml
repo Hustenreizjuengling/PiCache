@@ -31,6 +31,9 @@ services:
   picache:
     image: ghcr.io/hustenreizjuengling/picache:latest
     container_name: picache
+    # A fixed host name: the local CA names it, and without one every
+    # recreated container (an update) gets a new one (its ID).
+    hostname: picache
     restart: unless-stopped
     networks:
       picache-lan:

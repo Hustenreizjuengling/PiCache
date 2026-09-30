@@ -1234,8 +1234,11 @@ purge_account() {
 	fi
 	if [ -n "$uid" ]; then
 		if [ "$uid" -gt 0 ] && [ "$uid" -le "$(sys_id_max UID)" ]; then
-			userdel picache || warn "could not delete the account picache"
-			say "Deleted the account picache."
+			if userdel picache; then
+				say "Deleted the account picache."
+			else
+				warn "could not delete the account picache (still in use?); delete it later with userdel picache"
+			fi
 		else
 			warn "the account picache is not a system account (uid $uid); it was kept"
 		fi

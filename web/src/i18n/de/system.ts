@@ -797,6 +797,7 @@ const de: Messages<typeof en> = {
   'health.check.host': 'Ressourcen des Hosts',
   'health.check.network': 'Netzwerk-Einrichtung',
   'health.check.dnssec': 'DNSSEC',
+  'health.check.master-key': 'Hauptschlüssel',
 
   'health.about.title': 'Über PiCache',
   'health.about.loadError': 'Die Systeminformationen konnten nicht geladen werden',

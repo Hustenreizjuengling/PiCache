@@ -777,6 +777,7 @@ export default {
   'health.check.host': 'Host resources',
   'health.check.network': 'Network setup',
   'health.check.dnssec': 'DNSSEC',
+  'health.check.master-key': 'Master key',
 
   'health.about.title': 'About PiCache',
   'health.about.loadError': 'The system information could not be loaded',

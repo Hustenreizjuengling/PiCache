@@ -212,3 +212,25 @@ func TestIsLoopbackURL(t *testing.T) {
 		}
 	}
 }
+
+// In a container, serving as root with an empty PICACHE_RUN_AS is refused
+// like uid 0 (SEC-2); a set value, a non-root start and a start outside a
+// container are not.
+func TestRunAsRequiredInContainer(t *testing.T) {
+	for _, tc := range []struct {
+		runAs           string
+		root, container bool
+		refused         bool
+	}{
+		{"", true, true, true},
+		{" ", true, true, true},
+		{"65532:65532", true, true, false},
+		{"", false, true, false},
+		{"", true, false, false},
+	} {
+		err := checkRunAsInContainer(tc.runAs, tc.root, tc.container)
+		if (err != nil) != tc.refused || (err != nil && !strings.Contains(err.Error(), `PICACHE_RUN_AS must be numeric non-root uid:gid, got ""`)) {
+			t.Errorf("%+v: %v", tc, err)
+		}
+	}
+}

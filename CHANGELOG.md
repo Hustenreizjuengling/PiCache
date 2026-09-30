@@ -5,6 +5,170 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Upstreams with text after `#`:** 1.0.0 reads `host#port` as the port;
+  0.17 and earlier ignored everything after `#`. An upstream, fallback,
+  local PTR upstream, forwarder target or group upstream an earlier
+  version saved with other text there (`tls://1.1.1.1#cloudflare-dns.com`,
+  `9.9.9.9#dns.quad9.net`, `1.1.1.1:53#5353`) keeps its old meaning: it
+  is used without that text (the log names each one) and stored so at the
+  next save. New input with such text is still refused. A follower reads
+  such entries in the configuration of a 0.16 or 0.17 primary the same way,
+  so followers can still be upgraded first.
+- **Docker without host networking, NAS templates:** the bridge, macvlan,
+  TrueNAS and Synology compose files set `hostname: picache`, and the Unraid
+  template passes `--hostname=picache`. Add it to a compose file of your
+  own (Unraid: to *Extra Parameters* of an existing container). If the
+  `tls` health check said after an update that the local CA does not cover
+  a name of 12 hex digits (the container ID), do not create a new local
+  CA: that name is no longer used.
+- **Release candidates:** the refusal of an older release needs the
+  `get-picache.sh` and `install.sh` of 1.0.0. Until 1.0.0 is the latest
+  release, `releases/latest/download/get-picache.sh` is 0.17.0's, which
+  installs any release: testers use the script of the release candidate
+  (`releases/download/v1.0.0-rc.N/get-picache.sh`). Go back with the
+  installed release's `get-picache.sh` and `--version`, not with the older
+  release's installer.
+
+### Changed
+
+- **Query-log searches** read the log in windows of about 200 000 rows and
+  end a page after 4 s with the matches found so far, `partial: true` and
+  a cursor where the search stopped (the web UI says so; the next page
+  searches further back). A filter that matches few rows (a domain that
+  does not occur, a rare type or response code) failed with 503 after
+  10 s on a log of millions of rows, and a filtered export broke off.
+- **Clearing the query log** answers at once: the rows are gone from every
+  read and are deleted in the background in chunks. On a log of 7–8
+  million rows the clear failed with 500 after about 40 s, kept the rows
+  and dropped query events meanwhile.
+- **`picache db check`** also decodes the settings document; `picache db
+  salvage` shows `?` as the lost rows of a table it cannot read at all
+  (it reported 1000000 for an empty table).
+- **DNS over TCP, DoT and DoH connections:** at the limit of 1024, the
+  client holding the most connections gives up its oldest one for a
+  client holding fewer, and this machine may open 64 more. One host with
+  many addresses could hold every connection and keep everyone else (the
+  host's own resolver included) from answers that need TCP.
+- **In a container, `picache serve` as root refuses an empty
+  `PICACHE_RUN_AS`** ("must be numeric non-root uid:gid", exit code 2);
+  before, PiCache kept running as root.
+
+### Fixed
+
+- **Debian package:** `apt purge picache` (or a purge of all removed
+  packages) after switching to `install.sh` deleted `/etc/picache`, the
+  data (database, master key, local CA, backups) and tried to delete the
+  account of the running `install.sh` installation. While `install.sh`'s
+  binary or unit exists, the purge now deletes nothing of it and only
+  forgets the package's unit state (without deleting the enable links the
+  units share).
+- **Purge:** a failed `userdel` (the account still in use) is warned about
+  and no longer followed by "Deleted the account picache".
+- **Debian package downgrade:** the installed package refuses an older
+  one first, with the safe order (stop PiCache, put the database copy
+  back, then install with `PICACHE_ALLOW_DOWNGRADE=1`). dpkg then runs the
+  older package's scripts, whose preinst refuses as well; one before 1.0.0
+  offers `PICACHE_ALLOW_DOWNGRADE=1` there as an alternative, which the
+  first message and DEPLOYMENT say not to follow.
+- **`get-picache.sh` without `--version`** on a host whose installed
+  release candidate is newer than the latest release says "nothing to do"
+  instead of the steps to go back to that older release.
+- **Upgrade from 0.16/0.17:** upstreams saved with text after `#` were
+  dropped, so a default set of only such upstreams was empty and every
+  query got SERVFAIL, forwarders and group resolvers failed closed and
+  every settings save was refused. The health check `upstreams` now fails
+  when no configured upstream can be used ("no usable upstream DNS server
+  is configured"); it said ok.
+- **Follower sync from a 0.16/0.17 primary:** upstreams, fallbacks, group
+  upstreams and forwarder targets the primary sends with text after `#`
+  keep their old meaning, as stored ones do, and are logged ("the primary
+  sent an upstream with text after "#" …"). The follower refused the
+  primary's DNS settings, and with them every other synced section.
+- **Pre-upgrade copies:** a version before 1.0.0 started on a newer
+  database records itself before it fails; the next start of the newer
+  version named its copy after that older version, which cannot open it,
+  and could prune the genuine copy. The copy is now named after the version
+  whose schema the database has, and pruning keeps the newest copy of every
+  schema. When the older version already copied the database under the
+  newer version's name, the newer version adds no second copy of it, which
+  used up the three places the older version keeps. That older version
+  still prunes by its own rule before it fails: DEPLOYMENT now says to copy
+  the needed file out of `backups/` before going back.
+- **Restore on another machine:** a full or `storage` restore keeps this
+  machine's own local cache store, and a `picache.db` copied from another
+  machine adopts the store in the cache directory when the copied one was
+  never used here. The download cache stayed offline ("a different cache
+  store … was found") until the store was adopted by hand.
+- **Docker:** the local CA and its certificate no longer name the
+  container's default host name (its ID), which changed with every
+  recreated container, so the `tls` check warned after every update.
+- **`picache restore`** in a container says `docker restart <container>`
+  instead of `systemctl restart picache`.
+- **`picache query`** prints the answer records with spaces instead of
+  escaped tabs (`\u0009`).
+- **Full data disk:** signed-in browsers and API tokens failed with 503
+  on every request, the health page included, once recording their last
+  use failed; that record is now best effort.
+- **Blocklists after a restart:** DNS answered before the cached lists were
+  compiled, so for up to a few seconds after every start listed names
+  (the parental categories included) were answered unfiltered. The DNS,
+  DoT, DoH and web listeners now serve once they are compiled (at most
+  30 s later; the queries wait in the bound sockets).
+- **A missing or empty `picache.db`** in the data directory of an existing
+  installation stops the start with the way back; PiCache silently started
+  a new installation with the default filtering and first-run setup.
+  Deleting `instance-id` starts a new installation on purpose.
+- **A damaged `logs.db`** (damaged inside, so it still opens) made query
+  log reads fail with 500 while the health check said ok. The damage is
+  reported by the health check `logs`, and the next start checks the file
+  and moves it aside. Events of failed writes are no longer reported as
+  "dropped under load".
+- **A `logs.db` PiCache may not write** (owned by root after a copy) was
+  moved aside as broken and later deleted; it is kept, logging is off and
+  the cause is named, as for `picache.db`.
+- **Clock set far ahead:** the web certificate issued meanwhile (not valid
+  until then) is replaced when the clock is right again, with a new local
+  CA if that is not valid yet either (the health check `tls` warns
+  meanwhile); after a clock jump (more than an hour ahead or back while
+  PiCache runs, or the log last written after the time of the start) the
+  retention waits until the host clock is synchronised, at most a day,
+  instead of deleting the query log and the statistics, while a clock that
+  is only reported as not synchronised (no NTP client, Docker Desktop)
+  delays nothing; lists checked "in the future" are updated again; and the
+  health check `upstreams` names the clock when every upstream fails on its
+  certificate's validity.
+- **Blocklist with an unreadable cached copy** (damaged, another owner)
+  stayed empty while the server answered 304 Not Modified. It is now
+  downloaded again in full and replaced, and the health check names the
+  stored copy instead of the internet connection.
+- **Damaged settings document:** the start error names the way back
+  (`picache restore <backup file>`).
+- **Web certificate without network at the start:** its LAN addresses are
+  kept, and an address that appears is added at the next minute instead
+  of after up to an hour.
+- **Replaced master key:** a new `keys/master.key` created while the
+  configuration holds secrets sealed with the previous one is logged as an
+  error, and the health check `master-key` warns while a stored secret
+  cannot be decrypted with the new key (it tries each one, so saving a
+  notification channel or NAS target without entering its secret again
+  does not end the warning).
+- **Ownership error of a named volume** names the command for a volume
+  (`docker run --rm -v <volume>:/data alpine chown -R …`), not only the
+  one for a bind mount.
+- **Query-log export:** a failure on the server is audited as
+  `truncated: "error"`, no longer as `"disconnected"`.
+- **DoH:** the DNS access list is checked before the request is read, so a
+  source outside it gets 403, never 400 or 413.
+- **Docs:** the README's Docker commands work with `picache-deploy.tar.gz`
+  (`cd deploy/docker`); a damaged `picache.db` in Docker is checked with a
+  one-off container (`docker exec` cannot run in a restarting container);
+  going back to an older release, the downgrade refusal of the installers
+  and the recovery after a restore on another machine are described as
+  they work; the 0.17.0 upgrade notes give the safe order for going back
+  with the Debian package (stop, restore the copy, then install).
+
 ## [1.0.0-rc.1] - 2026-09-30
 
 ### Upgrade notes
@@ -220,11 +384,13 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Downgrade:** 0.16 refuses the migrated `picache.db` (settings v7, dns
   v4): go back with the copy 0.17 made at its first start (the automatic
   rollback uses it; Docker users restore it before starting the older
-  image; `.deb` users install the older package with
-  `PICACHE_ALLOW_DOWNGRADE=1` and then restore it). The DNSSEC mode and the
-  forwarders' validate flags set since the upgrade are lost. 0.16 sets the
-  new `logs.db` aside (`logs.db.broken-<timestamp>`). Every settings
-  document 0.17 writes keeps `dns.dnssec` with its old meaning.
+  image; `.deb` users stop PiCache, restore the copy, then install the
+  older package with `PICACHE_ALLOW_DOWNGRADE=1`; corrected in 1.0.0: this
+  note first gave the unsafe order, installing before restoring). The
+  DNSSEC mode and the forwarders' validate flags set since the upgrade are
+  lost. 0.16 sets the new `logs.db` aside (`logs.db.broken-<timestamp>`).
+  Every settings document 0.17 writes keeps `dns.dnssec` with its old
+  meaning.
 - **Follower sync:** upgrade the followers first; a 0.16 follower refuses
   the export of a 0.17 primary (newer schema). A 0.17 follower of a 0.16
   primary maps `dns.dnssec` to the mode.

@@ -474,6 +474,82 @@ func TestSyncDNSSettings(t *testing.T) {
 	}
 }
 
+// REV-3: a 0.17 primary exports upstreams, fallbacks, group upstreams and
+// forwarder targets with text after "#" as it stored them (1.0 refuses such
+// input). The follower applies the export with 0.17's meaning (the text
+// dropped, as for its own stored settings) and logs each entry; before, the
+// validation refused the dns-settings and with them every other section.
+func TestSyncLegacyHashUpstreamsFrom017Primary(t *testing.T) {
+	ctx := context.Background()
+	p, f := syncApp(t), syncApp(t)
+	var logBuf strings.Builder
+	f.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+	kids := seedPrimary(t, p, 0)
+	secs := append([]string{settings.SectionDNSSettings}, allSynced...)
+	exp := exportOf(t, p, secs...)
+	// As 0.17 exports them.
+	var dnsSet map[string]map[string]jsontext.Value
+	if err := json.Unmarshal(exp.Sections[settings.SectionDNSSettings], &dnsSet); err != nil {
+		t.Fatal(err)
+	}
+	dnsSet["dns"]["upstreams"] = jsontext.Value(`["9.9.9.9#dns.quad9.net","tls://1.1.1.1#cloudflare-dns.com"]`)
+	dnsSet["dns"]["fallbackUpstreams"] = jsontext.Value(`["8.8.8.8#google"]`)
+	exp.Sections[settings.SectionDNSSettings] = mustJSON(t, dnsSet)
+	var cg api.ExportClientsGroups
+	if err := json.Unmarshal(exp.Sections[settings.SectionClientsGroups], &cg); err != nil {
+		t.Fatal(err)
+	}
+	for i := range cg.Groups {
+		if cg.Groups[i].ID == kids {
+			cg.Groups[i].Upstreams = []string{"1.1.1.1#family"}
+		}
+	}
+	exp.Sections[settings.SectionClientsGroups] = mustJSON(t, cg)
+	var ld api.ExportLocalDNS
+	if err := json.Unmarshal(exp.Sections[settings.SectionLocalDNS], &ld); err != nil {
+		t.Fatal(err)
+	}
+	ld.Forwarders[0].Upstreams = []string{"192.168.1.1#corp"}
+	exp.Sections[settings.SectionLocalDNS] = mustJSON(t, ld)
+	exp.Version = "v0.17.0"
+	var err error
+	if exp.ContentSHA256, err = api.ExportContentSHA256(exp.Sections); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkExport(exp, secs); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.applySync(ctx, exp, secs); err != nil {
+		t.Fatalf("refused: %v", err)
+	}
+	got := f.set.Get().DNS
+	if !slices.Equal(got.Upstreams, []string{"9.9.9.9", "tls://1.1.1.1"}) || !slices.Equal(got.FallbackUpstreams, []string{"8.8.8.8"}) {
+		t.Errorf("dns-settings: %v %v", got.Upstreams, got.FallbackUpstreams)
+	}
+	groups, _ := f.clients.Groups(ctx)
+	if i := slices.IndexFunc(groups, func(g clients.Group) bool { return g.ID == kids }); i < 0 || !slices.Equal(groups[i].Upstreams, []string{"1.1.1.1"}) {
+		t.Errorf("groups %+v", groups)
+	}
+	fwds, _ := f.dns.Forwarders(ctx)
+	if len(fwds) != 1 || !slices.Equal(fwds[0].Upstreams, []string{"192.168.1.1"}) {
+		t.Errorf("forwarders %+v", fwds)
+	}
+	if !f.filter.Check("x.games.example", 1, []int64{kids}).Blocked() {
+		t.Error("the other sections were not applied")
+	}
+	for _, want := range []string{`where=dns-settings sent="\"9.9.9.9#dns.quad9.net\"" used="\"9.9.9.9\""`,
+		`sent="\"tls://1.1.1.1#cloudflare-dns.com\""`, `sent="\"8.8.8.8#google\""`,
+		`where="clients-and-groups: group Kids" sent="\"1.1.1.1#family\""`,
+		`where="local-dns: forwarder corp.example" sent="\"192.168.1.1#corp\""`} {
+		if !strings.Contains(logBuf.String(), want) {
+			t.Errorf("log lacks %s:\n%s", want, logBuf.String())
+		}
+	}
+	if n := strings.Count(logBuf.String(), `the primary sent an upstream with text after`); n != 5 {
+		t.Errorf("%d log lines:\n%s", n, logBuf.String())
+	}
+}
+
 // An export of a newer schema, another format version or a wrong content
 // hash is refused.
 func TestCheckExport(t *testing.T) {

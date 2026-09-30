@@ -125,6 +125,37 @@ func TestForwarderDomainsMigration(t *testing.T) {
 	}
 }
 
+// A forwarder target that 0.16 and 0.17 accepted with other text after
+// "#" (and ignored it) is read as they did, not dropped (the forwarder
+// failed closed with SERVFAIL after the upgrade).
+func TestForwarderLegacyHashTarget(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(filepath.Join(t.TempDir(), "picache.db"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.Migrate(ctx, "dns", migrations); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.W.ExecContext(ctx, `INSERT INTO dns_forwarders (domain, upstreams, enabled, comment, created_at, updated_at)
+		VALUES ('corp.example', '["10.77.31.1#corp"]', 1, '', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	set, err := settings.Open(ctx, d, quietLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(ctx, Deps{DB: d, Settings: set, Log: quietLog()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := srv.Forwarders(ctx)
+	if err != nil || len(list) != 1 || !slices.Equal(list[0].Upstreams, []string{"10.77.31.1"}) {
+		t.Fatalf("forwarders %+v %v", list, err)
+	}
+}
+
 // The target "default": the only target, refused for names that never
 // reach the default upstreams, skipped by step 6 when a later settings
 // change makes its domain local, and the step-13 path at step 12.

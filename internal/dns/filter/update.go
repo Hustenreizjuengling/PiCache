@@ -118,6 +118,7 @@ func (e *Engine) loadCached(ctx context.Context) {
 				}
 			case err != nil && !rt.LastChecked.IsZero():
 				rt.wantDownload = true // the copy is missing or unreadable: fetch it again now
+				rt.cacheBad = !errors.Is(err, os.ErrNotExist)
 			}
 		}
 		e.mu.Unlock()
@@ -204,6 +205,12 @@ func due(rt *listRT, now time.Time, interval time.Duration) bool {
 	if interval <= 0 {
 		return false
 	}
+	if rt.LastChecked.Sub(now) > time.Minute {
+		// Checked "in the future": the clock was ahead then. Waiting for
+		// that date would stop the updates (and the retries of failed
+		// lists) for as long.
+		return true
+	}
 	wait := interval
 	if (rt.Status == statusFailedCached || rt.Status == statusFailedEmpty) && wait > maxFailedRetry {
 		wait = maxFailedRetry
@@ -229,6 +236,8 @@ type listUpdate struct {
 	entries, invalid, unsupported   int
 	size                            int64
 	etag, lastModified, contentHash string
+	cacheBad                        bool // listRT.cacheBad after the refresh
+	retry                           bool // download again at once (without validators)
 }
 
 func (u *listUpdate) fail(err error, hasCache bool) {
@@ -268,17 +277,26 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 		status: cfg.Status, lastError: cfg.LastError, updated: cfg.LastUpdated, checked: cfg.LastChecked,
 		success: cfg.LastSuccess, entries: cfg.Entries, invalid: cfg.Invalid, unsupported: cfg.Unsupported,
 		size: cfg.SizeBytes, etag: cfg.etag, lastModified: cfg.lastModified, contentHash: cfg.hash,
+		cacheBad: cfg.cacheBad,
 	}
 	hasCache := e.hasCache(id)
 	format := cfg.format()
 	needParse := cfg.parsed == nil || cfg.parsed.format != format
+	// An unusable cached copy is replaced by the download whatever the
+	// server says about it: its validators and hash describe a copy PiCache
+	// cannot read (before, a 304 kept the list empty for good).
+	sameCopy := hasCache && !cfg.cacheBad
 	var p *parsed
 	var tmp, title string
 	if download {
 		now := e.now()
 		up.checked = now
-		f, err := e.fetchList(ctx, id, cfg.URL, cfg.etag, cfg.lastModified, hasCache && cfg.hash != "")
-		if f.tmp != "" && (err != nil || f.hash == cfg.hash && hasCache) {
+		etag, lastModified := cfg.etag, cfg.lastModified
+		if cfg.cacheBad {
+			etag, lastModified = "", ""
+		}
+		f, err := e.fetchList(ctx, id, cfg.URL, etag, lastModified, sameCopy && cfg.hash != "")
+		if f.tmp != "" && (err != nil || f.hash == cfg.hash && sameCopy) {
 			_ = os.Remove(f.tmp)
 		}
 		switch {
@@ -287,7 +305,7 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 		case err != nil:
 			up.fail(err, hasCache)
 			e.log.Warn("list download failed", slog.Int64("id", id), slog.String("url", redactURL(cfg.URL)), slog.String("err", up.lastError))
-		case f.notModified || f.hash == cfg.hash && hasCache:
+		case f.notModified || f.hash == cfg.hash && sameCopy:
 			up.status, up.lastError, up.success = statusUnchanged, "", now
 			if !f.notModified {
 				up.etag, up.lastModified = f.etag, f.lastModified
@@ -326,9 +344,14 @@ func (e *Engine) refresh(ctx context.Context, id int64, download bool) (bool, er
 			return false, ctx.Err()
 		case err != nil:
 			up.status, up.lastError = statusFailedEmpty, "cached copy: "+errorText(err)
+			// Download it again at once without the validators, unless
+			// this refresh just did.
+			up.retry = !(download && cfg.cacheBad)
+			up.cacheBad = true
 		default:
 			p = cached
 			up.setCounts(p)
+			up.cacheBad = false
 		}
 	}
 	return e.applyRefresh(ctx, cfg.URL, id, up, p, tmp, title), nil
@@ -349,6 +372,7 @@ func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up list
 		}
 		return false
 	}
+	stored := false
 	if tmp != "" {
 		if err := os.Rename(tmp, e.cachePath(id)); err != nil {
 			_ = os.Remove(tmp)
@@ -356,12 +380,16 @@ func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up list
 			p = nil
 			up.fail(err, e.hasCache(id))
 			up.lastError = "cannot store the downloaded list"
+		} else {
+			stored = true
 		}
 	}
 	rt.Status, rt.LastError = up.status, up.lastError
 	rt.LastUpdated, rt.LastChecked, rt.LastSuccess = up.updated, up.checked, up.success
 	rt.Entries, rt.Invalid, rt.Unsupported, rt.SizeBytes = up.entries, up.invalid, up.unsupported, up.size
 	rt.etag, rt.lastModified, rt.hash = up.etag, up.lastModified, up.contentHash
+	rt.cacheBad = up.cacheBad && !stored // a stored download replaced the copy
+	rt.wantDownload = rt.wantDownload || up.retry
 	rt.jitter = newJitter()
 	named := up.status == statusOK && rt.NameAuto
 	if named {
@@ -381,6 +409,9 @@ func (e *Engine) applyRefresh(ctx context.Context, url string, id int64, up list
 	e.mu.Unlock()
 	if changed {
 		e.requestCompile()
+	}
+	if up.retry {
+		e.signal()
 	}
 
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)

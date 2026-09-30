@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -575,6 +576,41 @@ func decodeSections(exp *api.ConfigExport, sections []string) (*syncSections, er
 	return out, nil
 }
 
+// legacyUpstream is an upstream of a primary before 1.0.0 with text after
+// "#" that this version refuses, read as that version did
+// (settings.LegacyUpstream).
+type legacyUpstream struct{ where, sent, used string }
+
+// legacySyncedUpstreams reads the group upstreams and forwarder targets of
+// the synced sections as a follower reads its own stored ones
+// (settings.LegacyUpstreams): a primary before 1.0.0 exports them as it
+// stored them, and such an entry failed the whole run with a validation
+// error. It returns the changed entries.
+func legacySyncedUpstreams(sec *syncSections) []legacyUpstream {
+	var out []legacyUpstream
+	fix := func(where string, list []string) []string {
+		for _, u := range list {
+			if used, ok := settings.LegacyUpstream(u); ok {
+				out = append(out, legacyUpstream{where, u, used})
+			}
+		}
+		return settings.LegacyUpstreams(list)
+	}
+	if sec.cg != nil {
+		for i := range sec.cg.Groups {
+			g := &sec.cg.Groups[i]
+			g.Upstreams = fix("clients-and-groups: group "+g.Name, g.Upstreams)
+		}
+	}
+	if sec.ld != nil {
+		for i := range sec.ld.Forwarders {
+			f := &sec.ld.Forwarders[i]
+			f.Upstreams = fix("local-dns: forwarder "+f.Domain, f.Upstreams)
+		}
+	}
+	return out
+}
+
 // groupMapper maps the primary's group ids onto this follower's: the
 // identity with clients-and-groups (the groups are replaced too), else by
 // name (case-insensitive; the Default group is 1 everywhere).
@@ -622,16 +658,23 @@ func (a *App) applySync(ctx context.Context, exp *api.ConfigExport, sections []s
 	if err != nil {
 		return err
 	}
+	// Upstreams a primary before 1.0.0 exports with text after "#" keep
+	// that version's meaning (as stored ones do), logged once the run is
+	// applied.
+	legacy := legacySyncedUpstreams(sec)
 	// The synced settings are checked first (without storing): the group
 	// upstreams below are checked against them.
 	var syncedSettings func(*settings.All) error
+	var legacyDNS [][2]string
 	nextDNS := a.set.Get().DNS
 	if sec.dns != nil {
 		syncedSettings = func(s *settings.All) error {
 			old := a.set.Get()
-			if err := settings.ApplySyncable(s, sec.dns); err != nil {
+			changed, err := settings.ApplySyncable(s, sec.dns)
+			if err != nil {
 				return err
 			}
+			legacyDNS = changed
 			return a.checkSyncedSettings(old, s)
 		}
 		next, err := a.set.DryRun(ctx, syncedSettings)
@@ -752,6 +795,14 @@ func (a *App) applySync(ctx context.Context, exp *api.ConfigExport, sections []s
 		if _, err := a.set.Update(ctx, syncedSettings); err != nil {
 			return fmt.Errorf("dns-settings: %w", err)
 		}
+		for _, c := range legacyDNS {
+			legacy = append(legacy, legacyUpstream{"dns-settings", c[0], c[1]})
+		}
+	}
+	for _, l := range legacy {
+		a.log.Warn(`the primary sent an upstream with text after "#" that this version refuses (saved by a version before 1.0.0); `+
+			`it is used without that text, as that version did (fix it on the primary)`, slog.String("component", "sync"),
+			slog.String("where", l.where), slog.String("sent", strconv.QuoteToASCII(l.sent)), slog.String("used", strconv.QuoteToASCII(l.used)))
 	}
 	// 4. The reloads (the clients' OnChange reloads the filter's groups,
 	// the parental controls, the records and the group upstream sets).

@@ -254,8 +254,8 @@ outage.
 ## Docker
 
 ```sh
-git clone https://github.com/hustenreizjuengling/picache.git   # or unpack picache-deploy.tar.gz
-cd picache/deploy/docker
+git clone https://github.com/hustenreizjuengling/picache.git
+cd picache/deploy/docker     # or unpack picache-deploy.tar.gz and cd deploy/docker
 docker compose up -d                                           # ghcr.io/hustenreizjuengling/picache:latest
 docker exec -u 65532:65532 picache /picache setup-token
 ```
@@ -414,10 +414,16 @@ key built into the running binary ([docs/release-key.pem](docs/release-key.pem))
   [Updates](docs/DEPLOYMENT.md#updates) for each release that needs them.
 - **Going back** to an older release means the older program **and** the
   database copy named after it, because an older version refuses a
-  database a newer one migrated. The installer refuses an older release
-  unless `PICACHE_ALLOW_DOWNGRADE=1` is set; `sudo picache update --version
-  vX.Y.Z --allow-downgrade` installs one. Step by step: [Going back to an
-  earlier version](docs/DEPLOYMENT.md#going-back-to-an-earlier-version).
+  database a newer one migrated. The installers of 1.0.0 and later
+  (`install.sh`, `get-picache.sh`, the Debian package) refuse an older
+  release unless `PICACHE_ALLOW_DOWNGRADE=1` is set; those of earlier
+  releases do not check, so go back with the installed release's
+  `get-picache.sh --version vX.Y.Z`, not with the older release's
+  installer. `sudo picache update --version vX.Y.Z --allow-downgrade`
+  installs one too. Copy the database copy you need out of `backups/`
+  first: a version before 1.0.0 started on the newer database prunes that
+  directory. Step by step: [Going back to an earlier
+  version](docs/DEPLOYMENT.md#going-back-to-an-earlier-version).
 
 Releases follow Semantic Versioning (`vX.Y.Z`, release candidates
 `vX.Y.Z-rc.N`). Only the newest release gets fixes.
@@ -574,7 +580,13 @@ each problem; **System → Application log** shows the log
   DNSSEC time checks suspended. Keep the host's time synchronised
   (`timedatectl set-ntp true`; `sudo apt install fake-hwclock` on a Pi) and
   give the host NTP servers by IP address if it resolves them through
-  PiCache.
+  PiCache. A clock far **ahead** makes every encrypted upstream fail its
+  certificate check: the health check `upstreams` fails with "the system
+  clock (<date>) is outside the validity of the upstreams' certificates".
+  Fix the time; after a clock jump the query log and the statistics are
+  kept until the clock is synchronised (at most a day), and a web
+  certificate issued meanwhile (not valid until that date) is replaced at
+  the next check.
 - **DNSSEC status "indeterminate"** (health check `dnssec`): the host clock
   is not synchronised (always so in Docker Desktop's VM), or an upstream
   returns no DNSSEC data (router DNS proxies, some ISP resolvers: choose

@@ -151,6 +151,10 @@ func queryForwarders(ctx context.Context, q queryer, id int64) ([]Forwarder, err
 		if err := json.Unmarshal([]byte(ups), &f.Upstreams); err != nil {
 			return nil, fmt.Errorf("dns: forwarder %d upstreams: %w", f.ID, err)
 		}
+		// Targets an earlier version stored with text after "#" that this
+		// version refuses: read as that version did (the next save stores
+		// them so).
+		f.Upstreams = settings.LegacyUpstreams(f.Upstreams)
 		f.CreatedAt, f.UpdatedAt = db.Time(created), db.Time(updated)
 		out = append(out, f)
 	}

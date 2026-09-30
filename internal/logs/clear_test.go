@@ -3,6 +3,7 @@ package logs
 import (
 	"context"
 	"log/slog"
+	"os"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -174,5 +175,74 @@ func TestClearTakesQueuedEvents(t *testing.T) {
 	}
 	if n := count(t, s, "logs_queries"); n != 3 {
 		t.Fatalf("%d query rows, want the 3 queued before the reset", n)
+	}
+}
+
+// Clearing a large query log marks its rows at once (every read leaves
+// them out) and deletes them in chunks on the writer's ticks, never in one
+// long transaction: one DELETE of millions of rows ran into the writer's
+// timeout, the clear failed and logging stopped meanwhile. A restart before
+// the rows are deleted keeps them hidden; a mark that does not belong to
+// the logs.db (a fresh file) hides nothing.
+func TestClearQueriesMarksAndDeletesInChunks(t *testing.T) {
+	s, _ := newTestStore(t) // the writer is driven directly
+	ctx := context.Background()
+	now := time.Now()
+	n := 3*pruneChunkRows + 7
+	if _, err := s.d.W.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+		INSERT INTO logs_queries (ts, client_ip, qname, qtype, status) SELECT ? + i, '10.0.0.1', 'q' || i || '.example', 'A', 'forwarded' FROM n`,
+		n, now.Add(-time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	r := s.w.handleClear(clearQueries)
+	if r.err != nil || r.mark != int64(n) {
+		t.Fatalf("mark %d %v", r.mark, r.err)
+	}
+	if count(t, s, "logs_queries") != n {
+		t.Fatal("the clear deleted the rows at once")
+	}
+	page, err := s.QueryLog(ctx, QueryFilter{Limit: 10})
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("cleared rows are read: %d %v", len(page.Items), err)
+	}
+	// A new row is read.
+	s.w.addQuery(query(now, "10.0.0.2", "new.example", "forwarded"))
+	s.w.flush(now)
+	if page, _ = s.QueryLog(ctx, QueryFilter{Limit: 10}); len(page.Items) != 1 || page.Items[0].QName != "new.example" {
+		t.Fatalf("after the clear: %+v", page.Items)
+	}
+	// A restart before the rows are deleted keeps them hidden.
+	s2, err := New(ctx, s.d, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.clearedTo.Load() != int64(n) {
+		t.Fatalf("mark after a restart %d", s2.clearedTo.Load())
+	}
+	// Chunk by chunk (a deadline that allows one statement each time).
+	steps := 0
+	for s.clearedTo.Load() != 0 && steps < 100 {
+		s.w.clearStep(time.Now())
+		steps++
+	}
+	if steps < 3 || count(t, s, "logs_queries") != 1 {
+		t.Fatalf("%d steps, %d rows left", steps, count(t, s, "logs_queries"))
+	}
+	if _, err := os.Stat(clearedFile(s.d.Path)); !os.IsNotExist(err) {
+		t.Fatalf("the mark file is left: %v", err)
+	}
+	// A mark file of another logs.db hides nothing and goes.
+	if err := os.WriteFile(clearedFile(s.d.Path), []byte("99999 12345\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s3, err := New(ctx, s.d, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s3.clearedTo.Load() != 0 {
+		t.Fatalf("a foreign mark was loaded: %d", s3.clearedTo.Load())
+	}
+	if _, err := os.Stat(clearedFile(s.d.Path)); !os.IsNotExist(err) {
+		t.Fatalf("the foreign mark file is left: %v", err)
 	}
 }

@@ -201,7 +201,9 @@ func (b *backupScheduler) missed(s settings.Backups, now time.Time) bool {
 	b.mu.Lock()
 	last := b.lastSuccess
 	b.mu.Unlock()
-	return last.IsZero() || now.Sub(last) > backupInterval(s)+catchUpSlack
+	// A last run "in the future" (the clock was ahead then) counts as
+	// missed.
+	return last.IsZero() || now.Sub(last) > backupInterval(s)+catchUpSlack || last.Sub(now) > time.Minute
 }
 
 // tick starts a run when a scheduled time lies in (prev, now], or when a
@@ -313,9 +315,11 @@ func (b *backupScheduler) run(ctx context.Context, trigger string) {
 	s := b.set.Get().Backups
 	at := b.now().UTC().Truncate(time.Second)
 	b.mu.Lock()
-	if b.last != nil && !at.After(b.last.Time) {
+	if b.last != nil && !at.After(b.last.Time) && b.last.Time.Sub(at) < time.Minute {
 		// File names have whole seconds: a run right after another one
-		// takes the next second instead of replacing its file.
+		// takes the next second instead of replacing its file. A last run
+		// further ahead (the clock was ahead then) is not followed, or
+		// every later file would be named after that date.
 		at = b.last.Time.Add(time.Second)
 	}
 	b.mu.Unlock()

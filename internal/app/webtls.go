@@ -89,6 +89,9 @@ type webTLS struct {
 	hostAddrs func() []netutil.HostAddr
 	search    func() []string
 	bridge    func() bool
+	// container reports a Docker or Podman container (nil: no), where the
+	// default host name is the container ID (dockerIDHostname).
+	container func() bool
 
 	cur atomic.Pointer[servedCert]
 
@@ -133,7 +136,7 @@ func (m *webTLS) identity() hostIdentity {
 	s := m.set.Get()
 	hn, _ := m.hostname()
 	hn = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hn), "."))
-	if !settings.ValidHostname(hn) {
+	if !settings.ValidHostname(hn) || (m.container != nil && m.container() && dockerIDHostname(hn)) {
 		hn = ""
 	}
 	search := m.search()
@@ -142,6 +145,23 @@ func (m *webTLS) identity() hostIdentity {
 		extra: extraHosts(s, m.webHosts), localDomain: s.DNS.LocalDomain, search: search,
 		serverName: s.DNS.Encrypted.ServerName, dot: s.DNS.Encrypted.DoT,
 	}
+}
+
+// dockerIDHostname reports whether a host name is the default one of a
+// Docker or Podman container: the first 12 hex digits of the container ID.
+// A container recreated without a hostname: (an update of the image) gets
+// a new one, so the local CA and its certificate never name it; clients
+// never reach PiCache by it.
+func dockerIDHostname(hn string) bool {
+	if len(hn) != 12 {
+		return false
+	}
+	for _, c := range hn {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // tlsConfig returns the configuration of the HTTPS web listener.
@@ -276,6 +296,12 @@ func (m *webTLS) ensureBaseLocked(now time.Time) *servedCert {
 		m.loadBaseLocked()
 	}
 	b := m.base
+	if b != nil && !m.bridge() && !hostAddressed(id.addrs) {
+		// No address of this machine yet (the network is not up at the
+		// start): keep the certificate's addresses rather than dropping
+		// them until the next check.
+		id.addrs = mergeAddrs(id.addrs, leafAddrs(b.chain[0]))
+	}
 	// A leaf of the local CA can be renewed usefully while the CA outlives
 	// it; in the CA's last day a new CA is created (the health check warns
 	// 90 days before).
@@ -296,13 +322,19 @@ func (m *webTLS) ensureBaseLocked(now time.Time) *servedCert {
 			// browsers do not warn about a new one every hour.
 			m.base, m.baseTemp = temp, true
 		}
+	case now.Before(b.chain[0].NotBefore):
+		// Issued while the clock was ahead: not valid for years; expiry
+		// alone would never replace it.
+		m.renewBaseLocked(id, now, "re-issued the web certificate, which is not valid yet (the clock was ahead when it was issued)")
 	case b.source == sourceSelfSigned && b.chain[0].NotAfter.Sub(now) < renewBefore:
 		m.renewBaseLocked(id, now, "replaced the self-signed web certificate, which expires soon, with a certificate of the local CA")
 	case b.source == sourceLocalCA && b.chain[0].NotAfter.Sub(now) < renewBefore && renewable():
 		m.renewBaseLocked(id, now, "renewed the web certificate of the local CA")
-	case b.source == sourceLocalCA && (now.Sub(m.lastSANCheck) >= sanRecheckWait || m.leafEnc != m.set.Get().DNS.Encrypted):
-		// A changed dns.encrypted (the server name, DoT's wildcard) is
-		// applied at once; other changes at most hourly.
+	case b.source == sourceLocalCA && (now.Sub(m.lastSANCheck) >= sanRecheckWait || m.leafEnc != m.set.Get().DNS.Encrypted ||
+		gainedAddr(id, m.ca.cert, b.chain[0])):
+		// A changed dns.encrypted (the server name, DoT's wildcard) and a
+		// new address of this machine (the network came up after the
+		// start) are applied at once; other changes at most hourly.
 		m.lastSANCheck, m.leafEnc = now, m.set.Get().DNS.Encrypted
 		names, addrs, _ := id.leafSANs(m.ca.cert)
 		if !sameSANs(b.chain[0], names, addrs) {
@@ -324,19 +356,49 @@ func (m *webTLS) ensureBaseLocked(now time.Time) *servedCert {
 	return m.base
 }
 
+// hostAddressed reports whether addrs (ownAddrs) hold an address of the
+// machine besides loopback.
+func hostAddressed(addrs []netip.Addr) bool {
+	return slices.ContainsFunc(addrs, func(a netip.Addr) bool { return !a.IsLoopback() })
+}
+
+// leafAddrs returns the IP addresses of a certificate.
+func leafAddrs(leaf *x509.Certificate) []netip.Addr {
+	var out []netip.Addr
+	for _, ip := range leaf.IPAddresses {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			out = append(out, netutil.Canon(a))
+		}
+	}
+	return out
+}
+
+// mergeAddrs returns a with the addresses of b it lacks.
+func mergeAddrs(a, b []netip.Addr) []netip.Addr {
+	out := slices.Clone(a)
+	for _, x := range b {
+		if !slices.Contains(out, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// gainedAddr reports whether this machine has an address the CA permits
+// that the leaf lacks.
+func gainedAddr(id hostIdentity, ca, leaf *x509.Certificate) bool {
+	_, addrs, _ := id.leafSANs(ca)
+	have := leafAddrs(leaf)
+	return slices.ContainsFunc(addrs, func(a netip.Addr) bool { return !slices.Contains(have, a) })
+}
+
 // sameSANs reports whether leaf has exactly these names and addresses.
 func sameSANs(leaf *x509.Certificate, names []string, addrs []netip.Addr) bool {
 	if !slices.Equal(slices.Sorted(slices.Values(leaf.DNSNames)), slices.Sorted(slices.Values(names))) {
 		return false
 	}
-	var got []netip.Addr
-	for _, ip := range leaf.IPAddresses {
-		if a, ok := netip.AddrFromSlice(ip); ok {
-			got = append(got, netutil.Canon(a))
-		}
-	}
 	cmp := func(a, b netip.Addr) int { return a.Compare(b) }
-	return slices.Equal(slices.SortedFunc(slices.Values(got), cmp), slices.SortedFunc(slices.Values(addrs), cmp))
+	return slices.Equal(slices.SortedFunc(slices.Values(leafAddrs(leaf)), cmp), slices.SortedFunc(slices.Values(addrs), cmp))
 }
 
 // loadCALocked reads the local CA (ca.crt, ca.key) if it is not loaded
@@ -397,7 +459,9 @@ func (m *webTLS) loadBaseLocked() {
 // cert.pem/key.pem, so a rolled-back earlier version serves the same
 // certificate.
 func (m *webTLS) renewBaseLocked(id hostIdentity, now time.Time, why string) {
-	if m.ca == nil || m.ca.cert.NotAfter.Sub(now) < 24*time.Hour {
+	// A CA that is not valid yet (created while the clock was ahead) cannot
+	// sign a certificate that verifies now: a new one is needed.
+	if m.ca == nil || m.ca.cert.NotAfter.Sub(now) < 24*time.Hour || now.Before(m.ca.cert.NotBefore) {
 		if err := m.createCALocked(id, now); err != nil {
 			m.retryAt, m.baseErr = now.Add(sanRecheckWait), err.Error()
 			m.log.Error("cannot create the local CA; retried in an hour", slog.Any("err", err))
@@ -900,6 +964,12 @@ func (m *webTLS) health(now time.Time) (status, msg, hint string, show bool) {
 		return "fail", "no web certificate is served", bySource[sourceSelfSigned], true
 	case !st.Certificate.NotAfter.After(now):
 		return "fail", "the web certificate expired on " + date(st.Certificate.NotAfter), bySource[st.Source], true
+	case now.Before(st.Certificate.NotBefore):
+		return "warn", "the web certificate is not valid until " + date(st.Certificate.NotBefore) + " (was the clock ahead?)",
+			bySource[st.Source], true
+	case st.Source == sourceLocalCA && st.LocalCA != nil && now.Before(st.LocalCA.NotBefore):
+		return "warn", "the local CA is not valid until " + date(st.LocalCA.NotBefore) + " (was the clock ahead?)",
+			"PiCache creates a new local CA with the next certificate (see the log); devices must trust the new CA", true
 	case st.EnvOverride && st.Error != "":
 		return "warn", "could not load the changed certificate files: " + st.Error + "; the previous certificate is still in use", filesHint, true
 	case st.Source == sourceSelfSigned && st.Error != "":

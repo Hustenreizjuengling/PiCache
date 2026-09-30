@@ -157,6 +157,79 @@ func TestDownloadConditionalGet(t *testing.T) {
 	}
 }
 
+// A cached copy that cannot be read or parsed (damaged, another owner) is
+// replaced by the next download although the server says it did not
+// change: the request carries no validators and the same content is
+// stored. Before, the server's 304 kept the list empty for good. A copy
+// that breaks while PiCache runs gets such a download at once.
+func TestUnreadableCachedCopyHeals(t *testing.T) {
+	srv := newListServer(t)
+	srv.set(func(s *listServer) { s.body, s.etag = "||a.example^\n", `"v1"` })
+	ctx := context.Background()
+	dir := t.TempDir()
+	d := openTestDB(t, dir)
+	defer d.Close()
+	e := newEngineAt(t, dir, d, testClient())
+	if err := e.DeleteList(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	l, err := e.CreateList(ctx, ListInput{URL: srv.URL + "/list", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l, err = e.RefreshList(ctx, l.ID); err != nil || l.Status != statusOK {
+		t.Fatalf("first download: %+v %v", l, err)
+	}
+	damage := func() {
+		t.Helper()
+		if err := os.WriteFile(e.cachePath(l.ID), []byte("PK\x03\x04\x14\x00\x00\x00\x00\x00"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	damage()
+
+	// At the start: the copy cannot be parsed.
+	e2 := newEngineAt(t, dir, d, testClient())
+	e2.loadCached(ctx)
+	if st := e2.Stats(); st.CacheErrors != 1 {
+		t.Fatalf("cache errors %d", st.CacheErrors)
+	}
+	if _, err := e2.refresh(ctx, l.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e2.list(l.ID)
+	if srv.conditional || got.Status != statusOK || got.Entries != 1 || e2.Stats().CacheErrors != 0 {
+		t.Fatalf("after the download: %+v (conditional %v)", got, srv.conditional)
+	}
+	e2.compile()
+	if !e2.Check("x.a.example", qtypeA, []int64{1}).Blocked() {
+		t.Fatal("the healed copy is not applied")
+	}
+
+	// While running: a 304 for the conditional request, the copy cannot
+	// be parsed; a download without validators follows at once.
+	damage()
+	e2.mu.Lock()
+	e2.lists[l.ID].parsed = nil // a re-parse is needed
+	e2.mu.Unlock()
+	if _, err := e2.refresh(ctx, l.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.conditional {
+		t.Fatal("test setup: the request was not conditional")
+	}
+	id, download, ok := e2.nextJob()
+	if !ok || id != l.ID || !download {
+		t.Fatalf("no download queued: %d %v %v", id, download, ok)
+	}
+	if _, err := e2.refresh(ctx, l.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = e2.list(l.ID); srv.conditional || got.Status != statusOK {
+		t.Fatalf("after the retry: %+v (conditional %v)", got, srv.conditional)
+	}
+}
+
 // TestEmptyDownloadKeepsLastGoodCopy: a changed download without entries
 // (empty, blank or comment-only body) does not replace a cached copy that
 // has entries; the list reports failed-cached and keeps blocking.

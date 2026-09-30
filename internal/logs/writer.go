@@ -37,6 +37,7 @@ type writer struct {
 	nextCheckpoint time.Time
 	nextDiskCheck  time.Time
 	nextPrune      time.Time
+	clk            clockWatch // evidence of a clock problem (retentionHeld)
 	errs           errLimiter
 
 	// The backfill of daily top lists: the next day to check, down to
@@ -54,6 +55,8 @@ func newWriter(s *Store, now time.Time) *writer {
 		nextCheckpoint: now.Add(checkpointInterval),
 		nextPrune:      now.Add(time.Minute),
 	}
+	w.errs.onErr = s.noteDamage
+	w.startClockWatch()
 	w.restartBackfill(now)
 	return w
 }
@@ -243,6 +246,7 @@ func (w *writer) tick(now time.Time) {
 	if !now.Before(w.nextDiskCheck) {
 		w.checkDisk(now)
 	}
+	w.clearStep(time.Now().Add(pruneBudget))
 	if !now.Before(w.nextPrune) {
 		w.prune(now)
 	}
@@ -280,6 +284,7 @@ func (w *writer) flush(now time.Time) {
 	})
 	if err != nil {
 		w.s.dropped.Add(uint64(w.rows()))
+		w.s.writeFailed.Add(uint64(w.rows()))
 		w.errs.log(w.s.log, "cannot write log events; the batch was dropped", err)
 	} else {
 		w.sessions.committed(created)
@@ -434,7 +439,8 @@ func insertEvictions(ctx context.Context, tx *sql.Tx, events []EvictionEvent) er
 // errLimiter logs a repeated error only when its text changes or once an
 // hour (per message).
 type errLimiter struct {
-	last map[string]loggedErr
+	last  map[string]loggedErr
+	onErr func(error) // sees every error first (Store.noteDamage)
 }
 
 type loggedErr struct {
@@ -443,6 +449,9 @@ type loggedErr struct {
 }
 
 func (l *errLimiter) log(log *slog.Logger, msg string, err error) {
+	if l.onErr != nil {
+		l.onErr(err)
+	}
 	now := time.Now()
 	text := err.Error()
 	if prev, ok := l.last[msg]; ok && prev.text == text && now.Sub(prev.at) < time.Hour {

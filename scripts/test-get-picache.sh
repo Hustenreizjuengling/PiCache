@@ -5,7 +5,8 @@
 # and a stand-in dpkg-query early in PATH (a name with "-" cannot be a
 # portable shell function), and checks the architecture table, the refusal
 # of OpenSSL 1.1, the refusal next to the Debian package, the version
-# comparison and the downgrade refusal, and the noexec message.
+# comparison, the downgrade refusal and the latest release older than an
+# installed pre-release (nothing to do), and the noexec message.
 #
 #   scripts/test-get-picache.sh
 set -eu
@@ -119,6 +120,28 @@ check "nothing installed" "ok" 0 "INSTALLED_BIN=$tmp/none check_downgrade 'picac
 stub v0.17.0-rc.2
 check "pre-release to its release" "ok" 0 "$downgrade 'picache v0.17.0 (commit y)'; echo ok"
 check "release candidate downgrade" "is older than the installed v0.17.0-rc.2" 1 "$downgrade 'picache v0.17.0-rc.1 (commit y)'"
+
+# Without --version, a latest release older than the installed one (a
+# release candidate newer than the latest stable release) is nothing to do:
+# it stops without an error and without the steps to go back. With
+# --version (a downgrade asked for, check_downgrade) or
+# PICACHE_ALLOW_DOWNGRADE=1 it goes on.
+stub v1.0.0-rc.1
+latest="INSTALLED_BIN=$tmp/installed ENV_FILE=$tmp/picache.env check_latest"
+check "latest older than the installed pre-release" \
+	"the installed v1.0.0-rc.1 is newer than the latest release v0.17.0; nothing to do (use --version v1.0.0-rc.1 to reinstall it)" 0 \
+	"version=''; $latest 'picache v0.17.0 (commit y)'; echo WENT-ON"
+case $(PATH="$tmp/bin:$PATH" sh -c ". \"$tmp/lib.sh\"; version=''; $latest 'picache v0.17.0 (commit y)'; echo WENT-ON" 2>&1) in
+*WENT-ON*)
+	echo "FAIL: latest older than the installed pre-release: check_latest went on to install" >&2
+	failures=$((failures + 1))
+	;;
+esac
+check "latest newer than the installed pre-release" "WENT-ON" 0 "version=''; $latest 'picache v1.0.0 (commit y)'; echo WENT-ON"
+check "an older --version is left to check_downgrade" "WENT-ON" 0 "version=v0.17.0; $latest 'picache v0.17.0 (commit y)'; echo WENT-ON"
+check "latest older with PICACHE_ALLOW_DOWNGRADE=1" "WENT-ON" 0 \
+	"version=''; PICACHE_ALLOW_DOWNGRADE=1 $latest 'picache v0.17.0 (commit y)'; echo WENT-ON"
+check "latest older: nothing installed" "WENT-ON" 0 "version=''; INSTALLED_BIN=$tmp/none check_latest 'picache v0.17.0 (commit y)'; echo WENT-ON"
 
 # With --version the downloaded binary must report exactly that release: a
 # mirror that serves another signed release (an older one without a fix)

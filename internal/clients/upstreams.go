@@ -50,7 +50,10 @@ func decodeUpstreams(s string) []string {
 	if err := json.Unmarshal([]byte(s), &out); err != nil || out == nil {
 		return []string{}
 	}
-	return out
+	// Upstreams an earlier version stored with text after "#" that this
+	// version refuses: read as that version did (the next save stores them
+	// so).
+	return settings.LegacyUpstreams(out)
 }
 
 // groupUpstreamsOf reads the stored upstream settings of group id.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/app"
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
 // picache db check | salvage (docs/DEPLOYMENT.md "Recovering a damaged
@@ -58,10 +59,11 @@ type dbReport struct {
 	integrity []string // lines of integrity_check other than "ok"
 	foreign   []string // foreign_key_check rows
 	versions  []string // components whose version differs from this binary
+	settings  []string // why the settings document cannot be decoded
 }
 
 func (r *dbReport) problems() bool {
-	return len(r.integrity)+len(r.foreign)+len(r.versions) > 0
+	return len(r.integrity)+len(r.foreign)+len(r.versions)+len(r.settings) > 0
 }
 
 // checkDB runs PRAGMA integrity_check and foreign_key_check (the first 100
@@ -106,6 +108,19 @@ func checkDB(ctx context.Context, q *sql.DB) (dbReport, error) {
 			r.foreign = append(r.foreign, fmt.Sprintf("%s row %d refers to a missing row of %s", table, rowid.Int64, parent))
 		}
 		rows.Close()
+	}
+	// The settings document as the service decodes it: a damaged document
+	// (a bit flip inside the row) passes the integrity check but stops the
+	// start.
+	var doc string
+	switch err := q.QueryRowContext(ctx, `SELECT doc FROM settings WHERE id = 1`).Scan(&doc); {
+	case errors.Is(err, sql.ErrNoRows): // before the first start
+	case err != nil:
+		r.settings = append(r.settings, "cannot read the settings document: "+err.Error())
+	default:
+		if _, err := settings.DecodeStored([]byte(doc)); err != nil {
+			r.settings = append(r.settings, err.Error()+" (restore a backup: picache restore <backup file>)")
+		}
 	}
 	have, err := componentVersions(ctx, q)
 	if err != nil {
@@ -170,6 +185,7 @@ func printReport(w io.Writer, what string, r dbReport) {
 	section("integrity", r.integrity)
 	section("foreign keys", r.foreign)
 	section("schema versions", r.versions)
+	section("settings", r.settings)
 }
 
 // dbCheck checks picache.db (read-only).
@@ -208,6 +224,7 @@ type tableResult struct {
 	copied     int64
 	lost       int64
 	incomplete bool   // the table could not be read to its end
+	unknown    bool   // how many rows were lost is unknown (neither the largest rowid nor the row count could be read)
 	skipped    string // why it was not copied at all
 }
 
@@ -261,11 +278,14 @@ func dbSalvage(out string, force bool) int {
 	fmt.Fprintln(tw, "TABLE\tCOPIED\tLOST\tNOTE")
 	lost := false
 	for _, r := range results {
-		note := r.skipped
+		note, lostText := r.skipped, fmt.Sprint(r.lost)
 		if r.incomplete {
 			note = "could not be read to its end"
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%s\n", escapeControls(r.name), r.copied, r.lost, escapeControls(note))
+		if r.unknown {
+			note, lostText = "unreadable: how many rows were lost is unknown", "?"
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", escapeControls(r.name), r.copied, lostText, escapeControls(note))
 		lost = lost || r.lost > 0 || r.incomplete || strings.HasPrefix(r.skipped, "unknown table")
 	}
 	_ = tw.Flush()
@@ -396,7 +416,7 @@ func copyTable(ctx context.Context, src *sql.DB, dst *db.DB, table string) table
 	var n int64
 	if err := src.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+quoteIdent(table)).Scan(&n); err != nil {
 		res.incomplete = true
-	} else if n > res.copied+res.lost {
+	} else if n > res.copied+res.lost && !res.unknown {
 		res.lost = n - res.copied
 	}
 	return res
@@ -436,7 +456,9 @@ func copyRows(ctx context.Context, src *sql.DB, dst *db.DB, table string) tableR
 		rows, err := readRows(ctx, src, `SELECT `+colList+` FROM `+quoteIdent(table), len(cols))
 		if err != nil {
 			res.incomplete = true
-			_ = src.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+quoteIdent(table)).Scan(&res.lost)
+			if src.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+quoteIdent(table)).Scan(&res.lost) != nil {
+				res.unknown = true
+			}
 			return res
 		}
 		n, lost := insertRows(ctx, dst, insert, rows, true)
@@ -447,6 +469,10 @@ func copyRows(ctx context.Context, src *sql.DB, dst *db.DB, table string) tableR
 	if err := src.QueryRowContext(ctx, `SELECT MAX(rowid) FROM `+quoteIdent(table)).Scan(&maxRowid); err != nil {
 		res.incomplete = true
 	}
+	// Without the largest rowid a failed probe of one rowid does not say
+	// whether a row was there: it is not counted as lost (1000 windows of
+	// 1000 probes reported an empty table as 1000000 rows lost).
+	maxKnown := maxRowid.Valid
 	var last int64
 	failedWindows := 0
 	for {
@@ -471,7 +497,9 @@ func copyRows(ctx context.Context, src *sql.DB, dst *db.DB, table string) tableR
 		for id := last + 1; id <= end; id++ {
 			row, err := readRows(ctx, src, `SELECT `+colList+` FROM `+quoteIdent(table)+` WHERE rowid = `+fmt.Sprint(id), len(cols))
 			if err != nil {
-				res.lost++
+				if maxKnown {
+					res.lost++
+				}
 				continue
 			}
 			n, lost := insertRows(ctx, dst, insert, row, false)
@@ -482,8 +510,9 @@ func copyRows(ctx context.Context, src *sql.DB, dst *db.DB, table string) tableR
 		failedWindows++
 		// Past the largest rowid (or, when it is unreadable, after 1000
 		// unreadable windows) the rest of the table is lost.
-		if (maxRowid.Valid && last >= maxRowid.Int64) || (!maxRowid.Valid && failedWindows >= 1000) {
-			res.incomplete = !maxRowid.Valid
+		if (maxKnown && last >= maxRowid.Int64) || (!maxKnown && failedWindows >= 1000) {
+			res.incomplete = !maxKnown
+			res.unknown = !maxKnown
 			return res
 		}
 	}
