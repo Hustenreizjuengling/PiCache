@@ -665,7 +665,7 @@ func TestCheckProtection(t *testing.T) {
 	if d := e.Check("y.adult.example", qtypeA, kids); d.Source != "rule" || d.Category != "" {
 		t.Errorf("rule decision %+v", d)
 	}
-	if n := testing.AllocsPerRun(200, func() { e.CheckProtection("a.b.www.adult.example", qtypeA, kids) }); n != 0 {
+	if n := testing.AllocsPerRun(200, func() { e.CheckProtection("a.b.www.adult.example", qtypeA, kids) }); n != 0 && !raceEnabled {
 		t.Errorf("CheckProtection allocates %v times", n)
 	}
 	// A category change swaps only the tables: security is no protection
@@ -680,7 +680,7 @@ func TestCheckProtection(t *testing.T) {
 	if e.snap.Load().hasProt {
 		t.Error("no protection list is enabled")
 	}
-	if n := testing.AllocsPerRun(200, func() { e.CheckProtection("www.adult.example", qtypeA, kids) }); n != 0 {
+	if n := testing.AllocsPerRun(200, func() { e.CheckProtection("www.adult.example", qtypeA, kids) }); n != 0 && !raceEnabled {
 		t.Errorf("CheckProtection allocates %v times without protection lists", n)
 	}
 }

@@ -135,7 +135,7 @@ func TestCheckIP(t *testing.T) {
 			t.Errorf("%s %v: %+v, want %+v", c.ip, c.groups, got, c.want)
 		}
 	}
-	if n := testing.AllocsPerRun(100, func() { s.checkIP(netip.MustParseAddr("2001:db8:bad:1::5"), []int64{1}) }); n != 0 {
+	if n := testing.AllocsPerRun(100, func() { s.checkIP(netip.MustParseAddr("2001:db8:bad:1::5"), []int64{1}) }); n != 0 && !raceEnabled {
 		t.Errorf("checkIP allocates %.1f times", n)
 	}
 	s.hasIP = false

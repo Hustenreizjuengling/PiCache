@@ -212,6 +212,9 @@ func TestListMatcherPatternCostBudget(t *testing.T) {
 }
 
 func TestCheckAllocationFree(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not meaningful under the race detector")
+	}
 	s := buildSnapshot(t,
 		[]testList{{body: "||ads.example.com^\n0.0.0.0 t.example.org\n||ad*.pattern.net^\n/^re[0-9]+\\./", groups: []int64{1}}},
 		[]ruleEntry{rule(1, ActionAllow, "exact", "ok.example.com", 1), rule(2, ActionBlock, "regex", "^evil", 1)})

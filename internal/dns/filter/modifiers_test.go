@@ -389,6 +389,9 @@ func TestInvertedCap(t *testing.T) {
 // The hot path stays allocation-free with type sets, denyallow sets,
 // modified list entries and inverted rules.
 func TestCheckAllocationFreeWithModifiers(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not meaningful under the race detector")
+	}
 	r1 := rule(1, ActionBlock, "subtree", "x.example", 1)
 	r1.types, r1.deny = newTypeSet([]uint16{qtypeAAAA}, false), denyHashes([]string{"ok.x.example"})
 	r2 := rule(2, ActionBlock, "regex", `^keep\.`, 1)
