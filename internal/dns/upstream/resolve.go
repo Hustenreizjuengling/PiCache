@@ -8,6 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/hustenreizjuengling/picache/internal/dns/dnssec"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -19,6 +20,22 @@ import (
 // is not modified; see the package doc for the reply contract.
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, ecs netip.Prefix) (*dns.Msg, Info, error) {
 	return r.resolve(ctx, req, r.defaultRoute(), ecs)
+}
+
+// ResolveValidating answers req via the target set of a forwarder that
+// validates DNSSEC (validate:true, registered with
+// SetValidatingForwarders): like ResolveVia, but in DNSSEC mode validate
+// its answers are validated through these upstreams only. In the other
+// modes it is ResolveVia.
+func (r *Resolver) ResolveValidating(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, Info, error) {
+	if !r.validating() {
+		return r.ResolveVia(ctx, req, upstreams)
+	}
+	set, err := r.forwarderSet(upstreams)
+	if err != nil {
+		return nil, Info{}, err
+	}
+	return r.resolve(ctx, req, route{set: set, validate: true}, netip.Prefix{})
 }
 
 // ResolveVia answers req via the given upstreams (conditional forwarding,
@@ -35,12 +52,20 @@ func (r *Resolver) ResolveVia(ctx context.Context, req *dns.Msg, upstreams []str
 }
 
 // route is the path of a fetch: the upstream set, the fallbacks asked when
-// none of them replied, and whether it is the default set (classification
-// of blocked answers, fastest-address order).
+// none of them replied, whether it is the default set or a group set
+// (classification of blocked answers, fastest-address order) and whether
+// its answers are validated in DNSSEC mode validate (the default route,
+// the group sets, the validating forwarders). The key and failure caches
+// of the validator are kept per set (set.id).
 type route struct {
 	set      *upstreamSet
 	fallback *upstreamSet // nil: none (ResolveVia, clock guard, not configured)
 	def      bool
+	validate bool
+	// fallbackOnly asks the fallbacks at once: the chain lookups of a
+	// fetch they answered (no upstream of set replied to it, so asking
+	// set first again would use up the validation's time).
+	fallbackOnly bool
 }
 
 func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, rt route, ecs netip.Prefix) (*dns.Msg, Info, error) {
@@ -56,7 +81,9 @@ func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, rt route, ecs neti
 	if ecs.IsValid() {
 		ecs = ecs.Masked()
 	}
-	k := cacheKey{name: lowerASCII(q.Name), qtype: q.Qtype, qclass: q.Qclass, do: do, set: rt.set.id, ecs: ecs}
+	validate := d.Validating()
+	k := cacheKey{name: lowerASCII(q.Name), qtype: q.Qtype, qclass: q.Qclass, do: do, set: rt.set.id, ecs: ecs,
+		val: validate && rt.validate}
 	if pol := policy(d); pol.capacity > 0 {
 		now := time.Now()
 		if hit, ok := r.cache.get(k, now, pol.staleWindow); ok {
@@ -64,12 +91,21 @@ func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, rt route, ecs neti
 				if hit.stale {
 					r.scheduleRefresh(k, rt)
 				}
-				return m, Info{Cached: true, Stale: hit.stale, Block: hit.meta.block, EDE: hit.meta.ede, Fallback: hit.meta.fallback}, nil
+				info := Info{Cached: true, Stale: hit.stale, Block: hit.meta.block, EDE: hit.meta.ede, Fallback: hit.meta.fallback,
+					DNSSEC: hit.meta.verdict}
+				if hit.stale && info.DNSSEC != nil {
+					info.DNSSEC = &Verdict{Status: dnssec.Indeterminate, Reason: reasonStale}
+				}
+				if validate {
+					m.AuthenticatedData = info.DNSSEC.Secure()
+				}
+				return m, info, nil
 			}
 		}
 	}
+	client := clientOf(ctx)
 	res, err := r.doFlight(ctx, k, func(fctx context.Context) (exchangeResult, error) {
-		return r.fetch(fctx, k, rt)
+		return r.fetch(fctx, k, rt, client)
 	})
 	if err != nil {
 		return nil, Info{}, err
@@ -78,14 +114,20 @@ func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, rt route, ecs neti
 	m.Id = req.Id
 	m.Question = []dns.Question{q}
 	m.Compress = true
-	return m, Info{Upstream: res.upstream, RTT: res.rtt, Block: res.block, EDE: res.ede, Fallback: res.fallback}, nil
+	if validate {
+		m.AuthenticatedData = res.verdict.Secure()
+	}
+	return m, Info{Upstream: res.upstream, RTT: res.rtt, Block: res.block, EDE: res.ede, Fallback: res.fallback, DNSSEC: res.verdict}, nil
 }
 
 // fetch queries the upstreams of rt for k, removes duplicate records,
-// classifies the answer (default set only), orders its addresses (mode
-// fastest_addr, default set only) and caches it. It owns the reply until
+// classifies the answer (default and group sets), validates it (a
+// validating fetch: k.val), orders its addresses (mode fastest_addr,
+// default and group sets, not for a bogus answer) and caches it with its
+// verdict. The chain lookups of the validation draw on client's share of
+// the chain exchanges (WithClient; invalid: none). It owns the reply until
 // it returns; afterwards the reply is shared read-only.
-func (r *Resolver) fetch(ctx context.Context, k cacheKey, rt route) (exchangeResult, error) {
+func (r *Resolver) fetch(ctx context.Context, k cacheKey, rt route, client netip.Addr) (exchangeResult, error) {
 	d := r.set.Get().DNS
 	q := newQuery(k.name, k.qtype, k.qclass, k.do)
 	addECS(q, k.ecs)
@@ -98,11 +140,15 @@ func (r *Resolver) fetch(ctx context.Context, k cacheKey, rt route) (exchangeRes
 	res.ede = logged
 	if rt.def {
 		res.block = classify(res.msg, k.qtype, res.host, blocking)
-		if res.block == nil && d.UpstreamMode == "fastest_addr" {
-			r.prober.reorder(ctx, res.msg, k.qtype)
-		}
 	}
-	r.cache.store(k, res.msg, time.Now(), policy(d), entryMeta{block: res.block, ede: res.ede, fallback: res.fallback})
+	if k.val && res.block == nil {
+		r.validateFetch(ctx, rt, k, &res, d, client)
+	}
+	if rt.def && res.block == nil && d.UpstreamMode == "fastest_addr" && statusOf(res.verdict) != dnssec.Bogus {
+		r.prober.reorder(ctx, res.msg, k.qtype)
+	}
+	r.cache.store(k, res.msg, time.Now(), policy(d), entryMeta{block: res.block, ede: res.ede, fallback: res.fallback,
+		verdict: res.verdict, val: res.val})
 	return res, nil
 }
 
@@ -164,7 +210,8 @@ type call struct {
 // doFlight runs fn once per key at a time; concurrent callers wait for the
 // same result. fn runs detached from any caller (bounded by the upstream
 // timeout, cancelled on shutdown) so one impatient client cannot fail the
-// others. Callers must copy res.msg before modifying it.
+// others; if it panics, the waiters get errInternal. Callers must copy
+// res.msg before modifying it.
 func (r *Resolver) doFlight(ctx context.Context, k cacheKey, fn func(context.Context) (exchangeResult, error)) (exchangeResult, error) {
 	g := &r.flight
 	g.mu.Lock()
@@ -184,8 +231,9 @@ func (r *Resolver) doFlight(ctx context.Context, k cacheKey, fn func(context.Con
 			close(c.done)
 		}
 		if !r.goTracked(func() {
+			defer finish()
+			c.err = errInternal // replaced unless fn panics
 			c.res, c.err = fn(r.life)
-			finish()
 		}) {
 			c.err = errClosed
 			finish()
@@ -227,7 +275,7 @@ func (r *Resolver) refreshLoop(ctx context.Context) {
 			return
 		case j := <-r.refreshQ:
 			_, _ = r.doFlight(ctx, j.key, func(fctx context.Context) (exchangeResult, error) {
-				return r.fetch(fctx, j.key, j.rt)
+				return r.fetch(fctx, j.key, j.rt, netip.Addr{})
 			})
 			r.cache.endRefresh(j.key, time.Now())
 		}

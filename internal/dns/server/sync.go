@@ -65,7 +65,8 @@ func (s *Server) ValidateSync(records []Record, forwarders []Forwarder) (*Synced
 	rules := s.forwarderRules()
 	fids := map[int64]bool{}
 	for _, f := range forwarders {
-		in, err := rules.validateForwarder(ForwarderInput{Domains: f.Domains, Upstreams: f.Upstreams, Enabled: f.Enabled, Comment: f.Comment})
+		in, err := rules.validateForwarder(ForwarderInput{Domains: f.Domains, Upstreams: f.Upstreams, Enabled: f.Enabled,
+			Validate: f.Validate, Comment: f.Comment})
 		if err != nil {
 			return nil, fmt.Errorf("forwarder %s: %w", f.Domain, err)
 		}
@@ -121,8 +122,9 @@ func ReplaceSynced(ctx context.Context, tx *sql.Tx, s *SyncedLocalDNS) error {
 		if created == 0 {
 			created, updated = now, now
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO dns_forwarders (id, domain, upstreams, enabled, comment, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, f.id, f.in.Domain, string(ups), f.in.Enabled, f.in.Comment, created, updated); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO dns_forwarders (id, domain, upstreams, enabled, validate, comment, created_at,
+			updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, f.id, f.in.Domain, string(ups), f.in.Enabled, f.in.Validate, f.in.Comment,
+			created, updated); err != nil {
 			return fmt.Errorf("forwarder %s: %w", f.in.Domain, err)
 		}
 		if err := writeDomains(ctx, tx, f.id, f.in.Domains); err != nil {

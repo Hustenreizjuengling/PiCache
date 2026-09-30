@@ -112,6 +112,9 @@ func (s *Server) Lookup(ctx context.Context, req LookupRequest, caller netip.Add
 		Steps:      steps,
 		Matches:    []filter.Match{},
 	}
+	if v := res.dnssec; v != nil {
+		out.DNSSECStatus, out.DNSSECReason, out.DNSSECEDE = v.Status, v.Reason, v.EDE
+	}
 	if res.msg != nil {
 		out.RCode = rcodeString(res.msg.Rcode)
 		for _, rr := range res.msg.Answer {

@@ -19,7 +19,9 @@
   an address in them link the list or IP rule and explain that an allow
   rule for the name lifts the check. DoT and DoH entries name their
   ClientID (with a filter for it); a query refused because plain DNS is
-  off links to the encrypted DNS settings.
+  off links to the encrypted DNS settings. PiCache's DNSSEC verdict shows as
+  a chip (with the failure of a bogus answer); without one, an AD flag the
+  upstream set is named.
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -46,6 +48,7 @@
   import { Button, CopyButton, KeyValue, Notice, QueryStatusChip, SidePanel, Spinner, toast } from '$lib/ui'
   import RulePanel from '../filtering/RulePanel.svelte'
   import { confirmBlockDevice } from '../shared/blockClient'
+  import DnssecStatusChip from '../shared/DnssecStatusChip.svelte'
   import MatchList from '../shared/MatchList.svelte'
   import PauseMenu from '../shared/PauseMenu.svelte'
   import { edeText } from './ede'
@@ -139,6 +142,11 @@
       !session.isSynced('clients-and-groups') &&
       !session.isSynced('lists-and-rules'),
   )
+  /** The failure of a bogus answer: its reason without the "dnssec: " prefix (absent while domains are hidden). */
+  const dnssecFailure = $derived(
+    event?.dnssecStatus === 'bogus' && event.reason?.startsWith('dnssec: ') ? event.reason.slice('dnssec: '.length) : undefined,
+  )
+
   /** The IP rule that blocked an answer (ruleId of blocked-ip entries names an IP rule). */
   const ipRuleId = $derived(event?.status === 'blocked-ip' ? event.ruleId : undefined)
 
@@ -282,7 +290,17 @@
         <dt>{t('dns.queryLog.duration')}</dt>
         <dd>{formatMicros(event.durationUs)}</dd>
         <dt>{t('dns.queryLog.protocol')}</dt>
-        <dd>{protocolName}{event.dnssec ? ` · ${t('dns.queryLog.dnssec')}` : ''}</dd>
+        <dd>{protocolName}</dd>
+        {#if event.dnssecStatus}
+          <dt>{t('dns.queryLog.dnssecStatus.title')}</dt>
+          <dd class="dnssec">
+            <DnssecStatusChip status={event.dnssecStatus} />
+            {#if dnssecFailure}<span class="small muted">{dnssecFailure}</span>{/if}
+          </dd>
+        {:else if event.dnssec}
+          <dt>{t('dns.queryLog.dnssecStatus.title')}</dt>
+          <dd>{t('dns.queryLog.dnssecStatus.adFlag')}</dd>
+        {/if}
         {#if event.dnsClientId}
           <dt>{t('dns.queryLog.clientId')}</dt>
           <dd class="mono">{event.dnsClientId}</dd>
@@ -462,6 +480,12 @@
   }
   .ede {
     overflow-wrap: anywhere;
+  }
+  .dnssec {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
   }
   /* The button names the query: a long name wraps instead of leaving the panel. */
   .long {

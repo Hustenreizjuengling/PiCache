@@ -18,9 +18,10 @@
 //     subscribers at ingestion (buffer 256, dropped when full).
 //   - Rollups: dns_minute / dns_hourly (counts by status class), cache_minute
 //     / cache_hourly (bytes by service), dns_top_hourly (kind domain |
-//     blocked | client | upstream | purpose | qtype | unique, top 1000 keys
-//     per hour and kind; purpose counts blocked and safe-search queries by
-//     the purpose the DNS server sets, QueryEvent.Purpose; qtype at most 32
+//     blocked | client | upstream | purpose | qtype | dnssec | unique, top
+//     1000 keys per hour and kind; purpose counts blocked and safe-search
+//     queries by the purpose the DNS server sets, QueryEvent.Purpose;
+//     dnssec the queries with a DNSSEC status by status; qtype at most 32
 //     types plus OTHER; unique is a HyperLogLog sketch of the distinct
 //     names) and cache_top_hourly (kind client | content), and their daily
 //     forms dns_top_daily / cache_top_daily (daily.go). Top/ClientStats/
@@ -126,8 +127,12 @@ type QueryEvent struct {
 	Upstream   string    `json:"upstream,omitempty"`
 	DurationUs int64     `json:"durationUs"`
 	Answer     string    `json:"answer,omitempty"` // compact summary, max 256 chars
-	DNSSEC     bool      `json:"dnssec,omitempty"` // AD flag set
+	DNSSEC     bool      `json:"dnssec,omitempty"` // AD flag set in the reply to the client
 	Protocol   string    `json:"protocol"`         // udp | tcp | dot | doh
+	// DNSSECStatus is the verdict of PiCache's own DNSSEC validation of the
+	// fetched data (secure, insecure, bogus, indeterminate); "" when
+	// nothing was validated.
+	DNSSECStatus string `json:"dnssecStatus,omitempty"`
 	// UpstreamEDE is the Extended DNS Error of the upstream reply (any
 	// upstream, also on cache hits); nil when it carried none.
 	UpstreamEDE *UpstreamEDE `json:"upstreamEde,omitempty"`
@@ -234,6 +239,9 @@ type QueryFilter struct {
 	Upstream string
 	RCode    []string // any of (at most 16; 1–16 characters of A-Z and 0-9)
 	DNSSEC   *bool    // the AD flag; nil = either
+	// DNSSECStatus matches any of these DNSSEC statuses (at most 4 of
+	// secure, insecure, bogus, indeterminate).
+	DNSSECStatus []string
 	// DNSClientID matches the ClientID exactly (lower-cased; a value that
 	// is no ClientID is refused).
 	DNSClientID string
@@ -335,6 +343,23 @@ type PurposeCount struct {
 	Purpose string `json:"purpose"`
 	Count   int64  `json:"count"`
 }
+
+// DNSSECStats are the queries of a range with a DNSSEC status by status
+// (GET /stats/dnssec), most first, then by status; never null. From is the
+// hour-aligned start the counts actually cover (like Summary.TopFrom).
+type DNSSECStats struct {
+	From     time.Time     `json:"from"`
+	Statuses []DNSSECCount `json:"statuses"`
+}
+
+// DNSSECCount is the number of queries of one DNSSEC status.
+type DNSSECCount struct {
+	Status string `json:"status"`
+	Count  int64  `json:"count"`
+}
+
+// DNSSEC statuses (QueryEvent.DNSSECStatus).
+var dnssecStatuses = []string{"secure", "insecure", "bogus", "indeterminate"}
 
 // QTypeStats are the queries of a range by query type (GET /stats/qtypes),
 // most first, then by name: at most 32 types, the others under "OTHER".

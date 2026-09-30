@@ -101,6 +101,9 @@ func TestRateLimiter(t *testing.T) {
 	if ok, _ := NewRateLimiter(0, 0, nil).Allow(ip); !ok {
 		t.Fatal("qps 0 must disable")
 	}
+	if r.Exempt(ip) || !r.Exempt(ex) || !NewRateLimiter(0, 0, nil).Exempt(ip) {
+		t.Fatal("Exempt: limited clients, exempt networks, limiting off")
+	}
 }
 
 func TestSafeDialerFilter(t *testing.T) {

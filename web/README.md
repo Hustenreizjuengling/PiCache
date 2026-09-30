@@ -102,7 +102,7 @@ support these query parameters):
 | Target | Parameters |
 |---|---|
 | `/` (overview) | `range` (15m, 1h, 24h, 7d, 30d, 90d, 180d, 365d) or `from` + `to` (unix seconds, a custom window of at most 400 days) |
-| `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d; 30d, 90d, 180d, 365d as far as the query log's retention goes) or `from` + `to` (unix seconds, a custom window), `status` (query statuses, repeated or a comma list; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name; repeated for every address of one device, at most 32, shown as "Device with N addresses"), `qtype`, `upstream`, `rcode` (reply codes, repeated: any of them), `dnssec` (true, false) |
+| `#/dns/queries` | `range` (15m, 1h, 6h, 24h, 7d; 30d, 90d, 180d, 365d as far as the query log's retention goes) or `from` + `to` (unix seconds, a custom window), `status` (query statuses, repeated or a comma list; the overview uses every `blocked-*`), `domain` (substring, or `"exact"` in double quotes, passed to the API as is), `client` (IP or name; repeated for every address of one device, at most 32, shown as "Device with N addresses"), `qtype`, `upstream`, `rcode` (reply codes, repeated: any of them), `dnssec` (true, false: the AD flag), `dnssecStatus` (secure, insecure, bogus, indeterminate; repeated or a comma list: any of them) |
 | `#/dns/clients` | `ip` (open/select that client; the global search sends any IPv4/IPv6 here), `tab` (clients, seen, groups), `range` (24h, 7d, 30d; without it the range last chosen in this browser) |
 | `#/cache/downloads` | `client` (IP), `active=true`, `from` + `to` (unix seconds: an explicit time window instead of the range; shown as a removable chip) |
 | `#/cache/library`, `#/cache/storage`, `#/cache/settings` | – |
@@ -130,7 +130,7 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.notifications` | `channels.{list,create,update,remove,test(id)}`, `events()`, `log(limit?)` |
 | `api.settings` | `get() put(all) patch(section, partial) defaults()` |
 | `api.dns` | `blocking() setBlocking(enabled, pauseSeconds?) lookup(req) stats() cacheIps() router()`, `records.{list,create,update,remove}`, `forwarders.{list,create,update,remove}` |
-| `api.upstreams` | `get() test(upstream) flushCache()` |
+| `api.upstreams` | `get() test(upstream) flushCache() testDnssec()` |
 | `api.clients` | `list() create(c) update(id,c) remove(id) known(within?)` |
 | `api.groups` | `list() create(g) update(id,g) remove(id)` (403 for group 1, `DEFAULT_GROUP_ID`) |
 | `api.parental` | `services() groups() group(id) update(id, c) setOverride(id, body) clearOverride(id) pause(id, {minutes} \| {until}) resume(id)` (`update` always sends all four members; `pause` replaces a running pause, `resume` also works without one) |
@@ -139,7 +139,7 @@ an optional trailing `{ signal }`. Types mirror the Go JSON (`src/lib/api/types.
 | `api.cache` | `state() services() groups(q) groupDetail(service,key) objects(q) deleteObject(id) pinObject(id,pinned) deleteGroup(service,key) pinGroup(service,key,pinned) purgeService(service) evict() verify(repair) verifyState() live() active() proxyStats() noSlice() resetNoSlice(host) downloads(q) requests(q) sniEvents(q) evictions(q)` |
 | `api.storage` | `capabilities() targets() target(id) create(t) update(id,t) remove(id) test(id) apply(id) init(id,adopt) activate(id) snippets(id) benchmark(id,sizeMiB?) benchmarkState() cancelBenchmark()` |
 | `api.logs` | `queries(q)` (cursor page), `exportUrl(format, q)` (a plain download link: ndjson or csv with the filters of `queries`), `clear()` (deletes the query log) |
-| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?, {group?}) services(range) clients(range, {group?}) purposes(range) qtypes(range) clientSeries(key, range, step?) reset()` – `range` is a preset (`'24h'`) or `{ from, to }`; `group: 'device'` (clients, cache-clients) merges the addresses of one device into one row with `addresses`; `clientSeries` keys: an address, `ip:<address>`, `client:<id>`, `mac:<MAC>`; `reset()` deletes the statistics |
+| `api.stats` | `summary(range) dns(range, step?) cache(range, step?, service?) top(kind, range, limit?, {group?}) services(range) clients(range, {group?}) purposes(range) qtypes(range) dnssec(range) clientSeries(key, range, step?) reset()` – `range` is a preset (`'24h'`) or `{ from, to }`; `group: 'device'` (clients, cache-clients) merges the addresses of one device into one row with `addresses`; `clientSeries` keys: an address, `ip:<address>`, `client:<id>`, `mac:<MAC>`; `reset()` deletes the statistics |
 
 Long-running calls (list/source refresh, storage test, starting a storage
 speed test, restore) already carry longer timeouts. The backup is a plain link: `<Button href={api.system.backupUrl(true)} download>`; so is a stored scheduled backup (`api.backups.fileUrl(name)`).

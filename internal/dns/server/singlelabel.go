@@ -63,7 +63,7 @@ func (s *Server) singleLabel(qc *qctx) (result, bool) {
 		qc.note("single-label: " + name + " only from local records")
 	} else if f := s.fwd.Load().unqualified; f != nil && !f.def { // 4
 		qc.note("single-label: (unqualified) forwarder")
-		r := s.resolveVia(qc, f.upstreams, f.ips, "conditional forwarder "+Unqualified)
+		r := s.resolveVia(qc, f.upstreams, f.ips, false, "conditional forwarder "+Unqualified)
 		if forwardedStatus(r.status) {
 			r.reason = ReasonSingleLabel
 		}
@@ -101,7 +101,7 @@ func (s *Server) singleLabelLocal(qc *qctx, full string, recordsOnly bool) (resu
 // rcode other than NOERROR or a failure is no answer.
 func (s *Server) singleLabelVia(qc *qctx, full string, via []string, ips []netip.Addr) (result, bool) {
 	q := dns.Question{Name: fqdn(full), Qtype: qc.qtype, Qclass: dns.ClassINET}
-	resp, info, err := s.exchange(qc, q, via, ips)
+	resp, info, err := s.exchange(qc, q, via, ips, false)
 	if err != nil || resp.Rcode != dns.RcodeSuccess {
 		return result{}, false
 	}

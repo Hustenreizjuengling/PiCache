@@ -368,6 +368,24 @@ func (s *Store) Purposes(ctx context.Context, from, to time.Time) (PurposeStats,
 	return out, nil
 }
 
+// DNSSEC returns the queries of [TopFrom(from, to), to) with a DNSSEC
+// status by status, from the top tables and the in-memory hour.
+func (s *Store) DNSSEC(ctx context.Context, from, to time.Time) (DNSSECStats, error) {
+	from, to, err := statsRange(from, to)
+	if err != nil {
+		return DNSSECStats{}, err
+	}
+	rows, err := s.dnsTop(ctx, dnsTopDNSSEC, from, to, len(dnssecStatuses))
+	if err != nil {
+		return DNSSECStats{}, err
+	}
+	out := DNSSECStats{From: TopFrom(from, to), Statuses: make([]DNSSECCount, 0, len(rows))}
+	for _, r := range rows {
+		out.Statuses = append(out.Statuses, DNSSECCount{Status: r.Key, Count: r.Count})
+	}
+	return out, nil
+}
+
 // QTypes returns the queries of [TopFrom(from, to), to) by query type, most
 // first, then by name: the 32 most frequent types, the others (and the
 // types an hour counted under OTHER) under OTHER.

@@ -356,6 +356,12 @@ func (a *App) build(ctx context.Context) error {
 	if a.up, err = upstream.New(a.set, log); err != nil {
 		return fmt.Errorf("upstream: %w", err)
 	}
+	// DNSSEC time checks follow the host clock's synchronisation (the NTP
+	// server's reader; an unreadable state suspends nothing).
+	a.up.SetClockReader(func() (bool, bool) {
+		st := ntp.ReadClock()
+		return st.Synced, st.Err == nil
+	})
 	lookup46 := func(ctx context.Context, host string) ([]netip.Addr, error) { return a.up.LookupIP(ctx, host, true) }
 	lookup4 := func(ctx context.Context, host string) ([]netip.Addr, error) { return a.up.LookupIP(ctx, host, false) }
 	fetch := newFetchClient(lookup46, a.proxyFor(proxyLists))
@@ -484,7 +490,7 @@ func (a *App) build(ctx context.Context) error {
 		DB: a.cdb, Settings: a.set, Upstream: a.up, Filter: a.filter, Clients: a.clients,
 		Services: a.services, Parental: a.parental, Logs: a.logs, ACL: a.acl, DownloadCacheReady: a.downloadCacheReady,
 		Container: a.storage.Capabilities().Container, Neighbours: a.clients.Neighbours, Leases: a.dhcp,
-		Encrypted: a.encrypted, Log: log,
+		Encrypted: a.encrypted, ValidatingForwarders: a.up.SetValidatingForwarders, Log: log,
 	}); err != nil {
 		return fmt.Errorf("dns: %w", err)
 	}

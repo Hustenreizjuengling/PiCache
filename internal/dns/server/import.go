@@ -56,11 +56,13 @@ type importLine struct {
 
 // ImportForwarders imports forwarders from text, all or nothing: a line
 // whose first domain is an existing forwarder's domain updates it (domains
-// and targets replaced, enabled and comment kept), other lines add enabled
-// forwarders. Lines are validated like POST /dns/forwarders; a domain may
-// appear once in the import and belong to no other existing forwarder, and
-// at most 256 forwarders may exist afterwards. Request errors (size, line
-// count) are apperr.Invalid with field text.
+// and targets replaced; enabled, validate and comment kept: an updated
+// line whose new domains or targets may not validate is an error of field
+// validate), other lines add enabled forwarders that do not validate.
+// Lines are validated like POST /dns/forwarders; a domain may appear once
+// in the import and belong to no other existing forwarder, and at most 256
+// forwarders may exist afterwards. Request errors (size, line count) are
+// apperr.Invalid with field text.
 func (s *Server) ImportForwarders(ctx context.Context, in ForwarderImport) (ForwarderImportResult, error) {
 	res := ForwarderImportResult{Errors: []ForwarderImportError{}}
 	if len(in.Text) > maxImportBytes {
@@ -154,8 +156,12 @@ func (s *Server) ImportForwarders(ctx context.Context, in ForwarderImport) (Forw
 			case slices.Equal(target.Domains, l.in.Domains) && slices.Equal(target.Upstreams, l.in.Upstreams):
 				res.Unchanged++
 			default:
+				l.in.Enabled, l.in.Comment, l.in.Validate = target.Enabled, target.Comment, target.Validate
+				if err := rules.checkValidate(l.in); err != nil {
+					fail(l.n, "validate", "%s", errValidate)
+					continue
+				}
 				res.Updated++
-				l.in.Enabled, l.in.Comment = target.Enabled, target.Comment
 				changes = append(changes, change{id: target.ID, in: l.in})
 			}
 		}

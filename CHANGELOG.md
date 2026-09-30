@@ -5,6 +5,97 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Databases:** `picache.db` gets settings migration 7 (`dns.dnssecMode`
+  is set from `dns.dnssec`: `true` → `passthrough`, else `off`) and dns
+  migration 4 (the column `validate` of `dns_forwarders`, `false` for
+  every forwarder); `logs.db` gets logs migration 6 (the column
+  `dnssec_status` of `logs_queries`; older rows have no status). Upgraded
+  installations keep their behaviour: local validation is on only in new
+  installations.
+- **Downgrade:** 0.16 refuses the migrated `picache.db` (settings v7, dns
+  v4): go back with the copy 0.17 made at its first start (the automatic
+  rollback uses it; Docker users restore it before starting the older
+  image; `.deb` users install the older package with
+  `PICACHE_ALLOW_DOWNGRADE=1` and then restore it). The DNSSEC mode and the
+  forwarders' validate flags set since the upgrade are lost. 0.16 sets the
+  new `logs.db` aside (`logs.db.broken-<timestamp>`). Every settings
+  document 0.17 writes keeps `dns.dnssec` with its old meaning.
+- **Follower sync:** upgrade the followers first; a 0.16 follower refuses
+  the export of a 0.17 primary (newer schema). A 0.17 follower of a 0.16
+  primary maps `dns.dnssec` to the mode.
+- **API:** `dns.dnssecMode` (`off`, `passthrough`, `validate`) replaces
+  `dns.dnssec`, which stays as an alias (`true` = `passthrough`, or keeps
+  `validate`; `false` = `off`; a `dnssec` changed in the same write that
+  contradicts a changed `dnssecMode` is refused with 400, otherwise
+  `dnssec` is rewritten from the mode); `GET /settings/defaults` reports
+  `validate`. New: `POST /dns/dnssec/test`, `GET /stats/dnssec`, the
+  query log filter and export parameter `dnssecStatus`,
+  `QueryEvent.dnssecStatus`, `validate` of conditional forwarders,
+  `dnssecStatus`, `dnssecReason` and `dnssecEde` of `POST /dns/lookup`,
+  `dnssec` of `GET /dns/stats`, the DNSSEC members of
+  `GET /dns/upstreams` (validate mode), the health check `dnssec` and the
+  metric `picache_dns_dnssec_total{status}`. The **CSV export gains a last
+  column** `dnssecStatus` after `dnsClientId` (parsers that read the
+  header are not affected). `QueryEvent.dnssec`, the `dnssec` filter and
+  the CSV column `dnssec` (the AD flag sent to the device) are unchanged.
+- **Units, `install.sh` and the packages:** unchanged. The mode `validate`
+  needs time synchronisation on the host (DEPLOYMENT "DNSSEC").
+
+### Added
+
+- **Local DNSSEC validation** (`dns.dnssecMode: validate`, **DNS settings
+  → DNSSEC**): PiCache verifies the answers of the default upstreams, the
+  fallbacks and the group resolvers along the chain of trust from the
+  built-in root trust anchors (KSK-2017 and KSK-2024; RSA/SHA-256 and
+  SHA-512, ECDSA P-256 and P-384, Ed25519; NSEC and NSEC3), answers bogus
+  data with SERVFAIL and an extended DNS error (a device with the CD flag
+  gets the data without AD), removes records that are not part of the
+  answer, and sets the AD flag only for answers it verified. It uses only
+  the DNSSEC primitives of `miekg/dns` and the standard library (no new
+  dependency), bounds every validation (KeyTrap and NSEC3 limits),
+  caches validated keys per upstream route, never fails open silently
+  (upstreams without DNSSEC data, stale trust anchors and a wrong clock
+  are reported, their answers passed on without AD) and never locks a
+  Raspberry Pi without RTC out (the date checks wait for time
+  synchronisation). **New installations start with `validate`**,
+  measured before the release: a cold validation of a signed root → TLD →
+  SLD chain with an NSEC3 proof takes 15.6–15.9 ms under armv7 emulation
+  (qemu, slower than a Raspberry Pi 4; the limit was 20 ms; 0.29 ms on
+  x86-64), a cold name below a cached TLD costs exactly 2 extra upstream
+  queries, 10 000 validated zones add 4.3 MiB of heap (limit 16 MiB), and
+  a response-cache hit verifies nothing.
+- **Validate DNSSEC** for conditional forwarders with their own DNS
+  servers outside the locally served zones (`validate`); chain lookups go
+  only to that forwarder's servers.
+- **DNSSEC status** of every validated answer (`secure`, `insecure`,
+  `bogus`, `indeterminate`) in the query log (a shield marks secure and
+  bogus rows), its filter, the live feed, the export (`--dnssec-status` for
+  `picache logs export`), the statistics (`GET /stats/dnssec`, a DNSSEC
+  list in the overview's DNS band), `picache query`, the domain tester and
+  its trace. In the mode `validate` the upstream lists of the DNS settings
+  and the conditional forwarders show whether each upstream returns DNSSEC
+  data.
+- **Test DNSSEC** (`POST /dns/dnssec/test`): probes the default upstreams
+  and checks four fixed names (`example.com`, `google.com`,
+  `dnssec-failed.org`, `sigfail.ippacket.stream`) in every mode, so it
+  shows whether `validate` works before switching.
+- The health check **`dnssec`** (validate mode): trust anchors that no
+  longer match, suspended time checks, upstreams without DNSSEC data, a new
+  root key, many bogus answers.
+
+### Changed
+
+- Replies **echo the client's CD bit** (RFC 4035 3.2.2), in every mode.
+- **DNS64** no longer synthesises AAAA records for a query with DO and CD
+  set (RFC 6147 5.5), in every mode: the AAAA answer is returned as it is.
+- In the mode `validate` the upstreams' AD flag is discarded on every
+  route (also for forwarders without validation, the router and the local
+  PTR servers), so only PiCache's own verdict sets AD.
+- **Unbound guide:** PiCache uses the mode `passthrough` in front of a
+  validating Unbound.
+
 ## [0.16.1] - 2026-09-30
 
 ### Fixed

@@ -32,6 +32,7 @@ func (s *Server) registerLogsRoutes() {
 	s.route("GET /api/v1/stats/clients", permRead, s.logsClientStats)
 	s.route("GET /api/v1/stats/clients/{key}/series", permRead, s.logsClientSeries)
 	s.route("GET /api/v1/stats/purposes", permRead, s.logsPurposes)
+	s.route("GET /api/v1/stats/dnssec", permRead, s.logsDNSSEC)
 	s.route("GET /api/v1/stats/qtypes", permRead, s.logsQTypes)
 	s.route("GET /api/v1/cache/downloads", permRead, s.logsDownloads)
 	s.route("GET /api/v1/cache/requests", permRead, s.logsCacheRequests)
@@ -108,6 +109,20 @@ func (s *Server) logsPurposes(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	st, err := s.d.Logs.Purposes(r.Context(), from, to)
+	if err != nil {
+		return err
+	}
+	return ok(w, st)
+}
+
+// logsDNSSEC answers the queries of the range with a DNSSEC status by
+// status (PiCache's own validation).
+func (s *Server) logsDNSSEC(w http.ResponseWriter, r *http.Request) error {
+	from, to, err := qRange(r, logsStatsRange)
+	if err != nil {
+		return err
+	}
+	st, err := s.d.Logs.DNSSEC(r.Context(), from, to)
 	if err != nil {
 		return err
 	}

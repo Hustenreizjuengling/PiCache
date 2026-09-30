@@ -185,13 +185,13 @@ func (s *Server) reverseZone(qc *qctx, zone string) result {
 		}
 	}
 	if f := s.fwd.Load().match(qc.qname, true); f != nil {
-		return s.resolveVia(qc, f.upstreams, f.ips, "conditional forwarder "+f.domain)
+		return s.resolveVia(qc, f.upstreams, f.ips, false, "conditional forwarder "+f.domain)
 	}
 	if ups := qc.set.DNS.LocalPTRUpstreams; len(ups) > 0 {
-		return s.resolveVia(qc, ups, upstreamIPs(ups), "local PTR upstreams")
+		return s.resolveVia(qc, ups, upstreamIPs(ups), false, "local PTR upstreams")
 	}
 	if ip, ok := s.routerAddr(); ok {
-		return s.resolveVia(qc, []string{routerUpstream(ip)}, s.routerAddrs(), "router resolver")
+		return s.resolveVia(qc, []string{routerUpstream(ip)}, s.routerAddrs(), false, "router resolver")
 	}
 	qc.note("no local resolver for this reverse zone: NXDOMAIN")
 	return s.negative(qc, dns.RcodeNameError, StatusSpecial, zone)
@@ -240,11 +240,11 @@ func (s *Server) localZoneAnswer(qc *qctx, zone string, router bool) result {
 		return r
 	}
 	if f := s.fwd.Load().match(qc.qname, true); f != nil {
-		return s.resolveVia(qc, f.upstreams, f.ips, "conditional forwarder "+f.domain)
+		return s.resolveVia(qc, f.upstreams, f.ips, false, "conditional forwarder "+f.domain)
 	}
 	if router {
 		if ip, ok := s.routerAddr(); ok {
-			return s.resolveVia(qc, []string{routerUpstream(ip)}, s.routerAddrs(), "router resolver")
+			return s.resolveVia(qc, []string{routerUpstream(ip)}, s.routerAddrs(), false, "router resolver")
 		}
 	}
 	qc.note("no local data or resolver for this name: NXDOMAIN")
@@ -256,26 +256,27 @@ func (s *Server) localZoneAnswer(qc *qctx, zone string, router bool) result {
 // only), otherwise the default upstreams. Forwarders are matched like the
 // pipeline does: private and local names skip those with the target
 // default as if absent (step 6); for other names such a forwarder means
-// the default upstreams (step 12), never a less specific forwarder. A nil
-// reply means the name has no resolver (local zone without router).
+// the default upstreams (step 12), never a less specific forwarder, and a
+// forwarder that validates DNSSEC validates (not for the names of step 6).
+// A nil reply means the name has no resolver (local zone without router).
 func (s *Server) routeName(qc *qctx, name string, q dns.Question) (*dns.Msg, upstream.Info, error) {
 	_, private := s.privateReverseZone(name)
 	_, router, local := s.localZone(qc.set, name)
 	special := inZone(name, "localhost") || inZone(name, "resolver.arpa") || serverName(qc.set, name) || encryptedServerName(qc.set, name)
 	if f := s.fwd.Load().match(name, private || local || special); f != nil && !f.def {
-		return s.exchange(qc, q, f.upstreams, f.ips)
+		return s.exchange(qc, q, f.upstreams, f.ips, f.validate && !(private || local || special))
 	}
 	switch {
 	case private && len(qc.set.DNS.LocalPTRUpstreams) > 0:
 		ups := qc.set.DNS.LocalPTRUpstreams
-		return s.exchange(qc, q, ups, upstreamIPs(ups))
+		return s.exchange(qc, q, ups, upstreamIPs(ups), false)
 	case private || router:
 		if ip, ok := s.routerAddr(); ok {
-			return s.exchange(qc, q, []string{routerUpstream(ip)}, s.routerAddrs())
+			return s.exchange(qc, q, []string{routerUpstream(ip)}, s.routerAddrs(), false)
 		}
 		return nil, upstream.Info{}, nil
 	case local || special:
 		return nil, upstream.Info{}, nil
 	}
-	return s.exchange(qc, q, nil, nil)
+	return s.exchange(qc, q, nil, nil, false)
 }

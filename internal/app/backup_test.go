@@ -695,7 +695,7 @@ func TestPreUpgradeCopyKeepsV010Schema(t *testing.T) {
 	if authV, setV, hasRole := versions(cp); authV != 1 || setV != 4 || hasRole {
 		t.Fatalf("the copy has auth v%d, settings v%d, role column %v", authV, setV, hasRole)
 	}
-	if authV, setV, hasRole := versions(a.cdb.R); authV != 3 || setV != 6 || !hasRole {
+	if authV, setV, hasRole := versions(a.cdb.R); authV != 3 || setV != 7 || !hasRole {
 		t.Fatalf("live: auth v%d, settings v%d, role column %v", authV, setV, hasRole)
 	}
 	if set.Get().Web.RestrictToNetworks {

@@ -295,7 +295,7 @@ var syncRules = func() map[string]bool {
 		"dns.rateLimitIpv4Prefix", "dns.rateLimitIpv6Prefix", "dns.rateLimitExempt", "dns.refuseAny",
 		"dns.ednsClientTrusted", "dns.rebindProtection", "dns.rebindAllow", "dns.domainNeeded",
 		"dns.privateReverseNetworks", "dns.droppedDomains", "dns.bogusNxdomain", "dns.cacheEnabled", "dns.cacheSize",
-		"dns.cacheMinTtl", "dns.cacheMaxTtl", "dns.serveStale", "dns.serveStaleMaxAgeSec", "dns.dnssec",
+		"dns.cacheMinTtl", "dns.cacheMaxTtl", "dns.serveStale", "dns.serveStaleMaxAgeSec", "dns.dnssec", "dns.dnssecMode",
 		"dns.disableAAAA", "dns.dns64.enabled", "dns.dns64.prefix", "dns.localRecordsEnabled", "dns.localizeRecords",
 		"filter.blockingMode", "filter.blockingIpv4", "filter.blockingIpv6", "filter.blockedTtl",
 		"filter.cnameInspection", "filter.updateIntervalHours", "filter.blockMozillaCanary",

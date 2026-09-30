@@ -54,7 +54,8 @@ fixes; please test against it or a current build of `main`.
 | Log file and syslog (optional) | Off by default. They receive the same, already redacted records as the journal (passwords, tokens and secrets never appear; client addresses and domains masked when the privacy settings say so). A syslog server receives them as plain text over the network; a log file (mode 0640, never through a symbolic link, only below the data directory or `/var/log/picache`) is as sensitive as the journal. |
 | Plain DNS switched off | `dns.plainDns` off answers other devices REFUSED over UDP and TCP (never a silent drop, so they fail over at once; no amplification: only allowed sources, rate limited, the reply no larger than the query plus the OPT record). It fails open: while no encrypted protocol is serving (a bind failure, an expired or unusable certificate, a restore on another host) plain DNS keeps serving everyone, an error is logged and the health check fails. This machine is always exempt. |
 | Apple configuration profiles | Profiles are unsigned (iOS shows them as not verified) and take over a device's DNS, so the direct download works only over HTTPS or on the PiCache host itself (on plain HTTP a profile could be replaced on the way), and links always point at `https://<server name>` on the HTTPS web listener. Link tokens are 32 random bytes kept in memory by their hash, at most 32, valid 15 minutes, lost at restart, never logged (the path is logged as `/api/v1/dns/profile-links/…`), audited or shown in errors; downloads are throttled (20 per minute and client). A profile contains nothing secret. |
-| DNS cache poisoning | Encrypted upstreams by default (DNS-over-HTTPS; DNS-over-TLS, DNS-over-QUIC, DNS over HTTP/3 and DNSCrypt are also supported), random IDs and ports, the question is verified on every reply, in-flight deduplication, no client EDNS options forwarded. |
+| DNS cache poisoning | Encrypted upstreams by default (DNS-over-HTTPS; DNS-over-TLS, DNS-over-QUIC, DNS over HTTP/3 and DNSCrypt are also supported), random IDs and ports, the question is verified on every reply, in-flight deduplication, no client EDNS options forwarded. With the DNSSEC mode **Validate** (the default of new installations) PiCache checks the signatures of signed zones itself and answers forged data with SERVFAIL. |
+| Forged or stripped DNSSEC, spoofed AD flags | In the mode **Validate** the AD flag comes only from PiCache's own verification: the upstreams' AD flag is discarded on every route, so a plain LAN resolver cannot tell a DANE client that a forged answer is authenticated. Validation can degrade only in three visible ways (an upstream without DNSSEC data, built-in trust anchors that no longer match the root zone, an unsynchronised clock): those answers are passed on without the AD flag and the health check says so. Answers blocked by the upstream are not validated: an attacker on the path can make a name look blocked, never redirect it. Each validation is bounded in CPU (KeyTrap, NSEC3). Details in [DNS protection](#dns-protection). |
 | QUIC dependency (quic-go) | Used only as a client for DNS-over-QUIC and DNS-over-HTTP/3 upstreams: PiCache never listens on QUIC. No 0-RTT (queries would be replayable), no incoming bidirectional streams, idle connections close after a minute, replies at most 64 KiB, at most 64 queries per connection at a time, TLS 1.3 with the system roots. |
 | DNS stamps | A stamp's certificate hashes are enforced in addition to the normal certificate verification against the system roots (one certificate of the verified chain must match; verification is never switched off). Stamps are parsed strictly (length checks, at most 1024 characters, fuzzed); only DNSCrypt, DoH, DoT and DoQ stamps are accepted; the stamp, its address and path never appear in the status, logs, metrics or the support bundle (`sdns:<protocol>:<host>`). DNSCrypt certificates are fetched from the stamp's address and checked against the provider key (Ed25519). An upstream that names PiCache itself (the encrypted server name, a server name) is refused. |
 | Private reverse-DNS leaks | PTR/SOA/NS queries for private and special-use reverse zones (and the extra networks of `dns.privateReverseNetworks`) never reach public upstreams, fallbacks or `default` forwarders. Address queries (A, AAAA, HTTPS, SVCB, ANY) for bare names (`nas`) are answered from the local domain and never sent to the upstreams (`dns.domainNeeded`, on by default); other types of bare names (e.g. `NS` or `DS` of top-level domains) still are, so validating resolvers behind PiCache keep working. |
@@ -773,6 +774,74 @@ flag), shows them as blocked and names only the upstream's host (never the
 path of a DoH URL, which can carry a profile ID); the upstream's own error
 text is never passed on to clients.
 
+**DNSSEC validation.** With `dns.dnssecMode` **Validate** (the default of
+new installations; upgraded installations keep **Off** or **Pass
+through**) PiCache verifies the answers of the default upstreams, the
+fallbacks, the resolvers of client groups and the conditional forwarders
+with **Validate DNSSEC** along the chain of trust from the root zone's
+keys. A forged answer for a signed zone is **bogus** and answered with
+SERVFAIL (a device that sets the CD flag gets the data without the AD
+flag); unsigned zones (**insecure**) are not protected, as with every
+validator. The AD flag comes only from PiCache's own **secure** verdict:
+the upstreams' AD flag is discarded on every route, also for answers that
+are not validated (forwarders without the flag, the router, the local PTR
+servers), so a plain-UDP resolver on the LAN cannot vouch for a forged
+answer to a DANE client. In **Pass through** PiCache trusts the upstreams'
+verdict and the path to them.
+
+- **Degradations**: validation never fails open silently. It degrades in
+  exactly three ways, each shown by the health check `dnssec` and **DNS
+  settings → DNSSEC** (an upstream of a client group only in the group's
+  upstream list and the Lookup trace), the Lookup trace and the query log
+  (status **indeterminate**: the answer is passed on without the AD flag,
+  never SERVFAIL): an upstream that returns no DNSSEC data (router DNS
+  proxies, some ISP resolvers; a warning), trust anchors of this version
+  that no longer match the root zone (after a root key rollover this
+  version does not know; a failure "update PiCache", preceded by the
+  warning "a new root key is published"), and suspended time checks (the
+  clock is before the build date, the host reports it as not
+  synchronised, or, where the host's clock state cannot be read, it
+  disagrees with the root zone's signatures as every upstream that returns
+  DNSSEC data sends them; a warning). While time checks are suspended only
+  the validity dates are ignored: forged data still fails.
+- **Probe stripping**: PiCache decides whether an upstream returns DNSSEC
+  data with two probe queries for the root zone (every 30 minutes). An
+  attacker on the path to a **plain** (UDP/TCP) upstream who strips the
+  DNSSEC data from these probes switches validation off for that upstream
+  until the next probe: its answers become **indeterminate** and the
+  health check warns "<upstream> does not return DNSSEC data". Encrypted
+  upstreams (DoH, DoT, DoQ, DNSCrypt) are not affected. The same attacker
+  can replay old, genuine root-zone signatures to the probe: that suspends
+  the time checks (a warning) only when no other upstream contradicts it
+  and the host clock state cannot be read, so an encrypted upstream or a
+  synchronised host clock keeps them active. The plain bootstrap servers
+  of the clock guard are probed only while the clock guard is active.
+- **Upstream blocks are not validated**: an answer the upstream marks as
+  its own block (EDE 15–17, 0.0.0.0, Quad9's NXDOMAIN without the RA flag)
+  becomes PiCache's blocking reply without validation. An attacker on the
+  path can therefore make a name look blocked (a denial of service), but
+  never redirect it.
+- **CPU bounds**: a device in the LAN (or a web page it opens) can make
+  PiCache validate names of a zone the attacker controls. Each validation
+  is bounded: at most 16 signature verifications (2 of them failed), 4
+  keys tried per signature (colliding key tags, KeyTrap CVE-2023-50387),
+  8 signatures per record set, 256 NSEC3 hashes and no hashing at all above
+  50 iterations or a 64-byte salt (CVE-2023-50868), 32 chain lookups and
+  4 seconds; verifications share a semaphore of one per CPU, chain lookups
+  a global limit of 50 per second (a lookup waits for its turn), of which
+  the queries of one device may start at most 20, so one device cannot
+  starve the validation of the others; a refused lookup is not remembered
+  as a failure of the zone. Cached and local answers never wait for
+  validation, and the per-client rate limit applies.
+- **Trust anchors** (the root zone's key signing keys KSK-2017 and
+  KSK-2024) are compiled into PiCache and never downloaded or updated at
+  runtime, so nobody can plant an anchor; a future root key rollover needs
+  a PiCache update.
+- **Test DNSSEC** (on request only, admins) sends queries for four fixed
+  third-party names (`example.com`, `google.com`, `dnssec-failed.org`,
+  `sigfail.ippacket.stream`) through the default upstreams: their operators
+  and the upstreams see that a DNSSEC test ran. It is never scheduled.
+
 ## Logs, diagnostics and privacy
 
 **What is recorded.** The query log, the statistics and the seen clients
@@ -874,6 +943,10 @@ the database itself and delete copies you no longer need.
       forwarders (`dns.ednsClientTrusted`) strip the ECS and MAC options of
       their own clients. The client subnet (`dns.ecs`) stays off unless a
       CDN needs it.
+- [ ] The DNSSEC mode is **Validate** (**DNS settings → DNSSEC**; **Test
+      DNSSEC** passes), the host clock is synchronised and the health check
+      `dnssec` is ok; upstreams are encrypted (DoH, DoT), so nobody on the
+      path can strip DNSSEC data from them.
 
 **Web UI**
 

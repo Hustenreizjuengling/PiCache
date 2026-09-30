@@ -5,8 +5,9 @@
   NXDOMAIN, dropped domains), rate limiting, access (blocked clients,
   trusted forwarders), encrypted DNS for devices (DoT, DoH, plain DNS,
   device set-up and Apple profiles), local names, IPv6 answers (no AAAA,
-  DNS64) and DNSSEC. Edits the "dns" and "filter"
-  settings sections; Save sends only the changed members of each.
+  DNS64) and DNSSEC (the mode, what keeps validation from working, a
+  test). Edits the "dns" and "filter" settings sections; Save sends only
+  the changed members of each.
   Validation errors appear next to the field. On a follower that syncs the
   DNS settings, the synced members are disabled (with the synced banner).
   Query: ?section=upstreams|cache|blocking|protection|ratelimit|access|encrypted|devices|names|ipv6|dnssec (scrolls there)
@@ -173,8 +174,10 @@
     </fieldset>
     <fieldset class="sections" disabled={!session.canEditSection('dns-settings')}>
       <Ipv6Section form={dns} />
-      <DnssecSection form={dns} />
     </fieldset>
+    <!-- The DNSSEC test stays usable for admins while the host locks the configuration
+         or the settings are synced: the section disables its mode itself. -->
+    <DnssecSection form={dns} upstreams={upstreams.data} {dirty} />
 
     {#if dirty || saveErrors.length > 0}
       <!-- Buttons first: toasts appear at the bottom right and must not cover them. -->

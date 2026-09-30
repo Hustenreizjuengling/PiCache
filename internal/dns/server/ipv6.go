@@ -1,6 +1,7 @@
 package dnsserver
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -77,9 +78,13 @@ func stripIPv6Hints(qc *qctx, r *result) {
 // are blocked for the client are never synthesised. TTL: the A record's,
 // at most the negative TTL of the AAAA answer's SOA. The answer never
 // carries AD; the status stays, the reason becomes "dns64".
-func (s *Server) synthesizeAAAA(qc *qctx, r *result, via []string, ips []netip.Addr) {
+func (s *Server) synthesizeAAAA(qc *qctx, r *result, via []string, ips []netip.Addr, validate bool) {
 	d := &qc.set.DNS
 	if !d.DNS64.Enabled || qc.qtype != dns.TypeAAAA || r.msg == nil || r.msg.Rcode != dns.RcodeSuccess || !forwardedStatus(r.status) {
+		return
+	}
+	if opt := qc.req.IsEdns0(); opt != nil && opt.Do() && qc.req.CheckingDisabled {
+		qc.note("DNS64: no synthesis for a query with DO and CD (RFC 6147 5.5)")
 		return
 	}
 	prefix := d.DNS64Prefix()
@@ -96,7 +101,18 @@ func (s *Server) synthesizeAAAA(qc *qctx, r *result, via []string, ips []netip.A
 		qc.note("DNS64: " + normalizeName(final) + " is blocked: no synthesis")
 		return
 	}
-	resp, info, err := s.exchange(qc, dns.Question{Name: final, Qtype: dns.TypeA, Qclass: dns.ClassINET}, via, ips)
+	resp, info, err := s.exchange(qc, dns.Question{Name: final, Qtype: dns.TypeA, Qclass: dns.ClassINET}, via, ips, validate)
+	if b, ok := errors.AsType[*bogusError](err); ok {
+		// 13v for the A lookup: SERVFAIL instead of the NODATA answer.
+		qc.note("DNS64: the A records of " + normalizeName(final) + " are bogus")
+		fail := s.bogusServfail(qc, b.v, r.upstream)
+		fail.dnssec = worstVerdict(r.dnssec, b.v)
+		*r = fail
+		return
+	}
+	if err == nil {
+		r.dnssec = worstVerdict(r.dnssec, info.DNSSEC)
+	}
 	if err != nil || resp.Rcode != dns.RcodeSuccess || (len(via) == 0 && info.Block != nil) {
 		qc.note("DNS64: no A records of " + normalizeName(final) + ": NODATA")
 		return

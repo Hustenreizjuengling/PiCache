@@ -4,7 +4,9 @@
   (each with its subdomains, or only subdomains with "*."), and optionally
   single-label names such as "nas", go to specific DNS servers (the router
   for fritz.box, a company DNS for corp.example) or to the default upstreams
-  (public.corp.example while corp.example goes elsewhere).
+  (public.corp.example while corp.example goes elsewhere). A forwarder with
+  its own DNS servers (recursive resolvers) can have its answers' DNSSEC
+  signatures validated (acts only in the DNSSEC mode Validate).
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -20,7 +22,7 @@
   } from '$lib/api'
   import { errorText, fieldError } from '$lib/errors'
   import { formatDateTime } from '$lib/format'
-  import { Checkbox, confirm, Field, Input, KeyValue, toast } from '$lib/ui'
+  import { Checkbox, confirm, Field, Input, KeyValue, toast, Toggle } from '$lib/ui'
   import { lineError } from '../shared/errors'
   import FormPanel from '../shared/FormPanel.svelte'
   import { asciiDomain } from '../shared/input'
@@ -45,6 +47,7 @@
   let useDefault = $state(false)
   let targets = $state<string[]>([])
   let enabled = $state(true)
+  let validate = $state(false)
   let comment = $state('')
   let saving = $state(false)
   let err = $state.raw<ApiError | undefined>(undefined)
@@ -67,6 +70,7 @@
       useDefault = !!f && usesDefault(f)
       targets = f && !useDefault ? [...f.upstreams] : []
       enabled = f?.enabled ?? true
+      validate = f?.validate ?? false
       comment = f?.comment ?? ''
       err = undefined
       submitted = false
@@ -112,6 +116,13 @@
               ? t('dns.forwarders.upstreamsMax', { max: MAX_TARGETS })
               : undefined)),
   )
+  // Validation needs the forwarder's own resolvers and names below the public root.
+  const singleLabel = $derived(unqualified || names.includes(UNQUALIFIED_DOMAIN))
+  const validateBlocked = $derived(
+    useDefault ? t('dns.forwarders.validate.notDefault') : singleLabel ? t('dns.forwarders.validate.notUnqualified') : undefined,
+  )
+  const validateError = $derived(fieldError(err, 'validate'))
+
   // Conflicts (409 "a forwarder for … already exists") and other errors without a field.
   const generalError = $derived(err && !err.field ? errorText(err) : undefined)
 
@@ -129,6 +140,7 @@
         domains: list,
         upstreams: useDefault ? [DEFAULT_TARGET] : [...targets],
         enabled,
+        validate: validate && !validateBlocked,
         comment: comment.trim(),
       }
       const saved = forwarder ? await api.dns.forwarders.update(forwarder.id, input) : await api.dns.forwarders.create(input)
@@ -197,6 +209,17 @@
       <LinesInput bind:value={targets} rows={3} placeholder={'192.168.178.1\ntls://dns.example.net'} />
     </Field>
   {/if}
+  <div class="stack-sm">
+    <Toggle
+      checked={validate && !validateBlocked}
+      disabled={!!validateBlocked}
+      label={t('dns.forwarders.validate.label')}
+      description={t('dns.forwarders.validate.help')}
+      onchange={(on) => (validate = on)}
+    />
+    {#if validateBlocked}<p class="note small muted">{validateBlocked}</p>{/if}
+    {#if validateError}<p class="note err">{validateError}</p>{/if}
+  </div>
   <Checkbox bind:checked={enabled} label={t('dns.forwarders.enabled')} />
   <Field label={t('common.label.comment')} optional error={fieldError(err, 'comment')}>
     <Input bind:value={comment} maxlength={512} />
@@ -209,5 +232,9 @@
     padding-left: 24px;
     color: var(--danger);
     font-size: var(--fs-sm);
+  }
+  /* Aligned with the switch's text. */
+  .note {
+    padding-left: calc(36px + var(--sp-3));
   }
 </style>

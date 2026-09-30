@@ -138,6 +138,11 @@ type result struct {
 	// steps after forwarding replaced or changed it (keepUpstreamAnswer);
 	// the query log shows it when it differs from the final answer.
 	upstreamAnswer string
+	// dnssec is the DNSSEC verdict of the fetched data (the worst of the
+	// fetches of a combined answer); nil when nothing was validated.
+	// dnssecFail marks the SERVFAIL of a bogus verdict (step 13v).
+	dnssec     *upstream.Verdict
+	dnssecFail bool
 }
 
 // scope computes the filtering groups of the query once, after
@@ -225,23 +230,26 @@ func (s *Server) forward(qc *qctx) result {
 	if f == nil && !qc.set.DNS.DomainNeeded && singleLabelQuery(qc) {
 		f = s.fwd.Load().unqualified // single-label names while dns.domainNeeded is off
 	}
+	validate := false
 	switch {
 	case f != nil && f.def: // 12: the default upstreams (the step-13 path)
-		r = s.resolveVia(qc, nil, nil, "conditional forwarder "+f.domain+": default upstreams")
+		r = s.resolveVia(qc, nil, nil, false, "conditional forwarder "+f.domain+": default upstreams")
 	case f != nil: // 12
-		via, ips = f.upstreams, f.ips
-		r = s.resolveVia(qc, via, ips, "conditional forwarder "+f.domain)
+		via, ips, validate = f.upstreams, f.ips, f.validate
+		r = s.resolveVia(qc, via, ips, validate, "conditional forwarder "+f.domain)
 	default: // 13
-		r = s.resolveVia(qc, nil, nil, "upstreams")
+		r = s.resolveVia(qc, nil, nil, false, "upstreams")
 	}
+	// 13v (a bogus verdict for a client with CD=0) happened in resolveVia:
+	// its SERVFAIL (status error) skips the steps below.
 	up := upstreamAnswerOf(qc, r.msg)
-	s.upstreamBlock(qc, &r)            // 13a
-	s.bogusNXDomain(qc, &r)            // 13b
-	s.inspectCNAMEs(qc, &r)            // 14
-	stripIPv6Hints(qc, &r)             // 14a
-	s.synthesizeAAAA(qc, &r, via, ips) // 14b
-	s.rebindCheck(qc, &r)              // 14c
-	s.responseIPCheck(qc, &r)          // 14d
+	s.upstreamBlock(qc, &r)                      // 13a
+	s.bogusNXDomain(qc, &r)                      // 13b
+	s.inspectCNAMEs(qc, &r)                      // 14
+	stripIPv6Hints(qc, &r)                       // 14a
+	s.synthesizeAAAA(qc, &r, via, ips, validate) // 14b
+	s.rebindCheck(qc, &r)                        // 14c
+	s.responseIPCheck(qc, &r)                    // 14d
 	up.keep(&r)
 	return r
 }
@@ -294,9 +302,10 @@ func (up upstreamAnswer) keep(r *result) {
 }
 
 // resolveVia forwards the query to specific resolvers (via == nil: the
-// default set, or the client's group set) and converts the reply into a
-// result.
-func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, what string) result {
+// default set, or the client's group set; validate: a forwarder that
+// validates DNSSEC) and converts the reply into a result. A bogus verdict
+// for a client with CD=0 is SERVFAIL (step 13v).
+func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, validate bool, what string) result {
 	if len(via) == 0 {
 		if _, name, ok := s.groupUpstream(qc); ok {
 			if what == "upstreams" {
@@ -306,7 +315,12 @@ func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, what strin
 			}
 		}
 	}
-	resp, info, err := s.exchange(qc, qc.q, via, ips)
+	resp, info, err := s.exchange(qc, qc.q, via, ips, validate)
+	if b, ok := errors.AsType[*bogusError](err); ok {
+		r := s.bogusServfail(qc, b.v, "")
+		r.upstream = info.Upstream
+		return r
+	}
 	if err != nil {
 		if qc.tracing() {
 			qc.note(fmt.Sprintf("%s failed: %s", what, errText(err)))
@@ -325,19 +339,24 @@ func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, what strin
 	if qc.tracing() {
 		qc.note(fmt.Sprintf("answered via %s (%s, %s)", what, orDash(info.Upstream), status))
 	}
-	r := result{msg: resp, status: status, upstream: info.Upstream, def: len(via) == 0, block: info.Block, ede: info.EDE}
+	r := result{msg: resp, status: status, upstream: info.Upstream, def: len(via) == 0, block: info.Block, ede: info.EDE,
+		dnssec: info.DNSSEC}
 	if info.Fallback {
 		qc.note("fallback: answered by " + orDash(info.Upstream))
 		r.reason = ReasonFallback
 	}
+	s.traceDNSSEC(qc, info.DNSSEC, len(via) > 0 && !validate, what)
 	return r
 }
 
 // exchange sends a fresh query for q upstream: via == nil asks the client's
 // group set (groupUpstream; fail closed) or else the default set with the
-// client subnet of dns.ecs. A query from one of the target resolvers
-// themselves (the source address) is refused with errLoop (loop guard).
-func (s *Server) exchange(qc *qctx, q dns.Question, via []string, ips []netip.Addr) (*dns.Msg, upstream.Info, error) {
+// client subnet of dns.ecs; validate asks a forwarder's targets with
+// DNSSEC validation. A query from one of the target resolvers themselves
+// (the source address) is refused with errLoop (loop guard). An answer
+// with a bogus verdict is a *bogusError for a client with CD=0 (step 13v:
+// bogus data never reaches the later steps).
+func (s *Server) exchange(qc *qctx, q dns.Question, via []string, ips []netip.Addr, validate bool) (*dns.Msg, upstream.Info, error) {
 	if s.d.Upstream == nil {
 		return nil, upstream.Info{}, errNoUpstream
 	}
@@ -359,11 +378,16 @@ func (s *Server) exchange(qc *qctx, q dns.Question, via []string, ips []netip.Ad
 		} else {
 			resp, info, err = s.d.Upstream.Resolve(qc.ctx, req, s.ecsFor(qc))
 		}
+	} else if validate {
+		resp, info, err = s.d.Upstream.ResolveValidating(qc.ctx, req, via)
 	} else {
 		resp, info, err = s.d.Upstream.ResolveVia(qc.ctx, req, via)
 	}
 	if err == nil && (resp == nil || len(resp.Question) != 1) {
 		err = errBadReply
+	}
+	if err == nil && info.DNSSEC != nil && info.DNSSEC.Status == dnssecBogus && !qc.req.CheckingDisabled {
+		err = &bogusError{v: info.DNSSEC}
 	}
 	return resp, info, err
 }

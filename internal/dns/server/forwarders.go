@@ -37,6 +37,7 @@ type fwdEntry struct {
 	upstreams []string
 	ips       []netip.Addr // IP-literal targets (loop guard, rate-limit exemption)
 	def       bool         // target DefaultTarget: the default upstreams
+	validate  bool         // validates DNSSEC (step 12 and the fetches routed like it)
 }
 
 // fwdTable is the immutable snapshot of enabled forwarders.
@@ -61,7 +62,7 @@ func newFwdTable(fwds []Forwarder) *fwdTable {
 		t.ips = append(t.ips, ips...)
 		def := len(f.Upstreams) == 1 && f.Upstreams[0] == DefaultTarget
 		for _, d := range domains {
-			e := &fwdEntry{domain: d, upstreams: f.Upstreams, ips: ips, def: def}
+			e := &fwdEntry{domain: d, upstreams: f.Upstreams, ips: ips, def: def, validate: f.Validate && !def}
 			switch base, wild := strings.CutPrefix(d, "*."); {
 			case d == Unqualified:
 				t.unqualified = e
@@ -133,7 +134,7 @@ func queryForwarders(ctx context.Context, q queryer, id int64) ([]Forwarder, err
 	if id != 0 {
 		where, args = " WHERE id = ?", []any{id}
 	}
-	rows, err := q.QueryContext(ctx, `SELECT id, domain, upstreams, enabled, comment, created_at, updated_at
+	rows, err := q.QueryContext(ctx, `SELECT id, domain, upstreams, enabled, validate, comment, created_at, updated_at
 		FROM dns_forwarders`+where+` ORDER BY domain, id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("dns: list forwarders: %w", err)
@@ -144,7 +145,7 @@ func queryForwarders(ctx context.Context, q queryer, id int64) ([]Forwarder, err
 		var f Forwarder
 		var ups string
 		var created, updated int64
-		if err := rows.Scan(&f.ID, &f.Domain, &ups, &f.Enabled, &f.Comment, &created, &updated); err != nil {
+		if err := rows.Scan(&f.ID, &f.Domain, &ups, &f.Enabled, &f.Validate, &f.Comment, &created, &updated); err != nil {
 			return nil, fmt.Errorf("dns: scan forwarder: %w", err)
 		}
 		if err := json.Unmarshal([]byte(ups), &f.Upstreams); err != nil {
@@ -306,11 +307,45 @@ func (rules forwarderRules) validateForwarder(in ForwarderInput) (ForwarderInput
 		ups = append(ups, u)
 	}
 	in.Upstreams = ups
+	if err := rules.checkValidate(in); err != nil {
+		return in, err
+	}
 	var err error
 	if in.Comment, err = cleanComment(in.Comment); err != nil {
 		return in, err
 	}
 	return in, nil
+}
+
+// errValidate refuses validate:true on a forwarder that may not validate.
+const errValidate = "only forwarders with explicit targets outside the locally served zones can validate"
+
+// checkValidate allows validate:true only on a forwarder with explicit
+// targets whose domains are all outside the locally served zones of step
+// 6 (special-use names, the local domain, home.arpa, the search domains,
+// the locally served reverse zones) and not Unqualified: a validating
+// forwarder answers public signed zones through a recursive resolver.
+func (rules forwarderRules) checkValidate(in ForwarderInput) error {
+	if !in.Validate {
+		return nil
+	}
+	if slices.Contains(in.Upstreams, DefaultTarget) || rules.defaultRefused(in.Domains) != "" {
+		return apperr.Invalid("validate", errValidate)
+	}
+	return nil
+}
+
+// validatingTargets returns the distinct target lists of the enabled
+// forwarders that validate DNSSEC (registered with the upstream package).
+func validatingTargets(fwds []Forwarder) [][]string {
+	var out [][]string
+	for _, f := range fwds {
+		if f.Enabled && f.Validate && !(len(f.Upstreams) == 1 && f.Upstreams[0] == DefaultTarget) &&
+			!slices.ContainsFunc(out, func(l []string) bool { return slices.Equal(l, f.Upstreams) }) {
+			out = append(out, f.Upstreams)
+		}
+	}
+	return out
 }
 
 // defaultRefused names the rule a domain breaks for the target
@@ -398,8 +433,8 @@ func insertForwarder(ctx context.Context, tx *sql.Tx, in ForwarderInput) (int64,
 		return 0, err
 	}
 	now := db.NowMs()
-	res, err := tx.ExecContext(ctx, `INSERT INTO dns_forwarders (domain, upstreams, enabled, comment, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, in.Domain, string(ups), in.Enabled, in.Comment, now, now)
+	res, err := tx.ExecContext(ctx, `INSERT INTO dns_forwarders (domain, upstreams, enabled, validate, comment, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, in.Domain, string(ups), in.Enabled, in.Validate, in.Comment, now, now)
 	if err != nil {
 		return 0, err
 	}
@@ -416,8 +451,8 @@ func updateForwarder(ctx context.Context, tx *sql.Tx, id int64, in ForwarderInpu
 	if err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE dns_forwarders SET domain = ?, upstreams = ?, enabled = ?, comment = ?, updated_at = ?
-		WHERE id = ?`, in.Domain, string(ups), in.Enabled, in.Comment, db.NowMs(), id)
+	res, err := tx.ExecContext(ctx, `UPDATE dns_forwarders SET domain = ?, upstreams = ?, enabled = ?, validate = ?, comment = ?,
+		updated_at = ? WHERE id = ?`, in.Domain, string(ups), in.Enabled, in.Validate, in.Comment, db.NowMs(), id)
 	if err != nil {
 		return err
 	}

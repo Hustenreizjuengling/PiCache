@@ -45,7 +45,9 @@ var expectedClasses = func() map[string]routeClass {
 		"POST /api/v1/dns/profile-links",
 		// 0.15.0: a sync run changes nothing but the synced data (an
 		// internal update the configuration lock does not apply to).
-		"POST /api/v1/system/sync/run")
+		"POST /api/v1/system/sync/run",
+		// 0.17.0: the DNSSEC test changes no configuration.
+		"POST /api/v1/dns/dnssec/test")
 	add(routeClass{lock: lockPause}, "POST /api/v1/dns/blocking")
 	add(none,
 		"POST /api/v1/auth/setup", "POST /api/v1/auth/login", "POST /api/v1/auth/logout", "POST /api/v1/dns/lookup",

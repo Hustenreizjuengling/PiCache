@@ -38,7 +38,7 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
   { route: DNS, anchor: 'dns-set-devices', title: 'dns.settings.encrypted.setup.title', help: 'dns.settings.encrypted.setup.description' },
   { route: DNS, anchor: 'dns-set-names', title: 'dns.settings.names.title', help: 'dns.settings.names.description' },
   { route: DNS, anchor: 'dns-set-ipv6', title: 'dns.settings.ipv6.title', help: 'dns.settings.ipv6.description' },
-  { route: DNS, anchor: 'dns-set-dnssec', title: 'dns.settings.dnssec.title', help: 'dns.settings.dnssec.help' },
+  { route: DNS, anchor: 'dns-set-dnssec', title: 'dns.settings.dnssec.title', help: 'dns.settings.dnssec.description' },
 
   // DNS settings: upstreams
   { route: DNS, anchor: 'dns-fallback-title', title: 'dns.settings.fallback.title', help: 'dns.settings.fallback.help', context: 'dns.settings.upstreams.title' },
@@ -109,7 +109,7 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
   { route: DNS, anchor: 'dns-set-ipv6', field: 'dns-field-disableAAAA', title: 'dns.settings.ipv6.disableAaaa', help: 'dns.settings.ipv6.disableAaaaHelp', context: 'dns.settings.ipv6.title' },
   { route: DNS, anchor: 'dns-set-ipv6', field: 'dns-field-dns64-enabled', title: 'dns.settings.ipv6.dns64', help: 'dns.settings.ipv6.dns64Help', context: 'dns.settings.ipv6.title' },
   { route: DNS, anchor: 'dns-set-ipv6', field: 'dns-field-dns64-prefix', title: 'dns.settings.ipv6.prefix', help: 'dns.settings.ipv6.prefixHelp', context: 'dns.settings.ipv6.title' },
-  { route: DNS, anchor: 'dns-set-dnssec', field: 'dns-field-dnssec', title: 'dns.settings.dnssec.label', help: 'dns.settings.dnssec.help', context: 'dns.settings.dnssec.title' },
+  { route: DNS, anchor: 'dns-set-dnssec', field: 'dns-field-dnssecMode', title: 'dns.settings.dnssec.mode', help: 'dns.settings.dnssec.modeHelp.validate', context: 'dns.settings.dnssec.title' },
 
   // Cache settings
   { route: CACHE, anchor: 'cache-set-download', title: 'cache.settings.downloadCacheTitle', help: 'cache.settings.offText' },

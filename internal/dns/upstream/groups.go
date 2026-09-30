@@ -255,7 +255,7 @@ func (r *Resolver) ResolveGroup(ctx context.Context, req *dns.Msg, groupID int64
 		}
 		set = s.guard
 	}
-	return r.resolve(ctx, req, route{set: set, def: true}, netip.Prefix{})
+	return r.resolve(ctx, req, route{set: set, def: true, validate: true}, netip.Prefix{})
 }
 
 // GroupStats describes every group set (never nil).
@@ -265,7 +265,7 @@ func (r *Resolver) GroupStats() []GroupUpstreamStat {
 	if gs == nil {
 		return out
 	}
-	guard := r.clockBehind()
+	guard, withDNSSEC := r.clockBehind(), r.validating()
 	for _, s := range gs.sets {
 		st := GroupUpstreamStat{GroupIDs: slices.Clone(s.ids), Preset: s.preset, Upstreams: []UpstreamStat{}, ClockGuard: guard, Error: s.err,
 			Names: slices.Clone(s.names)}
@@ -274,9 +274,9 @@ func (r *Resolver) GroupStats() []GroupUpstreamStat {
 		case guard && s.guard == nil:
 			st.Error = "the clock guard is active and the group has no plain upstream given by IP address"
 		case guard:
-			st.Upstreams = setStats(s.guard)
+			st.Upstreams = setStats(s.guard, withDNSSEC)
 		default:
-			st.Upstreams = setStats(s.normal)
+			st.Upstreams = setStats(s.normal, withDNSSEC)
 		}
 		out = append(out, st)
 	}

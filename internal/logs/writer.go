@@ -345,8 +345,9 @@ func insertQueries(ctx context.Context, tx *sql.Tx, events []QueryEvent) error {
 	}
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO logs_queries
 		(ts, client_ip, client_name, qname, qtype, status, rcode, reason, list_id, rule_id, service, upstream,
-		 duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs, upstream_answer, dns_client_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs, upstream_answer, dns_client_id,
+		 dnssec_status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -359,7 +360,7 @@ func insertQueries(ctx context.Context, tx *sql.Tx, events []QueryEvent) error {
 		}
 		if _, err := stmt.ExecContext(ctx, e.Time.UnixMilli(), e.ClientIP, e.ClientName, e.QName, e.QType, e.Status,
 			e.RCode, e.Reason, e.ListID, e.RuleID, e.Service, e.Upstream, e.DurationUs, e.Answer, e.DNSSEC, e.Protocol,
-			edeCode, edeText, e.ECS, e.UpstreamAnswer, e.DNSClientID); err != nil {
+			edeCode, edeText, e.ECS, e.UpstreamAnswer, e.DNSClientID, e.DNSSECStatus); err != nil {
 			return err
 		}
 	}

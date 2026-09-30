@@ -25,8 +25,35 @@
 //
 // Upstream queries are built fresh for every exchange: random ID (0 for
 // DoH), RD=1, AD=1, our OPT with a 1232-byte buffer and DO=1 if the client
-// set DO or dns.dnssec is on. Client EDNS options, the CD bit and the
-// client's ID never reach an upstream. Every reply must echo the question
+// set DO or dns.dnssecMode is passthrough or validate. Client EDNS options,
+// the CD bit and the client's ID never reach an upstream.
+//
+// DNSSEC (docs/ARCHITECTURE.md 7.6; mode validate): the answers of the
+// validated routes (the default route, the group sets, the validating
+// forwarders registered with SetValidatingForwarders) are validated once
+// per fetch by internal/dns/dnssec (rcode NOERROR or NXDOMAIN, not
+// classified as a block; after the classification, before the
+// fastest-address order) and cached with their verdict (Info.DNSSEC);
+// their Answer section keeps only the answer to the question (the chain
+// from the question name). Stale hits are indeterminate. The cache key
+// holds whether the fetch validates. Chain lookups (DS, DNSKEY; DO=1,
+// CD=0, fresh ID) use the route that answered (only its fallbacks when
+// they answered the fetch), bypass the response cache and are counted in
+// the upstream statistics; a fetch started for a client (WithClient)
+// draws on that client's share of them. In validate
+// mode every returned message carries AD exactly when its verdict is
+// secure and it is not stale; the upstream's AD is discarded on every
+// route. Modes off and passthrough pass the upstream's AD on. Probes
+// (". DNSKEY" and ". SOA" straight through the transport) judge each
+// upstream of a validated route (the clock-guard sets only while the clock
+// guard is active): capable, no-dnssec, anchor-mismatch or unknown; data
+// from a no-dnssec or anchor-mismatch upstream is indeterminate. Time
+// checks (RRSIG validity) are suspended while the clock guard is active,
+// the host clock (read through SetClockReader, at most once a second) is
+// readable and not synchronised, or, while it is not known to be
+// synchronised, the probes of the capable upstreams agree that the root's
+// signatures are outside their period now; they resume after 60 s without
+// any of these, which empties the caches. Every reply must echo the question
 // (qname case-insensitively, qtype, qclass); UDP replies that do not are
 // discarded and the exchange keeps waiting, TCP/DoT/DoH replies fail the
 // attempt.
@@ -44,7 +71,21 @@
 // duplicate check covers sections of at most 256 records; 16 EDE options
 // examined per reply, EDE texts ≤ 200 bytes; fastest-address probes: 8
 // addresses and 300 ms per answer, 32 dials at a time, 100 new targets per
-// second, 4096 cached results (10 minutes).
+// second, 4096 cached results (10 minutes). DNSSEC: the bounds of the
+// dnssec package per validation context (32 chain lookups, 4 s, 16
+// signature verifications of which 2 failed, 256 NSEC3 hashes, …), 1024
+// chain steps in flight, 50 new chain exchanges per second (burst 200;
+// a lookup waits for its turn within its context's deadline) of which 20
+// per second (burst 100) for one client (4096 clients tracked; beyond its
+// share a lookup fails at once), GOMAXPROCS concurrent signature
+// verifications, the key cache (16 384 zone states, 8 MiB) and the
+// failure cache (4096 entries); a bogus answer is cached min(its TTL,
+// 30 s) after a cryptographic failure and 5 s otherwise, never served
+// stale, and not at all after a local refusal (a chain rate limit, the
+// flight cap); a secure one at most until its earliest RRSIG expiration;
+// probes: 2 queries of 2 s per upstream every 30 minutes (30 s while
+// unknown or while its probes get no reply), 16 at a time; one bogus WARN
+// per zone per 10 minutes (1024 zones remembered).
 package upstream
 
 import (
@@ -55,10 +96,13 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/miekg/dns"
 
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
@@ -81,6 +125,10 @@ type Info struct {
 	EDE *EDE
 	// Fallback reports that a fallback upstream answered (Resolve only).
 	Fallback bool
+	// DNSSEC is the verdict of a validated answer (mode validate, a
+	// validated route); nil when it was not validated. Stored with the
+	// answer; a stale hit is indeterminate.
+	DNSSEC *Verdict
 }
 
 // UpstreamStat is per-upstream health for the UI. Upstream is the
@@ -96,6 +144,13 @@ type UpstreamStat struct {
 	LastError   string    `json:"lastError,omitempty"`
 	LastErrorAt time.Time `json:"lastErrorAt,omitzero"`
 	Healthy     bool      `json:"healthy"`
+	// DNSSEC is the probe state (capable, no-dnssec, anchor-mismatch,
+	// unknown), DNSSECError why it is not capable (≤ 200 bytes) and
+	// DNSSECCheckedAt when a probe last answered: only in validate mode
+	// for upstreams of validated routes.
+	DNSSEC          string    `json:"dnssec,omitempty"`
+	DNSSECError     string    `json:"dnssecError,omitempty"`
+	DNSSECCheckedAt time.Time `json:"dnssecCheckedAt,omitzero"`
 }
 
 // CacheStat describes the response cache. The counters count since the
@@ -112,6 +167,17 @@ type CacheStat struct {
 	// Types are the current entries by record type: the 16 largest, most
 	// entries first, and "OTHER" for the rest. Never null.
 	Types []CacheTypeStat `json:"types"`
+	// Validation describes the DNSSEC key and failure caches (validate
+	// mode only).
+	Validation *ValidationStat `json:"validation,omitempty"`
+}
+
+// ValidationStat describes the DNSSEC caches: the validated zone states
+// kept (per route), their bytes and the chain failures kept.
+type ValidationStat struct {
+	Zones    int `json:"zones"`
+	Bytes    int `json:"bytes"`
+	Failures int `json:"failures"`
 }
 
 // CacheTypeStat is the number of cached answers of one record type.
@@ -146,6 +212,7 @@ var (
 	errNoUpstreams = errors.New("upstream: no usable upstream configured")
 	errNoPlainPTR  = errors.New("upstream: no plain DNS server given for the PTR lookup")
 	errInvalidAddr = errors.New("upstream: invalid address")
+	errInternal    = errors.New("upstream: internal error")
 )
 
 // options are internal knobs; tests override them through newResolver.
@@ -165,6 +232,12 @@ type options struct {
 	probeDial func(ctx context.Context, network, address string) (net.Conn, error)
 	// quicIdle is the idle timeout of QUIC connections (DoQ, HTTP/3).
 	quicIdle time.Duration
+	// DNSSEC timings (0: the defaults): the probe interval, the retry
+	// while an upstream is unknown, the time of one probe query, the
+	// quiet time before time checks resume and the maintenance tick.
+	probeEvery, probeRetry, probeTimeout, resumeAfter, dnssecTick time.Duration
+	// anchors replace the root trust anchors (tests).
+	anchors []*dns.DS
 }
 
 func defaultOptions() options {
@@ -174,6 +247,20 @@ func defaultOptions() options {
 		quicIdle:  quicIdleTimeout,
 		buildDate: parseBuildDate(version.Date),
 	}
+}
+
+// withDefaults fills the DNSSEC timings left at zero.
+func (o options) withDefaults() options {
+	for _, v := range []struct {
+		p *time.Duration
+		d time.Duration
+	}{{&o.probeEvery, probeEvery}, {&o.probeRetry, probeRetry}, {&o.probeTimeout, probeQueryTimeout},
+		{&o.resumeAfter, resumeAfter}, {&o.dnssecTick, dnssecTick}} {
+		if *v.p <= 0 {
+			*v.p = v.d
+		}
+	}
+	return o
 }
 
 // safeFilter is netutil.SafeDialer's destination filter without private
@@ -219,7 +306,7 @@ type Resolver struct {
 	closed bool
 	wg     sync.WaitGroup // exchange and refresh goroutines
 
-	mu  sync.Mutex // serialises rebuilds and guards via and groupCfg
+	mu  sync.Mutex // serialises rebuilds and guards via, groupCfg and fwdCfg
 	def atomic.Pointer[defaultSets]
 	via map[string]*upstreamSet
 	// groups are the group sets built from groupCfg (SetGroupUpstreams).
@@ -227,6 +314,10 @@ type Resolver struct {
 	groupCfg []GroupUpstreams
 	// viaOrder is the insertion order of via (oldest first) for eviction.
 	viaOrder []string
+	// fwds are the target sets of the validating forwarders built from
+	// fwdCfg (SetValidatingForwarders), pinned outside the via LRU.
+	fwds   atomic.Pointer[fwdSets]
+	fwdCfg [][]string
 
 	cache    respCache
 	flight   flightGroup
@@ -237,6 +328,10 @@ type Resolver struct {
 
 	guardLogged  atomic.Bool
 	lastFallback atomic.Int64 // unix nanoseconds a fallback last answered a fetch; 0 = never
+
+	// val is the DNSSEC state: the validator, the time checks, the probes
+	// and the validating forwarders (dnssec.go).
+	val *validation
 }
 
 // New creates a resolver from the current settings and subscribes to changes.
@@ -245,6 +340,7 @@ func New(set *settings.Store, log *slog.Logger) (*Resolver, error) {
 }
 
 func newResolver(set *settings.Store, log *slog.Logger, opts options) *Resolver {
+	opts = opts.withDefaults()
 	if opts.publicFilter == nil {
 		opts.publicFilter = safeFilter
 	}
@@ -261,6 +357,7 @@ func newResolver(set *settings.Store, log *slog.Logger, opts options) *Resolver 
 		prober:   newProber(opts.probeDial, opts.publicFilter),
 	}
 	r.life, r.stop = context.WithCancel(context.Background())
+	r.val = newValidation(r)
 	r.cache.init()
 	r.flight.m = map[cacheKey]*call{}
 	r.ips.m = map[ipKey]ipEntry{}
@@ -277,6 +374,7 @@ func (r *Resolver) Start(ctx context.Context) {
 	for range refreshWorkers {
 		workers.Go(func() { r.refreshLoop(ctx) })
 	}
+	workers.Go(func() { r.dnssecLoop(ctx) })
 	r.workers.Store(true)
 	<-ctx.Done()
 	r.workers.Store(false)
@@ -298,6 +396,9 @@ func (r *Resolver) Close() error {
 		if gs := r.groups.Swap(nil); gs != nil {
 			gs.close()
 		}
+		if fs := r.fwds.Swap(nil); fs != nil {
+			fs.close()
+		}
 		r.mu.Unlock()
 		r.wg.Wait()
 	})
@@ -312,7 +413,10 @@ func (r *Resolver) shutdown() {
 }
 
 // goTracked runs fn in a goroutine that Start and Close wait for. It returns
-// false (and does not run fn) after shutdown.
+// false (and does not run fn) after shutdown. A panic in fn is logged and
+// ends only fn, never the process (these goroutines exchange, validate and
+// probe with untrusted data; the DNS server's handler has the same guard);
+// fn cleans up with defers, so its waiters still get an answer.
 func (r *Resolver) goTracked(fn func()) bool {
 	r.lifeMu.Lock()
 	if r.closed {
@@ -323,6 +427,11 @@ func (r *Resolver) goTracked(fn func()) bool {
 	r.lifeMu.Unlock()
 	go func() {
 		defer r.wg.Done()
+		defer func() {
+			if v := recover(); v != nil {
+				r.log.Error("panic in a DNS background task", slog.Any("panic", v), slog.String("stack", string(debug.Stack())))
+			}
+		}()
 		fn()
 	}()
 	return true
@@ -330,7 +439,9 @@ func (r *Resolver) goTracked(fn func()) bool {
 
 // onSettings follows settings changes: a new upstream, fallback or
 // bootstrap list (or bootstrap order) rebuilds the upstream sets; cache
-// changes resize or empty the cache.
+// changes resize or empty the cache; a new DNSSEC mode empties the
+// response, LookupIP, key and failure caches (switching to validate
+// starts the probes).
 func (r *Resolver) onSettings(old, next settings.DNS) {
 	if !slices.Equal(old.Upstreams, next.Upstreams) || !slices.Equal(old.FallbackUpstreams, next.FallbackUpstreams) ||
 		!slices.Equal(old.Bootstrap, next.Bootstrap) || old.BootstrapPreferIPv6 != next.BootstrapPreferIPv6 {
@@ -338,10 +449,17 @@ func (r *Resolver) onSettings(old, next settings.DNS) {
 	}
 	switch {
 	case !next.CacheEnabled || next.CacheSize == 0:
-		r.FlushCache()
+		r.flushResponses()
 	case next.CacheSize < old.CacheSize:
 		r.cache.trim(next.CacheSize)
 	}
+	if old.DNSSECMode != next.DNSSECMode {
+		r.FlushCache()
+		if next.DNSSECMode == settings.DNSSECValidate {
+			r.val.probeAllSoon()
+		}
+	}
+	r.val.keyShares(next)
 }
 
 // rebuild replaces the default upstream sets and drops all ResolveVia sets
@@ -387,6 +505,10 @@ func (r *Resolver) rebuild(d settings.DNS) {
 	if len(r.groupCfg) > 0 {
 		r.rebuildGroupsLocked(boot) // named group upstreams depend on the bootstrap servers
 	}
+	if len(r.fwdCfg) > 0 {
+		r.rebuildForwardersLocked(boot)
+	}
+	r.val.probeAllSoon() // the rebuilt sets are probed again
 	var fallbacks []string
 	if ds.fallback != nil {
 		fallbacks = ds.fallback.displays()
@@ -433,9 +555,9 @@ func (r *Resolver) defaultRoute() route {
 			r.log.Warn("system clock is before the build date: encrypted upstreams are skipped and plain DNS to the bootstrap servers is used until the clock is set",
 				slog.Time("buildDate", r.opts.buildDate), slog.Time("now", time.Now()))
 		}
-		return route{set: ds.guard, def: true}
+		return route{set: ds.guard, def: true, validate: true}
 	}
-	return route{set: ds.normal, fallback: ds.fallback, def: true}
+	return route{set: ds.normal, fallback: ds.fallback, def: true, validate: true}
 }
 
 func (r *Resolver) clockBehind() bool {
@@ -500,13 +622,14 @@ func (ds *defaultSets) collectStats(into, fallbacks map[string]*upstreamStats) {
 }
 
 // Stats returns per-upstream health of the upstreams currently in use (the
-// plain fallback while the clock guard is active).
-func (r *Resolver) Stats() []UpstreamStat { return setStats(r.defaultSet()) }
+// plain fallback while the clock guard is active), with their DNSSEC probe
+// state in validate mode.
+func (r *Resolver) Stats() []UpstreamStat { return setStats(r.defaultSet(), r.validating()) }
 
 // FallbackStats returns per-upstream health of the fallback upstreams
 // (their own statistics; empty, never nil, without fallbacks).
 func (r *Resolver) FallbackStats() []UpstreamStat {
-	return setStats(r.def.Load().fallback)
+	return setStats(r.def.Load().fallback, r.validating())
 }
 
 // LastFallback returns the time a fallback upstream last answered a fetch
@@ -518,13 +641,15 @@ func (r *Resolver) LastFallback() time.Time {
 	return time.Time{}
 }
 
-func setStats(set *upstreamSet) []UpstreamStat {
+// setStats returns the statistics of a set's upstreams; withDNSSEC adds
+// their probe state.
+func setStats(set *upstreamSet, withDNSSEC bool) []UpstreamStat {
 	if set == nil {
 		return []UpstreamStat{}
 	}
 	out := make([]UpstreamStat, 0, len(set.ups))
 	for _, u := range set.ups {
-		out = append(out, u.st.snapshot(u.name, u.display))
+		out = append(out, u.st.snapshot(u.name, u.display, withDNSSEC))
 	}
 	return out
 }
@@ -545,6 +670,10 @@ func (r *Resolver) CacheStats() CacheStat {
 	if d.CacheEnabled {
 		st.Capacity = d.CacheSize
 	}
+	if d.Validating() {
+		zones, bytes, failures := r.val.v.Stats()
+		st.Validation = &ValidationStat{Zones: zones, Bytes: bytes, Failures: failures}
+	}
 	return st
 }
 
@@ -554,8 +683,16 @@ func (r *Resolver) ClockGuard() bool {
 	return ds != nil && ds.guard != nil && r.clockBehind()
 }
 
-// FlushCache empties the response cache and the LookupIP cache.
+// FlushCache empties the response cache, the LookupIP cache and the
+// DNSSEC key and failure caches (POST /dns/cache/flush, a new DNSSEC
+// mode).
 func (r *Resolver) FlushCache() {
+	r.flushResponses()
+	r.val.v.Flush()
+}
+
+// flushResponses empties the response cache and the LookupIP cache.
+func (r *Resolver) flushResponses() {
 	r.cache.flush()
 	r.ips.flush()
 }

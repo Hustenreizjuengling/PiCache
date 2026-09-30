@@ -3501,10 +3501,52 @@
         "tags": [
           "Upstreams"
         ],
-        "description": "Request: –\n\nResponse: 204",
+        "description": "Request: –\n\nResponse: 204 (since v0.17.0 also empties the DNSSEC key and failure caches)",
         "responses": {
           "204": {
             "description": "No content."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/dns/dnssec/test": {
+      "post": {
+        "operationId": "postDnsDnssecTest",
+        "summary": "Test DNSSEC validation with fixed names",
+        "tags": [
+          "Upstreams"
+        ],
+        "description": "Request: – (no body)\n\nResponse: 200 upstream.DNSSECTest {mode:\"off\"|\"passthrough\"|\"validate\", timeChecks:\"active\"|\"suspended\", timeReason?:string, upstreams:[]upstream.UpstreamStat, checks:[{name:string, expect:\"secure\"|\"insecure\"|\"bogus\", status:\"secure\"|\"insecure\"|\"bogus\"|\"indeterminate\"|\"error\", rcode?:string, reason?:string, ede?:{code:int, text:string}, upstream?:string, upstreamRefused:bool, verdict:\"pass\"|\"fail\"|\"inconclusive\"}], durationMs:int} (v0.17.0; runs only on request, in every mode): probes the upstreams of the default set now (upstreams, with their DNSSEC state), then asks each fixed name (example.com expecting secure, google.com insecure, dnssec-failed.org and sigfail.ippacket.stream bogus; checks in this order, never null) for A with DO=1 and CD=1 through the default route, bypassing the response cache, and validates the answer locally; a second query with CD=0 shows whether the upstream's own validator refuses the name (upstreamRefused: it answered SERVFAIL). verdict: pass when status equals expect, inconclusive for indeterminate and error (no reply, SERVFAIL with checking disabled, NXDOMAIN: the name is gone), fail otherwise; at most 10 s (unfinished checks end as error). The group upstreams of the caller are never used; nothing is written to the query log or the statistics. 409 conflict \"a DNSSEC test is running\"; 429 \"wait 10 seconds between DNSSEC tests\"; 503 without a resolver. Audited as dns.dnssec.test ({passed, failed, inconclusive})",
+        "responses": {
+          "200": {
+            "description": "Test DNSSEC validation with fixed names.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/upstream.DNSSECTest"
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Error"
@@ -3575,7 +3617,7 @@
         "tags": [
           "DNS: blocking, lookup, records, forwarders, clients, groups"
         ],
-        "description": "Request: –\n\nResponse: []dnsserver.Forwarder (by domain, then id)",
+        "description": "Request: –\n\nResponse: []dnsserver.Forwarder (by domain, then id; validate:bool since v0.17.0)",
         "responses": {
           "200": {
             "description": "List conditional forwarders.",
@@ -3613,7 +3655,7 @@
         "tags": [
           "DNS: blocking, lookup, records, forwarders, clients, groups"
         ],
-        "description": "Request: dnsserver.ForwarderInput\n\nResponse: 201 dnsserver.Forwarder; 400 with field domain, domains, domains[i], upstreams or upstreams[i]; 409 when a domain belongs to another forwarder (\"a forwarder for <domain> already exists\") or 256 forwarders exist",
+        "description": "Request: dnsserver.ForwarderInput (since v0.17.0 with validate:bool, absent = false)\n\nResponse: 201 dnsserver.Forwarder; 400 with field domain, domains, domains[i], upstreams or upstreams[i], or validate \"only forwarders with explicit targets outside the locally served zones can validate\" (the target default, a domain (unqualified), or a domain in the local domain, home.arpa, a search domain, a special-use zone or a locally served reverse zone); 409 when a domain belongs to another forwarder (\"a forwarder for <domain> already exists\") or 256 forwarders exist",
         "requestBody": {
           "required": true,
           "content": {
@@ -3725,7 +3767,7 @@
         "tags": [
           "DNS: blocking, lookup, records, forwarders, clients, groups"
         ],
-        "description": "Request: {text:string, dryRun:bool}\n\nResponse: 200 {applied:bool, added:int, updated:int, unchanged:int, errors:[{line:int, field:string, message:string}]} (below); 400 field:\"text\" for more than 256 KiB or 1024 lines. Audited as dns.forwarder.import (details {added, updated}) when applied; dry runs and failed imports are not audited",
+        "description": "Request: {text:string, dryRun:bool}\n\nResponse: 200 {applied:bool, added:int, updated:int, unchanged:int, errors:[{line:int, field:string, message:string}]} (below; since v0.17.0 an updated line keeps the forwarder's validate, new lines get false, and an updated line whose new domains or targets may not validate is an error line with field:\"validate\"); 400 field:\"text\" for more than 256 KiB or 1024 lines. Audited as dns.forwarder.import (details {added, updated}) when applied; dry runs and failed imports are not audited",
         "requestBody": {
           "required": true,
           "content": {
@@ -3875,7 +3917,7 @@
         "tags": [
           "DNS: blocking, lookup, records, forwarders, clients, groups"
         ],
-        "description": "Request: dnsserver.ForwarderInput\n\nResponse: 200 (errors as for POST)",
+        "description": "Request: dnsserver.ForwarderInput (validate absent = false, like enabled)\n\nResponse: 200 (errors as for POST)",
         "parameters": [
           {
             "name": "id",
@@ -3937,7 +3979,7 @@
         "tags": [
           "DNS: blocking, lookup, records, forwarders, clients, groups"
         ],
-        "description": "Request: dnsserver.LookupRequest ({name, type?, clientIp?, dnsClientId?}; dnsClientId (v0.14.0) evaluates the query as a DoT or DoH query from clientIp that carries this ClientID; 400 dnsClientId \"must be a ClientID: 1–63 letters, digits and hyphens, not starting or ending with a hyphen\")\n\nResponse: dnsserver.LookupResult (status can also be dropped: a blocked client (since v0.14.0 also a blocked ClientID, traced blocked client: clientid:<id>) or a dropped domain gets no answer at all; rcode is then \"\" and answers empty; never logged. steps trace every pipeline step, e.g. blocked client: <entry>, dropped by dns.droppedDomains (<entry>), single-label: answered as nas.lan by local record, upstream block: dns.quad9.net: nxdomain-no-ra, bogus NXDOMAIN: <address> is in dns.bogusNxdomain, rebind protection: <address> blocked, rebind protection: exempt (<reason>), fallback: answered by <fallback>, conditional forwarder <domain>: default upstreams, since v0.10.0 safe search: <name> → CNAME <target> (<group>), safe search: not applied, <name> is blocked for the client, parental: blocked by list \"<name>\" (<category>): <mode> reply, filtering paused for group <name> until <time>, blocking is inactive: filtering is paused for every group of the client, special domain <reason>: allowed by <source> \"<name>\", since v0.13.0 blocked by rule \"<pattern>\" (<kind>): <reply> reply, response IP <address> blocked by list \"<name>\", response IP <address> blocked by IP rule \"<pattern>\", local records for <name>: no <type> record, continuing (other family: forward), local addresses first (dns.localizeRecords), local addresses only (dns.localizeRecords), answered via group upstreams of <group> (<upstream>, <status>) and group upstreams of <group> failed: <error>, since v0.14.0 ClientID <id>: client <name>, ClientID <id> ignored: the source is client <name>, ClientID <id>: no client has it; identified by the source, special-use name: this server's own name (dns.encrypted.serverName), DDR: <n> designated resolvers, DDR: not announced (<reason>) and a note when plain DNS is closed for the address)",
+        "description": "Request: dnsserver.LookupRequest ({name, type?, clientIp?, dnsClientId?}; dnsClientId (v0.14.0) evaluates the query as a DoT or DoH query from clientIp that carries this ClientID; 400 dnsClientId \"must be a ClientID: 1–63 letters, digits and hyphens, not starting or ending with a hyphen\")\n\nResponse: dnsserver.LookupResult (status can also be dropped: a blocked client (since v0.14.0 also a blocked ClientID, traced blocked client: clientid:<id>) or a dropped domain gets no answer at all; rcode is then \"\" and answers empty; never logged. steps trace every pipeline step, e.g. blocked client: <entry>, dropped by dns.droppedDomains (<entry>), single-label: answered as nas.lan by local record, upstream block: dns.quad9.net: nxdomain-no-ra, bogus NXDOMAIN: <address> is in dns.bogusNxdomain, rebind protection: <address> blocked, rebind protection: exempt (<reason>), fallback: answered by <fallback>, conditional forwarder <domain>: default upstreams, since v0.10.0 safe search: <name> → CNAME <target> (<group>), safe search: not applied, <name> is blocked for the client, parental: blocked by list \"<name>\" (<category>): <mode> reply, filtering paused for group <name> until <time>, blocking is inactive: filtering is paused for every group of the client, special domain <reason>: allowed by <source> \"<name>\", since v0.13.0 blocked by rule \"<pattern>\" (<kind>): <reply> reply, response IP <address> blocked by list \"<name>\", response IP <address> blocked by IP rule \"<pattern>\", local records for <name>: no <type> record, continuing (other family: forward), local addresses first (dns.localizeRecords), local addresses only (dns.localizeRecords), answered via group upstreams of <group> (<upstream>, <status>) and group upstreams of <group> failed: <error>, since v0.14.0 ClientID <id>: client <name>, ClientID <id> ignored: the source is client <name>, ClientID <id>: no client has it; identified by the source, special-use name: this server's own name (dns.encrypted.serverName), DDR: <n> designated resolvers, DDR: not announced (<reason>) and a note when plain DNS is closed for the address; since v0.17.0 dnssec: secure (<zone>), dnssec: insecure (<zone>: <reason>), dnssec: bogus (<zone>: <failure>), dnssec: indeterminate (<reason>), dnssec: bogus answer passed on (checking disabled) and, in the DNSSEC mode validate, dnssec: not validated (<route>) for the router resolver, localPtrUpstreams and forwarders without validate). Since v0.17.0 also dnssecStatus?:\"secure\"|\"insecure\"|\"bogus\"|\"indeterminate\" (the verdict of the fetched data; absent when nothing was validated), dnssecReason?:string (the failure of a bogus verdict, e.g. bad signature, or the reason of an insecure or indeterminate one) and dnssecEde?:{code:int, text:string} (the Extended DNS Error clients get). A bogus answer (the query has CD=0) is status error, rcode SERVFAIL, reason dnssec: <zone>: <failure>",
         "requestBody": {
           "required": true,
           "content": {
@@ -4540,7 +4582,7 @@
         "tags": [
           "DNS: blocking, lookup, records, forwarders, clients, groups"
         ],
-        "description": "Request: –\n\nResponse: dnsserver.Stats (blockedClients: queries of dns.blockedClients dropped or closed; dropped: queries of dns.droppedDomains dropped or closed)",
+        "description": "Request: –\n\nResponse: dnsserver.Stats (blockedClients: queries of dns.blockedClients dropped or closed; dropped: queries of dns.droppedDomains dropped or closed; dnssec (v0.17.0): {secure:int, insecure:int, bogus:int, indeterminate:int}, the answered queries by DNSSEC status since the start, never filtered)",
         "responses": {
           "200": {
             "description": "DNS server counters.",
@@ -4579,7 +4621,7 @@
         "tags": [
           "Upstreams"
         ],
-        "description": "Request: –\n\nResponse: {upstreams:[]upstream.UpstreamStat, fallbacks:[]upstream.UpstreamStat, fallbackLastUsed?:time, cache:upstream.CacheStat, clockGuard:bool, groups:[]upstream.GroupUpstreamStat} (groups, v0.13.0: one entry per group set {groupIds:[int], preset:string, upstreams:[]upstream.UpstreamStat, clockGuard:bool, error?:string}, never null; upstreams are the upstreams in use (a preset's or the group's plain addresses while the clock guard is active); error when the set could not be built or, while the clock guard is active, has no plain address) (upstream.CacheStat = {entries, capacity, hits, misses, staleHits, insertions, evictions, expired, types:[{type, entries}]}: counters since the start; evictions = entries removed for the capacity, expired = entries removed after their TTL and the serve-stale window, insertions = answers stored; types = the current entries by record type, the 16 largest, most first, and OTHER for the rest (at most 64 types are counted by name); never null): upstreams are the upstreams in use (the plain bootstrap servers while the clock guard is active), fallbacks the statistics of dns.fallbackUpstreams (never null), fallbackLastUsed the time a fallback last answered (omitted if never since the start); upstream.UpstreamStat = {upstream, name, queries, errors, avgRttMs, lastError?, lastErrorAt?, healthy}; upstream is the configured string, name (v0.14.0) its display name for tables, logs and metrics: the string itself, a DNS stamp as sdns:<dnscrypt|doh|dot|doq>:<host>, never the stamp",
+        "description": "Request: –\n\nResponse: {upstreams:[]upstream.UpstreamStat, fallbacks:[]upstream.UpstreamStat, fallbackLastUsed?:time, cache:upstream.CacheStat, clockGuard:bool, groups:[]upstream.GroupUpstreamStat} (groups, v0.13.0: one entry per group set {groupIds:[int], preset:string, upstreams:[]upstream.UpstreamStat, clockGuard:bool, error?:string}, never null; upstreams are the upstreams in use (a preset's or the group's plain addresses while the clock guard is active); error when the set could not be built or, while the clock guard is active, has no plain address) (upstream.CacheStat = {entries, capacity, hits, misses, staleHits, insertions, evictions, expired, types:[{type, entries}]}: counters since the start; evictions = entries removed for the capacity, expired = entries removed after their TTL and the serve-stale window, insertions = answers stored; types = the current entries by record type, the 16 largest, most first, and OTHER for the rest (at most 64 types are counted by name); never null): upstreams are the upstreams in use (the plain bootstrap servers while the clock guard is active), fallbacks the statistics of dns.fallbackUpstreams (never null), fallbackLastUsed the time a fallback last answered (omitted if never since the start); upstream.UpstreamStat = {upstream, name, queries, errors, avgRttMs, lastError?, lastErrorAt?, healthy}; upstream is the configured string, name (v0.14.0) its display name for tables, logs and metrics: the string itself, a DNS stamp as sdns:<dnscrypt|doh|dot|doq>:<host>, never the stamp. Since v0.17.0, only while dns.dnssecMode is validate: dnssec?:{timeChecks:\"active\"|\"suspended\", timeReason?:\"clock-guard\"|\"unsynced\"|\"root-signatures\", newRootKey:bool, forwarders:[{id:int, domains:[string], upstreams:[]upstream.UpstreamStat}]} (whether RRSIG validity periods are checked and why not, whether a validated root DNSKEY RRset holds a key-signing key that matches no built-in anchor, and the enabled forwarders with validate:true with their targets; forwarders never null), cache.validation?:{zones:int, bytes:int, failures:int} (the DNSSEC key cache's zone states and bytes, the failure cache's entries) and per upstream of upstreams, fallbacks and groups[].upstreams dnssec?:\"capable\"|\"no-dnssec\"|\"anchor-mismatch\"|\"unknown\" (the probe state), dnssecError?:string (why it is not capable, ≤ 200 bytes) and dnssecCheckedAt?:time (the last probe that answered)",
         "responses": {
           "200": {
             "description": "Upstream statistics.",
@@ -7067,7 +7109,7 @@
         "tags": [
           "Logs, statistics, downloads, streams"
         ],
-        "description": "Request: ?from&to&range&client(multi)&domain&status(multi)&qtype&upstream&rcode(multi)&dnssec&dnsClientId&cursor&limit (default range 1h; dnsClientId (v0.14.0) matches the ClientID exactly, lower-cased, 400 field:\"dnsClientId\" \"must be a ClientID\"; rcode repeatable or comma-separated, ORed, at most 16 values of 1–16 characters of A-Z0-9 after upper-casing (NOERROR, NXDOMAIN, SERVFAIL, …; 400 field:\"rcode\"); dnssec=true|false filters by the AD flag (400 field:\"dnssec\"); client may be repeated, at most 256 values, ORed: each an address (exact) or ≥ 3 characters of the name or address, e.g. every address of a device; status: forwarded, cached, stale, local, special, override, blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service, blocked-upstream, blocked-rebind, blocked-ip, safesearch, refused, error, or a series class; the class blocked covers every blocked-* status, the class allowed includes safesearch)\n\nResponse: logs.QueryPage",
+        "description": "Request: ?from&to&range&client(multi)&domain&status(multi)&qtype&upstream&rcode(multi)&dnssec&dnssecStatus(multi)&dnsClientId&cursor&limit (default range 1h; dnssecStatus (v0.17.0) repeatable or comma-separated, ORed, at most 4 values of secure, insecure, bogus, indeterminate (lower-cased; 400 field:\"dnssecStatus\" \"must be secure, insecure, bogus or indeterminate\"); dnsClientId (v0.14.0) matches the ClientID exactly, lower-cased, 400 field:\"dnsClientId\" \"must be a ClientID\"; rcode repeatable or comma-separated, ORed, at most 16 values of 1–16 characters of A-Z0-9 after upper-casing (NOERROR, NXDOMAIN, SERVFAIL, …; 400 field:\"rcode\"); dnssec=true|false filters by the AD flag (400 field:\"dnssec\"); client may be repeated, at most 256 values, ORed: each an address (exact) or ≥ 3 characters of the name or address, e.g. every address of a device; status: forwarded, cached, stale, local, special, override, blocked-list, blocked-rule, blocked-regex, blocked-cname, blocked-special, blocked-schedule, blocked-service, blocked-upstream, blocked-rebind, blocked-ip, safesearch, refused, error, or a series class; the class blocked covers every blocked-* status, the class allowed includes safesearch)\n\nResponse: logs.QueryPage",
         "parameters": [
           {
             "name": "from",
@@ -7150,6 +7192,14 @@
             }
           },
           {
+            "name": "dnssecStatus",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "dnsClientId",
             "in": "query",
             "required": false,
@@ -7212,7 +7262,7 @@
         "tags": [
           "Logs, statistics, downloads, streams"
         ],
-        "description": "Request: ?format=ndjson|csv and the parameters and defaults of /logs/queries without cursor and limit (400 field:\"format\")\n\nResponse: The query log newest first: NDJSON (application/x-ndjson, one logs.QueryEvent per line) or CSV (text/csv; charset=utf-8, RFC 4180, LF; header time,clientIp,clientName,qname,qtype,status,rcode,reason,listId,ruleId,service,upstream,durationUs,answer,upstreamAnswer,dnssec,protocol,upstreamEdeCode,upstreamEdeText,ecs,dnsClientId (dnsClientId since v0.14.0); control and bidi characters removed from every text cell, a cell starting with =, +, -, @, TAB or CR gets a leading '), Content-Disposition: attachment; filename=\"picache-queries-<from>-<to>.<ndjson|csv>\" (UTC YYYYMMDDTHHMMSSZ). Read in keyset chunks of at most 5000 rows, each its own read (normal 10 s timeout); one export at a time (429). It stops when the client disconnects, after 1 000 000 rows or after 15 minutes; then a final line {\"truncated\":true,\"reason\":\"rows\"|\"time\"} (NDJSON) or a record # truncated: rows|time (CSV). An error after the start aborts the connection. Audited as logs.export ({format, rows, truncated:\"\"|\"rows\"|\"time\"|\"disconnected\"})",
+        "description": "Request: ?format=ndjson|csv and the parameters and defaults of /logs/queries without cursor and limit (400 field:\"format\")\n\nResponse: The query log newest first: NDJSON (application/x-ndjson, one logs.QueryEvent per line) or CSV (text/csv; charset=utf-8, RFC 4180, LF; header time,clientIp,clientName,qname,qtype,status,rcode,reason,listId,ruleId,service,upstream,durationUs,answer,upstreamAnswer,dnssec,protocol,upstreamEdeCode,upstreamEdeText,ecs,dnsClientId,dnssecStatus (dnsClientId since v0.14.0, dnssecStatus since v0.17.0); control and bidi characters removed from every text cell, a cell starting with =, +, -, @, TAB or CR gets a leading '), Content-Disposition: attachment; filename=\"picache-queries-<from>-<to>.<ndjson|csv>\" (UTC YYYYMMDDTHHMMSSZ). Read in keyset chunks of at most 5000 rows, each its own read (normal 10 s timeout); one export at a time (429). It stops when the client disconnects, after 1 000 000 rows or after 15 minutes; then a final line {\"truncated\":true,\"reason\":\"rows\"|\"time\"} (NDJSON) or a record # truncated: rows|time (CSV). An error after the start aborts the connection. Audited as logs.export ({format, rows, truncated:\"\"|\"rows\"|\"time\"|\"disconnected\"})",
         "parameters": [
           {
             "name": "format",
@@ -8769,6 +8819,55 @@
         "x-picache-destructive": false
       }
     },
+    "/api/v1/stats/dnssec": {
+      "get": {
+        "operationId": "getStatsDnssec",
+        "summary": "Queries by DNSSEC status",
+        "tags": [
+          "Logs, statistics, downloads, streams"
+        ],
+        "description": "Request: ?range (as /stats/summary, default 24h)\n\nResponse: logs.DNSSECStats {from:time, statuses:[{status, count:int}]} (v0.17.0): the queries of the range with a DNSSEC status (PiCache's own validation) by status (secure, insecure, bogus, indeterminate), most first, then by status (never null); from like Summary.topFrom. Counted at log time like the purposes: not while logs.statsEnabled is off, for ignoreStats clients and logs.ignoredDomains, and with statsOnlyAddressQueries only for A, AAAA and HTTPS; read from the hourly top table (kind dnssec) and the current hour",
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queries by DNSSEC status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/logs.DNSSECStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "R",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
     "/api/v1/stats/purposes": {
       "get": {
         "operationId": "getStatsPurposes",
@@ -9792,7 +9891,7 @@
         "tags": [
           "Logs, statistics, downloads, streams"
         ],
-        "description": "Request: ?client(multi)&status (server-side filter; client as for /logs/queries)\n\nResponse: SSE event: query, data logs.QueryEvent (id is 0 in the live feed; seq is a positive per-process sequence for keying rows)",
+        "description": "Request: ?client(multi)&status (server-side filter; client as for /logs/queries)\n\nResponse: SSE event: query, data logs.QueryEvent (id is 0 in the live feed; seq is a positive per-process sequence for keying rows; dnssecStatus since v0.17.0)",
         "parameters": [
           {
             "name": "client",
@@ -10514,7 +10613,7 @@
         "tags": [
           "System"
         ],
-        "description": "Request: –\n\nResponse: api.Health (check names: listeners (a failed dot listener counts only while dns.encrypted.dot is on, a failed doh listener only while dns.encrypted.doh is on), upstreams (warns while the clock guard is active; otherwise fails when no default upstream and no fallback is healthy, and warns \"fallback DNS in use: the upstream DNS servers are not answering\" while no default upstream is healthy or a fallback answered within the last 5 minutes; after these, since v0.13.0, warns \"the upstreams of group <names> are not answering: their clients get SERVFAIL\" when a group set could not be built or has no healthy upstream), blocklists (warns, among others, \"<n> own list(s) contain entries that would block a whole top-level domain; they are ignored\" for tldGuardLists and, since v0.13.0, \"<n> list(s) of answer addresses contain blocks of broad or private networks; they are ignored\" for ipGuardLists), dns-rate-limit, cache-domains, download_cache, sni, cache-store, logs, data-disk, dhcp, network, tls, encrypted-dns; encrypted-dns (v0.14.0; present while dns.encrypted.dot or dns.encrypted.doh is on or dns.plainDns is off; the first match wins) fails while plain DNS is off and no protocol is serving (\"plain DNS is still served: no encrypted DNS listener is running\", hint \"check PICACHE_DOT_LISTEN, PICACHE_DOH_LISTEN and the certificate (System > HTTPS certificate); PiCache closes plain DNS again as soon as DoT or DoH is serving\"), warns while an enabled protocol is not serving (\"DoT is enabled but not serving: <dot.error>\", DoH likewise, both joined with \"; \"; hint \"see DNS > Settings > Encrypted DNS\") or the certificate does not cover the server name (\"the certificate does not cover <serverName>: devices refuse encrypted DNS\", hint \"upload a certificate for it under System > HTTPS certificate, or use the local CA on devices that trust it\"), else ok with an empty message; tls (only while a TLS listener is bound: the web UI over HTTPS, DoT or DoH; the first match wins) fails when the configured certificate (files or upload) cannot be used and a fallback is served (\"the configured certificate cannot be used: <error>; PiCache serves its local CA",
+        "description": "Request: –\n\nResponse: api.Health (check names: listeners (a failed dot listener counts only while dns.encrypted.dot is on, a failed doh listener only while dns.encrypted.doh is on), upstreams (warns while the clock guard is active; otherwise fails when no default upstream and no fallback is healthy, and warns \"fallback DNS in use: the upstream DNS servers are not answering\" while no default upstream is healthy or a fallback answered within the last 5 minutes; after these, since v0.13.0, warns \"the upstreams of group <names> are not answering: their clients get SERVFAIL\" when a group set could not be built or has no healthy upstream), blocklists (warns, among others, \"<n> own list(s) contain entries that would block a whole top-level domain; they are ignored\" for tldGuardLists and, since v0.13.0, \"<n> list(s) of answer addresses contain blocks of broad or private networks; they are ignored\" for ipGuardLists), dns-rate-limit, cache-domains, download_cache, sni, cache-store, logs, data-disk, dhcp, network, tls, encrypted-dns, dnssec; dnssec (v0.17.0; present only while dns.dnssecMode is validate; the first match wins) fails while an upstream of a validated route is anchor-mismatch (\"the DNSSEC trust anchors of this version do not match the root zone: update PiCache\", hint \"answers from it are passed on without validation until then\"), warns while the time checks are suspended (\"DNSSEC time checks are suspended: <the host clock is not synchronised|the system clock is before the build date|the host clock disagrees with the root zone's signatures>\", hint \"enable time synchronisation on the host (timedatectl set-ntp true)\"), while an upstream of the default set, the fallbacks, the clock-guard set or a validating forwarder is no-dnssec (\"<upstream> does not return DNSSEC data: its answers are not validated\", the first one, then \" (and N more)\"; forwarder targets as forwarder <domain>: <upstream>; group sets are left out; hint \"choose upstreams that support DNSSEC, or set the DNSSEC mode to passthrough\"), while a new root key is published (\"a new root key is published: update PiCache before it is used\") and when at least 20 and more than 1 % of the validated answers of the last hour were bogus (\"<n> of <m> validated answers in the last hour failed DNSSEC validation\", hint \"the query log shows them (DNSSEC status bogus)\"); else ok; encrypted-dns (v0.14.0; present while dns.encrypted.dot or dns.encrypted.doh is on or dns.plainDns is off; the first match wins) fails while plain DNS is off and no protocol is serving (\"plain DNS is still served: no encrypted DNS listener is running\", hint \"check PICACHE_DOT_LISTEN, PICACHE_DOH_LISTEN and the certificate (System > HTTPS certificate); PiCache closes plain DNS again as soon as DoT or DoH is serving\"), warns while an enabled protocol is not serving (\"DoT is enabled but not serving: <dot.error>\", DoH likewise, both joined with \"; \"; hint \"see DNS > Settings > Encrypted DNS\") or the certificate does not cover the server name (\"the certificate does not cover <serverName>: devices refuse encrypted DNS\", hint \"upload a certificate for it under System > HTTPS certificate, or use the local CA on devices that trust it\"), else ok with an empty message; tls (only while a TLS listener is bound: the web UI over HTTPS, DoT or DoH; the first match wins) fails when the configured certificate (files or upload) cannot be used and a fallback is served (\"the configured certificate cannot be used: <error>; PiCache serves its local CA",
         "responses": {
           "200": {
             "description": "Health checks.",
@@ -13001,8 +13100,18 @@
               "serveStaleMaxAgeSec": {
                 "type": "integer"
               },
+              "dnssecMode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "passthrough",
+                  "validate"
+                ],
+                "description": "v0.17.0: off, passthrough or validate (PiCache validates DNSSEC itself); new installations: validate."
+              },
               "dnssec": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "The alias of dnssecMode of versions before 0.17.0: dnssecMode != off."
               },
               "disableAAAA": {
                 "type": "boolean"
@@ -13108,6 +13217,7 @@
               "cacheMaxTtl",
               "serveStale",
               "serveStaleMaxAgeSec",
+              "dnssecMode",
               "dnssec",
               "disableAAAA",
               "dns64",
@@ -16667,6 +16777,29 @@
           "ready"
         ]
       },
+      "dnsserver.DNSSECCounts": {
+        "type": "object",
+        "properties": {
+          "secure": {
+            "type": "integer"
+          },
+          "insecure": {
+            "type": "integer"
+          },
+          "bogus": {
+            "type": "integer"
+          },
+          "indeterminate": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "secure",
+          "insecure",
+          "bogus",
+          "indeterminate"
+        ]
+      },
       "dnsserver.Forwarder": {
         "type": "object",
         "properties": {
@@ -16691,6 +16824,9 @@
           "enabled": {
             "type": "boolean"
           },
+          "validate": {
+            "type": "boolean"
+          },
           "comment": {
             "type": "string"
           },
@@ -16709,6 +16845,7 @@
           "domains",
           "upstreams",
           "enabled",
+          "validate",
           "comment",
           "createdAt",
           "updatedAt"
@@ -16754,6 +16891,9 @@
           "enabled": {
             "type": "boolean"
           },
+          "validate": {
+            "type": "boolean"
+          },
           "comment": {
             "type": "string"
           }
@@ -16761,6 +16901,7 @@
         "required": [
           "upstreams",
           "enabled",
+          "validate",
           "comment"
         ]
       },
@@ -16812,6 +16953,21 @@
           },
           "upstream": {
             "type": "string"
+          },
+          "dnssecStatus": {
+            "type": "string",
+            "enum": [
+              "secure",
+              "insecure",
+              "bogus",
+              "indeterminate"
+            ]
+          },
+          "dnssecReason": {
+            "type": "string"
+          },
+          "dnssecEde": {
+            "$ref": "#/components/schemas/upstream.EDE"
           },
           "durationUs": {
             "type": "integer"
@@ -17076,6 +17232,9 @@
           },
           "dropped": {
             "type": "integer"
+          },
+          "dnssec": {
+            "$ref": "#/components/schemas/dnsserver.DNSSECCounts"
           }
         },
         "required": [
@@ -17087,7 +17246,8 @@
           "overloaded",
           "topRateLimited",
           "blockedClients",
-          "dropped"
+          "dropped",
+          "dnssec"
         ]
       },
       "filter.CatalogEntry": {
@@ -18204,6 +18364,40 @@
           "lastSeen"
         ]
       },
+      "logs.DNSSECCount": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "count"
+        ]
+      },
+      "logs.DNSSECStats": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "statuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/logs.DNSSECCount"
+            }
+          }
+        },
+        "required": [
+          "from",
+          "statuses"
+        ]
+      },
       "logs.Download": {
         "type": "object",
         "properties": {
@@ -18545,6 +18739,16 @@
           },
           "protocol": {
             "type": "string"
+          },
+          "dnssecStatus": {
+            "type": "string",
+            "enum": [
+              "secure",
+              "insecure",
+              "bogus",
+              "indeterminate"
+            ],
+            "description": "v0.17.0: the verdict of the own DNSSEC validation of PiCache; absent when nothing was validated."
           },
           "upstreamEde": {
             "$ref": "#/components/schemas/logs.UpstreamEDE"
@@ -20632,6 +20836,9 @@
             "items": {
               "$ref": "#/components/schemas/upstream.CacheTypeStat"
             }
+          },
+          "validation": {
+            "$ref": "#/components/schemas/upstream.ValidationStat"
           }
         },
         "required": [
@@ -20659,6 +20866,128 @@
         "required": [
           "type",
           "entries"
+        ]
+      },
+      "upstream.DNSSECCheck": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "expect": {
+            "type": "string",
+            "enum": [
+              "secure",
+              "insecure",
+              "bogus"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "secure",
+              "insecure",
+              "bogus",
+              "indeterminate",
+              "error"
+            ]
+          },
+          "rcode": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "ede": {
+            "$ref": "#/components/schemas/upstream.EDE"
+          },
+          "upstream": {
+            "type": "string"
+          },
+          "upstreamRefused": {
+            "type": "boolean"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "inconclusive"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "expect",
+          "status",
+          "upstreamRefused",
+          "verdict"
+        ]
+      },
+      "upstream.DNSSECTest": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "passthrough",
+              "validate"
+            ]
+          },
+          "timeChecks": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended"
+            ]
+          },
+          "timeReason": {
+            "type": "string",
+            "enum": [
+              "clock-guard",
+              "unsynced",
+              "root-signatures"
+            ]
+          },
+          "upstreams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/upstream.UpstreamStat"
+            }
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/upstream.DNSSECCheck"
+            }
+          },
+          "durationMs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "timeChecks",
+          "upstreams",
+          "checks",
+          "durationMs"
+        ]
+      },
+      "upstream.EDE": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "text"
         ]
       },
       "upstream.GroupUpstreamStat": {
@@ -20745,6 +21074,23 @@
           },
           "healthy": {
             "type": "boolean"
+          },
+          "dnssec": {
+            "type": "string",
+            "enum": [
+              "capable",
+              "no-dnssec",
+              "anchor-mismatch",
+              "unknown"
+            ],
+            "description": "v0.17.0, validate mode only: the probe state."
+          },
+          "dnssecError": {
+            "type": "string"
+          },
+          "dnssecCheckedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -20754,6 +21100,25 @@
           "errors",
           "avgRttMs",
           "healthy"
+        ]
+      },
+      "upstream.ValidationStat": {
+        "type": "object",
+        "properties": {
+          "zones": {
+            "type": "integer"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "failures": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "zones",
+          "bytes",
+          "failures"
         ]
       },
       "version.Info": {

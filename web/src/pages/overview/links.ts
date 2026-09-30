@@ -1,7 +1,7 @@
 // Links from the overview into filtered pages. The target pages read these
 // query parameters (contract documented in web/README.md).
 
-import { BLOCKED_STATUSES, type RangePreset } from '../../lib/api'
+import { BLOCKED_STATUSES, type DnssecStatus, type RangePreset } from '../../lib/api'
 import { isCustom, PRESET_SECONDS, type Range } from '../../lib/range'
 import { href, type QueryPatch } from '../../lib/router.svelte'
 import { clientValues } from '../dns/querylog/filters'
@@ -30,6 +30,8 @@ export const links = {
   upstream: (upstream: string, range: Range) => href('/dns/queries', { upstream, ...logRange(range) }),
   /** Queries of one record type. */
   qtype: (qtype: string, range: Range) => href('/dns/queries', { qtype, ...logRange(range) }),
+  /** Queries with one DNSSEC status (PiCache's verdict). */
+  dnssec: (dnssecStatus: DnssecStatus, range: Range) => href('/dns/queries', { dnssecStatus, ...logRange(range) }),
   downloads: (query?: { client?: string; active?: boolean }) => href('/cache/downloads', query),
   library: () => href('/cache/library'),
   storage: () => href('/cache/storage'),

@@ -121,7 +121,14 @@ type DNS struct {
 	CacheMaxTTL         uint32 `json:"cacheMaxTtl"` // 0 = no cap
 	ServeStale          bool   `json:"serveStale"`
 	ServeStaleMaxAgeSec int    `json:"serveStaleMaxAgeSec"`
-	DNSSEC              bool   `json:"dnssec"` // set DO upstream and pass AD through (no local validation)
+	// DNSSECMode is off, passthrough or validate (DNSSECOff,
+	// DNSSECPassthrough, DNSSECValidate): whether DO is sent on every
+	// upstream query and whether PiCache validates the answers itself.
+	DNSSECMode string `json:"dnssecMode"`
+	// DNSSEC is the alias of DNSSECMode of versions before 0.17.0 (API
+	// clients, scripts, PICACHE_INITIAL_CONFIG, 0.16 primaries): every save
+	// writes DNSSECMode != "off" (reconcileDNSSEC).
+	DNSSEC bool `json:"dnssec"`
 
 	// DisableAAAA answers AAAA queries that would be forwarded with NODATA
 	// and removes ipv6hint from forwarded HTTPS/SVCB answers (networks with
@@ -639,6 +646,16 @@ var migrations = []string{
 		ELSE json_set(doc, '$.updates.channel',
 			CASE WHEN json_type(doc, '$.updates.includePrereleases') = 'true' THEN 'beta' ELSE 'stable' END) END
 	WHERE CASE WHEN json_valid(doc) THEN json_type(doc, '$.updates.channel') IS NULL ELSE 0 END;`,
+	// v7 (0.17.0): dns.dnssecMode replaces dns.dnssec (kept as its alias). A
+	// valid document whose dns is an object without dnssecMode gets
+	// "passthrough" when dns.dnssec is true, else "off", so an upgrade
+	// never switches local validation on. Like v6 it also converts a
+	// document restored from an older backup; a document that is not
+	// valid JSON, or whose dns is not an object, is left alone.
+	`UPDATE settings SET doc = json_set(doc, '$.dns.dnssecMode',
+		CASE WHEN json_type(doc, '$.dns.dnssec') = 'true' THEN 'passthrough' ELSE 'off' END)
+	WHERE CASE WHEN json_valid(doc) THEN json_type(doc, '$.dns') = 'object' AND json_type(doc, '$.dns.dnssecMode') IS NULL
+		ELSE 0 END;`,
 }
 
 // Default bootstrap lists: bootstrapV2 until 0.5.x, bootstrapV3 since 0.6.0
@@ -680,10 +697,14 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 		return nil, fmt.Errorf("settings: load: %w", err)
 	default:
 		// Decode on top of defaults so absent fields keep their defaults;
-		// fields removed in newer versions are ignored.
+		// fields removed in newer versions are ignored. dns.dnssecMode
+		// follows dns.dnssec when a document still lacks it (migration v7),
+		// and dns.dnssec always follows the mode.
+		cur.DNS.DNSSECMode, cur.DNS.DNSSEC = "", false
 		if err := json.Unmarshal([]byte(doc), &cur); err != nil {
 			return nil, fmt.Errorf("settings: decode stored document: %w", err)
 		}
+		cur.DNS.storedDNSSEC()
 		cur.normalize()
 		if lang, ok := cur.Web.forgetUnknownLanguage(); ok {
 			s.log.Warn("the stored web.language is not a language of this version; using the browser's language",
@@ -703,17 +724,21 @@ func Open(ctx context.Context, d *db.DB, log *slog.Logger) (*Store, error) {
 
 // DecodeStored decodes a stored settings document the way Open does after
 // this version's migrations: on top of Defaults, with web.restrictToNetworks
-// off when the document lacks it (migration v5), normalised, and a
-// web.language this version does not know read as "" (like Open, without
-// its log line). The API judges the settings of a staged restore with it
-// before they are applied.
+// off when the document lacks it (migration v5), updates.channel and
+// dns.dnssecMode derived from their aliases when it lacks them (v6, v7),
+// normalised, and a web.language this version does not know read as ""
+// (like Open, without its log line). The API judges the settings of a
+// staged restore with it before they are applied, and a partial restore
+// of the section settings uses it.
 func DecodeStored(doc []byte) (*All, error) {
 	cur := Defaults()
 	cur.Web.RestrictToNetworks = false
 	cur.Updates.Channel = ""
+	cur.DNS.DNSSECMode, cur.DNS.DNSSEC = "", false
 	if err := json.Unmarshal(doc, &cur); err != nil {
 		return nil, fmt.Errorf("settings: decode stored document: %w", err)
 	}
+	cur.DNS.storedDNSSEC() // migration v7
 	if cur.Updates.Channel == "" {
 		// Migration v6: the channel of includePrereleases.
 		cur.Updates.Channel = ChannelStable
@@ -774,6 +799,9 @@ func (s *Store) update(ctx context.Context, fn func(*All) error, recovery, dry b
 	}
 	next.normalize()
 	if err := next.Updates.reconcileChannel(old.Updates); err != nil {
+		return nil, err
+	}
+	if err := next.DNS.reconcileDNSSEC(old.DNS); err != nil {
 		return nil, err
 	}
 	secrets, bound, err := s.resolveSecrets(next)

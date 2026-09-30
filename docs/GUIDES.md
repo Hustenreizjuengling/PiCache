@@ -85,8 +85,11 @@ Under **DNS → DNS settings → Upstreams** (or with `picache config set dns`):
 
 - **Upstream DNS servers** (`dns.upstreams`): `udp://127.0.0.1:5335` only.
 - **Mode** (`dns.upstreamMode`): `strict`.
-- **DNSSEC** (`dns.dnssec`): on. PiCache then sets the DO bit and passes the
-  AD flag through; Unbound validates the signatures, PiCache does not.
+- **DNSSEC mode** (`dns.dnssecMode`): `passthrough` (**Pass through**).
+  PiCache then sets the DO bit and passes Unbound's AD flag through;
+  Unbound validates the signatures, PiCache does not. `validate` works
+  too, but checks every signature twice (Unbound and PiCache) and counts
+  on Unbound returning the DNSSEC data, which it does.
 - **Fallback DNS servers** (`dns.fallbackUpstreams`): an explicit choice.
   - `[]` (none) for privacy: nothing leaves the house except Unbound's own
     recursion. If Unbound fails, nothing resolves. Empty the **Bootstrap

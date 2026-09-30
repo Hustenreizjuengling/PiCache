@@ -282,7 +282,14 @@ const upstreams = {
   get: (o?: ReqOpts) => http.get<T.UpstreamsState>('/dns/upstreams', o),
   test: (upstream: string, o?: ReqOpts) =>
     http.post<T.UpstreamTestResult>('/dns/upstreams/test', { upstream }, { ...o, timeoutMs: 60_000 }),
+  /** Also empties the DNSSEC key and failure caches. */
   flushCache: (o?: ReqOpts) => http.post<void>('/dns/cache/flush', undefined, o),
+  /**
+   * Probes the default upstreams and validates the fixed test names now (in
+   * every mode; at most 10 s). 409 while a test runs, 429 within 10 s of the
+   * last start, 503 without a resolver.
+   */
+  testDnssec: (o?: ReqOpts) => http.post<T.DnssecTest>('/dns/dnssec/test', undefined, o),
 }
 
 const clients = {
@@ -599,6 +606,9 @@ const stats = {
   /** Queries by record type, counted per hour. */
   qtypes: (range: T.RangeArg = '24h', o?: ReqOpts) =>
     http.get<T.QTypeStats>('/stats/qtypes', { ...o, query: { ...rangeQuery(range) } }),
+  /** Validated queries by DNSSEC status, counted per hour. */
+  dnssec: (range: T.RangeArg = '24h', o?: ReqOpts) =>
+    http.get<T.DnssecStats>('/stats/dnssec', { ...o, query: { ...rangeQuery(range) } }),
   /**
    * Activity of one client per step (≥ 3600 s; default range 7d). `key`: an
    * address, "ip:<address>", "client:<id>" or "mac:<MAC>" (device keys are

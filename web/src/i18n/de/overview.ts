@@ -56,6 +56,7 @@ const de: Messages<typeof en> = {
   'dns.qtypes': 'Abfragetypen',
   'dns.noQtypes': 'Keine Anfragen in diesem Zeitraum.',
   'dns.otherTypes': 'Andere',
+  'dnssec.title': 'DNSSEC',
   'dns.statsOff': 'DNS-Statistiken sind aus',
   'dns.statsOffText':
     'Die Datenschutzeinstellungen schalten die DNS-Statistiken ab: Diagramme, Top-Listen und Abfragetypen werden nicht gezählt. Der Download-Cache unten wird wie gewohnt gezählt.',
@@ -166,6 +167,7 @@ const de: Messages<typeof en> = {
   'start.upstreams.dns': 'DNS-Einstellungen',
   'start.upstreams.lists': 'Sperrlisten',
   'start.upstreams.tick': 'Habe ich geprüft',
+  'start.upstreams.dnssec': 'DNSSEC: {mode}',
   'start.address.title': 'Diesem Rechner eine feste Adresse geben',
   'start.address.static': '{address} ist statisch eingestellt.',
   'start.address.dynamic':

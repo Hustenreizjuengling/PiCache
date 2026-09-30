@@ -21,8 +21,8 @@ import (
 
 const logsUsage = `usage: picache logs tail [--client ADDR]... [--status S]... [--json] [--url URL] [--token-file FILE]
        picache logs export --format ndjson|csv [--range R | --from T --to T] [--client ADDR]... [--status S]...
-                           [--domain D] [--qtype T] [--rcode R]... [--dnssec true|false] [--upstream U]
-                           --out FILE|- [--url URL] [--token-file FILE]`
+                           [--domain D] [--qtype T] [--rcode R]... [--dnssec true|false]
+                           [--dnssec-status S]... [--upstream U] --out FILE|- [--url URL] [--token-file FILE]`
 
 // Reconnect backoff of logs tail.
 const (
@@ -231,7 +231,7 @@ func escapeControls(s string) string {
 
 func logsExport(args []string) int {
 	fs := newFlags("logs export")
-	var clients, statuses, rcodes multiFlag
+	var clients, statuses, rcodes, dnssecStatuses multiFlag
 	format := fs.String("format", "", "ndjson or csv")
 	rng := fs.String("range", "", "range such as 1h, 24h, 7d")
 	from := fs.String("from", "", "start (RFC 3339 or unix seconds)")
@@ -241,7 +241,8 @@ func logsExport(args []string) int {
 	domain := fs.String("domain", "", "domain substring, or \"exact\"")
 	qtype := fs.String("qtype", "", "query type")
 	fs.Var(&rcodes, "rcode", "response code (repeatable)")
-	dnssec := fs.String("dnssec", "", "true or false")
+	dnssec := fs.String("dnssec", "", "true or false (the AD flag)")
+	fs.Var(&dnssecStatuses, "dnssec-status", "DNSSEC status: secure, insecure, bogus or indeterminate (repeatable)")
 	upstream := fs.String("upstream", "", "upstream")
 	outPath := fs.String("out", "", "output file, - for stdout")
 	flagURL := fs.String("url", "", "PiCache URL")
@@ -272,7 +273,7 @@ func logsExport(args []string) int {
 			q.Set(k, v)
 		}
 	}
-	for k, vs := range map[string]multiFlag{"client": clients, "status": statuses, "rcode": rcodes} {
+	for k, vs := range map[string]multiFlag{"client": clients, "status": statuses, "rcode": rcodes, "dnssecStatus": dnssecStatuses} {
 		for _, v := range vs {
 			q.Add(k, v)
 		}

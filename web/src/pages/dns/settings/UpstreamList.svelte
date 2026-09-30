@@ -1,7 +1,8 @@
 <!--
   @component
   An editable list of upstream DNS servers: one row per entry with its
-  health and statistics, a Test button (tests the typed address, saved or
+  health, statistics and (DNSSEC mode validate) whether it returns DNSSEC
+  data, a Test button (tests the typed address, saved or
   not; admins may test while the host locks the configuration, so the
   entries are disabled one by one), optional order buttons and "Add". Errors of single entries
   ("dns.upstreams[1]") appear under the entry, errors of the list below it.
@@ -18,6 +19,7 @@
   import { session } from '$lib/session.svelte'
   import { Button, Chip, IconButton, Input } from '$lib/ui'
   import { lineError } from '../shared/errors'
+  import UpstreamDnssecChip from '../shared/UpstreamDnssecChip.svelte'
 
   interface Props {
     value: string[]
@@ -124,6 +126,7 @@
               <!-- A DNS stamp is named by its protocol and host, as in the logs and statistics. -->
               {#if st.name && st.name !== st.upstream}<span class="mono subtle">{st.name}</span>{/if}
               <Chip size="sm" tone={st.healthy ? 'ok' : 'fail'} label={st.healthy ? t('dns.settings.upstreams.healthy') : t('dns.settings.upstreams.failing')} />
+              {#if st.dnssec}<UpstreamDnssecChip state={st.dnssec} error={st.dnssecError} />{/if}
               <span class="muted">
                 {t('dns.settings.upstreams.stats', {
                   queries: tn('dns.settings.upstreams.queries', st.queries, { count: formatNumber(st.queries) }),

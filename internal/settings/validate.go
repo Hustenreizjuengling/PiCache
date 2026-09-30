@@ -378,6 +378,9 @@ func (a *All) Validate() error {
 	default:
 		return apperr.Invalid("dns.upstreamMode", "must be load_balance, parallel, strict or fastest_addr")
 	}
+	if !validDNSSECMode(d.DNSSECMode) {
+		return apperr.Invalid("dns.dnssecMode", "must be off, passthrough or validate")
+	}
 	if d.UpstreamTimeoutMs < 500 || d.UpstreamTimeoutMs > 60000 {
 		return apperr.Invalid("dns.upstreamTimeoutMs", "must be between 500 and 60000")
 	}

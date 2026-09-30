@@ -13,9 +13,13 @@
     /** Accessible name of the group. */
     label: string
     onchange: (value: string) => void
+    /** Id of the group (focused by the settings search). */
+    id?: string
+    /** Id of a text describing the group (e.g. the help of the selected option). */
+    describedby?: string
   }
 
-  let { value, options, label, onchange }: Props = $props()
+  let { value, options, label, onchange, id, describedby }: Props = $props()
 
   let group: HTMLDivElement
   const selected = $derived(options.findIndex((o) => o.value === value))
@@ -25,18 +29,28 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    const i = Math.max(0, selected)
-    let n = -1
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') n = (i + 1) % options.length
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') n = (i - 1 + options.length) % options.length
-    if (n < 0) return
+    let step = 0
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') step = 1
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') step = -1
+    if (step === 0) return
     e.preventDefault()
-    select(options[n].value)
-    group.querySelectorAll<HTMLElement>('[role="radio"]')[n]?.focus()
+    // The next option that can be chosen: disabled ones are skipped, and a
+    // group inside a disabled fieldset (a read-only principal) has none
+    // (`:disabled` matches its buttons too).
+    const buttons = group.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+    let n = Math.max(0, selected)
+    for (let k = 0; k < options.length; k++) {
+      n = (n + step + options.length) % options.length
+      const btn = buttons[n]
+      if (!btn || btn.matches(':disabled')) continue
+      select(options[n].value)
+      btn.focus()
+      return
+    }
   }
 </script>
 
-<div bind:this={group} class="seg" role="radiogroup" aria-label={label} tabindex="-1" onkeydown={onKey}>
+<div bind:this={group} {id} class="seg" role="radiogroup" aria-label={label} aria-describedby={describedby} tabindex="-1" onkeydown={onKey}>
   {#each options as o, i (o.value)}
     <button
       type="button"

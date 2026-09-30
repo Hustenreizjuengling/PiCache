@@ -87,6 +87,10 @@ var migrations = []string{
 		PRIMARY KEY (record_id, group_id)
 	) WITHOUT ROWID;
 	CREATE INDEX dns_record_groups_group ON dns_record_groups(group_id);`,
+	// v4 (0.17.0): a forwarder may validate DNSSEC (validate, docs/
+	// ARCHITECTURE.md 7.6); every existing forwarder keeps its behaviour
+	// (0). One column: dns_forwarders keeps its rows.
+	`ALTER TABLE dns_forwarders ADD COLUMN validate INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // localRR is one enabled record of the in-memory zone.
@@ -727,6 +731,9 @@ func (s *Server) reloadConfig(ctx context.Context) error {
 	s.zone.Store(newZone(recs))
 	s.fwd.Store(newFwdTable(fwds))
 	s.reconfigureLimiter()
+	if s.d.ValidatingForwarders != nil {
+		s.d.ValidatingForwarders(validatingTargets(fwds))
+	}
 	return nil
 }
 
@@ -946,6 +953,13 @@ func (s *Server) resolveCNAMETarget(qc *qctx, res *result, target string, hops i
 	}
 	q := dns.Question{Name: fqdn(target), Qtype: qc.qtype, Qclass: dns.ClassINET}
 	resp, info, err := s.routeName(qc, target, q)
+	if b, ok := errors.AsType[*bogusError](err); ok {
+		qc.note("the CNAME target " + target + " is bogus")
+		*res = s.bogusServfail(qc, b.v, info.Upstream)
+		return
+	}
+	res.dnssec = info.DNSSEC
+	s.traceDNSSEC(qc, info.DNSSEC, false, "")
 	switch {
 	case err != nil:
 		qc.note("resolving the CNAME target failed: SERVFAIL")

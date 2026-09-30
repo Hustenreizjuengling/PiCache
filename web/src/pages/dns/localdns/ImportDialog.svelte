@@ -110,6 +110,8 @@
     syntax: () => t('dns.forwarders.import.fieldSyntax'),
     domains: () => t('dns.forwarders.domains'),
     upstreams: () => t('dns.forwarders.upstreams'),
+    // An updated line keeps the forwarder's DNSSEC validation, which its new domains or servers may not allow.
+    validate: () => t('dns.forwarders.validate.label'),
     text: () => t('dns.forwarders.import.fieldText'),
   }
 

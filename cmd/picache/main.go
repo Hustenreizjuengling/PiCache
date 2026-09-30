@@ -176,7 +176,8 @@ commands:
   logs tail                     follow the query log: [--client ADDR]... [--status S]... [--json]
   logs export                   export the query log: --format ndjson|csv --out FILE|- [--range R |
                                 --from T --to T] [--client ADDR]... [--status S]... [--domain D]
-                                [--qtype T] [--rcode R]... [--dnssec true|false] [--upstream U]
+                                [--qtype T] [--rcode R]... [--dnssec true|false]
+                                [--dnssec-status S]... [--upstream U]
                                 Both use the API: [--url URL] (default PICACHE_URL, else the local
                                 web listener) and an API token (a read token is enough) from
                                 PICACHE_TOKEN or [--token-file FILE], never from picache.env

@@ -143,7 +143,7 @@ func TestUpgradeFrom014(t *testing.T) {
 	if !newer {
 		t.Error("0.15 has no component newer than 0.14: 0.14 would open the migrated database")
 	}
-	for comp, want := range map[string]int{"auth": 3, "settings": 6} {
+	for comp, want := range map[string]int{"auth": 3, "settings": 7} {
 		var v int
 		_ = d.R.QueryRow(`SELECT MAX(version) FROM schema_migrations WHERE component = ?`, comp).Scan(&v)
 		if v != want {
@@ -179,7 +179,7 @@ func TestRestore014Backup(t *testing.T) {
 		}
 		var v int
 		_ = d.R.QueryRow(`SELECT MAX(version) FROM schema_migrations WHERE component = 'settings'`).Scan(&v)
-		if v != 6 {
+		if v != 7 {
 			t.Errorf("sections %v: settings v%d", sections, v)
 		}
 		users, err := auth.ListUsers(ctx, d)

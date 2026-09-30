@@ -259,7 +259,7 @@ func TestResolveViaUsesSeparateNamespace(t *testing.T) {
 }
 
 func TestUpstreamQueryIsBuiltFresh(t *testing.T) {
-	st := newStore(t, oneUpstream(func(d *settings.DNS) { d.DNSSEC = true }))
+	st := newStore(t, oneUpstream(func(d *settings.DNS) { d.DNSSECMode = settings.DNSSECPassthrough }))
 	synctest.Test(t, func(t *testing.T) {
 		f := &fakeTransport{fn: replyA("192.0.2.1", 60)}
 		r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: f})

@@ -37,7 +37,7 @@ Contents: [Download](#download) · [Build from source](#build-from-source) ·
 [Web access and accounts](#web-access-and-accounts) ·
 [HTTPS certificates](#https-certificates) ·
 [Behind a reverse proxy](#behind-a-reverse-proxy) ·
-[IPv6](#ipv6-and-dual-stack-networks) ·
+[IPv6](#ipv6-and-dual-stack-networks) · [DNSSEC](#dnssec) ·
 [Port conflicts](#port-conflicts) · [Persistent data](#persistent-data) ·
 [Backup and restore](#backup-and-restore) · [Updates](#updates) ·
 [Uninstall](#uninstall) · [Cache storage](#cache-storage) ·
@@ -608,7 +608,9 @@ server.
 
 Docker Desktop (macOS/Windows) is not a deployment target: containers run in
 a VM, so PiCache cannot see real client addresses, and bind-mount
-propagation does not work.
+propagation does not work. Its VM also steps its clock every half minute and
+reports it as not synchronised, so DNSSEC validation stays indeterminate
+there.
 
 ### macvlan: an own address in the LAN
 
@@ -1460,6 +1462,96 @@ all over DNS-over-HTTPS:
   mobile data) get around it, like every DNS-based control
   ([Parental controls](#parental-controls)).
 
+### DNSSEC
+
+DNSSEC signatures prove that an answer comes unchanged from the owner of
+the domain. **DNS settings → DNSSEC → DNSSEC mode** (`dns.dnssecMode`)
+decides who checks them:
+
+| Mode | What PiCache does |
+|---|---|
+| **Off** (`off`) | asks for DNSSEC data only when a device does and passes the upstream's verdict (the AD flag) on |
+| **Pass through** (`passthrough`) | asks the upstreams for DNSSEC data on every query and passes their verdict on; it trusts the upstreams and the path to them |
+| **Validate** (`validate`) | checks the signatures itself along the chain of trust from the root zone's keys (built into PiCache), marks only answers it verified as authenticated and answers forged or broken answers from signed zones with SERVFAIL |
+
+New installations start with **Validate**. Upgraded installations keep
+their behaviour: the old switch `dns.dnssec` on becomes **Pass through**,
+off becomes **Off**. `dns.dnssec` still works in the API, in
+`PICACHE_INITIAL_CONFIG` and in scripts (`true` = Pass through, or keeps
+Validate; `false` = Off); send `dnssecMode` for new configurations.
+
+In the query log, every answer PiCache checked has a **DNSSEC status**
+(filter and CSV column `dnssecStatus`): **secure** (verified), **insecure**
+(the domain is not signed; most domains), **bogus** (a signed domain whose
+answer cannot be verified: SERVFAIL, with the reason, e.g.
+`dnssec: dnssec-failed.org: no DNSKEY matches the DS`, and an extended
+DNS error for the device) or **indeterminate** (passed on unchecked, see
+below). A device that sets the CD flag ("checking disabled", e.g. a
+validating resolver behind PiCache) still gets a bogus answer, without the
+AD flag. **Filtering → Why is this blocked?** and `picache query <name>`
+show the status and each step of a lookup.
+
+**What Validate needs**
+
+- **A correct clock.** Signatures carry validity dates. Keep the host's
+  time synchronised (`timedatectl set-ntp true`, systemd-timesyncd or
+  chrony); a Raspberry Pi without a real-time clock also benefits from
+  `fake-hwclock` (`sudo apt install fake-hwclock`), which restores the last
+  known time at boot. While the host reports its clock as not
+  synchronised, while the clock is before the build date of PiCache, or
+  (where its state cannot be read) while it disagrees with the root zone's
+  signatures as every upstream sends them, PiCache suspends the date
+  checks (it still checks every signature and the chain): answers are
+  **indeterminate** instead of secure, nothing locks out, and the health
+  check `dnssec` warns until the clock is right for a minute. In Docker the
+  container reads the host's clock state like an installation on the host
+  (the kernel is shared), so keep the host's time synchronised; where the
+  state cannot be read, only the build date and the root zone's signatures
+  judge the clock.
+- **Upstreams that return DNSSEC data.** Quad9, Cloudflare, Google and
+  most public resolvers do; many router DNS proxies and some ISP resolvers
+  strip it. PiCache checks every upstream with two queries for the root
+  zone (at the start, every 30 minutes and after a change). An upstream
+  without DNSSEC data is shown under **DNS settings → Upstream DNS
+  servers** and the health check `dnssec` warns "<upstream> does not
+  return DNSSEC data"; its answers are passed on unchecked
+  (**indeterminate**). Choose other upstreams, or set the mode to **Pass
+  through**. A family-safe resolver of a group is checked the same way but
+  not reported by the health check.
+- **Nothing else.** The trust anchors (the root zone's keys, KSK-2017 and
+  KSK-2024) are built in and never downloaded. When the root zone
+  announces a key this version does not know, the health check warns "a
+  new root key is published: update PiCache before it is used"; if the
+  root then switches to it before you update, the check fails and answers
+  are passed on unchecked until the update.
+
+**Test DNSSEC** (**DNS settings → DNSSEC**, admins; `POST
+/api/v1/dns/dnssec/test`) checks the default upstreams now and looks up
+four fixed names through them: `example.com` (signed: expects secure),
+`google.com` (unsigned: insecure), `dnssec-failed.org` and
+`sigfail.ippacket.stream` (deliberately broken: bogus). It works in every
+mode, so it shows whether **Validate** would work before you switch.
+These names belong to third parties, which see the queries of the test
+(through your upstreams).
+
+**Conditional forwarders** answer without validation unless **Validate
+DNSSEC** is set on the forwarder (**Local DNS → Conditional forwarders**;
+`validate` in the API). Set it only for a forwarder whose own DNS servers
+are recursive resolvers for public, signed zones, not for a private zone
+such as `corp.example.com` served by an internal server: PiCache checks
+the chain of trust from the root, and an unsigned private zone below a
+signed public domain fails for every name. Forwarders for the local
+domain, `home.arpa`, reverse zones of private networks and
+`(unqualified)` cannot validate. Local records, DHCP names, the router and
+the answers of forwarders without the flag have no DNSSEC status and never
+carry the AD flag while the mode is **Validate**.
+
+A validating resolver in front of or behind PiCache (for example Unbound,
+[GUIDES.md](GUIDES.md)) checks again; **Pass through** avoids checking
+twice. On a small device each new signed domain costs a few milliseconds
+of CPU and at most a few extra upstream queries (the keys of `com`, `org`,
+… are cached); answers from the cache cost nothing.
+
 ### Blocking by answer address
 
 Some threat feeds list the addresses of malicious servers rather than their
@@ -2203,6 +2295,7 @@ export PICACHE_TOKEN=pc_...          # or: --token-file ~/.picache-token (chmod 
 picache logs tail --status blocked --client 192.168.1.20
 picache logs tail --json | jq .qname
 picache logs export --format csv --range 7d --rcode NXDOMAIN --out nxdomain.csv
+picache logs export --format csv --range 24h --dnssec-status bogus --out bogus.csv
 picache logs export --format ndjson --from 2026-09-01T00:00:00Z --to 2026-09-02T00:00:00Z --out - | gzip > sept1.ndjson.gz
 ```
 
@@ -2467,8 +2560,10 @@ PiCache serves the host's clock; it never sets it. The host must keep its
 clock synchronised (`timedatectl`, systemd-timesyncd or chrony): while it is
 not, the answers say so (stratum 16) and the health check `ntp` warns. The
 units of 0.15.0 allow reading the clock state (`SystemCallFilter=adjtimex`);
-with older units, or in a container, the state cannot be read and the
-answers are marked unsynchronised until the one-line installer has run once.
+with older units the state cannot be read and the answers are marked
+unsynchronised until the one-line installer has run once. A container reads
+the host's clock state (the kernel is shared), so keep the host's time
+synchronised.
 Only clients in the DNS allowed networks get answers, at most 4 requests per
 second each; with **Allow all networks** (`dns.allowAllNetworks`) the NTP
 server is open to the Internet too, which the page warns about.
@@ -2778,7 +2873,39 @@ installations do not show the getting-started checklist (a fresh
 installation does; **System → Health & about** shows it again). The units
 change only in comments.
 
+### Upgrading to 0.17.0
+
+The first start of 0.17.0 migrates `picache.db` (the DNSSEC mode in the
+settings, a `validate` column for the conditional forwarders) and `logs.db`
+(a column for the DNSSEC status of a query); a copy of `picache.db` is made
+before, as for every upgrade. Nothing changes behaviour: `dns.dnssec` on
+becomes the DNSSEC mode **Pass through**, off becomes **Off**, and no
+forwarder validates. Only new installations start with **Validate**; to
+use it on an upgraded installation, read [DNSSEC](#dnssec), run **Test
+DNSSEC** and switch the mode. The CSV export gains a last column
+`dnssecStatus` (parsers that read the header are not affected). Units,
+`install.sh` and the packages are unchanged.
+
+Upgrade followers before their primary: a 0.16 follower refuses the
+configuration of a 0.17 primary ("the primary runs PiCache 0.17.0 with a
+newer configuration schema: update this follower"); a 0.17 follower of a
+0.16 primary works.
+
 ### Going back to an earlier version
+
+A version before 0.17.0 refuses the `picache.db` of 0.17.0 (settings
+schema v7, dns schema v4) and does not start: go back with the copy 0.17.0
+made at its first start (`picache-v0.16.x-<timestamp>.db`). The rollback of
+the update helper does this itself; Docker users restore that copy before
+starting the older image; with the Debian package, install the older
+package with `PICACHE_ALLOW_DOWNGRADE=1` and then restore the copy (below).
+Changes made since the upgrade (the DNSSEC mode, the forwarders' **Validate
+DNSSEC** flags, everything else) are lost. 0.16 sets the `logs.db` of 0.17.0
+aside as `logs.db.broken-<timestamp>`: the query log and the statistics
+start fresh (after upgrading again you can stop PiCache and move the file,
+with its `-wal` and `-shm` files, back). Backups made by 0.17.0 are refused
+by 0.16 (newer schema); every settings document 0.17.0 writes keeps
+`dns.dnssec` with its old meaning.
 
 0.15.0 opens the databases of 0.16.0 unchanged. With the
 Debian package, install the older package with
@@ -3139,11 +3266,11 @@ flag or a `PICACHE_*_LISTEN` variable wins over them.
 | `picache update --from <dir> [--yes]` | Root only. The same from a directory with the release files (`SHA256SUMS`, `SHA256SUMS.sig`, the binary), without network access. |
 | `picache update apply-pending` | Root only. Install the version the web UI queued in `<data>/update-requests/`. Run by `picache-update.service`. |
 | `picache logs tail [--client ADDR]... [--status S]... [--json] [--url URL] [--token-file FILE]` | Follow the query log through the API ([From the command line](#from-the-command-line)). Needs an API token (read is enough). |
-| `picache logs export --format ndjson\|csv [--range R \| --from T --to T] [--client ADDR]... [--status S]... [--domain D] [--qtype T] [--rcode R]... [--dnssec true\|false] [--upstream U] --out FILE\|- [--url URL] [--token-file FILE]` | Export the query log through the API to a new file (0600) or stdout. |
+| `picache logs export --format ndjson\|csv [--range R \| --from T --to T] [--client ADDR]... [--status S]... [--domain D] [--qtype T] [--rcode R]... [--dnssec true\|false] [--dnssec-status S]... [--upstream U] --out FILE\|- [--url URL] [--token-file FILE]` | Export the query log through the API to a new file (0600) or stdout. `--dnssec` filters by the AD flag sent to the device, `--dnssec-status` (repeatable: `secure`, `insecure`, `bogus`, `indeterminate`) by PiCache's own DNSSEC verdict. |
 | `picache status [--watch] [--interval 5s] [--json]` | Queries and blocked share (24 h), cache hit rate, health and the top 5 clients; `--watch` redraws every 2–60 s until Ctrl-C. Read token. |
 | `picache pause <duration>` / `picache resume` | Pause blocking for `30m`, `2h`, `1d` … (1 s to 7 days) / resume it. Admin token. |
 | `picache explain <domain> [--client IP] [--type QTYPE] [--json]` | Which lists and rules match a domain for a client. Read token. |
-| `picache query <name> [type] [--client IP] [--json]` | How PiCache answers a query: status, response code, answers and the steps of the pipeline. Read token. |
+| `picache query <name> [type] [--client IP] [--json]` | How PiCache answers a query: status, response code, answers, the DNSSEC status (`dnssec: <status> (<reason>)`, DNSSEC mode Validate) and the steps of the pipeline. Read token. |
 | `picache lists update` | Refresh every list now. Admin token. |
 | `picache allow\|deny <domain> [--group NAME\|ID]... [--comment TEXT]` | Add an allow or block rule for the domain and its subdomains (for the named groups, else the default). An existing rule is not an error. Admin token. |
 | `picache config get [section]` / `config set <section> <file\|->` / `config apply <file\|->` `[--dry-run]` | Print, change one section of, or apply the settings as JSON ([Command line and automation](#command-line-and-automation)). Read token for `get`, admin token otherwise. |
@@ -3162,7 +3289,7 @@ restart requested from the web UI (systemd and Docker restart the process).
 ## Troubleshooting
 
 - **Health:** **System → Health & about** lists every check with a hint:
-  listeners, upstreams (including the clock guard), blocklists, rate limiting, cache-domains,
+  listeners, upstreams (including the clock guard), DNSSEC (in the mode Validate), blocklists, rate limiting, cache-domains,
   download cache (cache IP), SNI, cache storage, logs, free space on the data disk
   the DHCP server (when enabled; see [DHCP server](#dhcp-server) for its
   troubleshooting) and the HTTPS certificate (when the HTTPS listener is on;
@@ -3205,6 +3332,13 @@ restart requested from the web UI (systemd and Docker restart the process).
   on **System → Updates** shows the error. An update that failed or was
   rolled back is logged in `journalctl -u picache-update` (web UI) or printed
   by `sudo picache update`; see [Updates](#updates).
+- **SERVFAIL for one domain, "dnssec: …" in the query log:** the domain's
+  DNSSEC signatures are broken (DNSSEC status **bogus**); the reason names
+  the zone and the failure. Tell the domain's owner; a device can still
+  reach it with the CD flag (`dig +cd`). If many domains fail, check the
+  host clock and run **Test DNSSEC** ([DNSSEC](#dnssec)); answers changed
+  on the way to plain (UDP/TCP) upstreams are a reason to use encrypted
+  upstreams (DoH, DoT).
 - **No download cache answers:** the download cache must be enabled, the
   cache-domains list loaded, the :80 listener bound and a private cache IPv4
   address known, and the client must not be in a group that bypasses the

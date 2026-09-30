@@ -28,7 +28,7 @@ const (
 // exportCSVHeader is the header row of the CSV export.
 var exportCSVHeader = []string{"time", "clientIp", "clientName", "qname", "qtype", "status", "rcode", "reason", "listId",
 	"ruleId", "service", "upstream", "durationUs", "answer", "upstreamAnswer", "dnssec", "protocol", "upstreamEdeCode",
-	"upstreamEdeText", "ecs", "dnsClientId"}
+	"upstreamEdeText", "ecs", "dnsClientId", "dnssecStatus"}
 
 // queryFilter reads the query-log filters shared by GET /logs/queries and
 // the export (range default 1 h).
@@ -55,6 +55,9 @@ func queryFilter(r *http.Request) (logs.QueryFilter, error) {
 		f.DNSSEC = &b
 	default:
 		return f, apperr.Invalid("dnssec", "must be true or false")
+	}
+	if f.DNSSECStatus, err = logs.DNSSECStatusFilter(qList(r, "dnssecStatus")); err != nil {
+		return f, err
 	}
 	return f, nil
 }
@@ -95,7 +98,7 @@ func exportCSVRow(e *logs.QueryEvent) []string {
 		csvCell(e.QType), csvCell(e.Status), csvCell(e.RCode), csvCell(e.Reason), id(e.ListID), id(e.RuleID),
 		csvCell(e.Service), csvCell(e.Upstream), strconv.FormatInt(e.DurationUs, 10), csvCell(e.Answer),
 		csvCell(e.UpstreamAnswer), strconv.FormatBool(e.DNSSEC), csvCell(e.Protocol), edeCode, csvCell(edeText), csvCell(e.ECS),
-		csvCell(e.DNSClientID)}
+		csvCell(e.DNSClientID), csvCell(e.DNSSECStatus)}
 }
 
 // logsExport streams the query log as NDJSON or CSV.

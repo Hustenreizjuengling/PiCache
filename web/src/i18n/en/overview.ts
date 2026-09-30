@@ -52,6 +52,7 @@ export default {
   'dns.qtypes': 'Query types',
   'dns.noQtypes': 'No queries in this time range.',
   'dns.otherTypes': 'Other',
+  'dnssec.title': 'DNSSEC',
   'dns.statsOff': 'DNS statistics are off',
   'dns.statsOffText':
     'The privacy settings switch off the DNS statistics: charts, top lists and query types are not counted. The download cache below is counted as usual.',
@@ -161,6 +162,7 @@ export default {
   'start.upstreams.dns': 'DNS settings',
   'start.upstreams.lists': 'Blocklists',
   'start.upstreams.tick': 'I checked them',
+  'start.upstreams.dnssec': 'DNSSEC: {mode}',
   'start.address.title': 'Give this machine a fixed address',
   'start.address.static': '{address} is configured statically.',
   'start.address.dynamic':

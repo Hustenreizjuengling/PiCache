@@ -14,6 +14,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
+	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 )
@@ -237,6 +238,12 @@ func (s *Server) serve(ctx context.Context, w dns.ResponseWriter, req *dns.Msg, 
 
 	qctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
+	if !s.limiter.Exempt(ip) {
+		// A rate-limited source's DNSSEC chain lookups draw on its own
+		// share of the chain exchanges (7.6); exempt sources (a router or
+		// forwarder with a whole LAN behind it) only on the global rate.
+		qctx = upstream.WithClient(qctx, ip)
+	}
 	qc.ctx = qctx
 	res := s.process(qc)
 	if res.drop { // 7b: dns.droppedDomains
@@ -285,6 +292,7 @@ func (s *Server) reply(w dns.ResponseWriter, qc *qctx, res result, stream bool) 
 	case ProtoDoH:
 		s.dohAnswered.Add(1)
 	}
+	s.dnssec.count(res.dnssec, time.Now())
 	s.logQuery(qc, res, m)
 }
 
@@ -320,14 +328,18 @@ func (s *Server) refusal(qc *qctx, rcode int, reason string) result {
 }
 
 // shape applies ARCHITECTURE 7.1 step 15: our OPT only for EDNS clients,
-// DNSSEC records only for DO clients, AD only if requested, EDE 15 on
-// blocked replies (EDE 18 while plain DNS is closed), truncation to the
-// client's UDP size (never over a stream), EDNS padding for DoT and DoH.
+// DNSSEC records only for DO clients, AD only if requested, the client's
+// CD echoed (RFC 4035 3.2.2), EDE 15 on blocked replies (EDE 18 while
+// plain DNS is closed; the EDE of a DNSSEC verdict on its SERVFAIL and on
+// an insecure answer of an unsupported algorithm, digest or NSEC3
+// parameters), truncation to the client's UDP size (never over a stream),
+// EDNS padding for DoT and DoH.
 func (s *Server) shape(qc *qctx, res result, stream bool) *dns.Msg {
 	m := res.msg
 	m.Id = qc.req.Id
 	m.Response = true
 	m.RecursionAvailable = true
+	m.CheckingDisabled = qc.req.CheckingDisabled
 	m.Extra = dropOPT(m.Extra)
 	opt := qc.req.IsEdns0()
 	do := opt != nil && opt.Do()
@@ -360,6 +372,11 @@ func (s *Server) shape(qc *qctx, res result, stream bool) *dns.Msg {
 		if res.plainOff {
 			o := m.IsEdns0()
 			o.Option = append(o.Option, &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeProhibited, ExtraText: plainOffText})
+		}
+		if v := res.dnssec; v != nil && v.EDE != nil && !res.blocked &&
+			(res.dnssecFail || v.Status == dnssecInsecure && forwardedStatus(res.status)) {
+			o := m.IsEdns0()
+			o.Option = append(o.Option, &dns.EDNS0_EDE{InfoCode: v.EDE.Code, ExtraText: v.EDE.Text})
 		}
 		if !stream {
 			size = min(max(int(opt.UDPSize()), dns.MinMsgSize), ourUDPSize)
@@ -459,6 +476,9 @@ func (s *Server) logQuery(qc *qctx, res result, reply *dns.Msg) {
 		Purpose:     purposeOf(res),
 		NoLog:       qc.id.IgnoreLogs,
 		NoStats:     qc.id.IgnoreStats,
+	}
+	if res.dnssec != nil {
+		e.DNSSECStatus = res.dnssec.Status
 	}
 	if res.upstreamAnswer != "" && res.upstreamAnswer != answer {
 		e.UpstreamAnswer = res.upstreamAnswer

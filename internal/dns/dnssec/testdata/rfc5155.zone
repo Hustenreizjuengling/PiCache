@@ -1,0 +1,44 @@
+; The NSEC3 records of the example zone of RFC 5155 Appendix A (hash
+; algorithm 1, flags 1 = opt-out, 12 iterations, salt aabbccdd), used with
+; the proofs of the responses of Appendix B. The hashes of Appendix A are
+; listed as "; H name = hash" lines.
+;
+; Copyright (c) 2008 IETF Trust and the persons identified as the document
+; authors. All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, is permitted pursuant to, and subject to the license terms
+; contained in, the Simplified BSD License set forth in Section 4.c of the
+; IETF Trust's Legal Provisions Relating to IETF Documents
+; (https://trustee.ietf.org/license-info). These vectors are provided
+; without warranty as described in the Simplified BSD License.
+
+; H example = 0p9mhaveqvm6t7vbl5lop2u3t2rp3tom
+; H a.example = 35mthgpgcu1qg68fab165klnsnk3dpvl
+; H ai.example = gjeqe526plbf1g8mklp59enfd789njgi
+; H ns1.example = 2t7b4g4vsa5smi47k61mv5bv1a22bojr
+; H ns2.example = q04jkcevqvmu85r014c7dkba38o0ji5r
+; H w.example = k8udemvp1j2f7eg6jebps17vp3n8i58h
+; H *.w.example = r53bq7cc2uvmubfu5ocmm6pers9tk9en
+; H x.w.example = b4um86eghhds6nea196smvmlo4ors995
+; H y.w.example = ji6neoaepv8b5o6k4ev33abha8ht9fgc
+; H x.y.w.example = 2vptu5timamqttgl4luu9kg21e0aor3s
+; H xx.example = t644ebqk9bibcna874givr6joj62mlhv
+; H 2t7b4g4vsa5smi47k61mv5bv1a22bojr.example = kohar7mbb8dc2ce8a9qvl8hon4k53uhi
+; H c.x.w.example = 0va5bpr2ou0vk0lbqeeljri88laipsfh
+; H *.x.w.example = 92pqneegtaue7pjatc3l3qnk738c6v5m
+; H c.example = 4g6p9u5gvfshp30pqecj98b3maqbn1ck
+; H z.w.example = qlu7gtfaeh0ek0c05ksfhdpbcgglbe03
+
+0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example. 3600 IN NSEC3 1 1 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr MX DNSKEY NS SOA NSEC3PARAM RRSIG
+2t7b4g4vsa5smi47k61mv5bv1a22bojr.example. 3600 IN NSEC3 1 1 12 aabbccdd 2vptu5timamqttgl4luu9kg21e0aor3s A RRSIG
+2vptu5timamqttgl4luu9kg21e0aor3s.example. 3600 IN NSEC3 1 1 12 aabbccdd 35mthgpgcu1qg68fab165klnsnk3dpvl MX RRSIG
+35mthgpgcu1qg68fab165klnsnk3dpvl.example. 3600 IN NSEC3 1 1 12 aabbccdd b4um86eghhds6nea196smvmlo4ors995 NS DS RRSIG
+b4um86eghhds6nea196smvmlo4ors995.example. 3600 IN NSEC3 1 1 12 aabbccdd gjeqe526plbf1g8mklp59enfd789njgi MX RRSIG
+gjeqe526plbf1g8mklp59enfd789njgi.example. 3600 IN NSEC3 1 1 12 aabbccdd ji6neoaepv8b5o6k4ev33abha8ht9fgc HINFO A AAAA RRSIG
+ji6neoaepv8b5o6k4ev33abha8ht9fgc.example. 3600 IN NSEC3 1 1 12 aabbccdd k8udemvp1j2f7eg6jebps17vp3n8i58h
+k8udemvp1j2f7eg6jebps17vp3n8i58h.example. 3600 IN NSEC3 1 1 12 aabbccdd kohar7mbb8dc2ce8a9qvl8hon4k53uhi
+kohar7mbb8dc2ce8a9qvl8hon4k53uhi.example. 3600 IN NSEC3 1 1 12 aabbccdd q04jkcevqvmu85r014c7dkba38o0ji5r A RRSIG
+q04jkcevqvmu85r014c7dkba38o0ji5r.example. 3600 IN NSEC3 1 1 12 aabbccdd r53bq7cc2uvmubfu5ocmm6pers9tk9en A RRSIG
+r53bq7cc2uvmubfu5ocmm6pers9tk9en.example. 3600 IN NSEC3 1 1 12 aabbccdd t644ebqk9bibcna874givr6joj62mlhv MX RRSIG
+t644ebqk9bibcna874givr6joj62mlhv.example. 3600 IN NSEC3 1 1 12 aabbccdd 0p9mhaveqvm6t7vbl5lop2u3t2rp3tom HINFO A AAAA RRSIG

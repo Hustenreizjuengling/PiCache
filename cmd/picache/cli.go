@@ -642,14 +642,16 @@ func resolveGroups(ctx context.Context, c *apiClient, in []string) ([]int64, err
 // --- query ---
 
 type lookupAnswer struct {
-	Name     string   `json:"name"`
-	Type     string   `json:"type"`
-	Status   string   `json:"status"`
-	RCode    string   `json:"rcode"`
-	Answers  []string `json:"answers"`
-	Reason   string   `json:"reason"`
-	Upstream string   `json:"upstream"`
-	Steps    []string `json:"steps"`
+	Name         string   `json:"name"`
+	Type         string   `json:"type"`
+	Status       string   `json:"status"`
+	RCode        string   `json:"rcode"`
+	Answers      []string `json:"answers"`
+	Reason       string   `json:"reason"`
+	Upstream     string   `json:"upstream"`
+	DNSSECStatus string   `json:"dnssecStatus"`
+	DNSSECReason string   `json:"dnssecReason"`
+	Steps        []string `json:"steps"`
 }
 
 func queryCmd(args []string) int {
@@ -704,6 +706,13 @@ func renderLookup(a *lookupAnswer) string {
 	}
 	if a.Upstream != "" {
 		fmt.Fprintf(&b, "upstream: %s\n", escapeControls(a.Upstream))
+	}
+	if a.DNSSECStatus != "" {
+		fmt.Fprintf(&b, "dnssec: %s", escapeControls(a.DNSSECStatus))
+		if a.DNSSECReason != "" {
+			fmt.Fprintf(&b, " (%s)", escapeControls(a.DNSSECReason))
+		}
+		b.WriteString("\n")
 	}
 	for _, ans := range a.Answers {
 		fmt.Fprintf(&b, "  %s\n", escapeControls(ans))

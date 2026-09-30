@@ -3,7 +3,8 @@
   The upstreams of groups (DNS settings → Upstreams): each upstream list a
   group uses instead of the default upstreams (a family resolver preset or
   the group's own list), the groups that share it, its upstreams with their
-  health and statistics, the clock guard and the error when the list could
+  health and statistics (and, in the DNSSEC mode validate, whether they return
+  DNSSEC data), the clock guard and the error when the list could
   not be built (its clients get SERVFAIL). Changed on Clients & groups and
   on the parental controls page.
 -->
@@ -15,6 +16,7 @@
   import { Badge, Chip, Notice } from '$lib/ui'
   import { groupNames } from '../shared/groups'
   import { presetName } from '../shared/resolver'
+  import UpstreamDnssecChip from '../shared/UpstreamDnssecChip.svelte'
 
   interface Props {
     sets: readonly GroupUpstreamSet[]
@@ -54,6 +56,7 @@
                 <span class="mono u">{u.name || u.upstream}</span>
                 <span class="meta small">
                   <Chip size="sm" tone={u.healthy ? 'ok' : 'fail'} label={u.healthy ? t('dns.settings.upstreams.healthy') : t('dns.settings.upstreams.failing')} />
+                  {#if u.dnssec}<UpstreamDnssecChip state={u.dnssec} error={u.dnssecError} />{/if}
                   <span class="muted">
                     {t('dns.settings.upstreams.stats', {
                       queries: tn('dns.settings.upstreams.queries', u.queries, { count: formatNumber(u.queries) }),

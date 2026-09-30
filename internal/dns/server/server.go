@@ -163,6 +163,9 @@ type Upstream interface {
 	// to send (invalid = none).
 	Resolve(ctx context.Context, req *dns.Msg, ecs netip.Prefix) (*dns.Msg, upstream.Info, error)
 	ResolveVia(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, upstream.Info, error)
+	// ResolveValidating is ResolveVia for a forwarder that validates
+	// DNSSEC (validated in the DNSSEC mode validate).
+	ResolveValidating(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, upstream.Info, error)
 	// GroupFor picks the group whose upstreams answer a client with these
 	// enabled groups (a preset first, then the lowest id); ResolveGroup
 	// answers through that group set (no fallbacks, no client subnet;
@@ -220,7 +223,12 @@ type Deps struct {
 	// that app rebuilds on settings, listener and certificate changes; it
 	// drives the plain-DNS gate (step 3a) and DDR (step 6).
 	Encrypted func() *EncryptedState
-	Log       *slog.Logger
+	// ValidatingForwarders receives the target lists of the enabled
+	// forwarders that validate DNSSEC whenever the forwarders are loaded
+	// (app registers them with the upstream package:
+	// upstream.SetValidatingForwarders); nil: none.
+	ValidatingForwarders func(targets [][]string)
+	Log                  *slog.Logger
 }
 
 // EncryptedState describes the encrypted DNS PiCache serves now
@@ -291,13 +299,17 @@ type RecordInput struct {
 // only; Unqualified = single-label names) to specific upstreams, e.g.
 // "fritz.box" → 192.168.178.1 or "178.168.192.in-addr.arpa" →
 // 192.168.178.1, or to the default upstreams (the single target
-// DefaultTarget). Domain is the first of Domains.
+// DefaultTarget). Domain is the first of Domains. Validate validates the
+// DNSSEC of its answers in the DNSSEC mode validate (explicit targets
+// outside the locally served zones only; the targets must be recursive
+// resolvers).
 type Forwarder struct {
 	ID        int64     `json:"id"`
 	Domain    string    `json:"domain"`
 	Domains   []string  `json:"domains"`
 	Upstreams []string  `json:"upstreams"`
 	Enabled   bool      `json:"enabled"`
+	Validate  bool      `json:"validate"`
 	Comment   string    `json:"comment"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -305,11 +317,13 @@ type Forwarder struct {
 
 // ForwarderInput creates or updates a forwarder: Domains (1–16) wins,
 // Domain alone means [Domain]; with both, Domains[0] must be Domain.
+// Validate left out is false (PUT replaces it like Enabled).
 type ForwarderInput struct {
 	Domain    string   `json:"domain,omitempty"`
 	Domains   []string `json:"domains,omitempty"`
 	Upstreams []string `json:"upstreams"`
 	Enabled   bool     `json:"enabled"`
+	Validate  bool     `json:"validate"`
 	Comment   string   `json:"comment"`
 }
 
@@ -324,19 +338,25 @@ type LookupRequest struct {
 
 // LookupResult explains how PiCache would answer. Status "dropped" (a
 // blocked client or a dropped domain: no answer at all) comes with an
-// empty RCode and no answers.
+// empty RCode and no answers. DNSSECStatus is the verdict of the fetched
+// data (secure, insecure, bogus, indeterminate; absent when nothing was
+// validated), DNSSECReason its reason or failure and DNSSECEDE its
+// Extended DNS Error.
 type LookupResult struct {
-	Name       string         `json:"name"`
-	Type       string         `json:"type"`
-	Status     string         `json:"status"`
-	RCode      string         `json:"rcode"`
-	Answers    []string       `json:"answers"` // RR strings
-	Reason     string         `json:"reason,omitempty"`
-	Upstream   string         `json:"upstream,omitempty"`
-	DurationUs int64          `json:"durationUs"`
-	GroupIDs   []int64        `json:"groupIds"`
-	Steps      []string       `json:"steps"`   // pipeline trace, human-readable
-	Matches    []filter.Match `json:"matches"` // all filter matches
+	Name         string         `json:"name"`
+	Type         string         `json:"type"`
+	Status       string         `json:"status"`
+	RCode        string         `json:"rcode"`
+	Answers      []string       `json:"answers"` // RR strings
+	Reason       string         `json:"reason,omitempty"`
+	Upstream     string         `json:"upstream,omitempty"`
+	DNSSECStatus string         `json:"dnssecStatus,omitempty"`
+	DNSSECReason string         `json:"dnssecReason,omitempty"`
+	DNSSECEDE    *upstream.EDE  `json:"dnssecEde,omitempty"`
+	DurationUs   int64          `json:"durationUs"`
+	GroupIDs     []int64        `json:"groupIds"`
+	Steps        []string       `json:"steps"`   // pipeline trace, human-readable
+	Matches      []filter.Match `json:"matches"` // all filter matches
 }
 
 // BlockingStatus is the global blocking state. TimeZone and
@@ -385,6 +405,9 @@ type Stats struct {
 	TopRateLimited []netutil.RateLimited `json:"topRateLimited"`
 	BlockedClients int64                 `json:"blockedClients"` // queries of dns.blockedClients dropped (UDP) or closed (TCP)
 	Dropped        int64                 `json:"dropped"`        // queries of dns.droppedDomains dropped (UDP) or closed (TCP)
+	// DNSSEC counts the answered queries by DNSSEC status since the start
+	// (never filtered).
+	DNSSEC DNSSECCounts `json:"dnssec"`
 }
 
 // Server is the DNS server.
@@ -413,6 +436,8 @@ type Server struct {
 
 	queries, refused, rateLimited, inFlight, overloaded, blockedClients, dropped atomic.Int64
 	dotAnswered, dohAnswered                                                     atomic.Int64
+	// dnssec counts the answered queries by DNSSEC status.
+	dnssec dnssecStats
 	// doh counts the DoH requests in flight per client key (ServeDoH).
 	doh dohLimiter
 
@@ -669,5 +694,6 @@ func (s *Server) Stats() Stats {
 		TopRateLimited: top,
 		BlockedClients: s.blockedClients.Load(),
 		Dropped:        s.dropped.Load(),
+		DNSSEC:         s.dnssec.totals(),
 	}
 }

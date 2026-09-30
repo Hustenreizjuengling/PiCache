@@ -38,12 +38,20 @@ func Defaults() All {
 			CacheSize:              10000,
 			ServeStale:             true,
 			ServeStaleMaxAgeSec:    3600,
-			DNS64:                  DNS64{Prefix: DefaultDNS64Prefix},
-			LocalRecordsEnabled:    true,
-			LocalizeRecords:        LocalizeFirst,
-			ServerNameAddresses:    ServerNameAddresses{IPv4: []string{}, IPv6: []string{}},
-			PlainDNS:               true,
-			Encrypted:              EncryptedDNS{},
+			// DNSSECMode: validate, measured in 0.17.0 (ARCHITECTURE 13:
+			// a cold validation costs 15.6 ms of CPU under linux/arm/v7
+			// emulation, two extra exchanges for a new zone below a known
+			// TLD, 4.3 MiB of heap for 10 000 zones, nothing on a cache
+			// hit). Stored documents of earlier versions keep off or
+			// passthrough (settings migration v7).
+			DNSSECMode:          DNSSECValidate,
+			DNSSEC:              true,
+			DNS64:               DNS64{Prefix: DefaultDNS64Prefix},
+			LocalRecordsEnabled: true,
+			LocalizeRecords:     LocalizeFirst,
+			ServerNameAddresses: ServerNameAddresses{IPv4: []string{}, IPv6: []string{}},
+			PlainDNS:            true,
+			Encrypted:           EncryptedDNS{},
 		},
 		Filter: Filter{
 			Enabled:                 true,

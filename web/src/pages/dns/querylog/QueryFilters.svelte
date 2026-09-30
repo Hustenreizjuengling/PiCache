@@ -1,8 +1,8 @@
 <!--
   @component
   Query log toolbar: time range (presets up to the retention, a custom
-  window), client, domain, status, record type, upstream, reply code,
-  DNSSEC and the ClientID of DoT and DoH queries. Text filters apply after a short pause in typing (or Enter) once
+  window), client, domain, status, record type, upstream, reply code, the
+  AD flag, PiCache's DNSSEC status and the ClientID of DoT and DoH queries. Text filters apply after a short pause in typing (or Enter) once
   they are long enough for the server; everything lives in the URL. A
   device filter (several client addresses, from the overview or the clients
   page) shows as "Device with N addresses" with a button to remove it.
@@ -10,7 +10,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { t, tn } from '$i18n/index.svelte'
-  import type { QueryStatus, RangePreset } from '$lib/api'
+  import type { DnssecStatus, QueryStatus, RangePreset } from '$lib/api'
   import { isCustom, rangeParams, type CustomRange } from '$lib/range'
   import type { QueryPatch } from '$lib/router.svelte'
   import { Button, CustomRangeDialog, Field, Icon, IconButton, Input, Select, TimeRangePicker } from '$lib/ui'
@@ -27,6 +27,7 @@
     validDomain,
     type QueryFilters,
   } from './filters'
+  import DnssecFilter from './DnssecFilter.svelte'
   import RcodeFilter from './RcodeFilter.svelte'
   import StatusFilter from './StatusFilter.svelte'
 
@@ -55,7 +56,8 @@
     [filters.domain, filters.qtype, filters.upstream, filters.dnssec, filters.dnsClientId].filter(Boolean).length +
       (filters.client.length > 0 ? 1 : 0) +
       (filters.status.length > 0 ? 1 : 0) +
-      (filters.rcode.length > 0 ? 1 : 0),
+      (filters.rcode.length > 0 ? 1 : 0) +
+      (filters.dnssecStatus.length > 0 ? 1 : 0),
   )
 
   const ranges = $derived(logRanges(retentionHours))
@@ -240,6 +242,11 @@
     <div class="f small-f">
       <Field label={t('dns.queryLog.rcode.label')}>
         <RcodeFilter value={filters.rcode} seen={rcodes} onchange={(c: string[]) => onchange({ rcode: c })} />
+      </Field>
+    </div>
+    <div class="f small-f">
+      <Field label={t('dns.queryLog.dnssecStatus.label')}>
+        <DnssecFilter value={filters.dnssecStatus} onchange={(v: DnssecStatus[]) => onchange({ dnssecStatus: v })} />
       </Field>
     </div>
     <div class="f small-f">

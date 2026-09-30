@@ -3,7 +3,9 @@
   Conditional forwarders: domains answered by other DNS servers (router,
   company DNS) or by the default upstreams. The most specific enabled
   forwarder wins. Admins can also import forwarders from a list and select
-  rows to enable, disable or delete them together.
+  rows to enable, disable or delete them together. Forwarders that validate
+  DNSSEC carry a badge and, in the DNSSEC mode Validate, the worst DNSSEC
+  state of their DNS servers.
   Query: ?tab=forwarders&sel=<forwarder id>
 -->
 <script lang="ts">
@@ -12,13 +14,21 @@
   import { errorText } from '$lib/errors'
   import { router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
-  import { BulkBar, Button, EmptyState, Panel, Table, toast, Toggle, type Column } from '$lib/ui'
+  import { Badge, BulkBar, Button, EmptyState, Panel, Table, toast, Toggle, type Column } from '$lib/ui'
   import { runBatch } from '../shared/batch'
+  import { worstDnssecState } from '../shared/dnssec'
+  import UpstreamDnssecChip from '../shared/UpstreamDnssecChip.svelte'
   import ForwarderPanel from './ForwarderPanel.svelte'
   import { domainLabel, forwarderDomains, forwarderTitle, usesDefault } from './forwarders'
   import ImportDialog from './ImportDialog.svelte'
 
   const forwarders = resource((signal) => api.dns.forwarders.list({ signal }))
+  // The DNSSEC state of the validating forwarders' servers: null outside the mode Validate.
+  const validating = $derived((forwarders.data ?? []).some((f) => f.validate))
+  const dnssec = resource(
+    (signal) => (validating ? api.upstreams.get({ signal }).then((u) => u.dnssec ?? null) : Promise.resolve(undefined)),
+    { interval: 30_000 },
+  )
 
   let addOpen = $state(false)
   let importOpen = $state(false)
@@ -39,6 +49,7 @@
         domains: [...domains],
         upstreams: [...f.upstreams],
         enabled,
+        validate: f.validate,
         comment: f.comment,
       })
       forwarders.set((forwarders.data ?? []).map((x) => (x.id === saved.id ? saved : x)))
@@ -109,6 +120,13 @@
     {@render domainName(all[0])}
     {#if all.length > 1}
       <span class="more" title={all.map(domainLabel).join('\n')}>{tn('dns.forwarders.moreDomains', all.length - 1)}</span>
+    {/if}
+    {#if f.validate}
+      {@const state = dnssec.data ? worstDnssecState(dnssec.data.forwarders.find((x) => x.id === f.id)?.upstreams ?? []) : undefined}
+      <Badge tone="info" title={dnssec.data === null ? t('dns.forwarders.validate.inactive') : t('dns.forwarders.validate.badgeTitle')}>
+        {t('dns.forwarders.validate.badge')}
+      </Badge>
+      {#if state}<UpstreamDnssecChip {state} />{/if}
     {/if}
   </span>
 {/snippet}
@@ -182,8 +200,9 @@
 <style>
   .domains {
     display: inline-flex;
-    align-items: baseline;
-    gap: 0 var(--sp-2);
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px var(--sp-2);
   }
   .mono {
     font-family: var(--font-mono);

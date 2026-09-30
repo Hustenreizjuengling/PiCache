@@ -776,6 +776,7 @@ export default {
   'health.check.sync': 'Sync from the primary',
   'health.check.host': 'Host resources',
   'health.check.network': 'Network setup',
+  'health.check.dnssec': 'DNSSEC',
 
   'health.about.title': 'About PiCache',
   'health.about.loadError': 'The system information could not be loaded',

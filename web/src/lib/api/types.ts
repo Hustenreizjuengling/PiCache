@@ -476,6 +476,19 @@ export interface TlsStatus {
 /** How upstreams are asked (fastest_addr: like parallel, then the fastest-connecting address first). */
 export type UpstreamMode = 'load_balance' | 'parallel' | 'strict' | 'fastest_addr'
 
+/**
+ * dns.dnssecMode: `off` asks for DNSSEC data only for devices that ask,
+ * `passthrough` asks for it and passes the upstream's AD flag on,
+ * `validate` checks the signatures in PiCache (400 field "dns.dnssecMode").
+ */
+export type DnssecMode = 'off' | 'passthrough' | 'validate'
+
+/** The verdict of an answer PiCache validated (validate mode; absent for answers it did not validate). */
+export type DnssecStatus = 'secure' | 'insecure' | 'bogus' | 'indeterminate'
+
+/** Whether an upstream returns usable DNSSEC data (its probe; validate mode). */
+export type UpstreamDnssecState = 'capable' | 'no-dnssec' | 'anchor-mismatch' | 'unknown'
+
 /** settings.DNS */
 export interface DnsSettings {
   upstreams: string[]
@@ -528,6 +541,11 @@ export interface DnsSettings {
   cacheMaxTtl: number
   serveStale: boolean
   serveStaleMaxAgeSec: number
+  dnssecMode: DnssecMode
+  /**
+   * @deprecated The alias of `dnssecMode !== 'off'`, kept for API clients:
+   * send `dnssecMode` (a write that sets both so that they contradict fails).
+   */
   dnssec: boolean
   /** Answer forwarded AAAA queries with no records (networks with broken IPv6). Excludes dns64.enabled. */
   disableAAAA: boolean
@@ -935,6 +953,8 @@ export interface DnsStats {
   /** Queries of dns.droppedDomains dropped since the start. */
   dropped: number
   topRateLimited: RateLimited[]
+  /** Validated answers by DNSSEC status since the start (never filtered). */
+  dnssec: Record<DnssecStatus, number>
 }
 
 /** dnsserver.CacheIPStatus */
@@ -1167,6 +1187,8 @@ export interface Forwarder {
   domains: string[]
   upstreams: string[]
   enabled: boolean
+  /** Validate the DNSSEC signatures of its answers (acts only in the DNSSEC mode validate). */
+  validate: boolean
   comment: string
   createdAt: Timestamp
   updatedAt: Timestamp
@@ -1174,14 +1196,17 @@ export interface Forwarder {
 
 /**
  * dnsserver.ForwarderInput: `domains` wins, `domain` alone means [domain]
- * (errors "domain", "domains", "domains[i]", "upstreams", "upstreams[i]";
- * 409 for a domain another forwarder holds).
+ * (errors "domain", "domains", "domains[i]", "upstreams", "upstreams[i]",
+ * "validate"; 409 for a domain another forwarder holds). PUT replaces
+ * `validate` like `enabled` (absent = false), so it is always sent.
  */
 export interface ForwarderInput {
   domain?: string
   domains?: string[]
   upstreams: string[]
   enabled: boolean
+  /** Only for explicit targets outside the locally served zones and without (unqualified) (400 field "validate"). */
+  validate: boolean
   comment: string
 }
 
@@ -1242,6 +1267,12 @@ export interface LookupResult {
   groupIds: number[]
   steps: string[]
   matches: FilterMatch[]
+  /** The DNSSEC verdict of the fetched data (validate mode, validated routes). */
+  dnssecStatus?: DnssecStatus
+  /** Why: the failure of `bogus` ("bad signature"), the cause of `insecure` and `indeterminate`; `dnssecEde.text` adds the zone. */
+  dnssecReason?: string
+  /** The extended DNS error a client gets for a `bogus` answer. */
+  dnssecEde?: { code: number; text: string }
 }
 
 // ---------------------------------------------------------------- upstream
@@ -1258,6 +1289,12 @@ export interface UpstreamStat {
   lastError?: string
   lastErrorAt?: Timestamp
   healthy: boolean
+  /** Whether it returns DNSSEC data (validate mode, upstreams of validated routes only). */
+  dnssec?: UpstreamDnssecState
+  /** What its last probe found wrong (bounded and cleaned by the server). */
+  dnssecError?: string
+  /** When it was last probed. */
+  dnssecCheckedAt?: Timestamp
 }
 
 /** upstream.CacheStat */
@@ -1275,6 +1312,8 @@ export interface UpstreamCacheStat {
   expired: number
   /** Current entries by record type: the 16 largest, then OTHER for the rest (entries desc). */
   types: { type: string; entries: number }[]
+  /** The DNSSEC key cache (validated zones, their bytes) and the failure cache (validate mode only). */
+  validation?: { zones: number; bytes: number; failures: number }
 }
 
 /** The upstreams of one group upstream list, shared by the groups that name it. */
@@ -1289,6 +1328,20 @@ export interface GroupUpstreamSet {
   error?: string
 }
 
+/** Why DNSSEC time checks are suspended: the clock guard, an unsynchronised host clock, root signatures outside their period. */
+export type DnssecTimeReason = 'clock-guard' | 'unsynced' | 'root-signatures'
+
+/** The DNSSEC state of GET /dns/upstreams (validate mode only). */
+export interface UpstreamsDnssec {
+  /** Signature dates are checked (`suspended`: answers are `indeterminate` until the clock is right). */
+  timeChecks: 'active' | 'suspended'
+  timeReason?: DnssecTimeReason
+  /** A validated root DNSKEY set holds a key this version has no anchor for: update PiCache. */
+  newRootKey: boolean
+  /** The validating forwarders and their targets (never null). */
+  forwarders: { id: number; domains: string[]; upstreams: UpstreamStat[] }[]
+}
+
 /** GET /dns/upstreams */
 export interface UpstreamsState {
   upstreams: UpstreamStat[]
@@ -1300,6 +1353,39 @@ export interface UpstreamsState {
   clockGuard: boolean
   /** The upstream lists of groups. */
   groups: GroupUpstreamSet[]
+  /** Present only in the DNSSEC mode validate. */
+  dnssec?: UpstreamsDnssec
+}
+
+/** One fixed name of POST /dns/dnssec/test. */
+export interface DnssecTestCheck {
+  name: string
+  expect: 'secure' | 'insecure' | 'bogus'
+  /** `error`: no reply, SERVFAIL to the query with CD=1 or NXDOMAIN (the test name is gone). */
+  status: DnssecStatus | 'error'
+  rcode?: string
+  reason?: string
+  ede?: { code: number; text: string }
+  /** The upstream that answered. */
+  upstream?: string
+  /** The upstream's own validator answered SERVFAIL to the query with CD=0. */
+  upstreamRefused: boolean
+  verdict: 'pass' | 'fail' | 'inconclusive'
+}
+
+/**
+ * upstream.DNSSECTest (POST /dns/dnssec/test): the default upstreams probed
+ * now and the fixed test names validated locally, in every mode. 409 while
+ * one runs, 429 within 10 s of the last start.
+ */
+export interface DnssecTest {
+  /** The mode when the test ran. */
+  mode: DnssecMode
+  timeChecks: 'active' | 'suspended'
+  timeReason?: DnssecTimeReason
+  upstreams: UpstreamStat[]
+  checks: DnssecTestCheck[]
+  durationMs: number
 }
 
 /** upstream.TestResult */
@@ -2933,6 +3019,8 @@ export interface QueryEvent {
   ecs?: string
   /** The ClientID the DoT or DoH query carried (removed while client addresses are anonymised). */
   dnsClientId?: string
+  /** PiCache's DNSSEC verdict of the answer (validate mode; `dnssec` says whether AD was sent). */
+  dnssecStatus?: DnssecStatus
 }
 
 /** How a query reached PiCache: plain DNS over UDP or TCP, DNS over TLS or DNS over HTTPS. */
@@ -3051,6 +3139,13 @@ export interface PurposeStats {
   purposes: { purpose: Purpose; count: number }[]
 }
 
+/** logs.DNSSECStats (GET /stats/dnssec): validated queries by status, most first, then by status. */
+export interface DnssecStats {
+  /** Start actually covered (like Summary.topFrom). */
+  from: Timestamp
+  statuses: { status: DnssecStatus; count: number }[]
+}
+
 /** logs.QTypeStats (GET /stats/qtypes): most first, then by name; at most 32 types per hour, the rest as OTHER. */
 export interface QTypeStats {
   /** Start actually covered (like Summary.topFrom). */
@@ -3160,8 +3255,10 @@ export interface QueryLogQuery extends TimeQuery {
   upstream?: string
   /** Reply codes, ORed (at most 16). */
   rcode?: string[]
-  /** true: validated answers (the AD flag); false: the others. */
+  /** true: answers sent with the AD flag; false: the others. */
   dnssec?: boolean
+  /** PiCache's DNSSEC verdicts, ORed (at most 4; 400 field "dnssecStatus"). */
+  dnssecStatus?: DnssecStatus[]
   /** The ClientID the query carried (exact; 400 field "dnsClientId" for an invalid one). */
   dnsClientId?: string
   cursor?: string

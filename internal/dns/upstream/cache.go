@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/hustenreizjuengling/picache/internal/dns/dnssec"
 )
 
 const (
@@ -20,6 +22,8 @@ const (
 	maxEntryBytes   = 16 << 10        // larger responses are answered but not cached
 	maxCacheBytes   = 64 << 20        // total wire bytes in the cache
 	refreshBackoff  = 5 * time.Second // after a stale refresh, before the next one for the key
+	bogusCryptoTTL  = 30              // at most, seconds a bogus answer is cached after a cryptographic failure (RFC 9520)
+	bogusLookupTTL  = 5               // seconds a bogus answer is cached after a lookup failure or an exhausted budget
 	hardMaxTTL      = 7 * 86400       // cap for every cached TTL (RFC 8767 4 suggests 7 days)
 	maxCacheTypes   = 64              // record types counted by name; further types count as OTHER
 	shownCacheTypes = 16              // CacheStat.Types lists the largest types, the rest as OTHER
@@ -35,14 +39,34 @@ type cacheKey struct {
 	do     bool // DO bit sent upstream
 	set    string
 	ecs    netip.Prefix
+	// val: the fetch validates (DNSSEC mode validate on a validated
+	// route), so an answer fetched before a mode switch is never served
+	// after it.
+	val bool
 }
 
 // entryMeta is what a cached answer carries besides the reply: the default
-// set's own block, the reply's EDE and whether a fallback answered.
+// set's own block, the reply's EDE, whether a fallback answered and the
+// DNSSEC verdict with what its caching needs.
 type entryMeta struct {
 	block    *BlockInfo
 	ede      *EDE
 	fallback bool
+	verdict  *Verdict
+	val      valMeta
+}
+
+// valMeta is what the response cache needs of a verdict: a bogus answer
+// after a lookup failure (or an exhausted budget) is cached 5 s, a
+// cryptographic one at most 30 s, neither is ever served stale, and only a
+// cryptographic one replaces a servable entry; a bogus answer after a
+// local refusal (local: a chain rate limit, the chain flight cap) is not
+// cached at all; a secure answer expires with its earliest RRSIG
+// (expires, zero: no limit).
+type valMeta struct {
+	lookupFailure bool
+	local         bool
+	expires       time.Time
 }
 
 // cacheEntry is an answer in packed wire form: exact memory accounting and
@@ -54,6 +78,7 @@ type cacheEntry struct {
 	stored      time.Time
 	expires     time.Time
 	servfail    bool
+	noStale     bool // a bogus answer: never served stale
 	refreshing  bool
 	nextRefresh time.Time
 	otherType   bool // counted as OTHER in respCache.types
@@ -132,7 +157,7 @@ func (c *respCache) get(k cacheKey, now time.Time, staleWindow time.Duration) (c
 	}
 	e := el.Value.(*cacheEntry)
 	stale := !now.Before(e.expires)
-	if stale && (e.servfail || now.Sub(e.expires) >= staleWindow) {
+	if stale && (e.servfail || e.noStale || now.Sub(e.expires) >= staleWindow) {
 		c.removeLocked(el)
 		c.mu.Unlock()
 		c.misses.Add(1)
@@ -156,17 +181,42 @@ func (c *respCache) get(k cacheKey, now time.Time, staleWindow time.Duration) (c
 // blocked itself (meta.block) is stored whether or not it would be cached
 // otherwise (e.g. NXDOMAIN without SOA) for p.blockedTTL, which replaces
 // the normal or negative TTL, the TTL clamp and the negative cap (at most
-// the hard 7-day cap); its records are left as they came.
+// the hard 7-day cap); its records are left as they came. A bogus answer
+// (DNSSEC) is cached min(its TTL, 30 s) after a cryptographic failure and
+// 5 s after a lookup failure, never served stale; a lookup-failure one
+// never replaces a servable entry either (like a SERVFAIL), and one after
+// a local refusal (a chain rate limit) is not cached. A secure
+// answer's lifetime and TTLs are capped at its earliest RRSIG expiration,
+// which dns.cacheMinTtl never raises.
 func (c *respCache) store(k cacheKey, m *dns.Msg, now time.Time, p cachePolicy, meta entryMeta) {
 	if p.capacity <= 0 {
 		return
 	}
 	var ttl uint32
-	var servfail, ok bool
-	if meta.block != nil {
+	var servfail, noStale, ok bool
+	switch {
+	case meta.block != nil:
 		ttl, ok = min(p.blockedTTL, hardMaxTTL), p.blockedTTL > 0
-	} else {
+	case statusOf(meta.verdict) == dnssec.Bogus:
+		if meta.val.local {
+			return // a local refusal says nothing about the answer
+		}
+		ttl, _, ok = prepareForCache(m, k.qtype, p)
+		switch {
+		case meta.val.lookupFailure:
+			ttl = bogusLookupTTL
+		case !ok || ttl > bogusCryptoTTL:
+			ttl = bogusCryptoTTL
+		}
+		ok, noStale, servfail = true, true, meta.val.lookupFailure
+	default:
 		ttl, servfail, ok = prepareForCache(m, k.qtype, p)
+		if ok && !meta.val.expires.IsZero() {
+			left := max(meta.val.expires.Sub(now), 0) / time.Second
+			ttl = min(ttl, uint32(min(left, hardMaxTTL)))
+			capTTLs(m, ttl)
+			ok = ttl > 0
+		}
 	}
 	if !ok {
 		return
@@ -187,7 +237,8 @@ func (c *respCache) store(k cacheKey, m *dns.Msg, now time.Time, p cachePolicy, 
 		}
 		c.removeLocked(el)
 	}
-	e := &cacheEntry{key: k, wire: wire, meta: meta, stored: now, expires: now.Add(time.Duration(ttl) * time.Second), servfail: servfail}
+	e := &cacheEntry{key: k, wire: wire, meta: meta, stored: now, expires: now.Add(time.Duration(ttl) * time.Second),
+		servfail: servfail, noStale: noStale}
 	c.m[k] = c.lru.PushFront(e)
 	c.bytes += len(wire)
 	c.countType(e, 1)
@@ -252,6 +303,17 @@ func answersType(answer []dns.RR, qtype uint16) bool {
 		}
 	}
 	return false
+}
+
+// capTTLs lowers every TTL of m (except OPT) to at most ttl.
+func capTTLs(m *dns.Msg, ttl uint32) {
+	for _, sec := range [][]dns.RR{m.Answer, m.Ns, m.Extra} {
+		for _, rr := range sec {
+			if h := rr.Header(); h.Rrtype != dns.TypeOPT && h.Ttl > ttl {
+				h.Ttl = ttl
+			}
+		}
+	}
 }
 
 func clampTTLs(m *dns.Msg, p cachePolicy) {

@@ -6,19 +6,29 @@
   device. Steps 2–4 come from /network/check (self.dynamic4, the DHCP
   server, the queries of the last 24 hours, the router checks and the
   requester of this request); step 1 and the steps that cannot be checked
-  are ticked by hand in this browser only (onboarding.ticks). It never
-  changes the host or the network; "Hide checklist" stores
-  web.onboardingDone (System › Health & about shows it again).
+  are ticked by hand in this browser only (onboarding.ticks). Step 1 names
+  the DNSSEC mode and links to it. It never changes the host or the
+  network; "Hide checklist" stores web.onboardingDone (System › Health &
+  about shows it again).
 -->
 <script lang="ts">
   import { t, tn } from '../../i18n/index.svelte'
-  import { api, resource, type NetworkCheck, type Settings } from '../../lib/api'
+  import { api, resource, type DnssecMode, type NetworkCheck, type Settings } from '../../lib/api'
   import { formatNumber } from '../../lib/format'
   import { href } from '../../lib/router.svelte'
   import { loadPref, savePref } from '../../lib/storage'
   import { Badge, Button, Checkbox, Icon, Notice, Panel, Spinner, toast, type Tone } from '../../lib/ui'
+  import { dnssecModeLabel } from '../dns/shared/dnssec'
 
-  let { onhidden }: { onhidden: (all: Settings) => void } = $props()
+  interface Props {
+    /** dns.dnssecMode (GET /settings; undefined while loading). */
+    dnssecMode?: DnssecMode
+    onhidden: (all: Settings) => void
+  }
+
+  let { dnssecMode, onhidden }: Props = $props()
+
+  const modeLabel = $derived(dnssecMode ? dnssecModeLabel(dnssecMode) : undefined)
 
   const net = resource((signal) => api.network.check({ signal }), { interval: 60_000 })
 
@@ -36,6 +46,8 @@
     tick?: string
     /** Waiting for the network check. */
     pending?: boolean
+    /** A setting the step names, with a link to it. */
+    setting?: { label: string; href: string }
   }
 
   // ---- manual ticks: a per-browser convenience, never sent to the server
@@ -120,6 +132,9 @@
           { label: t('overview.start.upstreams.lists'), href: href('/dns/filtering'), icon: 'shield' },
         ],
         tick: t('overview.start.upstreams.tick'),
+        setting: modeLabel
+          ? { label: t('overview.start.upstreams.dnssec', { mode: modeLabel }), href: href('/dns/settings', { section: 'dnssec' }) }
+          : undefined,
       },
     ]
     const pending = !data && !net.error
@@ -232,6 +247,7 @@
               {/if}
             </div>
             <p class="text small">{s.text}</p>
+            {#if s.setting}<p class="small"><a href={s.setting.href}>{s.setting.label}</a></p>{/if}
             {#if ticked(s)}<p class="small muted">{t('overview.start.tickedNote')}</p>{/if}
             {#if s.links.length > 0 || (s.tick && s.state !== 'done')}
               <div class="acts">

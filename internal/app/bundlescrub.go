@@ -63,7 +63,7 @@ var settingRules = map[string]settingRule{
 	"dns.allowAllNetworks": ruleKeep, "dns.allowedNetworks": ruleAddr, "dns.blockedClients": ruleBlockedClient,
 	"dns.bogusNxdomain": ruleAddr, "dns.bootstrap": ruleUpstream, "dns.bootstrapPreferIpv6": ruleKeep,
 	"dns.cacheEnabled": ruleKeep, "dns.cacheMaxTtl": ruleKeep, "dns.cacheMinTtl": ruleKeep, "dns.cacheSize": ruleKeep,
-	"dns.disableAAAA": ruleKeep, "dns.dns64.enabled": ruleKeep, "dns.dns64.prefix": ruleAddr, "dns.dnssec": ruleKeep,
+	"dns.disableAAAA": ruleKeep, "dns.dns64.enabled": ruleKeep, "dns.dns64.prefix": ruleAddr, "dns.dnssec": ruleKeep, "dns.dnssecMode": ruleKeep,
 	"dns.domainNeeded": ruleKeep, "dns.droppedDomains": ruleDroppedDomain, "dns.ecs.customSubnet": ruleAddr,
 	"dns.ecs.mode": ruleKeep, "dns.ednsClientTrusted": ruleAddr, "dns.fallbackUpstreams": ruleUpstream,
 	"dns.localDomain": ruleName, "dns.localPtrUpstreams": ruleUpstream, "dns.privateReverseNetworks": ruleAddr,

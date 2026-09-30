@@ -19,8 +19,8 @@ const (
 
 // EDE is the Extended DNS Error (RFC 8914) of an upstream reply.
 type EDE struct {
-	Code uint16
-	Text string // sanitised (SanitizeEDEText): at most 200 bytes of valid UTF-8 without control or bidi characters
+	Code uint16 `json:"code"`
+	Text string `json:"text"` // sanitised (SanitizeEDEText): at most 200 bytes of valid UTF-8 without control or bidi characters
 }
 
 // errECSMismatch discards a reply whose client subnet option differs from

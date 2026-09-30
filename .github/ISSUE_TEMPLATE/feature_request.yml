@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        PiCache's priorities are security, simplicity, correctness, performance and features, in that order. Some things are deliberately out of scope for now (for example a DHCP server, DNS-over-HTTPS/TLS for clients, local DNSSEC validation) and TLS interception of downloads will never be added; see the non-goals in [docs/ARCHITECTURE.md](https://github.com/Hustenreizjuengling/PiCache/blob/main/docs/ARCHITECTURE.md#1-goals-and-non-goals).
+        PiCache's priorities are security, simplicity, correctness, performance and features, in that order. Some things are deliberately out of scope for now (for example DNS-over-QUIC for clients, per-service retention, online game-name lookups) and TLS interception of downloads will never be added; see the non-goals in [docs/ARCHITECTURE.md](https://github.com/Hustenreizjuengling/PiCache/blob/main/docs/ARCHITECTURE.md#1-goals-and-non-goals).
   - type: textarea
     id: problem
     attributes:

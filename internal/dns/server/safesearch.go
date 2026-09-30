@@ -78,14 +78,14 @@ func (s *Server) safeSearch(qc *qctx) (result, bool) {
 	switch {
 	case r.status == StatusError:
 		fail := s.servfail(qc, "safe search: "+r.reason)
-		fail.upstream, fail.ede = r.upstream, r.ede
+		fail.upstream, fail.ede, fail.dnssec, fail.dnssecFail = r.upstream, r.ede, r.dnssec, r.dnssecFail
 		return fail, true
 	case r.msg == nil:
 		return s.servfail(qc, "safe search: no answer for "+rw.Target), true
 	case forwardedStatus(r.status) && r.msg.Rcode != dns.RcodeSuccess && r.msg.Rcode != dns.RcodeNameError:
 		qc.note("safe search: the target " + rw.Target + " answered " + rcodeString(r.msg.Rcode) + ": SERVFAIL")
 		fail := s.servfail(qc, "safe search: "+rw.Target+" answered "+rcodeString(r.msg.Rcode))
-		fail.upstream, fail.ede = r.upstream, r.ede
+		fail.upstream, fail.ede, fail.dnssec = r.upstream, r.ede, r.dnssec
 		return fail, true
 	case !forwardedStatus(r.status) && r.reason != ReasonAAAADisabled:
 		// 13a, 13b or 14c turned the target's answer into a blocking or a
@@ -108,7 +108,7 @@ func (s *Server) safeSearch(qc *qctx) (result, bool) {
 	m.Rcode = r.msg.Rcode
 	m.Answer = append([]dns.RR{cname(ttl)}, r.msg.Answer...)
 	m.AuthenticatedData = false
-	res.upstream, res.ede = r.upstream, r.ede
+	res.upstream, res.ede, res.dnssec = r.upstream, r.ede, r.dnssec
 	return res, true
 }
 

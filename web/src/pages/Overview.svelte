@@ -50,7 +50,7 @@
 
   <!-- Admins of a fresh installation until they hide it (web.onboardingDone). -->
   {#if session.isAdmin && settings.data?.web.onboardingDone === false}
-    <GetStarted onhidden={(all) => settings.set(all)} />
+    <GetStarted dnssecMode={settings.data?.dns.dnssecMode} onhidden={(all) => settings.set(all)} />
   {/if}
 
   {#if appStatus.overview.error && !overview}

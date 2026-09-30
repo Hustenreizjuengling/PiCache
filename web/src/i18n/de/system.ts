@@ -796,6 +796,7 @@ const de: Messages<typeof en> = {
   'health.check.sync': 'Synchronisierung vom Primärsystem',
   'health.check.host': 'Ressourcen des Hosts',
   'health.check.network': 'Netzwerk-Einrichtung',
+  'health.check.dnssec': 'DNSSEC',
 
   'health.about.title': 'Über PiCache',
   'health.about.loadError': 'Die Systeminformationen konnten nicht geladen werden',

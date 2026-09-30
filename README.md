@@ -93,6 +93,15 @@ unprivileged Proxmox LXC container.
   fallback resolver of another operator for outages, a response cache and
   serve-stale. Quad9 (which blocks malware) by default; blocks of the
   upstream show as blocked in the query log.
+- Local DNSSEC validation (on by default in new installations): PiCache
+  checks the signatures of signed domains itself, from the root zone's
+  built-in keys, answers forged ones with SERVFAIL and sets the AD flag
+  only for answers it verified. The query log shows each answer's DNSSEC
+  status (secure, insecure, bogus, indeterminate), the health check warns
+  about upstreams without DNSSEC data or a wrong clock, and a test button
+  shows whether it works with your upstreams. Pass-through of the
+  upstream's verdict (for a validating resolver such as Unbound) and off
+  are the other modes.
 - Encrypted DNS for your devices: DNS-over-TLS on port 853
   (`PICACHE_DOT_LISTEN`) and DNS-over-HTTPS at `/dns-query` on the web
   ports or on a port of its own (`PICACHE_DOH_LISTEN`), switched on in the
@@ -264,8 +273,7 @@ on how it was built:
   [Updates](docs/DEPLOYMENT.md#updates).
 
 Not included: DNS-over-QUIC, DNSCrypt and DNS over HTTP/3 for clients
-(PiCache serves DNS-over-TLS and DNS-over-HTTPS) and local DNSSEC
-validation. TLS interception of downloads is never done. Docker Desktop on macOS and Windows
+(PiCache serves DNS-over-TLS and DNS-over-HTTPS). TLS interception of downloads is never done. Docker Desktop on macOS and Windows
 is not a deployment target.
 
 ## Quick start
@@ -616,7 +624,10 @@ einzigen Programm mit Weboberfläche (auf Deutsch und Englisch).
   Antwortadresse, Gruppen pro Client, „Nur für dieses Gerät“, lokale
   DNS-Einträge (auch SRV, MX, PTR, HTTPS, pro Gruppe, Import aus einer
   hosts-Datei), verschlüsselte Upstreams (DoH, DoT, DoQ, HTTP/3, DNSCrypt,
-  DNS-Stamps) mit Ausweich-DNS, ein eigener Resolver pro Gruppe (etwa ein
+  DNS-Stamps) mit Ausweich-DNS, eigene DNSSEC-Prüfung (bei neuen
+  Installationen an: gefälschte Antworten signierter Domains werden
+  abgewiesen, das AD-Flag nur für selbst geprüfte Antworten gesetzt, der
+  DNSSEC-Status steht im Abfrageprotokoll), ein eigener Resolver pro Gruppe (etwa ein
   familienfreundlicher DNS-Dienst), verschlüsseltes DNS für die eigenen
   Geräte (DNS-over-TLS auf Port 853 und DNS-over-HTTPS, mit ClientIDs, DDR
   und Konfigurationsprofilen für Apple-Geräte; unverschlüsseltes DNS lässt

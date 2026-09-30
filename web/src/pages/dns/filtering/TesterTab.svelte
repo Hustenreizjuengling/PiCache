@@ -6,7 +6,8 @@
   with the decisive one marked (with their query types, exceptions,
   inversion and answer, and the entries that match the name but not this
   query type or name). With a ClientID the query counts as a DoT or DoH
-  query of that client carrying it.
+  query of that client carrying it. In the DNSSEC mode Validate the answer's
+  DNSSEC verdict shows with its reason and extended DNS error.
   Query: ?domain=…&client=<ip>&qtype=A&dnsClientId=<ClientID>
 -->
 <script lang="ts">
@@ -20,6 +21,8 @@
   import { isBlockedStatus } from '$lib/traffic'
   import { Button, EmptyState, Field, Input, KeyValue, Notice, Panel, QueryStatusChip, Select } from '$lib/ui'
   import { isClientId, normalizeClientId } from '../shared/clientid'
+  import { edeText } from '../querylog/ede'
+  import DnssecStatusChip from '../shared/DnssecStatusChip.svelte'
   import { groupNames } from '../shared/groups'
   import { asciiDomain } from '../shared/input'
   import MatchList from '../shared/MatchList.svelte'
@@ -98,6 +101,18 @@
   const ruleAction = $derived(
     !res || res.status === 'blocked-upstream' || res.status === 'dropped' ? undefined : blocked ? 'allow' : 'block',
   )
+  // The DNSSEC verdict's EDE text is "<zone>: <reason>": then it stands in
+  // for the reason (it names the zone) and the EDE shows its code and name.
+  const dnssecDetail = $derived.by(() => {
+    if (!res?.dnssecStatus) return undefined
+    const reason = res.dnssecReason ?? ''
+    const ede = res.dnssecEde
+    const repeats = !!ede && !!reason && (ede.text === reason || ede.text.endsWith(`: ${reason}`))
+    return {
+      reason: ede && repeats ? ede.text : reason,
+      ede: ede ? edeText(repeats ? { code: ede.code, text: '' } : ede) : undefined,
+    }
+  })
 
   function createRule() {
     if (!res || !ruleAction) return
@@ -176,7 +191,16 @@
             { label: t('dns.queryLog.upstream'), value: res.upstream, mono: true },
             { label: t('dns.tester.groups'), value: groupNames(res.groupIds, groups) },
           ]}
-        />
+        >
+          {#if res.dnssecStatus && dnssecDetail}
+            <dt>{t('dns.tester.dnssec.label')}</dt>
+            <dd class="dnssec">
+              <DnssecStatusChip status={res.dnssecStatus} />
+              {#if dnssecDetail.reason}<span>{dnssecDetail.reason}</span>{/if}
+              {#if dnssecDetail.ede}<span class="muted">{t('dns.tester.dnssec.ede', { ede: dnssecDetail.ede })}</span>{/if}
+            </dd>
+          {/if}
+        </KeyValue>
 
         <section class="stack-sm" aria-labelledby="tester-answers">
           <h3 id="tester-answers">{t('dns.tester.answers')}</h3>
@@ -235,6 +259,12 @@
   }
   h3 {
     font-size: var(--fs-md);
+  }
+  .dnssec {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
   }
   .answers {
     margin: 0;

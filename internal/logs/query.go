@@ -361,6 +361,13 @@ func queryWhere(f *QueryFilter) (where, error) {
 	if f.DNSSEC != nil {
 		w.add("dnssec = ?", *f.DNSSEC)
 	}
+	statuses, err := DNSSECStatusFilter(f.DNSSECStatus)
+	if err != nil {
+		return w, err
+	}
+	if len(statuses) > 0 {
+		w.add("dnssec_status IN ("+strings.Repeat("?, ", len(statuses)-1)+"?)", anySlice(statuses)...)
+	}
 	if v := strings.TrimSpace(f.DNSClientID); v != "" {
 		id, ok := settings.NormalizeClientID(v)
 		if !ok {
@@ -369,6 +376,28 @@ func queryWhere(f *QueryFilter) (where, error) {
 		w.add("dns_client_id = ?", id)
 	}
 	return w, nil
+}
+
+// DNSSECStatusFilter validates the DNSSEC statuses of a filter: each of
+// secure, insecure, bogus or indeterminate (lower-cased; values may also
+// be comma-separated), each counted once, at most 4.
+func DNSSECStatusFilter(in []string) ([]string, error) {
+	var out []string
+	for _, raw := range in {
+		for v := range strings.SplitSeq(raw, ",") {
+			v = strings.ToLower(strings.TrimSpace(v))
+			if v == "" {
+				continue
+			}
+			if !slices.Contains(dnssecStatuses, v) {
+				return nil, apperr.Invalid("dnssecStatus", "must be secure, insecure, bogus or indeterminate")
+			}
+			if !slices.Contains(out, v) {
+				out = append(out, v)
+			}
+		}
+	}
+	return out, nil
 }
 
 // rcodeFilter validates the rcode values of a filter: at most 16, each 1–16
@@ -398,7 +427,7 @@ func rcodeFilter(in []string) ([]string, error) {
 // queryColumns are the columns scanQuery reads (id and ts first).
 const queryColumns = `id, ts, client_ip, client_name, qname, qtype, status, rcode, reason, list_id,
 		rule_id, service, upstream, duration_us, answer, dnssec, protocol, upstream_ede_code, upstream_ede_text, ecs, upstream_answer,
-		dns_client_id`
+		dns_client_id, dnssec_status`
 
 // scanQuery reads a row of queryColumns.
 func scanQuery(r *sql.Rows) (QueryEvent, int64, int64, error) {
@@ -408,7 +437,7 @@ func scanQuery(r *sql.Rows) (QueryEvent, int64, int64, error) {
 	var edeText string
 	err := r.Scan(&e.ID, &ts, &e.ClientIP, &e.ClientName, &e.QName, &e.QType, &e.Status, &e.RCode, &e.Reason,
 		&e.ListID, &e.RuleID, &e.Service, &e.Upstream, &e.DurationUs, &e.Answer, &e.DNSSEC, &e.Protocol,
-		&edeCode, &edeText, &e.ECS, &e.UpstreamAnswer, &e.DNSClientID)
+		&edeCode, &edeText, &e.ECS, &e.UpstreamAnswer, &e.DNSClientID, &e.DNSSECStatus)
 	if edeCode >= 0 {
 		e.UpstreamEDE = &UpstreamEDE{Code: edeCode, Text: edeText}
 	}

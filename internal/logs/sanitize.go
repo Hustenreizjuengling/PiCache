@@ -228,6 +228,9 @@ func cleanQuery(e QueryEvent, anon, hide bool, now time.Time) QueryEvent {
 		e.DNSClientID = "" // a ClientID names a device as well as its address
 	}
 	e.Purpose = strings.ToLower(clean(e.Purpose, maxShortLen))
+	if !slices.Contains(dnssecStatuses, e.DNSSECStatus) {
+		e.DNSSECStatus = ""
+	}
 	if hide {
 		hideDomain(&e)
 	}

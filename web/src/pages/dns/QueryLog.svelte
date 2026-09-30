@@ -2,15 +2,17 @@
   @component
   Query log: every DNS query with its status, filterable by time range
   (a preset or a custom window), client, domain, status, record type,
-  upstream, reply code, DNSSEC and ClientID (all in the URL), paged by cursor. "Live"
+  upstream, reply code, AD flag, DNSSEC status and ClientID (all in the URL),
+  paged by cursor. A shield next to the status marks answers PiCache
+  validated as secure or found bogus. "Live"
   follows new queries over SSE (pause/resume; not with a custom window,
   which may end in the past: turning Live on returns to the default range
   and ?live=true is ignored while one is set); a row opens the details
   panel. Export downloads the filtered log (NDJSON or CSV); admins may clear
   the query log or reset the statistics from the menu (when the host allows
   destructive actions).
-  Query: ?range|from&to&client&domain&status&qtype&upstream&rcode&dnssec&dnsClientId&live=true;
-  client and rcode may be repeated (every address of one device, any of the codes).
+  Query: ?range|from&to&client&domain&status&qtype&upstream&rcode&dnssec&dnssecStatus&dnsClientId&live=true;
+  client, rcode and dnssecStatus may be repeated (every address of one device, any of the codes or statuses).
 -->
 <script lang="ts">
   import { untrack } from 'svelte'
@@ -33,6 +35,7 @@
     Chip,
     CursorStack,
     EmptyState,
+    Icon,
     IconButton,
     Menu,
     Notice,
@@ -48,6 +51,7 @@
   import { apiQuery, CLEAR_FILTERS, exportQuery, hasFilters, matchesLocally, readFilters, streamClient } from './querylog/filters'
   import QueryFilters from './querylog/QueryFilters.svelte'
   import QueryPanel from './querylog/QueryPanel.svelte'
+  import { dnssecStatusLabel } from './shared/dnssec'
 
   /** Rows kept in live mode (newest first). */
   const MAX_LIVE = 500
@@ -245,7 +249,15 @@
 {/snippet}
 
 {#snippet statusCell(e: Row)}
-  <QueryStatusChip status={e.status} />
+  <span class="status">
+    <QueryStatusChip status={e.status} />
+    {#if e.dnssecStatus === 'secure' || e.dnssecStatus === 'bogus'}
+      {@const text = t('dns.queryLog.dnssecStatus.rowLabel', { status: dnssecStatusLabel(e.dnssecStatus) })}
+      <span class={['shield', e.dnssecStatus]} role="img" aria-label={text} title={text}>
+        <Icon name={e.dnssecStatus === 'secure' ? 'shield-check' : 'shield-off'} size={16} />
+      </span>
+    {/if}
+  </span>
 {/snippet}
 
 <div class="page">
@@ -369,5 +381,31 @@
   .ip {
     color: var(--text-3);
     font-size: var(--fs-xs);
+  }
+  .status {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .shield {
+    display: inline-flex;
+  }
+  .shield.secure {
+    color: var(--ok);
+  }
+  .shield.bogus {
+    color: var(--fail);
+  }
+  /* Phones: on the chip's corner, so the column gets no wider. */
+  @media (max-width: 480px) {
+    .shield {
+      position: absolute;
+      top: -7px;
+      right: -7px;
+      border-radius: 50%;
+      background: var(--surface);
+    }
   }
 </style>

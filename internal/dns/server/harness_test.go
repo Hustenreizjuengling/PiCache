@@ -28,11 +28,13 @@ import (
 // --- fakes ---
 
 type upCall struct {
-	name  string
-	qtype uint16
-	via   []string
-	do    bool
-	ecs   netip.Prefix
+	name     string
+	qtype    uint16
+	via      []string
+	do       bool
+	ecs      netip.Prefix
+	cd       bool // the client's CD bit handed to the upstream package
+	validate bool // ResolveValidating
 }
 
 type fakeUpstream struct {
@@ -90,6 +92,11 @@ func (f *fakeUpstream) ResolveVia(_ context.Context, req *dns.Msg, via []string)
 	return f.exchange(req, via)
 }
 
+// ResolveValidating records the call with validate set.
+func (f *fakeUpstream) ResolveValidating(_ context.Context, req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
+	return f.exchangeOpts(req, via, netip.Prefix{}, true)
+}
+
 func (f *fakeUpstream) Probe(context.Context, netip.Addr) bool {
 	if f.onProbe != nil {
 		f.onProbe()
@@ -102,10 +109,15 @@ func (f *fakeUpstream) exchange(req *dns.Msg, via []string) (*dns.Msg, upstream.
 }
 
 func (f *fakeUpstream) exchangeECS(req *dns.Msg, via []string, ecs netip.Prefix) (*dns.Msg, upstream.Info, error) {
+	return f.exchangeOpts(req, via, ecs, false)
+}
+
+func (f *fakeUpstream) exchangeOpts(req *dns.Msg, via []string, ecs netip.Prefix, validate bool) (*dns.Msg, upstream.Info, error) {
 	q := req.Question[0]
 	opt := req.IsEdns0()
 	f.mu.Lock()
-	f.calls = append(f.calls, upCall{name: normalizeName(q.Name), qtype: q.Qtype, via: slices.Clone(via), do: opt != nil && opt.Do(), ecs: ecs})
+	f.calls = append(f.calls, upCall{name: normalizeName(q.Name), qtype: q.Qtype, via: slices.Clone(via), do: opt != nil && opt.Do(), ecs: ecs,
+		cd: req.CheckingDisabled, validate: validate})
 	answer := f.answer
 	f.mu.Unlock()
 	if answer != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/dhcp"
+	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
@@ -48,6 +49,7 @@ type metricsSnapshot struct {
 	DNSRateLimited int64
 	DNSBlocked     int64 // queries of dns.blockedClients (no answer)
 	DNSDropped     int64 // queries of dns.droppedDomains (no answer)
+	DNSSEC         dnsserver.DNSSECCounts
 	CacheBytesHit  int64
 	CacheBytesWAN  int64
 	StoreOnline    bool
@@ -73,6 +75,7 @@ func (s *Server) collectMetrics() metricsSnapshot {
 		DNSRateLimited: dns.RateLimited,
 		DNSBlocked:     dns.BlockedClients,
 		DNSDropped:     dns.Dropped,
+		DNSSEC:         dns.DNSSEC,
 		CacheBytesHit:  px.BytesHit,
 		CacheBytesWAN:  px.BytesWAN,
 		StoreOnline:    st.Online,
@@ -112,6 +115,13 @@ func writeMetrics(w io.Writer, m metricsSnapshot) {
 	fmt.Fprintf(w, "picache_dns_blocked_clients_total %d\n", m.DNSBlocked)
 	family("picache_dns_dropped_total", "counter", "DNS queries for dropped domains (dns.droppedDomains) that got no answer since start.")
 	fmt.Fprintf(w, "picache_dns_dropped_total %d\n", m.DNSDropped)
+	family("picache_dns_dnssec_total", "counter", "Answered DNS queries by the status of PiCache's own DNSSEC validation since start.")
+	for _, x := range []struct {
+		status string
+		v      int64
+	}{{"secure", m.DNSSEC.Secure}, {"insecure", m.DNSSEC.Insecure}, {"bogus", m.DNSSEC.Bogus}, {"indeterminate", m.DNSSEC.Indeterminate}} {
+		fmt.Fprintf(w, "picache_dns_dnssec_total{status=\"%s\"} %d\n", x.status, x.v)
+	}
 
 	family("picache_cache_bytes_hit_total", "counter", "Bytes served from the download cache store since start.")
 	fmt.Fprintf(w, "picache_cache_bytes_hit_total %d\n", m.CacheBytesHit)

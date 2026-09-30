@@ -95,6 +95,16 @@ func (r *RateLimiter) Reconfigure(qps, burst int, exempt []netip.Prefix, v4Bits,
 	r.cfg.Store(newRateConfig(qps, burst, exempt, v4Bits, v6Bits))
 }
 
+// Exempt reports whether requests from ip are never limited: limiting is
+// off, or ip is in an exempt network.
+func (r *RateLimiter) Exempt(ip netip.Addr) bool {
+	if r == nil {
+		return true
+	}
+	cfg := r.cfg.Load()
+	return cfg.qps <= 0 || inAny(ip, cfg.exempt)
+}
+
 // Allow reports whether a request from ip may proceed. first reports whether
 // this is the first drop for this client within the last hour (callers log once).
 func (r *RateLimiter) Allow(ip netip.Addr) (ok, first bool) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/hustenreizjuengling/picache/internal/dns/dnssec"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -80,10 +81,15 @@ func (r *Resolver) lookupType(ctx context.Context, rt route, host string, qtype 
 	name := dns.Fqdn(host)
 	req := new(dns.Msg)
 	req.SetQuestion(name, qtype)
-	m, _, err := r.resolve(ctx, req, rt, netip.Prefix{})
+	m, info, err := r.resolve(ctx, req, rt, netip.Prefix{})
 	if err != nil {
 		return nil, 0, &net.DNSError{Err: err.Error(), Name: host, IsTemporary: true,
 			IsTimeout: errors.Is(err, errTimeout) || errors.Is(err, context.DeadlineExceeded), UnwrapErr: err}
+	}
+	if v := info.DNSSEC; statusOf(v) == dnssec.Bogus {
+		// A bogus answer is an error (not cached here); every other
+		// verdict gives the addresses.
+		return nil, 0, &net.DNSError{Err: "DNSSEC validation failed: " + v.Zone + ": " + v.Reason, Name: host}
 	}
 	switch m.Rcode {
 	case dns.RcodeSuccess:

@@ -23,16 +23,17 @@ const (
 	dnsTopUpstream                // queries and duration per upstream
 	dnsTopPurpose                 // blocked and safe-search queries per purpose (QueryEvent.Purpose)
 	dnsTopQType                   // queries per query type (at most maxQTypeKeys types, the others under qtypeOther)
+	dnsTopDNSSEC                  // queries with a DNSSEC status per status (QueryEvent.DNSSECStatus)
 	numDNSKinds
 )
 
 var (
 	// dnsKindNames are stored in logs_dns_top_hourly.kind; a version that
 	// does not know a kind ignores its rows.
-	dnsKindNames = [numDNSKinds]string{"domain", "blocked", "client", "upstream", "purpose", "qtype"}
+	dnsKindNames = [numDNSKinds]string{"domain", "blocked", "client", "upstream", "purpose", "qtype", "dnssec"}
 	// dnsKindCaps bound the distinct keys counted per hour in memory
 	// (qtype: maxQTypeKeys types plus qtypeOther).
-	dnsKindCaps = [numDNSKinds]int{16384, 16384, 4096, 256, 64, maxQTypeKeys + 1}
+	dnsKindCaps = [numDNSKinds]int{16384, 16384, 4096, 256, 64, maxQTypeKeys + 1, 4}
 )
 
 // Kind "unique" of the DNS top tables holds the hour's (day's) sketch of
@@ -160,7 +161,8 @@ func (t *topSet) cacheEntry(k cacheKind, key contentKey) *cacheTopRow {
 }
 
 // addQuery counts a query in the current hour: per domain (unless the
-// domains are hidden: domains false), client, upstream and purpose, and in
+// domains are hidden: domains false), client, upstream, purpose and DNSSEC
+// status, and in
 // the sketch of distinct names (name: the normalised query name, "" = not
 // counted). Query types are counted by addQType.
 func (t *topSet) addQuery(e *QueryEvent, name string, domains bool) {
@@ -204,6 +206,10 @@ func (t *topSet) addQuery(e *QueryEvent, name string, domains bool) {
 	if p := t.dnsEntry(dnsTopPurpose, e.Purpose); p != nil {
 		p.Count++
 		p.LastSeen = max(p.LastSeen, ts)
+	}
+	if d := t.dnsEntry(dnsTopDNSSEC, e.DNSSECStatus); d != nil {
+		d.Count++
+		d.LastSeen = max(d.LastSeen, ts)
 	}
 }
 

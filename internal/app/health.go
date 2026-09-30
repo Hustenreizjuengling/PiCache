@@ -182,6 +182,11 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	st, msg, hint = upstreamHealth(a.up.ClockGuard(), a.up.Stats(), a.up.FallbackStats(), a.up.LastFallback(), time.Now(), a.up.GroupStats())
 	add("upstreams", st, msg, hint)
 
+	// DNSSEC (validate mode only)
+	if st, msg, hint, show := a.dnssecCheck(ctx, set); show {
+		add("dnssec", st, msg, hint)
+	}
+
 	// Filtering
 	st, msg, hint = blocklistsHealth(set.Filter.Enabled, a.filter.Stats(), a.filter.EntryBudget())
 	add("blocklists", st, msg, hint)

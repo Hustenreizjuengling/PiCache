@@ -31,7 +31,8 @@ var noECS netip.Prefix
 
 // newStore opens a settings store in a temp dir and applies mutate to the
 // DNS section. The default fallback is removed first (tests never reach
-// the network). Call it outside synctest bubbles.
+// the network) and DNSSEC is off (the DNSSEC tests switch it on). Call it
+// outside synctest bubbles.
 func newStore(t *testing.T, mutate func(d *settings.DNS)) *settings.Store {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "settings.db"), 1)
@@ -45,6 +46,7 @@ func newStore(t *testing.T, mutate func(d *settings.DNS)) *settings.Store {
 	}
 	updateDNS(t, st, func(d *settings.DNS) {
 		d.FallbackUpstreams = nil
+		d.DNSSECMode = settings.DNSSECOff
 		if mutate != nil {
 			mutate(d)
 		}

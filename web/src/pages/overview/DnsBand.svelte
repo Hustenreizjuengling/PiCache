@@ -3,7 +3,8 @@
   Overview band "DNS": the range's key figures (queries, blocked share,
   average processing time, about how many unique domains, active clients),
   allowed/blocked queries per minute (stacked), blocked queries by purpose,
-  query types, then top allowed and blocked domains, top clients (one row
+  query types, DNSSEC statuses (only when the range has validated queries),
+  then top allowed and blocked domains, top clients (one row
   per device with all its addresses; its link shows the queries of every
   address) and the upstreams with their share and response time. While
   DNS statistics are off the band says so instead; while domains are hidden
@@ -20,6 +21,7 @@
   import { Button, Chart, Notice, Stat, Trans } from '../../lib/ui'
   import Band from './Band.svelte'
   import { Lane, pollInterval } from './lane'
+  import DnssecList from './DnssecList.svelte'
   import { links } from './links'
   import PurposeList from './PurposeList.svelte'
   import QTypeList from './QTypeList.svelte'
@@ -135,6 +137,7 @@
 
     <PurposeList {range} {lane} />
     <QTypeList {range} {lane} />
+    <DnssecList {range} {lane} />
   {/if}
 </Band>
 

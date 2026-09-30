@@ -246,6 +246,10 @@ var migrations = []string{
 	// 19). Adding a column with a constant default does not rewrite the
 	// table.
 	`ALTER TABLE logs_queries ADD COLUMN dns_client_id TEXT NOT NULL DEFAULT '';`,
+	// v6 (0.17.0): the verdict of PiCache's own DNSSEC validation
+	// (docs/ARCHITECTURE.md 7.6; '' = not validated, also for the rows of
+	// earlier versions). A constant default: no table rewrite.
+	`ALTER TABLE logs_queries ADD COLUMN dnssec_status TEXT NOT NULL DEFAULT '';`,
 }
 
 // enableAutoVacuum switches a brand-new logs.db to incremental auto-vacuum so

@@ -128,6 +128,8 @@ type upstreamStats struct {
 	fails     int     // consecutive failures
 	lastErr   string
 	lastErrAt time.Time
+	// probe is the DNSSEC capability of the upstream (validate mode).
+	probe probeState
 }
 
 // success records an answer; it reports whether the upstream recovered.
@@ -170,10 +172,10 @@ func (s *upstreamStats) score() float64 {
 	return max(rtt, 1) * (1 + f) * (1 + f)
 }
 
-func (s *upstreamStats) snapshot(name, display string) UpstreamStat {
+func (s *upstreamStats) snapshot(name, display string, withDNSSEC bool) UpstreamStat {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return UpstreamStat{
+	st := UpstreamStat{
 		Upstream:    name,
 		Name:        display,
 		Queries:     s.queries.Load(),
@@ -183,6 +185,10 @@ func (s *upstreamStats) snapshot(name, display string) UpstreamStat {
 		LastErrorAt: s.lastErrAt,
 		Healthy:     s.fails < unhealthyAfter,
 	}
+	if withDNSSEC {
+		st.DNSSEC, st.DNSSECError, st.DNSSECCheckedAt = s.probe.stateOrUnknown(), s.probe.err, s.probe.checkedAt
+	}
+	return st
 }
 
 // exchangeResult is a verified upstream reply.
@@ -194,6 +200,11 @@ type exchangeResult struct {
 	fallback bool       // answered by a fallback upstream
 	block    *BlockInfo // the default set's own block (classify)
 	ede      *EDE       // the reply's EDE (parseEDE)
+	up       *upstream  // the answering upstream (its DNSSEC probe state)
+	// verdict is the DNSSEC verdict of a validated fetch (nil: not
+	// validated); val holds what the response cache needs of it.
+	verdict *Verdict
+	val     valMeta
 }
 
 // Fallback budgets (ARCHITECTURE 7.4): with fallbacks configured the
@@ -210,7 +221,7 @@ const (
 // errors, timeouts) and the route has fallbacks, all fallbacks in
 // parallel. A reply of any rcode never leads to the fallbacks. Mode
 // fastest_addr asks the default set like parallel and ResolveVia sets like
-// load_balance.
+// load_balance. With rt.fallbackOnly only the fallbacks are asked.
 func (r *Resolver) exchangeRoute(ctx context.Context, rt route, q *dns.Msg, d settings.DNS) (exchangeResult, error) {
 	wire, err := q.Pack()
 	if err != nil {
@@ -227,19 +238,32 @@ func (r *Resolver) exchangeRoute(ctx context.Context, rt route, q *dns.Msg, d se
 	if rt.fallback == nil || len(rt.fallback.ups) == 0 {
 		return r.exchangeSet(ctx, rt.set, q, wire, mode, timeout)
 	}
+	if rt.fallbackOnly {
+		return r.exchangeFallbacks(ctx, rt, q, wire)
+	}
 	res, err := r.exchangeSet(ctx, rt.set, q, wire, mode, min(timeout, primaryBudget))
 	if err == nil || ctx.Err() != nil || errors.Is(err, errClosed) {
 		return res, err
 	}
-	fctx, cancel := context.WithTimeout(ctx, fallbackBudget)
-	defer cancel()
-	fres, ferr := r.exchangeParallel(fctx, rt.fallback.ups, q, wire)
+	fres, ferr := r.exchangeFallbacks(ctx, rt, q, wire)
 	if ferr != nil {
 		return exchangeResult{}, fmt.Errorf("%w; fallback: %w", err, ferr)
 	}
-	fres.fallback = true
-	r.lastFallback.Store(time.Now().UnixNano())
 	return fres, nil
+}
+
+// exchangeFallbacks asks all fallbacks of rt at once, for at most
+// fallbackBudget.
+func (r *Resolver) exchangeFallbacks(ctx context.Context, rt route, q *dns.Msg, wire []byte) (exchangeResult, error) {
+	fctx, cancel := context.WithTimeout(ctx, fallbackBudget)
+	defer cancel()
+	res, err := r.exchangeParallel(fctx, rt.fallback.ups, q, wire)
+	if err != nil {
+		return exchangeResult{}, err
+	}
+	res.fallback = true
+	r.lastFallback.Store(time.Now().UnixNano())
+	return res, nil
 }
 
 // exchangeSet sends q (packed: wire) to the upstreams of set according to
@@ -297,8 +321,9 @@ func (r *Resolver) exchangeParallel(ctx context.Context, ups []*upstream, q *dns
 	started := 0
 	for _, u := range ups {
 		if !r.goTracked(func() {
-			res, err := r.attempt(ctx, u, q, wire)
-			ch <- outcome{res, err}
+			o := outcome{err: errInternal} // sent even if the attempt panics
+			defer func() { ch <- o }()
+			o.res, o.err = r.attempt(ctx, u, q, wire)
 		}) {
 			break
 		}
@@ -350,7 +375,7 @@ func (r *Resolver) attempt(ctx context.Context, u *upstream, q *dns.Msg, wire []
 	u.st.queries.Add(1)
 	if err == nil && m.Rcode == dns.RcodeRefused {
 		r.recordFailure(u, errRefused)
-		return exchangeResult{msg: m, upstream: u.display, host: u.host, rtt: rtt}, nil
+		return exchangeResult{msg: m, upstream: u.display, host: u.host, rtt: rtt, up: u}, nil
 	}
 	if err != nil {
 		r.recordFailure(u, err)
@@ -359,7 +384,7 @@ func (r *Resolver) attempt(ctx context.Context, u *upstream, q *dns.Msg, wire []
 	if u.st.success(rtt) {
 		r.log.Info("upstream recovered", slog.String("upstream", u.display))
 	}
-	return exchangeResult{msg: m, upstream: u.display, host: u.host, rtt: rtt}, nil
+	return exchangeResult{msg: m, upstream: u.display, host: u.host, rtt: rtt, up: u}, nil
 }
 
 func (r *Resolver) recordFailure(u *upstream, err error) {
