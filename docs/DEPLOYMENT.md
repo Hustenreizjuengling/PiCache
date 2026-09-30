@@ -164,15 +164,13 @@ database the newer one migrated: go back as [Going back to an earlier
 version](#going-back-to-an-earlier-version) describes, with
 `sudo PICACHE_ALLOW_DOWNGRADE=1 sh -s -- --version vX.Y.Z` after the pipe.
 The check is in the script of 1.0.0 and later: the script of an earlier
-release installs any release. So while `releases/latest` still serves an
-earlier release's script (during the 1.0.0 release candidates, 0.17.0's),
-release-candidate testers run the script of the release they installed,
-for example
-`https://github.com/Hustenreizjuengling/PiCache/releases/download/v1.0.0-rc.1/get-picache.sh`.
+release installs any release, so to go back, run the script of the
+release you have installed
+(`https://github.com/Hustenreizjuengling/PiCache/releases/download/vX.Y.Z/get-picache.sh`).
 Without `--version`, when the latest release is older than the installed
-one (a release candidate newer than the latest stable release), it says
-"the installed … is newer than the latest release …; nothing to do" and
-changes nothing.
+one (a release candidate or nightly build newer than the latest stable
+release), it says "the installed … is newer than the latest release …;
+nothing to do" and changes nothing.
 It runs the downloaded program once in a directory below `$TMPDIR`
 (default `/var/tmp`); on a host that mounts that directory `noexec` it
 says so: set `TMPDIR` to a directory that allows running programs, for
@@ -3139,12 +3137,7 @@ changes:
   allows it ([Going back to an earlier
   version](#going-back-to-an-earlier-version)). The refusal needs the
   scripts of 1.0.0: an earlier release's `get-picache.sh` or `install.sh`
-  has no check, and until 1.0.0 is the latest release
-  `releases/latest/download/get-picache.sh` is 0.17.0's. Testers of the
-  release candidates therefore use the pinned script
-  (`releases/download/v1.0.0-rc.N/get-picache.sh`), which also says
-  "nothing to do" instead of going back to 0.17.0 when it is run without
-  `--version`.
+  has no check, so going back uses the script of 1.0.0 with `--version`.
 - **Upstreams with text after `#`:** 1.0.0 reads `host#port` as the port
   (`10.0.0.53#5353`, as other DNS filters write it) and saves it as
   `host:port` (`10.0.0.53:5353`); 0.17 and earlier ignored everything
