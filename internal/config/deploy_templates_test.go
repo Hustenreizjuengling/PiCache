@@ -127,7 +127,10 @@ func TestUnraidTemplate(t *testing.T) {
 	if c.Network != "br0" || c.MyIP == "" || c.Privileged != "false" || !strings.HasPrefix(c.Repository, "ghcr.io/hustenreizjuengling/picache:") {
 		t.Fatalf("template %+v", c)
 	}
-	if c.ExtraParams != "--cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID "+
+	// OPS-1: restarted like the compose files (restart: unless-stopped,
+	// stop_grace_period: 30s); dockerMan sets no restart policy itself, so an
+	// in-app restart (exit 75) or a crash would leave the network without DNS.
+	if c.ExtraParams != "--restart=unless-stopped --stop-timeout=30 --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID "+
 		"--security-opt=no-new-privileges:true --read-only --tmpfs=/tmp:size=64m" {
 		t.Fatalf("ExtraParams %q", c.ExtraParams)
 	}

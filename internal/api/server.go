@@ -217,12 +217,28 @@ type Server struct {
 	// localAddrs returns this machine's addresses (nil:
 	// netutil.LocalAddrs; replaced in tests).
 	localAddrs func() []netip.Addr
+
+	// streamsDone is closed by EndStreams at shutdown: every event stream
+	// ends (nil in tests that build a Server without New: streams end
+	// only with their request).
+	streamsDone chan struct{}
+	endStreams  sync.Once
+}
+
+// EndStreams ends every open event stream and makes new ones end at once.
+// The app calls it when the shutdown starts: http.Server.Shutdown neither
+// cancels request contexts nor waits less than its grace for a stream.
+func (s *Server) EndStreams() {
+	if s.streamsDone != nil {
+		s.endStreams.Do(func() { close(s.streamsDone) })
+	}
 }
 
 // New builds the handler with all routes and middleware.
 func New(d Deps) *Server {
 	s := &Server{d: d, log: d.Log.With(slog.String("component", "api")), mux: http.NewServeMux(),
-		exportMaxRows: exportMaxRows, exportMaxTime: exportMaxTime, links: newProfileLinks()}
+		exportMaxRows: exportMaxRows, exportMaxTime: exportMaxTime, links: newProfileLinks(),
+		streamsDone: make(chan struct{})}
 	s.hosts = newHostAllowlist(d.Config, d.Settings)
 	s.web = d.WebAccess
 	if s.web == nil {

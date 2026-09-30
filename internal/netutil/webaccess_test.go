@@ -93,7 +93,26 @@ func TestNewWebACLUsesInterfaces(t *testing.T) {
 	}
 }
 
-func webAccessEnv(t *testing.T) (*settings.Store, *WebAccess, *bytes.Buffer, *[]netip.Addr) {
+// logBuffer is a bytes.Buffer the logger may write from other goroutines
+// (a listener's) while the test reads it.
+type logBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func webAccessEnv(t *testing.T) (*settings.Store, *WebAccess, *logBuffer, *[]netip.Addr) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"), 1)
 	if err != nil {
@@ -104,7 +123,7 @@ func webAccessEnv(t *testing.T) (*settings.Store, *WebAccess, *bytes.Buffer, *[]
 	if err != nil {
 		t.Fatal(err)
 	}
-	var logBuf bytes.Buffer
+	var logBuf logBuffer
 	own := &[]netip.Addr{}
 	w := newWebAccess(st, slog.New(slog.NewTextHandler(&logBuf, nil)), func(s *settings.All) *WebACL {
 		return newWebACL(s, *own, nil)

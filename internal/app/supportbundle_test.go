@@ -503,3 +503,30 @@ func TestSupportBundleGroupUpstreams(t *testing.T) {
 		}
 	}
 }
+
+// A port written as #port (settings.ParseUpstream) stays next to the
+// reduced host like a port after ":"; before, the value was taken for a
+// name and kept the low part of a public address ("*.113.53#5353").
+func TestScrubUpstreamHashPort(t *testing.T) {
+	sc := newScrubber(false)
+	for in, want := range map[string]string{
+		"203.0.113.53#5353":                     "203.0.0.0#5353",
+		"203.0.113.53:5353":                     "203.0.0.0:5353",
+		"192.168.1.1#5353":                      "192.168.1.1#5353",
+		"[2001:db8:1:2::53]#5335":               "[2001:db8:1::]#5335",
+		"udp://203.0.113.53#5353":               "udp://203.0.0.0#5353",
+		"tcp://[2001:db8:1:2::53]#5335":         "tcp://[2001:db8:1::]#5335",
+		"tls://abc.dns.example.net#8853":        "tls://*.example.net#8853",
+		"tls://abc.dns.example.net#x":           "tls://*.example.net",
+		"https://dns.example.net/dns-query#443": "https://*.example.net/dns-query",
+	} {
+		if got := sc.scrubUpstream(in); got != want {
+			t.Errorf("%q → %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{"abc.resolver.example.net#5353": "abc.resolver.example.net", "[fd00::53]#5335": "fd00::53"} {
+		if got := upstreamHost(in); got != want {
+			t.Errorf("upstreamHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

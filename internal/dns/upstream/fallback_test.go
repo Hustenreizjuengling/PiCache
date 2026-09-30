@@ -2,6 +2,8 @@ package upstream
 
 import (
 	"context"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -68,6 +70,48 @@ func TestFallbackTrigger(t *testing.T) {
 			})
 		})
 	}
+}
+
+// FallbacksSince counts the fetches the fallbacks answered after a time,
+// at most the latest FallbackTimesKept (the health check warns from the
+// third within 5 minutes).
+func TestFallbacksSince(t *testing.T) {
+	st := newStore(t, func(d *settings.DNS) {
+		d.Upstreams = []string{up1}
+		d.FallbackUpstreams = []string{fb1}
+		d.CacheEnabled = false
+	})
+	synctest.Test(t, func(t *testing.T) {
+		r := newTestResolver(t, st, testOptions(), map[string]*fakeTransport{up1: {fn: failing}, fb1: {fn: replyA("198.51.100.97", 60)}})
+		defer r.Close()
+		ask := func(i int) {
+			_, info, err := r.Resolve(context.Background(), query("since"+strconv.Itoa(i)+".example.", dns.TypeA, 1, false), noECS)
+			if err != nil || !info.Fallback {
+				t.Fatalf("query %d: %+v %v", i, info, err)
+			}
+		}
+		start := time.Now()
+		if n := r.FallbacksSince(start.Add(-time.Hour)); n != 0 {
+			t.Fatalf("%d fallback answers before any query", n)
+		}
+		for i := range 3 {
+			ask(i)
+			time.Sleep(time.Minute)
+		}
+		if n := r.FallbacksSince(time.Now().Add(-5 * time.Minute)); n != 3 {
+			t.Errorf("%d fallback answers within 5 minutes, want 3", n)
+		}
+		time.Sleep(2 * time.Minute) // the first answer is 5 minutes old now
+		if n := r.FallbacksSince(time.Now().Add(-5 * time.Minute)); n != 2 {
+			t.Errorf("%d fallback answers within 5 minutes, want 2", n)
+		}
+		for i := range 2 * FallbackTimesKept {
+			ask(10 + i)
+		}
+		if n := r.FallbacksSince(start.Add(-time.Hour)); n != FallbackTimesKept {
+			t.Errorf("%d fallback answers remembered, want %d", n, FallbackTimesKept)
+		}
+	})
 }
 
 // Four dead upstreams with a 10 s upstream timeout still get a fallback
@@ -166,4 +210,69 @@ func TestFallbackScope(t *testing.T) {
 	if len(g.FallbackStats()) != 1 {
 		t.Errorf("fallback stats while the clock guard is active: %+v", g.FallbackStats())
 	}
+}
+
+// While every default upstream is unhealthy (black-holed), the fallbacks
+// answer a fetch after fallbackHedge instead of after the whole attempt;
+// the default upstream is still asked, and once it answers again its
+// reply wins at once and it is healthy again.
+func TestFallbackHedgeWhileDefaultIsDead(t *testing.T) {
+	st := newStore(t, func(d *settings.DNS) {
+		d.Upstreams = []string{up1}
+		d.FallbackUpstreams = []string{fb1}
+		d.CacheEnabled = false
+	})
+	synctest.Test(t, func(t *testing.T) {
+		var alive atomic.Bool
+		p := &fakeTransport{fn: func(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+			if alive.Load() {
+				return answerA(q, "198.51.100.1", 60), nil
+			}
+			return hanging(ctx, q)
+		}}
+		f := &fakeTransport{fn: replyA("198.51.100.99", 60)}
+		opts := testOptions()
+		opts.attempt = 3 * time.Second
+		r := newTestResolver(t, st, opts, map[string]*fakeTransport{up1: p, fb1: f})
+		defer r.Close()
+		ask := func(name string) (time.Duration, Info) {
+			t.Helper()
+			start := time.Now()
+			_, info, err := r.Resolve(context.Background(), query(name, dns.TypeA, 1, false), noECS)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			return time.Since(start), info
+		}
+		// Until it counts as unhealthy, each fetch waits for its attempt.
+		for i := range unhealthyAfter {
+			if d, info := ask("dead" + strconv.Itoa(i) + ".example."); d != opts.attempt || !info.Fallback {
+				t.Fatalf("fetch %d: %v, fallback %v", i, d, info.Fallback)
+			}
+		}
+		calls := p.calls()
+		if d, info := ask("hedged.example."); d != fallbackHedge || !info.Fallback || info.Upstream != fb1 {
+			t.Fatalf("hedged fetch: %v via %q", d, info.Upstream)
+		}
+		if p.calls() != calls+1 {
+			t.Fatal("the default upstream was not asked")
+		}
+		alive.Store(true)
+		fcalls := f.calls()
+		if d, info := ask("back.example."); d != 0 || info.Fallback || info.Upstream != up1 {
+			t.Fatalf("after the recovery: %v via %q", d, info.Upstream)
+		}
+		if f.calls() != fcalls {
+			t.Fatal("the fallback was asked after the default upstream answered")
+		}
+		if s := r.Stats(); !s[0].Healthy {
+			t.Fatalf("still unhealthy: %+v", s[0])
+		}
+		// Healthy again: a fetch waits for the attempt before the
+		// fallbacks, as before.
+		alive.Store(false)
+		if d, _ := ask("again.example."); d != opts.attempt {
+			t.Fatalf("healthy default upstream: %v", d)
+		}
+	})
 }

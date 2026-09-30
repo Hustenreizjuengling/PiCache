@@ -99,7 +99,11 @@ usage: install.sh --binary PATH [--with-host-apply] [--without-updater]
                       local cache and the picache user (default paths only)
   --yes               do not ask before --purge
 
-The update helper (picache-update.path) is installed by default.
+The update helper (picache-update.path) is installed by default. A binary
+of a release older than the installed one is refused unless
+PICACHE_ALLOW_DOWNGRADE=1 is set (stop PiCache and put the database copy
+made before the upgrade back first, docs/DEPLOYMENT.md "Going back to an
+earlier version").
 EOF
 }
 
@@ -286,8 +290,89 @@ install_binary() {
 		die "$binary is not a PiCache binary"
 		;;
 	esac
+	check_downgrade "$out"
 	mv -f "$tmp" "$BIN"
 	say "installed $BIN: $out"
+}
+
+# release_version OUTPUT prints the version in the output of `picache
+# version` ("picache v1.2.3 (commit …)") when it is a release version
+# (vX.Y.Z or vX.Y.Z-pre), else nothing: development builds are never
+# compared.
+release_version() {
+	rv=$(printf '%s\n' "$1" | sed -n '1s/^picache \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-[0-9A-Za-z.]*\)\{0,1\}\) .*/\1/p')
+	case $rv in *-dirty) rv="" ;; esac
+	printf '%s' "$rv"
+}
+
+# semver_lt A B succeeds when the release version A sorts below B by SemVer
+# precedence (as `picache update` compares them: numeric identifiers
+# numerically and below alphanumeric ones, a release above its
+# pre-releases).
+semver_lt() {
+	awk -v a="$1" -v b="$2" '
+	function cmpid(x, y) {
+		if (x ~ /^[0-9]+$/ && y ~ /^[0-9]+$/) {
+			if (length(x) != length(y)) return length(x) < length(y) ? -1 : 1
+		} else if (x ~ /^[0-9]+$/) {
+			return -1
+		} else if (y ~ /^[0-9]+$/) {
+			return 1
+		}
+		if (x < y) return -1
+		if (x > y) return 1
+		return 0
+	}
+	function cmp(x, y,   i, c, n, m, xp, yp, xc, yc, xi, yi) {
+		sub(/^v/, "", x)
+		sub(/^v/, "", y)
+		xp = ""
+		yp = ""
+		if ((i = index(x, "-")) > 0) { xp = substr(x, i + 1); x = substr(x, 1, i - 1) }
+		if ((i = index(y, "-")) > 0) { yp = substr(y, i + 1); y = substr(y, 1, i - 1) }
+		split(x, xc, ".")
+		split(y, yc, ".")
+		for (i = 1; i <= 3; i++) if ((c = cmpid(xc[i], yc[i])) != 0) return c
+		if (xp == "" && yp == "") return 0
+		if (xp == "") return 1
+		if (yp == "") return -1
+		n = split(xp, xi, ".")
+		m = split(yp, yi, ".")
+		for (i = 1; i <= n && i <= m; i++) if ((c = cmpid(xi[i], yi[i])) != 0) return c
+		return n < m ? -1 : n > m ? 1 : 0
+	}
+	BEGIN { exit !(cmp(a, b) < 0) }'
+}
+
+# check_downgrade NEWOUT dies (removing the staged $tmp) when the binary
+# being installed (its `version` output NEWOUT) is older than the installed
+# $BIN, unless PICACHE_ALLOW_DOWNGRADE=1 (the name the Debian package uses):
+# the installed version may have migrated the database, which the older one
+# refuses, so PiCache would not start and the network would lose DNS. The
+# message puts the database copy back before the older version starts (a
+# version before 1.0.0 started on a newer database copies it, prunes the
+# copies and records its own version) and repeats the options of this run.
+check_downgrade() {
+	[ "${PICACHE_ALLOW_DOWNGRADE:-}" != 1 ] || return 0
+	[ -x "$BIN" ] || return 0
+	new_version=$(release_version "$1")
+	installed_version=$(release_version "$("$BIN" version 2>/dev/null)")
+	[ -n "$new_version" ] && [ -n "$installed_version" ] || return 0
+	semver_lt "$new_version" "$installed_version" || return 0
+	rm -f "$tmp"
+	data=$(env_path PICACHE_DATA_DIR "$DEFAULT_DATA_DIR")
+	die "picache $new_version is older than the installed $installed_version. $installed_version may have migrated the database, which $new_version then refuses: PiCache would not start. To go back anyway (docs/DEPLOYMENT.md \"Going back to an earlier version\"): unless the upgrade notes say that $new_version opens this database, first stop PiCache (sudo systemctl stop picache) and put the copy made before the upgrade ($data/backups/picache-$new_version-*.db) in place as $data/picache.db, deleting picache.db-wal and picache.db-shm; then run: sudo PICACHE_ALLOW_DOWNGRADE=1 sh $0 --binary $binary$(given_options)"
+}
+
+# given_options prints the options of this run for a command in a message
+# (each with a leading space): --without-updater is not kept between runs,
+# so a run without it would install the update helper again.
+given_options() {
+	[ "$with_host_apply" -eq 0 ] || printf ' --with-host-apply'
+	[ "$without_updater" -eq 0 ] || printf ' --without-updater'
+	[ "$with_dhcp" -eq 0 ] || printf ' --with-dhcp'
+	[ "$without_dhcp" -eq 0 ] || printf ' --without-dhcp'
+	[ "$nightly" -eq 0 ] || printf ' --nightly'
 }
 
 # install_docs copies the license texts to $DOC_DIR. A missing file is only

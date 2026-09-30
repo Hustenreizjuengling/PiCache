@@ -41,12 +41,18 @@ type doqServer struct {
 	// written, when set, runs after the reply is written, before the
 	// stream's send side is closed.
 	written func(str *quic.Stream)
+	// cert replaces the self-signed test certificate (pool then trusts
+	// nothing).
+	cert *tls.Certificate
 }
 
 func startDoQ(t *testing.T, s *doqServer, idle time.Duration) *doqServer {
 	t.Helper()
 	cert, pool := testCert(t)
 	s.pool = pool
+	if s.cert != nil {
+		cert, s.pool = *s.cert, x509.NewCertPool()
+	}
 	conf := &quic.Config{MaxIdleTimeout: idle, MaxIncomingStreams: 200, Allow0RTT: true}
 	ln, err := quic.ListenAddr("127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"doq"}}, conf)
 	if err != nil {
@@ -157,7 +163,7 @@ func TestDoQStreamBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tr := newDoQ(spec, nil, s.pool, time.Minute)
+	tr := newDoQ(spec, nil, encOpts{roots: s.pool}, time.Minute)
 	defer tr.close()
 	const n = doqMaxStreams + 6
 	var wg sync.WaitGroup
@@ -207,7 +213,7 @@ func TestDoQIdleAndErrors(t *testing.T) {
 		return answerA(q, "192.0.2.1", 60), nil
 	}}, 300*time.Millisecond)
 	spec, _ := settings.ParseUpstream("quic://" + s.addr.String())
-	tr := newDoQ(spec, nil, s.pool, 300*time.Millisecond)
+	tr := newDoQ(spec, nil, encOpts{roots: s.pool}, 300*time.Millisecond)
 	defer tr.close()
 	ask := func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -253,7 +259,7 @@ func TestDoQBadReplyAbandonsStream(t *testing.T) {
 		},
 	}, time.Minute)
 	spec, _ := settings.ParseUpstream("quic://" + s.addr.String())
-	tr := newDoQ(spec, nil, s.pool, time.Minute)
+	tr := newDoQ(spec, nil, encOpts{roots: s.pool}, time.Minute)
 	defer tr.close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -362,7 +368,7 @@ func TestH3SharedDial(t *testing.T) {
 	life, stop := context.WithCancel(context.Background())
 	defer stop()
 	tr := &http3.Transport{
-		TLSClientConfig: clientTLS(addr.Addr().String(), tls.VersionTLS13, pool, nil),
+		TLSClientConfig: clientTLS(addr.Addr().String(), tls.VersionTLS13, encOpts{roots: pool}, nil),
 		QUICConfig:      quicConfig(time.Minute, h3MaxUniStreams),
 		Dial:            sharedDial(life, slow),
 	}
@@ -427,6 +433,63 @@ func TestH3SharedDial(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("closing did not end the dial")
+	}
+}
+
+// TestH3ResendsWhenServerClosesReusedConnection: an HTTP/3 server that
+// closes a connection just as a query arrives on it failed that query
+// ("http3: parsing frame failed: H3_NO_ERROR"): quic-go sends a request
+// again only when its stream could not be opened or was rejected. As over
+// HTTP/2, the query is sent again once over a fresh connection.
+func TestH3ResendsWhenServerClosesReusedConnection(t *testing.T) {
+	cert, pool := testCert(t)
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type quicConnKey struct{}
+	var reqs, conns atomic.Int32
+	srv := &http3.Server{
+		TLSConfig: http3.ConfigureTLSConfig(&tls.Config{Certificates: []tls.Certificate{cert}}),
+		ConnContext: func(ctx context.Context, c *quic.Conn) context.Context {
+			conns.Add(1)
+			return context.WithValue(ctx, quicConnKey{}, c)
+		},
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			q := new(dns.Msg)
+			if q.Unpack(body) != nil {
+				http.Error(w, "bad message", http.StatusBadRequest)
+				return
+			}
+			if reqs.Add(1) == 2 {
+				_ = r.Context().Value(quicConnKey{}).(*quic.Conn).CloseWithError(0x100, "") // H3_NO_ERROR
+				return
+			}
+			writeMsg(w, answerA(q, "192.0.2.35", 60))
+		}),
+	}
+	done := make(chan struct{})
+	go func() { _ = srv.Serve(pc); close(done) }()
+	t.Cleanup(func() { _ = srv.Close(); _ = pc.Close(); <-done })
+	st := newStore(t, func(d *settings.DNS) {
+		d.Upstreams = []string{"h3://" + pc.LocalAddr().String() + "/dns-query"}
+		d.CacheEnabled = false
+	})
+	opts := testOptions()
+	opts.rootCAs = pool
+	r := newTestResolver(t, st, opts, nil)
+	defer r.Close()
+	for i := range 3 {
+		if _, _, err := r.Resolve(context.Background(), query("h3q"+strconv.Itoa(i)+".example.", dns.TypeA, uint16(i), false), noECS); err != nil {
+			t.Fatalf("query %d: %v", i, err)
+		}
+	}
+	if st := r.Stats(); st[0].Errors != 0 {
+		t.Errorf("the closed connection counted as an upstream error: %+v", st[0])
+	}
+	if n := conns.Load(); n != 2 {
+		t.Errorf("connections = %d, want 2", n)
 	}
 }
 

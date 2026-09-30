@@ -177,6 +177,7 @@ func upstreamHost(v string) string {
 		}
 		return ""
 	}
+	v, _ = cutHashPort(v)
 	if h, _, err := net.SplitHostPort(v); err == nil {
 		return strings.ToLower(h)
 	}
@@ -302,20 +303,30 @@ func (sc *scrubber) scrubStamp(v string) string {
 	return "sdns:" + kind + ":" + sc.scrubHostName(spec.Host)
 }
 
+// cutHashPort splits a port written as "#port" (host#port, as other DNS
+// software writes it; settings.ParseUpstream) off a plain upstream value.
+func cutHashPort(v string) (rest, port string) {
+	if i := strings.LastIndexByte(v, '#'); i >= 0 && i+1 < len(v) && strings.Trim(v[i+1:], "0123456789") == "" {
+		return v[:i], v[i:]
+	}
+	return v, ""
+}
+
 // scrubUpstream reduces an upstream-like value: scheme://host[:port], a
 // path other than "", "/" or "/dns-query" as "/…", no user information,
-// query or fragment (quic:// and h3:// like tls:// and https://); a DNS
-// stamp as sdns:<protocol>:<host>; plain host[:port] values keep their
-// form.
+// query or fragment other than a port written as "#port" (quic:// and h3://
+// like tls:// and https://); a DNS stamp as sdns:<protocol>:<host>; plain
+// host[:port] and host#port values keep their form.
 func (sc *scrubber) scrubUpstream(v string) string {
 	if isStampValue(v) {
 		return sc.scrubStamp(v)
 	}
 	if !strings.Contains(v, "://") {
-		if h, p, err := net.SplitHostPort(v); err == nil {
-			return net.JoinHostPort(strings.Trim(sc.scrubHostName(h), "[]"), p)
+		hostPort, hashPort := cutHashPort(v)
+		if h, p, err := net.SplitHostPort(hostPort); err == nil {
+			return net.JoinHostPort(strings.Trim(sc.scrubHostName(h), "[]"), p) + hashPort
 		}
-		return sc.scrubHostName(v)
+		return sc.scrubHostName(hostPort) + hashPort
 	}
 	u, err := url.Parse(v)
 	if err != nil || u.Host == "" {
@@ -328,6 +339,8 @@ func (sc *scrubber) scrubUpstream(v string) string {
 	}
 	if p := u.Port(); p != "" {
 		host += ":" + p
+	} else if f := u.EscapedFragment(); f != "" && strings.Trim(f, "0123456789") == "" && u.Scheme != "https" && u.Scheme != "h3" {
+		host += "#" + f
 	}
 	path := u.EscapedPath()
 	if path != "" && path != "/" && path != "/dns-query" {

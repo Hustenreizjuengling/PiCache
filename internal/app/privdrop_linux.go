@@ -63,6 +63,19 @@ func (a *App) dropPrivileges() error {
 	return nil
 }
 
+// ownerOf names the owner of path for a hint (", it belongs to uid:gid"), ""
+// if it cannot be read.
+func ownerOf(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return fmt.Sprintf(", it belongs to %d:%d", st.Uid, st.Gid)
+	}
+	return ""
+}
+
 // dropNetRaw removes CAP_NET_RAW from the process for good, on every start
 // (docs/ARCHITECTURE.md 18.1): the systemd unit grants it only to open the
 // raw ICMPv6 socket of the router advertisements at start. Capabilities

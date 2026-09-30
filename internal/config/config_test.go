@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -94,7 +96,8 @@ func TestConfigLockAndDestructiveSwitch(t *testing.T) {
 // load the configuration without it, so a missing or unreadable (root-only)
 // secret file does not break them.
 func TestLoadWithoutSecrets(t *testing.T) {
-	env := envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(), "PICACHE_ADMIN_PASSWORD_FILE": t.TempDir() + "/missing"})
+	unreadable := t.TempDir() // a directory cannot be read as the file
+	env := envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(), "PICACHE_ADMIN_PASSWORD_FILE": unreadable})
 	if _, err := Load(nil, env); err == nil || !strings.Contains(err.Error(), "PICACHE_ADMIN_PASSWORD_FILE") {
 		t.Fatalf("Load: err = %v, want the password file error", err)
 	}
@@ -102,8 +105,30 @@ func TestLoadWithoutSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithoutSecrets: %v", err)
 	}
-	if c.AdminPassword != "" || c.AdminPasswordFromEnv {
+	if c.AdminPassword != "" || c.AdminPasswordFromEnv || c.AdminPasswordFileMissing != "" {
 		t.Fatalf("secret read: %+v", c)
+	}
+}
+
+// OPS-5: a PICACHE_ADMIN_PASSWORD_FILE that does not exist (the line left
+// after the first start, the file removed) is no configuration error: Load
+// records it and the app fails only while no account exists.
+func TestAdminPasswordFileMissing(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "admin-password")
+	c, err := Load(nil, envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(), "PICACHE_ADMIN_PASSWORD_FILE": missing,
+		"PICACHE_ADMIN_PASSWORD": "not used when the file variable is set"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.AdminPasswordFileMissing != missing || c.AdminPassword != "" || c.AdminPasswordFromEnv {
+		t.Fatalf("config %+v", c)
+	}
+	if err := os.WriteFile(missing, []byte("correct horse battery\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c, err = Load(nil, envOf(map[string]string{"PICACHE_DATA_DIR": t.TempDir(), "PICACHE_ADMIN_PASSWORD_FILE": missing})); err != nil ||
+		c.AdminPassword != "correct horse battery" || c.AdminPasswordFileMissing != "" {
+		t.Fatalf("with the file: %+v %v", c, err)
 	}
 }
 

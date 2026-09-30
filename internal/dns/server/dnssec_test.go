@@ -396,3 +396,40 @@ func TestDNSSchemaV4(t *testing.T) {
 		t.Fatalf("dns v%d %v", v, err)
 	}
 }
+
+// TestChainClientKey: the share of the DNSSEC chain exchanges a query
+// draws on is keyed by the source's device: the MAC the neighbour table
+// knows for the source's own identity (every address of a device, IPv6
+// privacy addresses included, shares it), else its DNS rate-limit key.
+func TestChainClientKey(t *testing.T) {
+	set := &settings.All{}
+	set.DNS.RateLimitIPv4Prefix, set.DNS.RateLimitIPv6Prefix = 24, 56
+	const mac = "aa:bb:cc:dd:ee:ff"
+	key := func(ip string, id *clients.Identity, derived, ednsMAC bool) string {
+		return chainClientKey(&qctx{set: set, id: id, derived: derived, ednsMAC: ednsMAC}, netip.MustParseAddr(ip))
+	}
+	for _, ip := range []string{"fd00::1:2", "fd00::9:9", "2001:db8:1:2::77", "192.168.1.20"} {
+		if k := key(ip, &clients.Identity{MAC: mac}, false, false); k != "mac "+mac {
+			t.Errorf("%s with a known MAC: %q", ip, k)
+		}
+	}
+	for _, tc := range []struct {
+		ip               string
+		id               *clients.Identity
+		derived, ednsMAC bool
+		want             string
+	}{
+		{"fd00::1", &clients.Identity{}, false, false, "fd00::1/128"}, // LAN addresses: one each
+		{"192.168.1.9", &clients.Identity{}, false, false, "192.168.1.9/32"},
+		{"203.0.113.9", &clients.Identity{}, false, false, "203.0.113.0/24"}, // public: the network
+		{"2001:db8:9::1", nil, false, false, "2001:db8:9::/56"},
+		// A MAC or address a trusted forwarder named in EDNS is not the
+		// source's own.
+		{"192.168.1.9", &clients.Identity{MAC: mac}, true, false, "192.168.1.9/32"},
+		{"192.168.1.9", &clients.Identity{MAC: mac}, false, true, "192.168.1.9/32"},
+	} {
+		if k := key(tc.ip, tc.id, tc.derived, tc.ednsMAC); k != tc.want {
+			t.Errorf("%s: %q, want %q", tc.ip, k, tc.want)
+		}
+	}
+}

@@ -5,16 +5,24 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/miekg/dns"
 )
 
-// fakeLeases answers laptop.lan → 192.168.1.100 (TTL 120) and its PTR.
-type fakeLeases struct{ calls []string }
+// fakeLeases answers laptop.lan → 192.168.1.100 (TTL 120) and its PTR
+// and records the names it was asked for (under mu: handler goroutines
+// call it concurrently).
+type fakeLeases struct {
+	mu    sync.Mutex
+	calls []string
+}
 
 func (f *fakeLeases) LeaseAddr(name string) (netip.Addr, uint32, bool) {
+	f.mu.Lock()
 	f.calls = append(f.calls, name)
+	f.mu.Unlock()
 	if name == "laptop.lan" {
 		return netip.MustParseAddr("192.168.1.100"), 120, true
 	}

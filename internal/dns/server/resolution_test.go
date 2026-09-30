@@ -78,7 +78,7 @@ func TestUpstreamBlocked(t *testing.T) {
 		}
 		return answerWith(req, aRec(name, "0.0.0.0")), info, nil
 	})
-	e.flt.check["allowed.example"] = filter.Decision{Action: filter.ActionAllow, Source: "rule", Name: "@@allowed.example"}
+	e.flt.setCheck("allowed.example", filter.Decision{Action: filter.ActionAllow, Source: "rule", Name: "@@allowed.example"})
 	if _, err := e.srv.CreateForwarder(context.Background(), ForwarderInput{Domain: "corp.example", Upstreams: []string{"10.9.9.9"}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestRebindProtection(t *testing.T) {
 	if _, err := e.srv.CreateForwarder(ctx, ForwarderInput{Domain: "public.corp.example", Upstreams: []string{"default"}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	e.flt.rules["allow-rule.example"] = filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", Name: "@@allow-rule.example"}
+	e.flt.setRule("allow-rule.example", filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", Name: "@@allow-rule.example"})
 	e.up.setAnswer(func(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
 		q := req.Question[0]
 		name := normalizeName(q.Name)

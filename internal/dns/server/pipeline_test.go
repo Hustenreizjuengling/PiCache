@@ -29,11 +29,11 @@ func pipelineEnv(t *testing.T) *testEnv {
 	if _, err := e.srv.CreateForwarder(context.Background(), ForwarderInput{Domain: "corp.example", Upstreams: []string{"10.9.9.9"}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	e.flt.check["ads.example.com"] = listBlock("TestList")
-	e.flt.check["tracker.example.net"] = listBlock("Trackers")
-	e.flt.rules["blocked.steamcontent.com"] = ruleBlock("blocked.steamcontent.com")
-	e.svc["lancache.steamcontent.com"] = "steam"
-	e.svc["blocked.steamcontent.com"] = "steam"
+	e.flt.setCheck("ads.example.com", listBlock("TestList"))
+	e.flt.setCheck("tracker.example.net", listBlock("Trackers"))
+	e.flt.setRule("blocked.steamcontent.com", ruleBlock("blocked.steamcontent.com"))
+	e.svc.set("lancache.steamcontent.com", "steam")
+	e.svc.set("blocked.steamcontent.com", "steam")
 	e.up.setAnswer(func(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
 		q := req.Question[0]
 		switch normalizeName(q.Name) {

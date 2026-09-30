@@ -3,7 +3,7 @@ package upstream
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -20,7 +20,10 @@ const (
 )
 
 // dotTransport is DNS over TLS (RFC 7858, ALPN "dot") with a small pool of
-// idle connections. One query at a time per connection (no pipelining).
+// idle connections. One query at a time per connection (no pipelining);
+// queries are padded (padQuery). A query is sent once more, over a new
+// connection, when a pooled connection turns out closed or the server cut
+// the TLS handshake of a new one (at most once per query).
 type dotTransport struct {
 	host string     // TLS server name (hostname or IP literal)
 	ip   netip.Addr // valid if the upstream is an IP literal or a stamp with an address
@@ -38,7 +41,7 @@ type idleConn struct {
 	since time.Time
 }
 
-func newDoT(spec settings.UpstreamSpec, boot *bootstrap, roots *x509.CertPool) *dotTransport {
+func newDoT(spec settings.UpstreamSpec, boot *bootstrap, enc encOpts) *dotTransport {
 	t := &dotTransport{host: spec.Host, port: uint16(spec.Port), boot: boot}
 	switch {
 	case spec.DialAddr.IsValid():
@@ -46,17 +49,21 @@ func newDoT(spec settings.UpstreamSpec, boot *bootstrap, roots *x509.CertPool) *
 	case spec.IsIPLit:
 		t.ip, _ = netip.ParseAddr(spec.Host)
 	}
-	t.conf = clientTLS(spec.Host, tls.VersionTLS12, roots, spec.Pins)
+	t.conf = clientTLS(spec.Host, tls.VersionTLS12, enc, spec.Pins)
 	t.conf.NextProtos = []string{"dot"}
 	t.conf.ClientSessionCache = tls.NewLRUClientSessionCache(dotMaxIdle)
 	return t
 }
 
 func (t *dotTransport) exchange(ctx context.Context, q *dns.Msg, wire []byte) (*dns.Msg, error) {
+	wire = padQuery(q, wire)
 	for try := 0; ; try++ {
 		c, reused, err := t.get(ctx)
 		if err != nil {
-			return nil, err
+			if try > 0 || ctx.Err() != nil || !errors.As(err, new(cutHandshakeError)) {
+				return nil, err
+			}
+			continue // the server cut the TLS handshake: dial once more
 		}
 		m, reusable, err := streamRoundTrip(ctx, c, q.Id, wire)
 		if err == nil {
@@ -65,6 +72,7 @@ func (t *dotTransport) exchange(ctx context.Context, q *dns.Msg, wire []byte) (*
 			} else {
 				_ = c.Close()
 			}
+			dropPadding(m)
 			return m, nil
 		}
 		_ = c.Close()
@@ -126,18 +134,14 @@ func (t *dotTransport) dial(ctx context.Context) (net.Conn, error) {
 		return nil, err
 	}
 	d := tls.Dialer{NetDialer: &net.Dialer{}, Config: t.conf}
-	lastErr := errNoAddrs
-	for _, a := range addrs {
-		c, err := d.DialContext(ctx, "tcp", netip.AddrPortFrom(a, t.port).String())
-		if err == nil {
-			return c, nil
+	c, err := dialAddrs(ctx, addrs, t.port, func(ctx context.Context, address string) (net.Conn, error) {
+		c, err := d.DialContext(ctx, "tcp", address)
+		if err != nil && cutHandshake(err) { // connecting never ends with EOF or a reset
+			err = cutHandshakeError{err}
 		}
-		lastErr = err
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	return nil, ctxErr(ctx, lastErr)
+		return c, err
+	})
+	return c, ctxErr(ctx, err)
 }
 
 // addrs returns the IP literal or the bootstrap-resolved addresses of host.

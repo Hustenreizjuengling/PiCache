@@ -23,8 +23,8 @@ func TestUserRulesBeforeOverridesOnlyForDownloadCacheNames(t *testing.T) {
 	listAllow := filter.Decision{Action: filter.ActionAllow, Source: "list", Kind: "subtree", ListID: 2, Name: "Allowlist"}
 
 	// Ordinary name: the full-precedence decision (list allow) wins.
-	e.flt.rules["cdn.example.com"] = regexDeny
-	e.flt.check["cdn.example.com"] = listAllow
+	e.flt.setRule("cdn.example.com", regexDeny)
+	e.flt.setCheck("cdn.example.com", listAllow)
 	r := e.query("udp", "cdn.example.com", dns.TypeA)
 	if got := answerIPs(r.Answer); !slices.Equal(got, []string{"198.51.100.7"}) {
 		t.Errorf("list allow must beat a user regex deny: answer %v", got)
@@ -35,8 +35,8 @@ func TestUserRulesBeforeOverridesOnlyForDownloadCacheNames(t *testing.T) {
 
 	// Download service name: user rules are checked before the override is
 	// answered.
-	e.svc["cdn.steamcontent.com"] = "steam"
-	e.flt.rules["cdn.steamcontent.com"] = regexDeny
+	e.svc.set("cdn.steamcontent.com", "steam")
+	e.flt.setRule("cdn.steamcontent.com", regexDeny)
 	r = e.query("udp", "cdn.steamcontent.com", dns.TypeA)
 	if got := answerIPs(r.Answer); !slices.Equal(got, []string{"0.0.0.0"}) {
 		t.Errorf("a user rule must still block a download service name: answer %v", got)
@@ -47,9 +47,9 @@ func TestUserRulesBeforeOverridesOnlyForDownloadCacheNames(t *testing.T) {
 
 	// Override inactive (the download cache is not ready): the normal verdict
 	// applies.
-	e.svc["dl.steamcontent.com"] = "steam"
-	e.flt.rules["dl.steamcontent.com"] = regexDeny
-	e.flt.check["dl.steamcontent.com"] = listAllow
+	e.svc.set("dl.steamcontent.com", "steam")
+	e.flt.setRule("dl.steamcontent.com", regexDeny)
+	e.flt.setCheck("dl.steamcontent.com", listAllow)
 	e.dcReady.Store(false)
 	r = e.query("udp", "dl.steamcontent.com", dns.TypeA)
 	if got := answerIPs(r.Answer); !slices.Equal(got, []string{"198.51.100.7"}) {

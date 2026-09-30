@@ -59,6 +59,10 @@ usage: get-picache.sh [--version vX.Y.Z] [--with-host-apply] [--without-updater]
 Environment: PICACHE_RELEASE_BASE replaces
 https://github.com/Hustenreizjuengling/PiCache/releases (a mirror or a local
 copy with the same layout); the signature is checked all the same.
+PICACHE_ALLOW_DOWNGRADE=1 installs a release older than the installed one
+(stop PiCache and put the database copy made before the upgrade back
+first, docs/DEPLOYMENT.md "Going back to an earlier version"). TMPDIR
+(default /var/tmp) is where the download is checked and run once.
 EOF
 }
 
@@ -136,6 +140,106 @@ check_not_packaged() {
 	die "PiCache is installed as a Debian package here: update it with apt (docs/DEPLOYMENT.md \"Debian package\") or remove it with apt remove picache"
 }
 
+# run_binary FILE runs the downloaded binary's `version` and sets v to its
+# output; it dies with the reason when that fails: 126 (not executable
+# although it is mode 0755) means its directory is mounted noexec.
+run_binary() {
+	rc=0
+	v=$("$1" version 2>&1) || rc=$?
+	case $rc in
+	0) ;;
+	126) die "the downloaded binary cannot be run in $(dirname "$1"): its file system is probably mounted noexec. Set TMPDIR to a directory that allows running programs, for example: curl -fsSL <url> | sudo TMPDIR=/root sh" ;;
+	*) die "the downloaded binary does not run on this machine ($(uname -m)): $v" ;;
+	esac
+}
+
+# The binary and the configuration of an installation (deploy/install.sh).
+INSTALLED_BIN=/usr/local/bin/picache
+ENV_FILE=/etc/picache/picache.env
+
+# release_version OUTPUT prints the version in the output of `picache
+# version` ("picache v1.2.3 (commit …)") when it is a release version
+# (vX.Y.Z or vX.Y.Z-pre), else nothing: development builds are never
+# compared.
+release_version() {
+	rv=$(printf '%s\n' "$1" | sed -n '1s/^picache \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-[0-9A-Za-z.]*\)\{0,1\}\) .*/\1/p')
+	case $rv in *-dirty) rv="" ;; esac
+	printf '%s' "$rv"
+}
+
+# semver_lt A B succeeds when the release version A sorts below B by SemVer
+# precedence (as `picache update` compares them: numeric identifiers
+# numerically and below alphanumeric ones, a release above its
+# pre-releases).
+semver_lt() {
+	awk -v a="$1" -v b="$2" '
+	function cmpid(x, y) {
+		if (x ~ /^[0-9]+$/ && y ~ /^[0-9]+$/) {
+			if (length(x) != length(y)) return length(x) < length(y) ? -1 : 1
+		} else if (x ~ /^[0-9]+$/) {
+			return -1
+		} else if (y ~ /^[0-9]+$/) {
+			return 1
+		}
+		if (x < y) return -1
+		if (x > y) return 1
+		return 0
+	}
+	function cmp(x, y,   i, c, n, m, xp, yp, xc, yc, xi, yi) {
+		sub(/^v/, "", x)
+		sub(/^v/, "", y)
+		xp = ""
+		yp = ""
+		if ((i = index(x, "-")) > 0) { xp = substr(x, i + 1); x = substr(x, 1, i - 1) }
+		if ((i = index(y, "-")) > 0) { yp = substr(y, i + 1); y = substr(y, 1, i - 1) }
+		split(x, xc, ".")
+		split(y, yc, ".")
+		for (i = 1; i <= 3; i++) if ((c = cmpid(xc[i], yc[i])) != 0) return c
+		if (xp == "" && yp == "") return 0
+		if (xp == "") return 1
+		if (yp == "") return -1
+		n = split(xp, xi, ".")
+		m = split(yp, yi, ".")
+		for (i = 1; i <= n && i <= m; i++) if ((c = cmpid(xi[i], yi[i])) != 0) return c
+		return n < m ? -1 : n > m ? 1 : 0
+	}
+	BEGIN { exit !(cmp(a, b) < 0) }'
+}
+
+# check_version NEWOUT dies when --version asked for a release and the
+# downloaded binary (its `version` output NEWOUT) reports another one: the
+# signature shows only that PiCache published the files, so a mirror
+# (PICACHE_RELEASE_BASE) could serve an older signed release under the
+# version asked for.
+check_version() {
+	[ -n "${version:-}" ] || return 0
+	got=$(release_version "$1")
+	[ "$got" = "$version" ] ||
+		die "the downloaded binary reports ${got:-no release version} instead of $version: the files downloaded for $version belong to another release (check PICACHE_RELEASE_BASE)"
+}
+
+# check_downgrade NEWOUT dies when the release about to be installed (the
+# `version` output NEWOUT of its binary) is older than the installed one,
+# unless PICACHE_ALLOW_DOWNGRADE=1 (the name the Debian package uses): the
+# installed version may have migrated the database, which the older one
+# refuses, so PiCache would not start and the network would lose DNS. It
+# runs here because the installer of an older release has no such check.
+# The message puts the database copy back before the older version starts
+# (a version before 1.0.0 started on a newer database copies it, prunes the
+# copies and records its own version) and repeats the options of this run
+# ($pass: --without-updater is not kept between runs).
+check_downgrade() {
+	[ "${PICACHE_ALLOW_DOWNGRADE:-}" != 1 ] || return 0
+	[ -x "$INSTALLED_BIN" ] || return 0
+	new_version=$(release_version "$1")
+	installed_version=$(release_version "$("$INSTALLED_BIN" version 2>/dev/null)")
+	[ -n "$new_version" ] && [ -n "$installed_version" ] || return 0
+	semver_lt "$new_version" "$installed_version" || return 0
+	data=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}PICACHE_DATA_DIR=//p' "$ENV_FILE" 2>/dev/null | tail -n 1 | tr -d "\"'")
+	data=${data:-/var/lib/picache}
+	die "picache $new_version is older than the installed $installed_version. $installed_version may have migrated the database, which $new_version then refuses: PiCache would not start. To go back anyway (docs/DEPLOYMENT.md \"Going back to an earlier version\"): unless the upgrade notes say that $new_version opens this database, first stop PiCache (sudo systemctl stop picache) and put the copy made before the upgrade ($data/backups/picache-$new_version-*.db) in place as $data/picache.db, deleting picache.db-wal and picache.db-shm; then run get-picache.sh again with PICACHE_ALLOW_DOWNGRADE=1 (... | sudo PICACHE_ALLOW_DOWNGRADE=1 sh -s -- --version $new_version${pass:-})"
+}
+
 # need_tools installs openssl and the CA certificates when they are missing
 # (minimal LXC templates): with apt-get, dnf or zypper; on Arch it prints the
 # pacman command instead (never -Sy: a partial upgrade). The rest is part of
@@ -161,7 +265,7 @@ need_tools() {
 		fi
 	fi
 	check_openssl
-	for t in tar gzip sha256sum base64 mktemp; do
+	for t in tar gzip sha256sum base64 mktemp awk; do
 		command -v "$t" >/dev/null 2>&1 || die "$t is missing"
 	done
 }
@@ -221,7 +325,9 @@ main() {
 		url=$base/latest/download
 	fi
 
-	tmp=$(mktemp -d)
+	# The downloaded binary is run from here: /var/tmp rather than /tmp,
+	# which hardened hosts often mount noexec (TMPDIR chooses another).
+	tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/picache.XXXXXX")
 	trap 'rm -rf "$tmp"' EXIT
 	trap 'exit 130' INT TERM
 
@@ -263,8 +369,15 @@ main() {
 	fi
 
 	chmod 0755 "$tmp/picache-linux-$a"
-	v=$("$tmp/picache-linux-$a" version) || die "the downloaded binary does not run on this machine"
+	run_binary "$tmp/picache-linux-$a"
+	check_version "$v"
+	check_downgrade "$v"
 	say "installing $v"
+	# Without --version nothing binds the download to a release: name the
+	# installed one too, so a mirror's old release stands out.
+	if [ -x "$INSTALLED_BIN" ] && old=$("$INSTALLED_BIN" version 2>/dev/null); then
+		say "replacing $old"
+	fi
 	# shellcheck disable=SC2086 # word splitting is intended
 	sh "$tmp/src/deploy/install.sh" --binary "$tmp/picache-linux-$a" $pass
 	if token=$(/usr/local/bin/picache setup-token 2>/dev/null) && [ -n "$token" ]; then

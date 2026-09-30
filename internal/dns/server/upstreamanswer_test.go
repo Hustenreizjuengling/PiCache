@@ -20,8 +20,8 @@ func TestUpstreamAnswerInQueryLog(t *testing.T) {
 		a.DNS.BogusNXDomain = []string{"203.0.113.66"}
 		a.DNS.DNS64.Enabled = true
 	})
-	e.flt.check["tracker.example.net"] = listBlock("Trackers")
-	e.flt.check["listed.example"] = listBlock("Ads")
+	e.flt.setCheck("tracker.example.net", listBlock("Trackers"))
+	e.flt.setCheck("listed.example", listBlock("Ads"))
 	e.up.setAnswer(func(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
 		q := req.Question[0]
 		name := normalizeName(q.Name)
@@ -81,7 +81,7 @@ func TestUpstreamAnswerInQueryLog(t *testing.T) {
 		t.Errorf("ipv6hint: answer %q, upstream answer %q", ev.Answer, ev.UpstreamAnswer)
 	}
 	// A cached upstream answer turned into a CNAME block keeps it too.
-	e.flt.check["cdn.cached.example"] = filter.Decision{Action: filter.ActionBlock, Source: "list", Kind: "exact", Name: "Ads"}
+	e.flt.setCheck("cdn.cached.example", filter.Decision{Action: filter.ActionBlock, Source: "list", Kind: "exact", Name: "Ads"})
 	e.up.setAnswer(func(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
 		return answerWith(req, cnameRec(req.Question[0].Name, "cdn.cached.example"), aRec("cdn.cached.example", "192.0.2.9")),
 			upstream.Info{Cached: true}, nil

@@ -239,10 +239,11 @@ func (s *Server) serve(ctx context.Context, w dns.ResponseWriter, req *dns.Msg, 
 	qctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 	if !s.limiter.Exempt(ip) {
-		// A rate-limited source's DNSSEC chain lookups draw on its own
-		// share of the chain exchanges (7.6); exempt sources (a router or
-		// forwarder with a whole LAN behind it) only on the global rate.
-		qctx = upstream.WithClient(qctx, ip)
+		// A rate-limited source's DNSSEC chain lookups draw on its
+		// device's share of the chain exchanges (7.6); exempt sources (a
+		// router or forwarder with a whole LAN behind it) only on the
+		// global rate.
+		qctx = upstream.WithClient(qctx, chainClientKey(qc, ip), ip)
 	}
 	qc.ctx = qctx
 	res := s.process(qc)

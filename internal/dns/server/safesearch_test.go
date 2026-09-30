@@ -151,10 +151,10 @@ func TestSafeSearchRewrites(t *testing.T) {
 // A block for the client wins over safe search; allow rules do not lift it.
 func TestSafeSearchGuard(t *testing.T) {
 	e, p, kids := safeEnv(t, func(a *settings.All) { a.DNS.DroppedDomains = []string{"duckduckgo.com"} })
-	e.flt.check["www.bing.com"] = filter.Decision{Action: filter.ActionBlock, Source: "rule", Kind: "subtree", RuleID: 3, Name: "bing.com"}
-	e.flt.check["www.google.com"] = listBlock("Search engines")
-	e.flt.rules["pixabay.com"] = filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 4, Name: "pixabay.com"}
-	e.flt.check["pixabay.com"] = e.flt.rules["pixabay.com"]
+	e.flt.setCheck("www.bing.com", filter.Decision{Action: filter.ActionBlock, Source: "rule", Kind: "subtree", RuleID: 3, Name: "bing.com"})
+	e.flt.setCheck("www.google.com", listBlock("Search engines"))
+	e.flt.setRule("pixabay.com", filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 4, Name: "pixabay.com"})
+	e.flt.setCheck("pixabay.com", e.flt.rules["pixabay.com"])
 	if _, err := p.Update(context.Background(), kids, parental.UpdateInput{BlockedServices: []string{"youtube"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -214,17 +214,19 @@ func TestSafeSearchIndependentOfBlocking(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("allow override")
-	e.flt.rules["www.google.de"] = filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 1, Name: "www.google.de"}
+	e.flt.setRule("www.google.de", filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 1, Name: "www.google.de"})
 	check("user allow rule")
 }
 
 // The target's answer runs the forwarding steps with the client's context.
 func TestSafeSearchTarget(t *testing.T) {
-	var targetAnswer func(req *dns.Msg) (*dns.Msg, upstream.Info, error)
-	setUp := func(e *testEnv) {
+	// setTarget answers forcesafesearch.google.com with target, every
+	// other name with upAnswer (through the fake upstream's lock: the
+	// server calls it in its handler goroutines).
+	setTarget := func(e *testEnv, target func(req *dns.Msg) (*dns.Msg, upstream.Info, error)) {
 		e.up.setAnswer(func(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
-			if targetAnswer != nil && normalizeName(req.Question[0].Name) == "forcesafesearch.google.com" {
-				return targetAnswer(req)
+			if normalizeName(req.Question[0].Name) == "forcesafesearch.google.com" {
+				return target(req)
 			}
 			return upAnswer(req), upstream.Info{Upstream: "fake-upstream"}, nil
 		})
@@ -232,26 +234,25 @@ func TestSafeSearchTarget(t *testing.T) {
 
 	t.Run("ttl and AD", func(t *testing.T) {
 		e, _, _ := safeEnv(t, nil)
-		setUp(e)
 		for _, tc := range []struct{ ttl, want uint32 }{{30, 30}, {3600, 300}} {
-			targetAnswer = func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
+			setTarget(e, func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
 				m := upAnswer(req)
 				m.Answer[0].Header().Ttl = tc.ttl
 				m.AuthenticatedData = true
 				return m, upstream.Info{Upstream: "fake-upstream"}, nil
-			}
+			})
 			r := e.query("udp", "www.google.de", dns.TypeA, withEDNS(1232, true))
 			if c := wantCNAME(t, r, "www.google.de", "forcesafesearch.google.com"); c.Hdr.Ttl != tc.want || r.AuthenticatedData {
 				t.Errorf("ttl %d: CNAME TTL %d, AD %v", tc.ttl, c.Hdr.Ttl, r.AuthenticatedData)
 			}
 		}
 		// NXDOMAIN keeps the target's SOA and its negative TTL.
-		targetAnswer = func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
+		setTarget(e, func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
 			m := new(dns.Msg)
 			m.SetRcode(req, dns.RcodeNameError)
 			m.Ns = []dns.RR{syntheticSOA("google.com.", 60)}
 			return m, upstream.Info{Upstream: "fake-upstream"}, nil
-		}
+		})
 		r := e.query("udp", "www.google.de", dns.TypeA)
 		if c := wantCNAME(t, r, "www.google.de", "forcesafesearch.google.com"); r.Rcode != dns.RcodeNameError || len(r.Ns) != 1 || c.Hdr.Ttl != 60 {
 			t.Errorf("NXDOMAIN target: %v", r)
@@ -260,10 +261,9 @@ func TestSafeSearchTarget(t *testing.T) {
 
 	t.Run("failure", func(t *testing.T) {
 		e, _, _ := safeEnv(t, nil)
-		setUp(e)
-		targetAnswer = func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
+		setTarget(e, func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
 			return nil, upstream.Info{}, errors.New("all upstreams failed")
-		}
+		})
 		r := e.query("udp", "www.google.de", dns.TypeA)
 		if r.Rcode != dns.RcodeServerFailure || len(r.Answer) != 0 {
 			t.Errorf("failure: %v", r)
@@ -272,11 +272,11 @@ func TestSafeSearchTarget(t *testing.T) {
 		if ev.Status != StatusError || !strings.HasPrefix(ev.Reason, "safe search: ") {
 			t.Errorf("logged %+v", ev)
 		}
-		targetAnswer = func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
+		setTarget(e, func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
 			m := new(dns.Msg)
 			m.SetRcode(req, dns.RcodeServerFailure)
 			return m, upstream.Info{Upstream: "fake-upstream"}, nil
-		}
+		})
 		if r := e.query("udp", "www.google.de", dns.TypeA); r.Rcode != dns.RcodeServerFailure || len(r.Answer) != 0 {
 			t.Errorf("SERVFAIL of the target: %v", r)
 		}
@@ -284,13 +284,12 @@ func TestSafeSearchTarget(t *testing.T) {
 
 	t.Run("rebind", func(t *testing.T) {
 		e, _, _ := safeEnv(t, nil)
-		setUp(e)
-		targetAnswer = func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
+		setTarget(e, func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
 			m := new(dns.Msg)
 			m.SetReply(req)
 			m.Answer = []dns.RR{&dns.A{Hdr: rrHeader(req.Question[0].Name, dns.TypeA, 300), A: net.ParseIP("10.0.0.1").To4()}}
 			return m, upstream.Info{Upstream: "fake-upstream"}, nil
-		}
+		})
 		r := e.query("udp", "www.google.de", dns.TypeA)
 		if ips := answerIPs(r.Answer); !slices.Equal(ips, []string{"0.0.0.0"}) || r.Answer[0].Header().Name != "www.google.de." ||
 			r.Question[0].Name != "www.google.de." {
@@ -315,8 +314,7 @@ func TestSafeSearchTarget(t *testing.T) {
 
 	t.Run("dns64", func(t *testing.T) {
 		e, _, _ := safeEnv(t, func(a *settings.All) { a.DNS.DNS64.Enabled = true })
-		setUp(e)
-		targetAnswer = func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
+		setTarget(e, func(req *dns.Msg) (*dns.Msg, upstream.Info, error) {
 			if req.Question[0].Qtype == dns.TypeAAAA {
 				m := new(dns.Msg)
 				m.SetReply(req)
@@ -324,7 +322,7 @@ func TestSafeSearchTarget(t *testing.T) {
 				return m, upstream.Info{Upstream: "fake-upstream"}, nil
 			}
 			return upAnswer(req), upstream.Info{Upstream: "fake-upstream"}, nil
-		}
+		})
 		r := e.query("udp", "www.google.de", dns.TypeAAAA)
 		wantCNAME(t, r, "www.google.de", "forcesafesearch.google.com")
 		if ips := answerIPs(r.Answer); !slices.Equal(ips, []string{"64:ff9b::c633:6407"}) {
@@ -351,9 +349,9 @@ func TestSafeSearchTarget(t *testing.T) {
 func TestProtectionLists(t *testing.T) {
 	e, p, kids := safeEnv(t, nil)
 	ctx := context.Background()
-	e.flt.protect["porn.example"] = filter.Decision{Action: filter.ActionBlock, Source: "list", Kind: "subtree", ListID: 5,
-		Name: "OISD NSFW", Category: filter.CategoryAdult}
-	e.flt.check["porn.example"] = filter.Decision{Action: filter.ActionAllow, Source: "list", Kind: "exact", ListID: 6, Name: "Fixes"}
+	e.flt.setProtect("porn.example", filter.Decision{Action: filter.ActionBlock, Source: "list", Kind: "subtree", ListID: 5,
+		Name: "OISD NSFW", Category: filter.CategoryAdult})
+	e.flt.setCheck("porn.example", filter.Decision{Action: filter.ActionAllow, Source: "list", Kind: "exact", ListID: 6, Name: "Fixes"})
 	blocked := func(what string) {
 		t.Helper()
 		if r := e.query("udp", "porn.example", dns.TypeA); !slices.Equal(answerIPs(r.Answer), []string{"0.0.0.0"}) {
@@ -385,7 +383,7 @@ func TestProtectionLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocked("allow override")
-	e.flt.rules["porn.example"] = filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 2, Name: "porn.example"}
+	e.flt.setRule("porn.example", filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 2, Name: "porn.example"})
 	if r := e.query("udp", "porn.example", dns.TypeA); !slices.Equal(answerIPs(r.Answer), []string{"198.51.100.7"}) {
 		t.Errorf("a user allow rule lifts it: %v", r.Answer)
 	}
@@ -404,11 +402,11 @@ func TestGroupPause(t *testing.T) {
 		paused: map[int64]parental.GroupPause{2: {GroupID: 2, Group: "Kids", Until: until}}}
 	e.srv.d.Parental = p
 	e.cl.set(&clients.Identity{IP: localhost, GroupIDs: []int64{1, 2}})
-	e.flt.scoped["ads.example.com"] = 2     // a list of Kids only
-	e.flt.scoped["tracker.example.net"] = 2 // CNAME target blocked for Kids only
-	e.flt.scoped["blocked.steamcontent.com"] = 2
-	e.flt.check["mixed.example"] = listBlock("Default list")
-	e.flt.scoped["mixed.example"] = 1 // a list of Default
+	e.flt.setScope("ads.example.com", 2)     // a list of Kids only
+	e.flt.setScope("tracker.example.net", 2) // CNAME target blocked for Kids only
+	e.flt.setScope("blocked.steamcontent.com", 2)
+	e.flt.setCheck("mixed.example", listBlock("Default list"))
+	e.flt.setScope("mixed.example", 1) // a list of Default
 
 	for _, tc := range []struct {
 		name string
@@ -461,7 +459,7 @@ func TestGroupPause(t *testing.T) {
 // groups, computed for these names only).
 func TestSpecialDomainAllowlisted(t *testing.T) {
 	e := pipelineEnv(t)
-	e.flt.check["mask.icloud.com"] = filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 1, Name: "mask.icloud.com"}
+	e.flt.setCheck("mask.icloud.com", filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 1, Name: "mask.icloud.com"})
 	if _, err := e.srv.SetBlocking(context.Background(), false, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -477,10 +475,10 @@ func TestSpecialDomainAllowlisted(t *testing.T) {
 // The purpose of a logged query follows the mechanism that decided it.
 func TestQueryPurpose(t *testing.T) {
 	e, _ := parentalEnv(t)
-	e.flt.check["sec.example"] = filter.Decision{Action: filter.ActionBlock, Source: "list", Kind: "subtree", ListID: 8, Name: "TIF",
-		Category: filter.CategorySecurity}
-	e.flt.check["re.example"] = filter.Decision{Action: filter.ActionBlock, Source: "rule", Kind: "regex", RuleID: 3, Name: "/re/"}
-	e.flt.check["rule.example"] = ruleBlock("rule.example")
+	e.flt.setCheck("sec.example", filter.Decision{Action: filter.ActionBlock, Source: "list", Kind: "subtree", ListID: 8, Name: "TIF",
+		Category: filter.CategorySecurity})
+	e.flt.setCheck("re.example", filter.Decision{Action: filter.ActionBlock, Source: "rule", Kind: "regex", RuleID: 3, Name: "/re/"})
+	e.flt.setCheck("rule.example", ruleBlock("rule.example"))
 	for _, tc := range []struct{ name, status, purpose string }{
 		{"ads.example.com", StatusBlockedList, filter.CategoryOther},
 		{"sec.example", StatusBlockedList, filter.CategorySecurity},

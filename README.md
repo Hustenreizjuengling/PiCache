@@ -4,356 +4,423 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go 1.27](https://img.shields.io/badge/go-1.27-00ADD8.svg?logo=go&logoColor=white)](go.mod)
 
-**PiCache is the DNS server and download cache for your home lab or LAN
-party, in one binary.** It filters ads and trackers for the whole network.
-It also caches game and OS downloads that the CDNs deliver over plain HTTP
-(Steam, Battle.net, Xbox, Windows Update and more), so they come from your
-local disk or NAS after the first download. The cache uses the
-cache-domains lists and works with Steam's cache discovery and with prefill
-tools. One web UI shows who asked for what, what is cached and how much
-bandwidth was saved. It is written in Go with an embedded Svelte UI, and no
-nginx, BIND, dnsmasq or cron runs underneath: one process, one configuration
-database. It is designed for a Raspberry Pi 4 or 5, a small VM or an
-unprivileged Proxmox LXC container.
+**PiCache is the DNS server for your home network: it filters ads,
+trackers and malware for every device, keeps an eye on the network, and
+can also cache game and OS downloads.** It is one static Go binary with a
+web UI built in, for a Raspberry Pi 4 or 5, a small VM, an unprivileged
+Proxmox container or Docker. There is no nginx, BIND, dnsmasq or cron
+underneath: one process, one configuration database.
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/overview-light.png">
-  <img src="docs/screenshots/overview.png" alt="The PiCache overview page with a week of DNS traffic, the top blocked domains and the busiest devices of a home network">
-</picture>
+![The PiCache overview with an hour of DNS traffic of a home network: queries per minute, the blocked share, why names were blocked and the query types](docs/images/overview.png)
+
+**Contents:** [Goals](#goals) · [Features](#features) ·
+[Screenshots](#screenshots) · [Requirements](#system-requirements) ·
+[Installation](#installation) · [Quick start](#quick-start) ·
+[Docker](#docker) · [Configuration](#configuration) ·
+[Network and DNS](#network-and-dns) · [Data](#data-and-persistence) ·
+[Backup](#backup-and-restore) · [Updates](#updates-and-going-back) ·
+[Architecture](#architecture) · [API](#api) ·
+[Development](#development) · [Troubleshooting](#troubleshooting) ·
+[Security](#security) · [Limitations](#known-limitations) ·
+[Documentation](#documentation) · [License](#license) ·
+[Deutsch](#kurzüberblick-deutsch)
+
+## Goals
+
+- **Security and simplicity first.** An unprivileged service in a
+  hardened systemd sandbox or a distroless container, secure defaults (not
+  an open resolver, web UI only from your own networks), signed releases.
+- **Local and private.** Everything runs and stays on your machine: no
+  account, no cloud service, no telemetry. Outbound traffic is what its
+  job needs: DNS to your upstream servers, list downloads and a daily
+  update check that you can switch off.
+- **Bounded resources.** Every cache, queue and upload has a limit; the
+  blocklists follow the memory of the host; the log database has a size
+  cap.
+- **Understandable.** Every answer can be traced: the query log, "Why is
+  this blocked?" and the health checks say what PiCache did and why.
+- **Safe upgrades.** Database copies before every migration, an automatic
+  rollback when an update from the web UI does not start, documented
+  upgrade notes and a documented way back.
 
 ## Features
 
 **DNS filtering**
 
-- Blocklists in hosts, domain, adblock (ABP) and regex formats (HaGeZi
-  Multi NORMAL by default), updated automatically. The built-in catalogue
-  offers 68 checked lists by category (security, privacy and vendor
-  telemetry, adult content, gambling, dating, piracy, social networks,
-  encrypted-DNS/VPN bypass, abused TLDs, URL shorteners, stalkerware,
-  regional lists and allowlists), with their size, maintainer and license.
-  A list cannot block a whole top-level domain by mistake. List lines with
-  query types (`$dnstype`) and exceptions (`$denyallow`) are understood, and
-  a list's title becomes its name.
-- Your own allow and block rules for exact names, subdomains or regular
-  expressions, per query type (for example only AAAA), with their own reply
-  (NXDOMAIN, an address, this server's address, …), exceptions for
-  subdomains and inverted regular expressions. Allow rules and exact or
-  subdomain block rules take precedence over the lists. The UI explains
-  which rule or list decided, searches your rules and the downloaded lists,
-  imports and exports rules as text and changes many rules at once.
-- Blocking by answer address: lists of malicious server addresses and your
-  own IP rules block answers that point at them; broad and private
-  networks can never be blocked by a list.
-- Groups: clients (by IP, CIDR, MAC or ClientID) get the lists and rules of
-  their groups; "Only for this device" in the query log makes a rule for one
-  device. A group can use its own upstream resolver, such as a family-safe
-  DNS service (Cloudflare for Families, OpenDNS FamilyShield, CleanBrowsing).
-- Parental controls per group: block apps and sites such as YouTube,
-  TikTok or Roblox from a built-in list of 144 services (video, social,
-  messaging, games, music, AI, dating, gambling, shopping, VPN apps, app
-  stores, file hosting, news), weekly schedules (a bedtime that blocks all
-  internet, or selected apps during homework time), and "block internet
-  now" or "lift restrictions" for a while. **Safe search** for Google,
-  YouTube (moderate or strict), Bing, DuckDuckGo, Ecosia, Yandex and
-  Pixabay, and **category switches** for adult content, gambling, dating,
-  piracy and encrypted-DNS/VPN bypass (through downloaded lists). All of it
-  stays on while blocking is paused; everything works locally, without a
-  cloud service.
-- Pausing: all blocking for 30 s up to 7 days or until the next morning,
-  or the lists and rules of one group; parental controls, safe search and
-  the protection lists stay on.
-- Network check: shows whether all devices in your network use PiCache,
-  detects a router that forwards every query or announces itself as IPv6
-  DNS server, and gives the steps to fix it (including the FRITZ!Box
-  settings). An optional scan finds devices that are switched on.
-- Optional DHCP server for routers that cannot hand out another DNS server,
-  switched on in the web UI when needed (nothing to install; no DHCP port is
-  open while it is off): addresses, reservations (also by client identifier,
-  with their own lease time; import and export), DNS names for the devices'
-  host names (and generated names for the others), NTP, MTU, WPAD and extra
-  search domain options, a log of recent exchanges, plus IPv6 DNS
-  announcements (router advertisements with DNS server and domain only,
-  never as router; stateless DHCPv6) that warn when another router announces
-  its own DNS server. Off by default, and it refuses to serve while another
-  DHCP server answers or PiCache's own address is dynamic.
-- Blocking modes (null IP, NXDOMAIN, NODATA, REFUSED, custom IP), a timed
-  pause, CNAME inspection, and blocking of the Firefox DoH canary and iCloud
-  Private Relay.
+- Blocklists in hosts, domain, adblock and regular-expression formats,
+  updated automatically; a catalogue of 68 checked lists by category
+  (HaGeZi Multi NORMAL on by default); allowlists; lists of malicious
+  answer addresses. A list can never block a whole top-level domain or
+  your private networks by mistake.
+- Own allow and block rules for names, subdomains or regular expressions,
+  per query type, with their own reply; import and export as text; "Why is
+  this blocked?" traces every step of a lookup.
+- Groups: clients by IP address, network, MAC address, ClientID, interface
+  or host name get the lists and rules of their groups; "Only for this
+  device" in the query log; a family-safe resolver per group.
+- Blocking replies `0.0.0.0` (default), NXDOMAIN, NODATA, REFUSED or an
+  address of your choice; a pause from 30 seconds up to 7 days; CNAME
+  inspection.
+
+**Parental controls** (per group, all local)
+
+- Block 144 apps and sites in 13 categories (YouTube, TikTok, Roblox, …)
+  always or on weekly schedules (bedtime, homework time), "block internet
+  now" and "lift restrictions" for a while.
+- Safe search for Google, YouTube, Bing, DuckDuckGo, Ecosia, Yandex and
+  Pixabay; category switches for adult content, gambling, dating, piracy
+  and DNS/VPN bypass. All of it stays on while blocking is paused.
+
+**Resolution, privacy and protection**
+
+- Encrypted upstreams: DNS-over-HTTPS (Quad9 by default), DNS-over-TLS,
+  DNS-over-QUIC, DNS over HTTP/3, DNSCrypt and DNS stamps, plus plain
+  DNS; a fallback resolver of another operator; response cache with
+  serve-stale; conditional forwarding.
+- Local DNSSEC validation from the root zone's keys (on in new
+  installations), with the status of every answer in the query log.
+- Encrypted DNS for your devices: DNS-over-TLS (port 853) and
+  DNS-over-HTTPS (`/dns-query`), ClientIDs, discovery (DDR) and Apple
+  configuration profiles; plain DNS can be switched off.
+- Not an open resolver, rate limits, DNS rebinding protection, private
+  reverse lookups and bare names never sent upstream, blocked clients.
+
+**Your network**
+
 - Local DNS records (A, AAAA, CNAME, TXT, SRV, MX, PTR, HTTPS, SVCB,
-  wildcards, automatic PTR), per group (split horizon: another answer for
-  guests than for staff), with the local address first for multi-address
-  names, imported from a hosts file; conditional forwarding (several domains per forwarder, exceptions back to
-  the default upstreams, a catch-all for bare names, bulk import), and local
-  names and reverse lookups from your router. Address lookups of bare names
-  such as `nas` are answered from the local domain and never sent to the
-  internet.
-- Encrypted upstreams (DNS-over-HTTPS, DNS-over-TLS, DNS-over-QUIC, DNS
-  over HTTP/3 and DNSCrypt, also as DNS stamps `sdns://` with certificate
-  pins; plain UDP/TCP too, also by host name) with load balancing, a
-  fallback resolver of another operator for outages, a response cache and
-  serve-stale. Quad9 (which blocks malware) by default; blocks of the
-  upstream show as blocked in the query log.
-- Local DNSSEC validation (on by default in new installations): PiCache
-  checks the signatures of signed domains itself, from the root zone's
-  built-in keys, answers forged ones with SERVFAIL and sets the AD flag
-  only for answers it verified. The query log shows each answer's DNSSEC
-  status (secure, insecure, bogus, indeterminate), the health check warns
-  about upstreams without DNSSEC data or a wrong clock, and a test button
-  shows whether it works with your upstreams. Pass-through of the
-  upstream's verdict (for a validating resolver such as Unbound) and off
-  are the other modes.
-- Encrypted DNS for your devices: DNS-over-TLS on port 853
-  (`PICACHE_DOT_LISTEN`) and DNS-over-HTTPS at `/dns-query` on the web
-  ports or on a port of its own (`PICACHE_DOH_LISTEN`), switched on in the
-  web UI with a server name (Android Private DNS, iPhone/iPad/Mac, Windows
-  11, browsers). ClientIDs in the server name or the DoH path tell devices
-  apart that share an address (they identify a device, they do not
-  authenticate it); Discovery of Designated Resolvers (DDR) lets devices
-  upgrade to encrypted DNS by themselves; configuration profiles for
-  Apple devices, also as a QR code link. Plain DNS can be switched off for
-  everyone but this machine (it stays on while no encrypted protocol is
-  serving).
-- IPv6 on par with IPv4: clients configured by IPv4 address are recognised
-  over IPv6 too (privacy addresses included), statistics per device instead
-  of per address, the router over IPv6, an opt-in trust of the networks the
-  machine is connected to (for a changing global IPv6 prefix), and DNS64
-  or "no AAAA answers" for NAT64 and broken-IPv6 networks.
-- Safe by default: not an open resolver (private networks only), rate limits
-  (optionally per network), private reverse zones never leak upstream, and
-  DNS rebinding protection for answers that point public names at your LAN.
-  Clients can be blocked by address, network, MAC or ClientID.
+  wildcards, per group) and the router's local names.
+- Network check: shows whether every device uses PiCache and how to fix
+  the router (FRITZ!Box steps built in), and a getting-started checklist.
+- Optional DHCP server with reservations and IPv6 DNS announcements, for
+  routers that cannot hand out another DNS server; off by default.
+- Full IPv6 support: devices recognised across their IPv4 and IPv6
+  addresses, DNS64, "no AAAA answers" for broken IPv6.
 
-**Download cache**
+**Download cache** (off until you enable it)
 
-- DNS answers that send the game and OS CDNs to the cache, from the
-  cache-domains lists
-  ([uklans/cache-domains](https://github.com/uklans/cache-domains)) plus
-  your own services and hosts. The download cache is off until you enable
-  it.
-- HTTP cache on port 80 that stores 1 MiB slices, handles range requests,
-  merges concurrent downloads of the same content and reads ahead.
-- HTTPS pass-through on port 443: the connection is relayed by SNI and never
-  decrypted, so HTTPS downloads are not cached.
-- Steam finds the cache by itself (it looks up a fixed hostname to discover
-  a download cache), and prefill tools work (the heartbeat path they probe
-  and the response header they check).
-- "What was downloaded": content grouped into games and updates (Steam
-  depots, Blizzard products, Epic, Riot, Xbox packages, Windows KBs,
-  PlayStation titles, …) with your own labels.
-- Retention by inactivity and size, pinning, background verify and rebuild.
-- Cache storage on a local disk or on an SMB/NFS NAS, with a mount guard that
-  never writes into an unmounted directory.
+- Caches game and OS downloads that CDNs deliver over plain HTTP (Steam,
+  Epic, Battle.net, Riot, Xbox, Windows Update, PlayStation, Nintendo, …)
+  from the [uklans/cache-domains](https://github.com/uklans/cache-domains)
+  lists, on a local disk or an SMB/NFS NAS; HTTPS is passed through by
+  SNI, never decrypted. Steam finds the cache by itself; prefill tools
+  work. The UI shows what was downloaded and how much bandwidth was saved.
 
-**Web UI and operations**
+**Operation**
 
-- A web UI in English and German with a getting-started checklist for new installations, step-by-step
-  guides for single devices, a search over all settings, dashboard, live
-  query and download streams,
-  query log, statistics and health checks with hints. Statistics over up to
-  a year (daily summaries), top domains and upstreams with their response
-  times, query types, an estimate of the distinct domains, activity charts
-  per client and device, and an export of the query log as NDJSON or CSV
-  (also `picache logs export`; `picache logs tail` follows it in a
-  terminal).
-- Privacy levels (full, hide domains, anonymous, off) with the switches
-  behind them: anonymised client addresses, hidden domain names, no query
-  log or no statistics; clients excluded from the log or the statistics,
-  ignored domains, and clearing the query log or the statistics. All data
-  stays on the machine.
-- Diagnostics: the application log in the web UI with a temporary debug
-  level, host resources (memory, load, temperatures, disks) with health
-  thresholds, database sizes, a history of past warnings to acknowledge,
-  a redacted support bundle for bug reports, and `picache db check` /
-  `picache db salvage` to recover a damaged configuration database.
-- Several accounts with the roles admin and viewer (viewers see the pages
-  read-only, except the audit log, the application log, notification
-  channels and backup downloads, and change nothing but their own account), optional TOTP
-  two-factor authentication, API tokens (`read`/`admin`/`sync`) for automation, an audit
-  log, backup and restore (also scheduled, for example to your NAS, and of
-  selected sections only), and optional Prometheus metrics.
-- A command line for daily tasks and automation: `picache status [--watch]`,
-  `pause`, `resume`, `explain`, `query`, `allow`, `deny`, `lists update`,
-  `config get|set|apply` (settings as JSON, with a dry run) and
-  `PICACHE_INITIAL_CONFIG` for a pre-configured first start.
-- A second PiCache can follow a primary (clients and groups, lists and
-  rules, local DNS, parental controls, DNS settings), pulled over HTTPS with
-  a sync token that can read nothing else.
-- Devices with the vendor of their MAC address (or "private address"),
-  their interface and optionally the owner of a public network; clients
-  identified by interface (guest VLANs, VPNs) or host name; names from DHCP,
-  PTR and the hosts file, each switchable; seen devices can be forgotten.
-- Listeners, an outbound proxy (for list downloads, the release check and
-  notifications) and an optional NTP server set in the web UI; the log also
-  to a file or a syslog server; update channels stable, beta and nightly.
-- Web access limited to your own networks by default, trusted reverse
-  proxies (their `X-Forwarded-For` is read only when you list them), and an
-  optional configuration lock for infrastructure as code.
-- HTTPS for the web UI with a certificate of PiCache's own local CA, which
-  your devices trust once; or upload your own certificate, or point PiCache
-  at certificate files (for example from Let's Encrypt), which it reloads
-  when they are renewed.
-- Notifications through ntfy, Gotify or a webhook (Home Assistant) when the
-  storage goes offline, a health check fails, an update is out or installed,
-  or a backup fails.
-- A single static binary for Linux amd64, arm64 and armv7 (best effort:
-  armv6, 386 and riscv64). Deploy it with hardened systemd units on Debian,
-  Ubuntu, Fedora, RHEL/Alma/Rocky, Arch or openSUSE, as a Debian package
-  (updated with apt), in a Proxmox LXC container, or as a distroless Docker
-  image (also with its own LAN address, and with templates for Unraid,
-  TrueNAS SCALE and Synology). The REST API is described in OpenAPI 3.1
-  (`GET /api/v1/openapi.json`).
-- Updates: the UI shows new releases with their notes and installs one on
-  request (the program and its systemd unit files), only with a valid
-  release signature and with an automatic rollback if the new version does
-  not start. `sudo picache update` does the same on the command line;
-  Docker images come from GHCR.
+- Web UI in English and German, light and dark, search over all
+  settings; query log with filters and NDJSON/CSV export; statistics up
+  to a year; privacy levels; application log, host resources and a
+  redacted support bundle.
+- Accounts with the roles admin and viewer, TOTP two-factor sign-in, API
+  tokens (`read`, `admin`, `sync`), audit log.
+- Backups (download, scheduled to disk or NAS, restore of selected
+  sections), signed updates from the web UI with automatic rollback,
+  notifications (ntfy, Gotify, webhook), Prometheus metrics, a follower
+  that syncs from a primary, and a command line for scripts.
+
+The complete behaviour is specified in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Screenshots
 
-All screenshots show a demo instance with made-up devices and traffic. Its
-image was built with `VERSION=v0.1.0-dev`, the version on the health page.
-Select an image to see it at full size.
+A demo network with made-up devices, built from the current source.
 
 <table>
   <tr>
-    <td width="50%" valign="top">
-      <a href="docs/screenshots/query-log.png"><img src="docs/screenshots/query-log.png" width="380" alt="The query log with device names, record types, statuses and response times"></a><br>
-      <b>Query log:</b> every query with the device name, type, status (cached, stale, forwarded, local record, blocked by list or rule) and the time it took.
+    <td width="33%" valign="top">
+      <a href="docs/images/query-log.png"><img src="docs/images/query-log.png" alt="The query log with device names, record types, statuses and response times"></a><br>
+      <b>Query log:</b> every query with the device, its type, what PiCache did (cached, forwarded, blocked by a list or rule, …) and the time it took.
     </td>
-    <td width="50%" valign="top">
-      <a href="docs/screenshots/filtering.png"><img src="docs/screenshots/filtering.png" width="380" alt="The Why is this blocked? tab testing a domain as the living-room TV"></a><br>
-      <b>"Why is this blocked?":</b> a test query as the living-room TV shows which IoT rule blocks it, which list entry it overrides, and every step PiCache took.
+    <td width="33%" valign="top">
+      <a href="docs/images/why-blocked.png"><img src="docs/images/why-blocked.png" alt="The Why is this blocked? tab tracing a lookup for one device"></a><br>
+      <b>Why is this blocked?</b> a test lookup for one device shows which rule or list decides, the answer and every step.
     </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <a href="docs/screenshots/clients.png"><img src="docs/screenshots/clients.png" width="380" alt="The clients table with IP and MAC addresses, groups, queries and block rates"></a><br>
-      <b>Clients &amp; groups:</b> named devices (IP and MAC), their filter group (Default, Kids, IoT), and a week of queries and block rates per device.
-    </td>
-    <td width="50%" valign="top">
-      <a href="docs/screenshots/downloads.png"><img src="docs/screenshots/downloads.png" width="380" alt="The downloads page with an active download and a week of downloads per device"></a><br>
-      <b>Downloads:</b> a Steam Deck installs a game straight from the cache while the table lists a week of game and update downloads per device, split into Internet and cache.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <a href="docs/screenshots/library.png"><img src="docs/screenshots/library.png" width="380" alt="The library with cached games and updates grouped by service"></a><br>
-      <b>Library:</b> what is cached per game or update, with size, first cached, last used, when it will be removed, bytes served, clients and pinning.
-    </td>
-    <td width="50%" valign="top">
-      <a href="docs/screenshots/health.png"><img src="docs/screenshots/health.png" width="380" alt="The health page with passing checks, version details, data paths and memory use"></a><br>
-      <b>Health &amp; about:</b> self-checks for listeners, upstreams, blocklists, the download cache and storage, plus version, data paths and memory.
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center" valign="top">
-      <a href="docs/screenshots/overview-light.png"><img src="docs/screenshots/overview-light.png" width="380" alt="The overview page in the light theme"></a><br>
-      <b>Light theme:</b> the same overview in the light theme. The UI follows the system setting unless you choose light or dark yourself.
+    <td width="33%" valign="top">
+      <a href="docs/images/parental-controls.png"><img src="docs/images/parental-controls.png" alt="The parental controls of a group Kids with a weekly schedule, blocked services and safe search"></a><br>
+      <b>Parental controls:</b> a bedtime and a homework schedule, always-blocked services and safe search for the group "Kids".
     </td>
   </tr>
 </table>
 
-## Status
+Pictures of the download cache pages (Downloads, Library) from an earlier
+version are in [docs/screenshots](docs/screenshots/).
 
-PiCache is in early development. Releases are published on
-[GitHub](https://github.com/Hustenreizjuengling/PiCache/releases) as static
-binaries with signed checksums, and as container images at
-`ghcr.io/hustenreizjuengling/picache`. The version a build reports depends
-on how it was built:
+## System requirements
 
-- Releases (binaries and images): the tag, for example `v0.1.0`.
-- `make` and `make docker`: the output of
-  `git describe --tags --always --dirty`, for example `v0.1.0-3-gabc1234`
-  (with `-dirty` if the tree has uncommitted changes). `make VERSION=v0.1.0`
-  sets it explicitly.
-- CI builds: the commit hash.
-- A plain `go build`, and the image that `docker compose up --build` builds
-  (the compose files pass no build arguments): `dev`. Such builds skip the
-  automatic database copy before an upgrade, see
-  [Updates](docs/DEPLOYMENT.md#updates).
+- **Linux.** With systemd 247 or later for a native installation: Debian
+  12/13 (Raspberry Pi OS included), Ubuntu 22.04 or later, Fedora,
+  RHEL/Alma/Rocky 9 or later, Arch, openSUSE Tumbleweed and Leap 16
+  (others with a warning). Anywhere else: Docker with host networking.
+- **CPU:** amd64, arm64 and armv7 are supported; armv6 (Pi Zero W, Pi 1),
+  386 (SSE2) and riscv64 are best effort (built and started under
+  emulation in CI, not tested on hardware). Container images exist for
+  amd64, arm64, arm/v7 and riscv64.
+- **Memory:** at least 512 MB (256 MB is not supported). The blocklists'
+  entry budget follows it: 4 000 000 entries from 1 GB, 2 000 000 at
+  512 MB.
+- **Disk:** the databases on a local disk (never NFS or SMB). For the
+  download cache an SSD or a NAS share, not an SD card.
+- **Network:** a static address (or a DHCP reservation) and these ports
+  on the machine: 53 udp+tcp (DNS), 8080 and 8443 tcp (web UI), 80 and
+  443 tcp (download cache), 853 tcp (DNS-over-TLS); 67 and 547 udp only
+  with the DHCP server, 123 udp only with the NTP server.
 
-Not included: DNS-over-QUIC, DNSCrypt and DNS over HTTP/3 for clients
-(PiCache serves DNS-over-TLS and DNS-over-HTTPS). TLS interception of downloads is never done. Docker Desktop on macOS and Windows
-is not a deployment target.
+A Raspberry Pi 4 or 5 with a 64-bit OS and a USB SSD is a good home for
+it.
 
-## Quick start
+## Installation
 
-**Linux with systemd (Debian, Ubuntu, Fedora, RHEL/Alma/Rocky, Arch,
-openSUSE; bare metal, VM, Raspberry Pi, LXC), one line:**
+Every release on
+[GitHub](https://github.com/Hustenreizjuengling/PiCache/releases) has
+static binaries, Debian packages, the deploy files and `SHA256SUMS` with an
+Ed25519 signature; images are at `ghcr.io/hustenreizjuengling/picache`.
+All the details are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+**One line** (Linux with systemd; bare metal, VM, Raspberry Pi, LXC):
 
 ```sh
 curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh
-# open http://<ip>:8080/ and create the admin account with the setup token it shows
 ```
 
-The script verifies the release signature before it installs anything
-([details and options](docs/DEPLOYMENT.md#one-line-install); to read it
-first, download it and run `sudo sh get-picache.sh`).
+The script verifies the release signature before it installs anything and
+shows the setup token at the end. To read it first, download it and run
+`sudo sh get-picache.sh`. Options (a version, NAS mounts from the web UI,
+no update helper) are in [One-line install](docs/DEPLOYMENT.md#one-line-install).
 
-**By hand:** download the binary for
-your machine (`picache-linux-amd64`, `-arm64`, `-armv7`, `-armv6`, `-386` or
-`-riscv64`),
-`picache-deploy.tar.gz`, `SHA256SUMS` and `SHA256SUMS.sig` from the
-[latest release](https://github.com/Hustenreizjuengling/PiCache/releases/latest)
-and check them ([how](docs/DEPLOYMENT.md#download)). Then:
+**By hand:** download the binary for your machine
+(`picache-linux-amd64`, `-arm64`, `-armv7`, `-armv6`, `-386` or
+`-riscv64`), `picache-deploy.tar.gz`, `SHA256SUMS` and `SHA256SUMS.sig`,
+[check them](docs/DEPLOYMENT.md#download), then:
 
 ```sh
 tar -xzf picache-deploy.tar.gz          # deploy/, LICENSE, THIRD_PARTY_NOTICES.md
 sudo sh deploy/install.sh --binary ./picache-linux-amd64
 sudo picache setup-token
-# open http://<ip>:8080/ and create the admin account
 ```
 
-**Debian package** (Debian, Ubuntu, Raspberry Pi OS): download
-`picache_<version>_<arch>.deb` with `SHA256SUMS` and `SHA256SUMS.sig`,
-verify them ([how](docs/DEPLOYMENT.md#debian-package): `apt install ./file`
-checks no signature), then `sudo apt install ./picache_<version>_<arch>.deb`
-and `sudo picache setup-token`. Updates are installed the same way.
+The installer creates the system user `picache`, installs the hardened
+unit and starts PiCache; it never changes your firewall or
+systemd-resolved, it prints what to do instead.
 
-**Proxmox VE (unprivileged LXC):** create a Debian 12/13 container with
-`nesting=1` and a static IP, copy the binary and `picache-deploy.tar.gz`
-into it and run the same installer. See
-[deploy/lxc/README.md](deploy/lxc/README.md), which also covers NAS mounts.
-
-**Docker (host networking)**
+**Debian package** (Debian, Ubuntu, Raspberry Pi OS; updated with apt):
+download `picache_<version>_<arch>.deb` with `SHA256SUMS` and
+`SHA256SUMS.sig`, [verify them](docs/DEPLOYMENT.md#debian-package)
+(`apt install ./file` checks no signature), then:
 
 ```sh
-git clone https://github.com/hustenreizjuengling/picache.git   # or unpack picache-deploy.tar.gz
-cd picache/deploy/docker
-docker compose up -d        # pulls ghcr.io/hustenreizjuengling/picache:latest
-docker exec -u 65532:65532 picache /picache setup-token
-# open http://<host-ip>:8080/
+sudo apt install ./picache_<version>_<arch>.deb
+sudo picache setup-token
 ```
 
-**A NAS or a host whose ports 80/443 are taken:** the macvlan compose file
-and the templates for Unraid, TrueNAS SCALE and Synology give PiCache its
+**Docker:** see [Docker](#docker) below.
+
+**Proxmox VE:** an unprivileged Debian 12/13 container with `nesting=1`
+and the same installer; NAS shares are mounted on the host
+([deploy/lxc/README.md](deploy/lxc/README.md)).
+
+**NAS** (Unraid, TrueNAS SCALE, Synology): templates that give PiCache its
 own LAN address ([NAS](docs/DEPLOYMENT.md#nas)).
 
-Then point your router's DHCP DNS option at PiCache
-([ROUTERS.md](docs/ROUTERS.md) has the steps for common routers). If port 53
-is already in use (for example by systemd-resolved), see
-[Port 53 conflicts](docs/DEPLOYMENT.md#port-53-conflicts). More guides:
-[single devices](docs/DEVICES.md), and [Unbound, VPNs, Home Assistant and
-firewall rules](docs/GUIDES.md).
-
-**Updates:** **System → Updates** in the web UI shows new releases and, on
-bare metal, VMs and LXC, installs them; on the command line use
-`sudo picache update`, with Docker `docker compose pull && docker compose up -d`,
-with the Debian package `apt install` of the next package.
-See [Updates](docs/DEPLOYMENT.md#updates).
-
-**From source** (Go 1.27, Node.js 22, GNU make):
+**From source:** Go 1.27, Node.js 22 and GNU make:
 
 ```sh
 git clone https://github.com/hustenreizjuengling/picache.git
 cd picache
-make              # web UI + bin/picache for this machine
-make build-all    # static bin/picache-linux-{386,amd64,arm64,armv6,armv7,riscv64}
+make                  # web UI + bin/picache for this machine
+make build-all        # static bin/picache-linux-{386,amd64,arm64,armv6,armv7,riscv64}
+sudo sh deploy/install.sh --binary bin/picache-linux-amd64
 ```
 
-Install such a binary with `sudo sh deploy/install.sh --binary
-bin/picache-linux-amd64`, or build the Docker image with
-`docker compose up -d --build` in `deploy/docker`.
+## Quick start
+
+1. Open `https://<PiCache IP>:8443/` (accept the certificate warning once,
+   or trust PiCache's local CA later) or `http://<PiCache IP>:8080/`.
+2. Enter the one-time setup token and create the admin account. The token:
+   `sudo picache setup-token`, `docker exec -u 65532:65532 picache
+   /picache setup-token`, or the log (`journalctl -u picache`).
+3. Set the DNS server of your router's DHCP server to PiCache's address
+   ([ROUTERS.md](docs/ROUTERS.md)). **DNS → Network check** shows whether
+   your devices use PiCache and what to fix.
+4. Switch on scheduled backups (**System → Backup & restore**; they are
+   off by default).
+5. Optional: groups and parental controls, encrypted DNS for your devices
+   ([DEVICES.md](docs/DEVICES.md)), the download cache (**Cache**).
+
+Coming from another DNS filter? [Moving from another DNS
+filter](docs/GUIDES.md#moving-from-another-dns-filter) brings its lists,
+rules, local records, forwarders and clients over and switches without an
+outage.
+
+## Docker
+
+```sh
+git clone https://github.com/hustenreizjuengling/picache.git   # or unpack picache-deploy.tar.gz
+cd picache/deploy/docker
+docker compose up -d                                           # ghcr.io/hustenreizjuengling/picache:latest
+docker exec -u 65532:65532 picache /picache setup-token
+```
+
+`deploy/docker/docker-compose.yml` uses **host networking**, so PiCache
+sees the real client addresses and MAC addresses. The container starts as
+root only to bind its ports, then runs as `65532:65532` with all other
+capabilities dropped, a read-only root filesystem and
+`no-new-privileges`; its health check is `picache healthcheck`. Data lives
+in the volumes `picache-data` (`/data`) and `picache-cache` (`/cache`).
+Keep `restart: unless-stopped` and `stop_grace_period: 30s`: PiCache exits
+to restart itself.
+
+- **Commands:** `docker exec -u 65532:65532 picache /picache <command>`,
+  logs with `docker compose logs -f picache`.
+- **Update:** `docker compose pull && docker compose up -d` (tags `X.Y.Z`,
+  `X.Y` and `latest`).
+- **Build from source:** `docker compose up -d --build` in a clone.
+- **Own LAN address** (a NAS or a host whose ports 53, 80 or 443 are
+  taken): `docker-compose.macvlan.yml`. **Bridge networking**
+  (`docker-compose.bridge.yml`) works with limits: no MAC addresses, no
+  DHCP server, and you must set the cache address yourself.
+- Docker Desktop on macOS and Windows is not a deployment target.
+
+Details: [Docker](docs/DEPLOYMENT.md#docker).
+
+## Configuration
+
+Almost everything is configured in the web UI and stored in the database:
+upstreams, lists, rules, clients, groups, local DNS, parental controls,
+privacy, backups. The same settings are JSON through the API and the
+command line (`picache config get`, `picache config apply file.json
+--dry-run`); `PICACHE_INITIAL_CONFIG` applies such a document at the first
+start ([Command line and automation](docs/DEPLOYMENT.md#command-line-and-automation)).
+
+A few bootstrap settings are needed before the database opens. They come
+from environment variables: in `/etc/picache/picache.env` on a native
+installation (read by systemd and every `picache` command; restart after a
+change), in `environment:` of the compose file with Docker. The listeners
+can also be saved under **System → Network**; a variable wins.
+
+| Variable | Default (Linux · Docker) | Purpose |
+|---|---|---|
+| `PICACHE_DATA_DIR` | `/var/lib/picache` · `/data` | databases, keys, certificates (local disk only) |
+| `PICACHE_CACHE_DIR` | `/var/cache/picache` · `/cache` | the built-in download cache store |
+| `PICACHE_DNS_LISTEN` | `:53` | DNS over UDP and TCP (required) |
+| `PICACHE_WEB_LISTEN` / `PICACHE_WEB_TLS_LISTEN` | `:8080` / `:8443` | web UI and API over HTTP / HTTPS |
+| `PICACHE_CACHE_LISTEN` / `PICACHE_SNI_LISTEN` | `:80` / `:443` | download cache and HTTPS pass-through |
+| `PICACHE_DOT_LISTEN` / `PICACHE_DOH_LISTEN` | `:853` / `off` | DNS-over-TLS, a DoH-only listener |
+| `PICACHE_NTP_LISTEN` | `off` | the optional NTP server, e.g. `:123` |
+| `PICACHE_WEB_HOSTS` | – | extra host names for the web UI |
+| `PICACHE_WEB_TLS_CERT` / `PICACHE_WEB_TLS_KEY` | – | your own certificate files (reloaded when renewed) |
+| `PICACHE_DHCP` | – | `off` prevents the DHCP server |
+| `PICACHE_CONFIG_LOCKED` | `off` | `on`: only admin API tokens change the configuration |
+| `PICACHE_DESTRUCTIVE_API` | `on` | `off` refuses restores, purges and other bulk deletions |
+| `PICACHE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `PICACHE_ADMIN_PASSWORD_FILE` | – | create the first admin from a file instead of the setup token |
+| `PICACHE_RUN_AS` | – · `65532:65532` | the user a container switches to after binding its ports |
+
+Listener values are comma-separated `host:port` lists; `off` disables one.
+Every variable and every `picache serve` flag is in
+[Environment variables](docs/DEPLOYMENT.md#environment-variables).
+
+## Network and DNS
+
+- **Port 53.** DNS is mandatory: PiCache does not start while another
+  program holds port 53 (often systemd-resolved's stub listener, dnsmasq
+  or another DNS filter). The installer detects it, does not start
+  PiCache and prints the fix ([Troubleshooting](#troubleshooting)).
+- **Router.** Set the DNS server option of the router's **DHCP server** to
+  PiCache's address. Do not make PiCache the router's own upstream: then
+  every query comes from the router and per-device groups cannot work.
+  Steps for common routers: [ROUTERS.md](docs/ROUTERS.md); the FRITZ!Box
+  steps are also in the network check.
+- **IPv6.** Give PiCache a unique local address (`fd…`) and let the router
+  announce it as IPv6 DNS server, or turn the router's own IPv6 DNS
+  announcement off, or devices bypass PiCache over IPv6. Never announce a
+  global address: it changes with the provider's prefix
+  ([IPv6](docs/DEPLOYMENT.md#ipv6-and-dual-stack-networks)).
+- **Who may ask.** Loopback, private networks (RFC 1918, ULA, CGNAT,
+  link-local) and the private networks the machine is connected to. A
+  public IPv6 prefix of your LAN needs **DNS settings → Access** (allow the
+  connected networks, or add the prefix).
+- **Never forward** PiCache's ports on the router. Away from home, use a
+  VPN ([GUIDES.md](docs/GUIDES.md#filtering-away-from-home)); host firewall
+  rules are in [GUIDES.md](docs/GUIDES.md#firewall-rules).
+
+## Data and persistence
+
+| Data | Native installation | Docker | Back up? |
+|---|---|---|---|
+| Configuration, accounts, audit log (`picache.db`) | `/var/lib/picache` | volume `picache-data` at `/data` | **yes** |
+| Master key (`keys/master.key`) and local CA (`tls/`) | `/var/lib/picache` | `/data` | **yes**, separately and privately |
+| Query log and statistics (`logs.db`) | `/var/lib/picache` | `/data` | optional |
+| Pre-upgrade copies and scheduled backups (`backups/`) | `/var/lib/picache` | `/data` | send scheduled backups to a NAS target |
+| Lists, cache-domains, cache indexes | `/var/lib/picache` | `/data` | no, rebuilt |
+| Download cache (slice files) | `/var/cache/picache`, NAS shares below `/srv/picache` | volume `picache-cache` at `/cache` | no, it fills again |
+| Bootstrap settings | `/etc/picache/picache.env` | the compose file | yes |
+
+The master key opens the stored secrets (NAS passwords, notification
+tokens, TOTP secrets in file copies); `tls/` holds the CA your devices
+trust. Neither is part of a backup of `picache.db`. Details:
+[Persistent data](docs/DEPLOYMENT.md#persistent-data).
+
+## Backup and restore
+
+- **Download a backup:** **System → Backup & restore → Download**
+  (`picache-backup-<date>.db`): the configuration and the audit log,
+  never accounts, sessions or API tokens.
+- **Scheduled backups** daily or weekly to the data directory or a NAS
+  target, keeping the newest 1–90. **Off by default**: switch on **Back
+  up automatically**.
+- **Restore** everything or selected sections (for example only lists and
+  rules) in the web UI with your password, or from the host:
+
+  ```sh
+  sudo picache restore /path/to/picache-backup-2026-09-01.db --sections lists-and-rules,local-dns
+  sudo systemctl restart picache
+  ```
+
+  A restore keeps the running instance's accounts; the previous database
+  stays as `picache.db.before-restore`.
+- **Moving to another machine:** copy `picache.db`, `keys/master.key` and
+  `tls/` with PiCache stopped, or restore a backup there and copy the key
+  and `tls/`.
+
+Automated backups with an API token, file copies and the recovery of a
+damaged database: [Backup and restore](docs/DEPLOYMENT.md#backup-and-restore).
+
+## Updates and going back
+
+PiCache checks GitHub for new releases once a day (switch it off under
+**System → Updates**) and installs one only when an admin asks. Every file
+is checked against `SHA256SUMS` and its Ed25519 signature by the release
+key built into the running binary ([docs/release-key.pem](docs/release-key.pem)).
+
+| Installation | Update |
+|---|---|
+| Native (bare metal, VM, LXC) | **System → Updates → Install update**, or `sudo picache update` |
+| Without Internet access | `sudo picache update --from <directory with the release files>` |
+| Debian package | verify and `sudo apt install ./picache_<version>_<arch>.deb` |
+| Docker | `docker compose pull && docker compose up -d` |
+
+- **Migrations are automatic.** Before a new version migrates anything,
+  it copies `picache.db` to `<data>/backups/picache-<previous
+  version>-<timestamp>.db` (the newest three are kept); without the copy
+  it does not start.
+- **Automatic rollback** for updates from the web UI and `sudo picache
+  update`: if the new version does not become healthy within 90 seconds,
+  the previous program, its unit files and the database copy are put back.
+  Debian packages and Docker have no automatic rollback.
+- **Channels:** Stable, Beta (release candidates) and Nightly (untested
+  builds of `main`; the web UI installs them only on hosts set up with
+  `install.sh --nightly`).
+- **Upgrade notes** are in [CHANGELOG.md](CHANGELOG.md) and in
+  [Updates](docs/DEPLOYMENT.md#updates) for each release that needs them.
+- **Going back** to an older release means the older program **and** the
+  database copy named after it, because an older version refuses a
+  database a newer one migrated. The installer refuses an older release
+  unless `PICACHE_ALLOW_DOWNGRADE=1` is set; `sudo picache update --version
+  vX.Y.Z --allow-downgrade` installs one. Step by step: [Going back to an
+  earlier version](docs/DEPLOYMENT.md#going-back-to-an-earlier-version).
+
+Releases follow Semantic Versioning (`vX.Y.Z`, release candidates
+`vX.Y.Z-rc.N`). Only the newest release gets fixes.
 
 ## Architecture
 
@@ -364,7 +431,7 @@ flowchart LR
 
     subgraph picache["picache: one process"]
         dns["DNS :53 UDP and TCP<br/>DoT :853, DoH /dns-query"]
-        pipeline["Local records, download cache answers,<br/>rules and blocklists"]
+        pipeline["Local records, parental controls,<br/>rules and blocklists"]
         resolver["Upstream resolver<br/>and response cache"]
         proxy["HTTP cache :80"]
         sni["SNI pass-through :443"]
@@ -386,320 +453,216 @@ flowchart LR
     admin --> web
 ```
 
-For names of enabled cache services, the DNS server answers with
-PiCache's own address, so the clients' downloads arrive at the HTTP cache on
-port 80 and the SNI pass-through on port 443. Both resolve the real CDN
-addresses through the upstream resolver, which bypasses the overrides,
-filtering and local records. The web UI and API reach every component. The
-full specification is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+A query passes access control and the rate limit, client identification,
+PiCache's own names and local records, parental controls, the download
+cache answers, the rules and lists, conditional forwarders, the response
+cache and the upstreams, and then the checks of the answer (CNAME targets,
+rebinding, answer addresses); "Why is this blocked?" shows every step.
+For enabled download services the DNS server answers with PiCache's own
+address, so the downloads reach the cache.
+Three kinds of SQLite database (configuration, logs, one index per cache
+store) live in the data directory; the slice files of the cache may live
+on a NAS. The specification is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Stack
+**Stack:** Go 1.27 without cgo (static binaries), the standard library
+for HTTP, TLS and logging; Svelte 5, TypeScript and Vite for the web UI,
+embedded into the binary, with uPlot for charts and self-hosted fonts (no
+CDN, a strict Content-Security-Policy). Third-party Go modules, deliberately
+few:
 
-**Backend**
+| Module | Version | Used for |
+|---|---|---|
+| `github.com/miekg/dns` | v1.1.73 | DNS messages, the UDP and TCP listeners, upstream exchanges, the DNSSEC primitives |
+| `github.com/quic-go/quic-go` (with `quic-go/qpack` v0.6.0) | v0.63.0 | DNS-over-QUIC and DNS over HTTP/3 upstreams; client only, PiCache never listens on QUIC |
+| `modernc.org/sqlite` (with `modernc.org/libc` v1.75.7 pinned) | v1.59.0 | SQLite without cgo |
+| `golang.org/x/crypto` | v0.57.0 | argon2id password hashes, XChaCha20-Poly1305 for stored secrets, the DNSCrypt client (curve25519, salsa20, chacha20, poly1305, secretbox) |
+| `golang.org/x/net` | v0.59.0 | public suffix list, HTTP header validation, IDNA, the SOCKS5 tunnel of the outbound proxy, the DHCP sockets |
+| `golang.org/x/sys` | v0.48.0 | Linux system calls (capabilities, statfs, the mount guard, neighbour table) |
+| `golang.org/x/sync` | v0.23.0 | the semaphore of the fastest-address probes |
+| `golang.org/x/time` | v0.16.0 | token buckets: the global sign-in limit, DNSSEC chain lookups, fastest-address probes |
 
-- Go 1.27 (`go 1.27.0` in `go.mod`); the code uses `encoding/json/v2`,
-  which is part of the standard library from Go 1.27.
-- No CGO (`CGO_ENABLED=0`). Release builds are static binaries for
-  linux/amd64, linux/arm64, linux/arm (GOARM=7 and GOARM=6), linux/386
-  (GO386=sse2) and linux/riscv64, and Debian packages of them, built with `-trimpath`
-  and the version set through `-ldflags`. The code also builds and its tests
-  run on Windows and macOS for development (`*_other.go` fallbacks next to
-  the `*_linux.go` files).
-- Third-party Go modules, deliberately few:
+## API
 
-  | Module | Version | Used for |
-  |---|---|---|
-  | `github.com/miekg/dns` | v1.1.73 | DNS messages, the UDP and TCP listeners, upstream exchanges |
-  | `modernc.org/sqlite` | v1.59.0 | SQLite without CGO: SQLite translated to Go, with `modernc.org/libc` v1.75.7 pinned exactly |
-  | `golang.org/x/crypto` | v0.57.0 | argon2id password hashes; XChaCha20-Poly1305 for stored secrets (NAS passwords, TOTP secrets) |
-  | `golang.org/x/net` | v0.59.0 | public suffix list (validation of cache-domains patterns), HTTP header validation |
-  | `golang.org/x/sys` | v0.48.0 | Linux system calls: statfs for free space, the mount guard and the local-disk check of the databases; opening key files without following links |
-  | `golang.org/x/time` | v0.16.0 | token-bucket limiter for the global sign-in attempt limit |
-  | `golang.org/x/sync` | v0.23.0 | pinned in `go.mod` through `internal/deps`, but not used by the current code |
+- REST API under `/api/v1`, JSON only; every route is in
+  [docs/API.md](docs/API.md), and an OpenAPI 3.1 document is served at
+  `GET /api/v1/openapi.json` (signed in) and kept in
+  [internal/api/openapi.json](internal/api/openapi.json).
+- Automation uses API tokens (**System → API tokens**; creating one needs
+  your password): `Authorization: Bearer pc_…`. Scopes: `read` (reads what a
+  viewer sees), `admin` (changes too) and `sync` (only the configuration
+  export for a follower). Tokens never manage tokens, passwords, accounts or
+  certificates, restore backups or install updates: those need a browser
+  session.
+- `GET /metrics` (Prometheus, off by default) takes a read token;
+  `GET /healthz` answers `ok` without authentication.
+- Browser requests are protected against cross-site requests and DNS
+  rebinding; everything that changes something is written to the audit log.
 
-- Standard library: `net/http` with method and wildcard route patterns for
-  the REST API, `http.CrossOriginProtection` against CSRF,
-  `http.ResponseController` for per-request deadlines and Server-Sent Events
-  for the live streams, `http.FileServerFS` over `embed.FS` for the UI, and
-  HTTP/2 for DNS-over-HTTPS; `crypto/tls` and `crypto/x509` for the web
-  certificate (a local CA with name constraints, ECDSA P-256, unless you
-  provide a certificate); `os.Root` for file access in the cache
-  store and the downloaded snapshots; `log/slog`; `net/netip`;
-  `testing/synctest` in tests. Cache hits are sent with `sendfile(2)` where
-  possible, and the SNI relay copies with `splice(2)`, both through the
-  zero-copy paths of Go's `net` package.
-
-**Frontend** (`web/`)
-
-- Svelte 5.57.1 (runes) and TypeScript 6.0.3, built with Vite 8.3.0
-  (`@sveltejs/vite-plugin-svelte` 7.3.1) and type-checked with svelte-check
-  4.7.6. A single-page app with a hash router and lazily loaded pages.
-- uPlot 1.6.32 for charts is the only runtime dependency besides Svelte.
-- Fonts: Atkinson Hyperlegible Next and Mono, self-hosted from
-  `@fontsource-variable` 5.3.0 (WOFF2, latin and latin-ext).
-- No CDN and no external requests. The server sends a strict
-  Content-Security-Policy (`default-src 'none'`, `script-src 'self'`,
-  `connect-src 'self'`, `font-src 'self'`, `frame-ancestors 'none'`; inline
-  styles are allowed, inline scripts are not). The theme is applied by an
-  external `theme-init.js` for that reason.
-- `vite build` writes to `internal/webui/dist`, which the binary embeds with
-  `go:embed`. Hashed assets are cached for a year; `index.html` is
-  revalidated on every load.
-- Languages: `web/src/i18n/<id>/*.ts`, every dictionary type-checked
-  against the English keys; `npm run check` also checks plural forms,
-  placeholders and commands, and each language except English is its own
-  chunk loaded on demand ([docs/TRANSLATING.md](docs/TRANSLATING.md)).
-
-**Data**
-
-- Three kinds of SQLite database, all on local disk in the data directory
-  (PiCache refuses to open them on NFS or CIFS): `picache.db` holds the
-  configuration (settings, lists, rules, clients, groups, local records,
-  services, storage targets), the accounts, sessions, API tokens and the
-  audit log; `logs.db` holds the query log, cache and SNI events, download
-  sessions, statistics rollups and evictions;
-  `cache-index/<store-id>.db` indexes one cache store.
-- WAL mode with a single writer connection and a read-only reader pool,
-  `trusted_schema` off, per-component migrations with table names prefixed
-  by component.
-- Slice store (local directory or NAS mount), one per storage target:
-
-  ```
-  <root>/.picache-store                           store marker (JSON: store ID, format, slice size)
-  <root>/tmp/                                     temporary files, renamed into place
-  <root>/slices/<h0h1>/<h2h3>/<objectId>.<index>  one slice of 1 MiB (default)
-  ```
-
-  Each slice file starts with a header (object ID, index, service, host,
-  path, total size, CRC32C of the data, stored response headers), so a lost
-  index can be rebuilt from the files. Only slice files may live on a NAS.
-
-**Deployment**
-
-- Linux with systemd 247 or later (Debian 12/13, Ubuntu 22.04+, Fedora,
-  RHEL/Alma/Rocky 9+, Arch, openSUSE Tumbleweed and Leap 16; bare metal, VM,
-  Raspberry Pi): `deploy/install.sh` (or the Debian package, whose
-  maintainer scripts share its code) installs `picache.service`, which runs as the system
-  user `picache` with only `CAP_NET_BIND_SERVICE` (and `CAP_NET_RAW`, used
-  only at start for the optional IPv6 router advertisements and dropped
-  right after; PiCache refuses to run if that fails), `NoNewPrivileges=yes`,
-  `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`,
-  `RestrictAddressFamilies`, `MemoryDenyWriteExecute` and
-  `SystemCallFilter=@system-service ~@privileged`, among others. An optional
-  root helper (`picache-storage.path` and `.service`) mounts NAS shares on
-  request of the web UI, and the update helper (`picache-update.path` and
-  `.service`, installed unless `--without-updater`) installs signed releases
-  and their unit files on request of the web UI.
-- Docker: a multi-stage build (Node 22 and Go 1.27 Alpine stages) into
-  `gcr.io/distroless/static-debian13` (no shell). The container starts as
-  root only to bind ports 53, 80, 443 and 853 (and, while the DHCP server is
-  switched on, the DHCP ports and the raw socket for IPv6 router
-  advertisements), then drops to `65532:65532` before it opens its data and
-  checks that it cannot regain root. The compose file uses host networking,
-  `cap_drop: [ALL]` plus `NET_BIND_SERVICE`, `SETUID`, `SETGID` and
-  `NET_RAW` (used only at start for that raw socket; the switch to 65532
-  clears it with every other capability), `no-new-privileges` and a
-  read-only root filesystem; the image's health check runs `picache healthcheck`, whose
-  DNS probe is answered locally and never counted or logged.
-- NAS: `deploy/docker/docker-compose.macvlan.yml` and templates for Unraid,
-  TrueNAS SCALE and Synology (`deploy/unraid`, `deploy/truenas`,
-  `deploy/synology`) with the same hardening and a non-root
-  `PICACHE_RUN_AS`.
-- Proxmox VE: an unprivileged Debian container with `nesting=1` and the same
-  installer. NAS shares are mounted on the Proxmox host and bind-mounted into
-  the container, because an unprivileged container cannot mount SMB or NFS.
-
-**CI** (GitHub Actions, [`.github/workflows/ci.yml`](.github/workflows/ci.yml),
-on pushes to `main` and on pull requests)
-
-- Web UI: `npm ci`, `svelte-check` and `vite build` on Node 22.
-- Go on Ubuntu, Windows and macOS: `go vet` and `go test ./...`; on Linux
-  also `gofmt`, `go vet` for linux/arm (v7 and v6), linux/386 and
-  linux/riscv64, and the tests as linux/386.
-- `govulncheck` (v1.8.0) against the dependencies.
-- Static binaries for the six Linux targets with the embedded UI, kept as
-  workflow artifacts for 7 days; `picache version` and the privilege tests
-  under QEMU for 386, riscv64 and armv6.
-- Deployment files: `sh -n` and ShellCheck for the shell scripts,
-  `docker compose config` for every compose file, and the installer test in
-  Debian, Fedora, Arch and openSUSE containers.
-- A multi-arch Docker build (linux/amd64, linux/arm64, linux/arm/v7,
-  linux/riscv64) that is not pushed anywhere, and a check of `make dist`
-  (the release files, `scripts/check-dist.sh`) with the Debian package test
-  on Debian 12 and 13.
-
-**Releases** ([`.github/workflows/release.yml`](.github/workflows/release.yml),
-on pushed `v*` tags): `make dist` builds the six static binaries, the five
-Debian packages, `picache-deploy.tar.gz` and `SHA256SUMS`; the workflow signs `SHA256SUMS`
-with the Ed25519 release key, publishes a GitHub release with the
-`CHANGELOG.md` section as notes (a pre-release for tags with a hyphen), and
-pushes multi-arch images to `ghcr.io/hustenreizjuengling/picache` (`X.Y.Z`,
-and for stable releases `X.Y` and `latest`). See
-[CONTRIBUTING.md](CONTRIBUTING.md#releases).
-
-## Persistent data
-
-| Data | Bare metal / LXC | Docker | Back up? |
-|---|---|---|---|
-| Configuration, account and audit log (`picache.db`), history and statistics (`logs.db`), cache indexes, master key, TLS certificate, list snapshots | `/var/lib/picache` | volume `picache-data` at `/data` | `picache.db`; keep `keys/master.key` separately |
-| Built-in local cache store (slice files) | `/var/cache/picache` | volume `picache-cache` at `/cache` | No, it fills again |
-| NAS cache stores | `/srv/picache/<id>` | optional bind mount of `/srv/picache` (`rslave`) | No |
-| Bootstrap settings (listeners, paths, logging) | `/etc/picache/picache.env` | `environment:` in the compose file | Yes |
-
-Details, including backup and restore, are in
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#persistent-data).
-
-## Security
-
-- Not an open resolver: PiCache answers loopback, private and directly
-  connected private networks (plus networks you add), with a per-client rate
-  limit.
-- Unprivileged: the systemd service holds only `CAP_NET_BIND_SERVICE`, the
-  container drops to UID 65532 after binding its ports, and the service
-  never holds `CAP_SYS_ADMIN`.
-- The first account is created with a one-time setup token. Passwords are
-  hashed with argon2id, sign-ins are throttled, and TOTP is optional.
-  Viewer accounts and read tokens cannot change anything; accounts and
-  certificates are managed only in an admin's browser session.
-- New installations allow the web UI only from this machine, the private
-  and connected networks and the networks you add; a proxy's
-  `X-Forwarded-For` is read only from addresses you trust.
-- Strict Content-Security-Policy, `HttpOnly` and `SameSite=Strict` session
-  cookies, cross-origin protection and a host allowlist against DNS
-  rebinding; the resolver blocks rebinding answers for the whole network.
-- The HTTP cache serves only hosts of known cache services and, by
-  default, connects only to public upstream addresses (SSRF protection).
-  HTTPS is relayed without being decrypted.
-- NAS passwords and TOTP secrets are sealed with XChaCha20-Poly1305. Backups
-  never contain accounts, sessions or API tokens.
-- Updates are installed only with a valid Ed25519 signature from the release
-  key built into PiCache ([docs/release-key.pem](docs/release-key.pem)). The
-  web UI can only ask the root helper for a newer version number, and the
-  daily update check, which contacts only `api.github.com`, can be turned
-  off.
-
-Threat model, hardening checklist and how to report a vulnerability:
-[docs/SECURITY.md](docs/SECURITY.md). Please report vulnerabilities
-privately, not in a public issue.
-
-## Documentation
-
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): downloads, installation,
-  first-run setup, backup and restore, updates, storage, environment
-  variables, CLI.
-- [deploy/lxc/README.md](deploy/lxc/README.md): Proxmox LXC and NAS.
-- [docs/SECURITY.md](docs/SECURITY.md): threat model, updates and the
-  release key, hardening checklist, reporting vulnerabilities.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): design and specification.
-- [docs/API.md](docs/API.md): REST API.
-- [docs/DESIGN.md](docs/DESIGN.md) and [web/README.md](web/README.md): UI
-  design system and frontend guide.
-- [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
+```sh
+curl -fsS -H "Authorization: Bearer $PICACHE_TOKEN" http://<PiCache IP>:8080/api/v1/system/overview
+```
 
 ## Development
 
+Go 1.27, Node.js 22 with npm and GNU make; Docker for the installer and
+package tests.
+
 ```sh
-make web     # build the UI into internal/webui/dist (or: cd web && npm run dev)
-make build   # bin/picache
-make test vet lint
+make web       # npm ci + the web UI into internal/webui/dist
+make build     # bin/picache (embeds the UI)
 bin/picache serve --dev --data-dir ./data --cache-dir ./cache \
   --dns-listen 127.0.0.1:1053 --cache-listen off --sni-listen off \
-  --web-listen 127.0.0.1:8080 --web-tls-listen off
+  --web-listen 127.0.0.1:8080 --web-tls-listen off --dot-listen off
+PICACHE_DATA_DIR=./data bin/picache setup-token
 ```
 
-The UI development server (`npm run dev` in `web/`) proxies `/api` to
-`127.0.0.1:8080`. `scripts/test-install.sh bin/picache-linux-amd64 [image]`
-runs the installer test in a throwaway container, `scripts/test-deb.sh dist`
-the Debian package test (both need Docker). See
-[CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request; the
-project follows its [code of conduct](CODE_OF_CONDUCT.md).
+`npm run dev` in `web/` starts the Vite development server, which proxies
+`/api` to `127.0.0.1:8080`. The code builds and its tests run on Linux,
+Windows and macOS (`*_linux.go` files have `*_other.go` fallbacks); the
+service itself runs on Linux.
 
-## Kurzüberblick (Deutsch)
+**Running the tests:**
 
-PiCache ist ein filternder DNS-Server und ein Download-Cache in einem
-einzigen Programm mit Weboberfläche (auf Deutsch und Englisch).
+```sh
+make test                  # go test ./... (no network access needed)
+make vet lint              # go vet for several platforms, gofmt check
+cd web && npm run check    # svelte-check, translations, settings search index
+cd web && npm run build    # also checks the bundle sizes
+CGO_ENABLED=1 go test -race ./internal/dns/... ./internal/netutil/...
+sh scripts/test-install.sh bin/picache-linux-amd64 debian:13   # installer test (Docker)
+```
 
-- **DNS-Filter** für das ganze Netz: Blocklisten, eigene Regeln (auch pro
-  Abfragetyp, mit eigener Antwort, Import und Export), Sperren nach
-  Antwortadresse, Gruppen pro Client, „Nur für dieses Gerät“, lokale
-  DNS-Einträge (auch SRV, MX, PTR, HTTPS, pro Gruppe, Import aus einer
-  hosts-Datei), verschlüsselte Upstreams (DoH, DoT, DoQ, HTTP/3, DNSCrypt,
-  DNS-Stamps) mit Ausweich-DNS, eigene DNSSEC-Prüfung (bei neuen
-  Installationen an: gefälschte Antworten signierter Domains werden
-  abgewiesen, das AD-Flag nur für selbst geprüfte Antworten gesetzt, der
-  DNSSEC-Status steht im Abfrageprotokoll), ein eigener Resolver pro Gruppe (etwa ein
-  familienfreundlicher DNS-Dienst), verschlüsseltes DNS für die eigenen
-  Geräte (DNS-over-TLS auf Port 853 und DNS-over-HTTPS, mit ClientIDs, DDR
-  und Konfigurationsprofilen für Apple-Geräte; unverschlüsseltes DNS lässt
-  sich abschalten),
-  Schutz vor DNS-Rebinding, Abfrageprotokoll und Statistiken.
-- **Jugendschutz** pro Gruppe: Dienste wie YouTube, TikTok oder Roblox
-  sperren (144 Dienste), Zeitpläne (Schlafenszeit, Hausaufgabenzeit),
-  „Internet jetzt sperren“ oder „Einschränkungen aufheben“ auf Zeit,
-  SafeSearch für Google, YouTube, Bing, DuckDuckGo, Ecosia, Yandex und
-  Pixabay sowie Kategorien (Erwachseneninhalte, Glücksspiel, Dating,
-  Raubkopien, Umgehung per VPN oder verschlüsseltem DNS) über
-  heruntergeladene Listen – alles lokal, ohne Cloud-Dienst. Der **Netzwerk-Check**
-  zeigt, ob alle Geräte PiCache nutzen, und erklärt die Einstellungen im
-  Router (auch für die FRITZ!Box).
-- **Download-Cache** für Spiele und Updates (Steam, Epic, Battle.net, Riot,
-  Xbox, Windows Update, PlayStation, Nintendo, …): Downloads, die über
-  unverschlüsseltes HTTP laufen, werden nach dem ersten Mal aus dem lokalen
-  Netz geliefert, wahlweise von einer lokalen SSD oder einem NAS (SMB/NFS).
-  HTTPS wird nur durchgereicht, nie entschlüsselt und nicht gecacht. Die
-  Oberfläche zeigt, was heruntergeladen wurde und wie viel Bandbreite
-  gespart wurde. Der Cache nutzt die cache-domains-Listen und funktioniert
-  mit der Cache-Erkennung von Steam und mit Prefill-Tools.
-- **Sicher voreingestellt:** kein offener Resolver, unprivilegierter Dienst,
-  Einrichtung per Einmal-Token, Weboberfläche nur aus den eigenen Netzen,
-  mehrere Konten (Admins und Betrachter, die nur lesen), optionale
-  Zwei-Faktor-Anmeldung, API-Tokens, HTTPS mit einer eigenen lokalen
-  Zertifizierungsstelle.
-- **DHCP-Server** (optional), falls der Router keinen anderen DNS-Server
-  verteilen kann: wird bei Bedarf in der Oberfläche eingeschaltet (keine
-  Installationsoption; solange er aus ist, belegt PiCache keinen DHCP-Port),
-  mit Reservierungen, DNS-Namen der Geräte und IPv6-DNS-Ankündigungen.
-- **Datenschutz und Diagnose:** Datenschutzstufen (vollständig, Domains
-  verbergen, anonym, aus), Clients ohne Protokoll oder ohne Statistik,
-  ignorierte Domains, Löschen von Abfrageprotokoll und Statistik, Export
-  als NDJSON/CSV, Statistik über bis zu ein Jahr, Anwendungsprotokoll in der
-  Oberfläche, Host-Ressourcen, Warnungsverlauf, bereinigtes Support-Paket
-  und `picache db salvage` für eine beschädigte Konfigurationsdatenbank –
-  alle Daten bleiben auf dem Gerät.
-- **Betrieb** auf Linux mit systemd (Debian, Ubuntu, Fedora, RHEL/Alma/Rocky,
-  Arch, openSUSE; auch Raspberry Pi), als Debian-Paket (Updates mit apt), in
-  einem Proxmox-LXC oder mit Docker (auch mit eigener LAN-Adresse und mit
-  Vorlagen für Unraid, TrueNAS SCALE und Synology); Anleitungen für Router,
-  einzelne Geräte, Unbound, VPN, Home Assistant und Firewall-Regeln;
-  Checkliste für den Einstieg und Suche über alle Einstellungen; Kommandozeile (`picache status`, `pause`, `allow`,
-  `config` …), Einstellungen als JSON, Protokoll auch in eine Datei oder an
-  einen Syslog-Server, optionaler NTP-Server und Proxy für ausgehende
-  Downloads, ein zweites PiCache als Folgesystem (Sync) und Geräte mit
-  Hersteller, Schnittstelle und Namensquellen.
-- **Updates:** Die Oberfläche zeigt neue Versionen an und installiert sie auf
-  Wunsch, nur mit gültiger Signatur und mit automatischer Rückkehr zur alten
-  Version, falls die neue nicht startet (`sudo picache update` auf der
-  Kommandozeile, bei Docker `docker compose pull && docker compose up -d`).
-- **Stand:** frühe Entwicklung. Releases gibt es auf
-  [GitHub](https://github.com/Hustenreizjuengling/PiCache/releases)
-  (Binärdateien für amd64, arm64 und armv7, ohne Gewähr auch armv6, 386 und
-  riscv64, sowie Debian-Pakete, mit signierten Prüfsummen) und als
-  Container-Image `ghcr.io/hustenreizjuengling/picache`.
+The CI runs these on every push and pull request, plus the tests on
+Windows, macOS and linux/386, `govulncheck`, ShellCheck, the Debian
+package test and a multi-architecture image build. Conventions, the
+release process and the full check list are in
+[CONTRIBUTING.md](CONTRIBUTING.md); the project follows its
+[code of conduct](CODE_OF_CONDUCT.md).
 
-Schnellstart: `curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh`
-(prüft die Signatur und installiert). Von Hand: Binärdatei und `picache-deploy.tar.gz` des neuesten
-Releases herunterladen und prüfen, `tar -xzf picache-deploy.tar.gz`, dann
-`sudo sh deploy/install.sh --binary <datei>` und `sudo picache setup-token`
-ausführen und `http://<ip>:8080/` öffnen.
-Anschließend im Router (DHCP) die IP von PiCache als DNS-Server eintragen
-([docs/ROUTERS.md](docs/ROUTERS.md), englisch; die FRITZ!Box-Schritte zeigt
-auch der Netzwerk-Check).
-Auf einem Raspberry Pi gehört der Cache auf eine USB-SSD, nicht auf die
-SD-Karte. Details stehen in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-(englisch). Sicherheitslücken bitte vertraulich melden, siehe
-[docs/SECURITY.md](docs/SECURITY.md).
+## Troubleshooting
 
-PiCache steht unter der MIT-Lizenz ([LICENSE](LICENSE)).
+**System → Health & about** runs the health checks and gives a hint for
+each problem; **System → Application log** shows the log
+(`journalctl -u picache -f`, `docker compose logs -f picache`).
+
+- **Port 53 is in use** (`bind DNS (udp) on :53: … port 53 is in use`):
+  `sudo ss -lunp 'sport = :53'` names the program. Stop and disable
+  another DNS server, or bind PiCache to specific addresses in
+  `/etc/picache/picache.env` (`PICACHE_DNS_LISTEN=192.168.1.5:53,127.0.0.1:53`),
+  then `sudo systemctl start picache`.
+- **systemd-resolved** holds `127.0.0.53:53`: either bind PiCache to
+  specific addresses as above, or turn off its stub listener and let the
+  host resolve through PiCache:
+
+  ```sh
+  sudo mkdir -p /etc/systemd/resolved.conf.d
+  printf '[Resolve]\nDNS=127.0.0.1\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/picache.conf
+  sudo mv /etc/resolv.conf /etc/resolv.conf.backup
+  sudo ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf
+  sudo systemctl reload-or-restart systemd-resolved
+  ```
+
+- **Local names or download cache answers fail for devices that still ask
+  the router:** the router's rebind protection drops answers with private
+  addresses. Add exceptions for your local domain (and the download
+  domains) on the router, never switch the protection off
+  ([ROUTERS.md](docs/ROUTERS.md)). A service of yours whose public name
+  points into your LAN shows **Rebinding blocked** in PiCache's query log:
+  allow its domain there or under **DNS settings → Protection**.
+- **Wrong clock** (a Raspberry Pi without a real-time clock): "system
+  clock is not set; using unencrypted DNS to the bootstrap servers", or
+  DNSSEC time checks suspended. Keep the host's time synchronised
+  (`timedatectl set-ntp true`; `sudo apt install fake-hwclock` on a Pi) and
+  give the host NTP servers by IP address if it resolves them through
+  PiCache.
+- **DNSSEC status "indeterminate"** (health check `dnssec`): the host clock
+  is not synchronised (always so in Docker Desktop's VM), or an upstream
+  returns no DNSSEC data (router DNS proxies, some ISP resolvers: choose
+  other upstreams or the mode **Pass through**). **Bogus** answers get
+  SERVFAIL: **Test DNSSEC** under **DNS settings → DNSSEC** checks the
+  upstreams ([DNSSEC](docs/DEPLOYMENT.md#dnssec)).
+- **Locked out of the web UI** (not allowed from your address, TLS 1.3
+  required, a broken certificate): `sudo picache web-access --reset` on the
+  host (Docker: `docker exec -u 65532:65532 picache /picache web-access
+  --reset`) opens it again within a minute. A forgotten password: `sudo
+  picache reset-password <user>`. Listeners saved in the UI that no
+  longer work: `sudo picache listeners --reset` and a restart.
+- **`421 Misdirected Request`:** the host name is not allowed; add it to
+  `PICACHE_WEB_HOSTS` or the allowed hosts of the web settings.
+- **Devices bypass PiCache:** **DNS → Network check** names the cause
+  (the router forwards or announces itself as IPv6 DNS server, a device
+  with its own DNS).
+
+More (damaged database, a full data disk, NAS mounts, updates):
+[Troubleshooting](docs/DEPLOYMENT.md#troubleshooting).
+
+## Security
+
+- The service runs as the unprivileged user `picache` with only
+  `CAP_NET_BIND_SERVICE` in a strict systemd sandbox; the container
+  switches to UID 65532 after binding its ports. PiCache never holds
+  `CAP_SYS_ADMIN`; NAS mounts go through an optional root helper.
+- Not an open resolver; per-client rate limits and connection caps on
+  every listener; DNS rebinding protection for the whole network.
+- The first account needs a one-time setup token. Passwords are hashed
+  with argon2id, sign-ins are throttled, TOTP is optional. The web UI
+  answers only this machine and your networks by default, with a strict
+  Content-Security-Policy, `HttpOnly` and `SameSite=Strict` cookies and a
+  host allowlist.
+- Stored secrets are sealed with XChaCha20-Poly1305; backups never contain
+  accounts or tokens. The HTTP cache serves only known download services
+  and by default never connects to private addresses; HTTPS is never
+  decrypted.
+- Updates install only files signed with the release key.
+
+Threat model, hardening checklist and how to report a vulnerability
+**privately**: [docs/SECURITY.md](docs/SECURITY.md).
+
+## Known limitations
+
+- **Linux only** as a service (systemd 247 or later, or Docker). Docker
+  Desktop on macOS and Windows is not a deployment target; bridge
+  networking loses MAC addresses and the DHCP server.
+- **Web UI in English and German** only.
+- **Encrypted DNS for devices** is DNS-over-TLS and DNS-over-HTTPS only:
+  DNS-over-QUIC, DNSCrypt and DNS over HTTP/3 are supported as upstreams,
+  not served to clients. There is no access from the Internet: devices
+  away from home use a VPN.
+- **The download cache** caches plain HTTP only; HTTPS downloads are passed
+  through, never intercepted.
+- **DNS-based controls can be bypassed** by devices that use another
+  resolver (encrypted DNS in a browser or app, a VPN, mobile data).
+  ClientIDs identify devices, they do not authenticate them.
+- **DHCP:** IPv4 addresses on one interface; for IPv6 only DNS
+  announcements (router advertisements, stateless DHCPv6), no addresses;
+  no relayed requests.
+- **DNSSEC trust anchors** are built in: a future root key rollover needs
+  a PiCache update. Validation needs a synchronised host clock.
+- **Rebinding protection** does not cover the global IPv6 addresses of
+  your LAN by default ([SECURITY.md](docs/SECURITY.md#dns-protection)).
+- **Time zone:** schedules and scheduled backups use the host's time; a
+  container uses UTC unless `TZ` is set.
+- No text export of local records and forwarders (JSON through the API);
+  statistics count an upstream's SERVFAIL as a forwarded answer; answers
+  never come from the host's `/etc/hosts` (import it instead).
+- **Updates:** Debian packages and Docker images have no automatic
+  rollback, there is no apt repository, container images are not signed
+  (the binaries and packages are), and nightly builds have no image.
+- The databases must be on a local disk; only the cache's slice files may
+  live on a NAS. armv6, 386 and riscv64 are best effort.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | installation, first-run setup, certificates, reverse proxies, encrypted DNS, DNSSEC, DHCP, backups, updates, storage, environment variables, CLI, troubleshooting |
+| [docs/GUIDES.md](docs/GUIDES.md) | moving from another DNS filter, Unbound, VPNs, Home Assistant and Prometheus, firewall rules |
+| [docs/ROUTERS.md](docs/ROUTERS.md) · [docs/DEVICES.md](docs/DEVICES.md) | router set-up · single devices and encrypted DNS |
+| [deploy/lxc/README.md](deploy/lxc/README.md) | Proxmox LXC and NAS storage |
+| [docs/SECURITY.md](docs/SECURITY.md) | threat model, updates and the release key, hardening checklist, reporting vulnerabilities |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/API.md](docs/API.md) | specification · REST API |
+| [docs/DESIGN.md](docs/DESIGN.md) · [web/README.md](web/README.md) · [docs/TRANSLATING.md](docs/TRANSLATING.md) | UI design system · frontend guide · translations |
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) | development and releases · changes and upgrade notes |
 
 ## License
 
@@ -708,6 +671,53 @@ container image also contain third-party components under their own
 licenses (BSD-3-Clause, MIT, SIL Open Font License 1.1 for the fonts, and
 public domain for SQLite); see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Keep both files with every
-copy you pass on. `deploy/install.sh` installs them to
-`/usr/share/doc/picache/`, and the container image contains them in the same
-directory.
+copy you pass on. `deploy/install.sh` and the Debian package install them
+to `/usr/share/doc/picache/`, and the container image contains them in the
+same directory.
+
+## Kurzüberblick (Deutsch)
+
+PiCache ist der DNS-Server für das Heimnetz: Er filtert Werbung, Tracker
+und Schadsoftware für alle Geräte, zeigt, welches Gerät was abfragt, und
+kann zusätzlich Spiele- und System-Downloads zwischenspeichern. Ein
+einzelnes Programm mit Weboberfläche (Deutsch und Englisch), ohne Cloud,
+Konto oder Telemetrie.
+
+- **DNS-Filter:** Blocklisten (Katalog mit 68 geprüften Listen),
+  Erlaubnislisten, eigene Regeln (auch als Text importierbar), Gruppen pro
+  Gerät, „Nur für dieses Gerät“, „Warum ist das gesperrt?“,
+  Sperren nach Antwortadresse.
+- **Jugendschutz** pro Gruppe: 144 Dienste sperren, Zeitpläne
+  (Schlafenszeit, Hausaufgabenzeit), „Internet jetzt sperren“,
+  SafeSearch, Kategorien (Erwachseneninhalte, Glücksspiel, Dating,
+  Raubkopien, Umgehung per VPN oder verschlüsseltem DNS) – alles lokal.
+- **Auflösung:** verschlüsselte Upstreams (DoH, DoT, DoQ, HTTP/3,
+  DNSCrypt) mit Ausweich-DNS, eigene DNSSEC-Prüfung, verschlüsseltes DNS
+  für die eigenen Geräte (DoT, DoH), lokale DNS-Einträge, bedingte
+  Weiterleitungen, Schutz vor DNS-Rebinding, volle IPv6-Unterstützung.
+- **Netzwerk:** Netzwerkprüfung mit Anleitung für den Router (auch
+  FRITZ!Box), optionaler DHCP-Server, Checkliste für den Einstieg.
+- **Download-Cache** (optional) für Steam, Epic, Battle.net, Xbox,
+  Windows Update und mehr, auf SSD oder NAS; HTTPS wird nie entschlüsselt.
+- **Betrieb:** Admins und Betrachter, Zwei-Faktor-Anmeldung, API-Tokens,
+  Sicherungen (automatische Sicherungen sind anfangs **aus**: unter
+  **System → Sicherung & Wiederherstellung → Automatisch sichern**
+  einschalten), signierte Updates aus der
+  Oberfläche mit automatischer Rückkehr zur alten Version,
+  Benachrichtigungen, Prometheus-Metriken.
+
+**Installation** auf Linux mit systemd (Debian, Ubuntu, Raspberry Pi OS,
+Fedora, RHEL, Arch, openSUSE; auch im Proxmox-LXC):
+`curl -fsSL https://github.com/Hustenreizjuengling/PiCache/releases/latest/download/get-picache.sh | sudo sh`
+(prüft die Signatur). Alternativ als Debian-Paket oder mit Docker
+(`deploy/docker`). Danach `http://<IP>:8080/` öffnen, das Einmal-Token von
+`sudo picache setup-token` eingeben und im Router (DHCP) die IP von
+PiCache als DNS-Server eintragen. Wer von einem anderen DNS-Filter kommt,
+übernimmt Listen, Regeln, lokale Einträge und Weiterleitungen mit der
+Anleitung in [docs/GUIDES.md](docs/GUIDES.md#moving-from-another-dns-filter).
+Mindestens 512 MB Arbeitsspeicher; auf einem Raspberry Pi gehört der Cache
+auf eine USB-SSD, nicht auf die SD-Karte. Die ausführliche Dokumentation
+ist englisch ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)). Sicherheitslücken
+bitte vertraulich melden, siehe [docs/SECURITY.md](docs/SECURITY.md).
+
+PiCache steht unter der MIT-Lizenz ([LICENSE](LICENSE)).

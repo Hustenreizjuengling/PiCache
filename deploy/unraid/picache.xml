@@ -18,7 +18,14 @@
 
   PiCache starts as root only to bind its ports, then runs as PICACHE_RUN_AS
   (never empty or 0). Only for IPv6 router advertisements: add the
-  capability NET_RAW (the Docker option cap-add=NET_RAW) to Extra Parameters.
+  capability NET_RAW (the Docker option cap-add=NET_RAW) to Extra Parameters
+  (Docker -> picache -> Edit, then switch on Advanced View at the top right:
+  the basic view does not show the field).
+  Keep restart=unless-stopped there: PiCache exits to restart itself (System
+  -> Restart, a restore, switching DHCP on) and the network has no DNS while
+  it is stopped; stop-timeout=30 gives it time to write its last log batch.
+  A container created from an earlier template keeps its parameters: add
+  restart=unless-stopped and stop-timeout=30 there the same way.
 -->
 <Container version="2">
   <Name>picache</Name>
@@ -34,7 +41,7 @@
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL/>
   <Icon/>
-  <ExtraParams>--cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID --security-opt=no-new-privileges:true --read-only --tmpfs=/tmp:size=64m</ExtraParams>
+  <ExtraParams>--restart=unless-stopped --stop-timeout=30 --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=SETUID --cap-add=SETGID --security-opt=no-new-privileges:true --read-only --tmpfs=/tmp:size=64m</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DonateText/>

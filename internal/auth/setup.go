@@ -151,9 +151,11 @@ func (a *Service) Setup(ctx context.Context, token, username, password string, m
 		a.recordFailure(ckey)
 		return nil, errSetupDone()
 	}
-	if err := a.throttle.allow(a.now(), ckey); err != nil {
+	release, err := a.throttle.allow(a.now(), ckey)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	required, err := a.SetupRequired(ctx)
 	if err != nil {
 		return nil, err

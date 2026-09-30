@@ -25,3 +25,6 @@ func isAddrInUse(err error) bool {
 }
 
 func isPermission(err error) bool { return errors.Is(err, os.ErrPermission) }
+
+// ownerOf names nothing: file owners are not read outside Linux.
+func ownerOf(string) string { return "" }

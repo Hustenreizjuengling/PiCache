@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -95,6 +96,43 @@ func unwantedEDERune(r rune) bool {
 		return true
 	}
 	return false
+}
+
+// queryPadBlock is the block size of the queries to encrypted upstreams
+// (RFC 8467 4.1: block-length padding of queries to 128 bytes).
+const queryPadBlock = 128
+
+// padQuery returns wire (q packed) with an EDNS Padding option (RFC 7830)
+// that makes it a multiple of queryPadBlock bytes, for the encrypted
+// transports (DoT, DoH, DoQ, HTTP/3; never plain DNS or the bootstrap):
+// the length of a query no longer tells the length of its name, and
+// resolvers pad their replies only to padded queries (RFC 8467). q is not
+// modified; without an OPT record (or if q cannot be packed again) wire is
+// returned.
+func padQuery(q *dns.Msg, wire []byte) []byte {
+	if q.IsEdns0() == nil {
+		return wire
+	}
+	n := len(wire) + 4 // the option header
+	fill := (queryPadBlock - n%queryPadBlock) % queryPadBlock
+	p := q.Copy()
+	opt := p.IsEdns0()
+	opt.Option = append(opt.Option, &dns.EDNS0_PADDING{Padding: make([]byte, fill)})
+	out, err := p.Pack()
+	if err != nil || len(out) != n+fill {
+		return wire
+	}
+	return out
+}
+
+// dropPadding removes the Padding options from the OPT record of a reply
+// of an encrypted upstream: the response cache keeps replies without them
+// (a resolver pads its reply to a padded query to a multiple of 468
+// bytes).
+func dropPadding(m *dns.Msg) {
+	if opt := m.IsEdns0(); opt != nil {
+		opt.Option = slices.DeleteFunc(opt.Option, func(o dns.EDNS0) bool { return o.Option() == dns.EDNS0PADDING })
+	}
 }
 
 // addECS adds the client subnet option for p (SCOPE 0, the address masked

@@ -11,7 +11,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"modernc.org/sqlite"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
@@ -345,13 +348,29 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 			log.Info("request error", slog.String("path", logPath(r)), slog.String("kind", code), slog.Any("cause", ae.Err))
 		}
 	}
-	if status == http.StatusInternalServerError {
+	switch {
+	case status == http.StatusInternalServerError && diskFull(err):
+		// Like the health check "disk-data": the admin learns what to fix.
+		log.Error("data disk full", slog.String("method", r.Method), slog.String("path", logPath(r)), slog.Any("err", err))
+		status, code = http.StatusServiceUnavailable, "unavailable"
+		body.Error.Message = "the data disk is full: free space on it (System → Health & about)"
+	case status == http.StatusInternalServerError:
 		log.Error("internal error", slog.String("method", r.Method), slog.String("path", logPath(r)), slog.Any("err", err))
 		body.Error.Message = "internal error (see server log)"
 	}
 	body.Error.Code = code
 	w.Header().Set("Cache-Control", "no-store")
 	_ = writeJSON(w, status, body)
+}
+
+// sqliteFull is SQLite's primary result code SQLITE_FULL.
+const sqliteFull = 13
+
+// diskFull reports an error of a full disk: SQLite's SQLITE_FULL (a
+// database write) or ENOSPC (a file write).
+func diskFull(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code()&0xff == sqliteFull || errors.Is(err, syscall.ENOSPC)
 }
 
 // --- query helpers ---
@@ -487,9 +506,10 @@ func extendDeadlines(w http.ResponseWriter, d time.Duration) {
 
 // sse streams events from ch as Server-Sent Events until the client
 // disconnects, ch is closed, alive() returns false (checked every 15 s with
-// the heartbeat: session revoked or expired) or the stream is 1 h old (the
-// browser reconnects).
-func sse[T any](w http.ResponseWriter, r *http.Request, event string, ch <-chan T, alive func() bool) error {
+// the heartbeat: session revoked or expired), the stream is 1 h old (the
+// browser reconnects) or stop is closed (Server.EndStreams at shutdown; nil
+// never).
+func sse[T any](w http.ResponseWriter, r *http.Request, event string, ch <-chan T, alive func() bool, stop <-chan struct{}) error {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		return fmt.Errorf("streaming unsupported")
@@ -508,6 +528,8 @@ func sse[T any](w http.ResponseWriter, r *http.Request, event string, ch <-chan 
 	for {
 		select {
 		case <-r.Context().Done():
+			return nil
+		case <-stop:
 			return nil
 		case <-deadline.C:
 			return nil

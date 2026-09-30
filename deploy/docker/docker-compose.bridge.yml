@@ -50,9 +50,8 @@ services:
       - "8080:8080/tcp"
       - "8443:8443/tcp"
       # NTP server: set PICACHE_NTP_LISTEN=:123 below and switch it on under
-      # System -> Network. In a container the clock state usually cannot be
-      # read, so clients get answers marked unsynchronised; the host's own
-      # NTP server is the better choice.
+      # System -> Network. The container reads the host's clock state: keep
+      # the host's time synchronised, or answers are marked unsynchronised.
       # - "123:123/udp"
     read_only: true
     cap_drop: [ALL]

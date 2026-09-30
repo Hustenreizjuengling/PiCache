@@ -151,8 +151,8 @@ func TestPlainDNSGate(t *testing.T) {
 
 func TestEncryptedServerNameAnswered(t *testing.T) {
 	e, _ := encEnv(t, nil)
-	e.flt.check["dns.lan"] = listBlock("everything")
-	e.flt.check["phone.dns.lan"] = listBlock("everything")
+	e.flt.setCheck("dns.lan", listBlock("everything"))
+	e.flt.setCheck("phone.dns.lan", listBlock("everything"))
 	lan := netip.MustParseAddr("192.168.1.50")
 	for _, name := range []string{"dns.lan", "phone.dns.lan", "PHONE.Dns.Lan"} {
 		w := e.serveVia(queryConn{proto: ProtoUDP, source: lan}, question(name, dns.TypeA))
@@ -280,8 +280,8 @@ func TestClientIDIdentification(t *testing.T) {
 		"dad":   {ClientID: 2, Name: "Dad", GroupIDs: []int64{adults}, DownloadCacheBypass: true},
 		"quiet": {ClientID: 3, Name: "Quiet", GroupIDs: []int64{adults}, IgnoreLogs: true, IgnoreStats: true},
 	}
-	e.flt.check["kids.example"] = listBlock("kids list")
-	e.flt.scoped["kids.example"] = kids
+	e.flt.setCheck("kids.example", listBlock("kids list"))
+	e.flt.setScope("kids.example", kids)
 
 	for _, proto := range []string{ProtoDoT, ProtoDoH} {
 		// The MAC-identified tablet keeps Kids whatever ClientID it sends.
@@ -494,8 +494,16 @@ func TestDoTPipelinedInOrder(t *testing.T) {
 	if ev := e.logs.waitEvent(t, "pa.example", 0); ev.Protocol != ProtoDoT || ev.DNSClientID != "kid" {
 		t.Fatalf("logged %+v", ev)
 	}
-	if dot, _ := e.srv.EncryptedQueries(); dot != 5 {
-		t.Fatalf("DoT queries %d", dot)
+	// A reply is counted right after it was written: the client can read
+	// the fifth one before it is counted.
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		dot, _ := e.srv.EncryptedQueries()
+		if dot == 5 {
+			break
+		}
+		if dot > 5 || time.Now().After(deadline) {
+			t.Fatalf("DoT queries %d", dot)
+		}
 	}
 
 	// A client that offers ALPN without dot fails the handshake.

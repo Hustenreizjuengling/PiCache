@@ -71,6 +71,21 @@ jobs:
         if: runner.os == 'Linux'
         run: GOARCH=386 go test ./...
 
+  # The query path (DNS server, upstreams, DNSSEC validation) and the
+  # network building blocks under the race detector (it needs cgo).
+  race:
+    name: Go race detector (DNS, netutil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go test -race
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./internal/dns/... ./internal/netutil/...
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest

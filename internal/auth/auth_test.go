@@ -411,6 +411,121 @@ func TestLoginUsernameDelayIsNoLockout(t *testing.T) {
 	}
 }
 
+// SEC-2: sign-ins that run at the same time get no more password checks than
+// the same sign-ins one after another. The password check is held (both
+// hash slots taken) until every attempt either waits for it or was refused.
+func TestLoginThrottleCountsAttemptsInFlight(t *testing.T) {
+	e := newEnv(t)
+	e.withAdmin(t)
+	ctx := context.Background()
+	// run starts the attempts at once and returns how many reached the
+	// password check (wrong password: 401) and how many were refused (429).
+	run := func(t *testing.T, attempts []func() error) (checked, refused int) {
+		t.Helper()
+		for range cap(e.a.hashSem) {
+			e.a.hashSem <- struct{}{}
+		}
+		now := e.clock.Now()
+		errs := make(chan error, len(attempts))
+		for _, attempt := range attempts {
+			go func() { errs <- attempt() }()
+		}
+		var done []error
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			for len(errs) > 0 {
+				done = append(done, <-errs)
+			}
+			// Every attempt that passed the throttle took a global token and
+			// now waits for a hash slot.
+			waiting := globalAttempts - int(e.a.throttle.global.TokensAt(now))
+			if len(done)+waiting == len(attempts) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%d attempts ended, %d wait for the password check, of %d", len(done), waiting, len(attempts))
+			}
+			time.Sleep(time.Millisecond)
+		}
+		for range cap(e.a.hashSem) {
+			<-e.a.hashSem
+		}
+		for len(done) < len(attempts) {
+			done = append(done, <-errs)
+		}
+		for _, err := range done {
+			switch apperr.KindOf(err) {
+			case apperr.KindUnauthorized:
+				checked++
+			case apperr.KindTooMany:
+				refused++
+			default:
+				t.Fatalf("attempt: %v", err)
+			}
+		}
+		return checked, refused
+	}
+
+	// One client key, ten usernames: the client is locked out after five
+	// failures, so five reach the password check.
+	var attempts []func() error
+	for i := range globalAttempts {
+		attempts = append(attempts, func() error {
+			_, err := e.a.Login(ctx, fmt.Sprintf("guess%d", i), "wrong password", "", ReqMeta{IP: "192.168.1.77"})
+			return err
+		})
+	}
+	if checked, refused := run(t, attempts); checked != maxFailures || refused != globalAttempts-maxFailures {
+		t.Fatalf("one client: %d checked, %d refused; want %d and %d", checked, refused, maxFailures, globalAttempts-maxFailures)
+	}
+
+	// The username "admin" once it is delayed, ten client keys: one attempt
+	// per delay.
+	for i := range maxFailures {
+		e.clock.Advance(time.Minute) // the global limit refills
+		if _, err := e.a.Login(ctx, "admin", "wrong password", "", ReqMeta{IP: fmt.Sprintf("10.0.1.%d", i+1)}); apperr.KindOf(err) != apperr.KindUnauthorized {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+	}
+	e.clock.Advance(userDelayMax)
+	attempts = nil
+	for i := range globalAttempts {
+		attempts = append(attempts, func() error {
+			_, err := e.a.Login(ctx, "admin", "wrong password", "", ReqMeta{IP: fmt.Sprintf("10.0.2.%d", i+1)})
+			return err
+		})
+	}
+	if checked, refused := run(t, attempts); checked != 1 || refused != globalAttempts-1 {
+		t.Fatalf("delayed username: %d checked, %d refused; want 1 and %d", checked, refused, globalAttempts-1)
+	}
+
+	// Password confirmations of one session: five, then the session key is
+	// locked.
+	e.clock.Advance(failureWindow + time.Minute)
+	s := e.login(t)
+	p, err := e.a.Authenticate(cookieRequest(s.Token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts = nil
+	for range globalAttempts {
+		attempts = append(attempts, func() error {
+			ok, _, err := e.a.checkUserPassword(ctx, p, "wrong password")
+			if err == nil && !ok {
+				err = apperr.Unauthorized("wrong password")
+			}
+			return err
+		})
+	}
+	e.clock.Advance(time.Minute)
+	if checked, refused := run(t, attempts); checked != maxFailures || refused != globalAttempts-maxFailures {
+		t.Fatalf("password confirmations: %d checked, %d refused; want %d and %d", checked, refused, maxFailures, globalAttempts-maxFailures)
+	}
+	if len(e.a.throttle.pending) != 0 {
+		t.Fatalf("reservations left: %v", e.a.throttle.pending)
+	}
+}
+
 // SEC-06: /auth/setup after setup neither uses the global attempt budget nor
 // goes unpunished: the caller is locked out like a password guesser, and
 // sign-ins keep working.

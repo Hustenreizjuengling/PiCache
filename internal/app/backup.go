@@ -535,6 +535,15 @@ func (a *App) preUpgradeBackup(ctx context.Context) error {
 func PreUpgradeBackup(ctx context.Context, d *db.DB, dataDir string, log *slog.Logger) error {
 	var hadSchema int
 	_ = d.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'schema_migrations'`).Scan(&hadSchema)
+	if hadSchema > 0 {
+		// An older binary on a newer database (a downgrade without the copy)
+		// neither copies it under its own, older name nor records itself as
+		// the database's version: the next upgrade would copy the migrated
+		// database under that name and prune a genuine older copy.
+		if err := refuseNewerSchema(ctx, d); err != nil {
+			return err
+		}
+	}
 	var prev string // stays "" while app_meta does not exist yet
 	_ = d.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = 'binary_version'`).Scan(&prev)
 	cur := version.Version
@@ -560,6 +569,31 @@ func PreUpgradeBackup(ctx context.Context, d *db.DB, dataDir string, log *slog.L
 	_, err := d.W.ExecContext(ctx, `INSERT INTO app_meta (key, value) VALUES ('binary_version', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, cur)
 	return err
+}
+
+// refuseNewerSchema returns db.Migrate's downgrade refusal when a component
+// of picache.db this binary knows has a newer schema version than this
+// binary (components it does not know are left to their own version).
+func refuseNewerSchema(ctx context.Context, d *db.DB) error {
+	rows, err := d.R.QueryContext(ctx, `SELECT component, MAX(version) FROM schema_migrations GROUP BY component ORDER BY component`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	known := ConfigSchemaVersions()
+	for rows.Next() {
+		var component string
+		var version int
+		if err := rows.Scan(&component, &version); err != nil {
+			return err
+		}
+		if steps, ok := known[component]; ok && version > steps {
+			return fmt.Errorf("db: %s schema version %d is newer than this binary (%d); refusing to downgrade "+
+				"(start the newer version again, or restore the copy made before the upgrade: "+
+				"docs/DEPLOYMENT.md \"Going back to an earlier version\")", component, version, steps)
+		}
+	}
+	return rows.Err()
 }
 
 func sanitizeFile(s string) string {

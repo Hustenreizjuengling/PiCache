@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -639,6 +642,85 @@ func TestPreUpgradeBackupBeforeMigrations(t *testing.T) {
 	}
 	if schema, bin := appState(a.cdb.R); schema != len(oldMigrations)+1 || bin != "v1.1.0" {
 		t.Fatalf("migrated without a copy: app schema %d, version %s", schema, bin)
+	}
+}
+
+// OPS-4: an older binary started on the database of a newer version
+// refuses before it copies anything or records its own version, so the
+// newer version's next start makes no copy of its migrated database under
+// the older name and prunes no genuine pre-upgrade copy.
+func TestPreUpgradeBackupRefusesNewerSchema(t *testing.T) {
+	ctx := context.Background()
+	a := newRestoreApp(t)
+	makeConfigDB(t, a.paths.ConfigDB, "owner", "owner password", "en")
+	openLive(t, a)
+	oldVersion := version.Version
+	t.Cleanup(func() { version.Version = oldVersion })
+	version.Version = "v1.1.0"
+	if err := a.preUpgradeBackup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The newer version migrated settings one step further.
+	steps := ConfigSchemaVersions()["settings"]
+	if _, err := a.cdb.W.ExecContext(ctx, `INSERT INTO schema_migrations (component, version, applied_at) VALUES ('settings', ?, 1)`,
+		steps+1); err != nil {
+		t.Fatal(err)
+	}
+	version.Version = "v1.0.0" // the older binary
+	err := a.preUpgradeBackup(ctx)
+	want := fmt.Sprintf("db: settings schema version %d is newer than this binary (%d); refusing to downgrade", steps+1, steps)
+	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "Going back to an earlier version") {
+		t.Fatalf("older binary: %v", err)
+	}
+	if copies, _ := filepath.Glob(filepath.Join(a.cfg.DataDir, "backups", "picache-*.db")); len(copies) != 0 {
+		t.Fatalf("the older binary made copies: %v", copies)
+	}
+	var bin string
+	if err := a.cdb.R.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key = 'binary_version'`).Scan(&bin); err != nil || bin != "v1.1.0" {
+		t.Fatalf("binary_version %q %v: the older binary recorded itself", bin, err)
+	}
+}
+
+// OPS-6: a damaged picache.db or one PiCache cannot write names the cause
+// and the fix instead of a bare SQLite message.
+func TestExplainConfigDBError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "picache.db")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("not a database "), 512), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(path, 1)
+	if err == nil {
+		d.Close()
+		t.Fatal("test setup: the garbage file opened as a database")
+	}
+	got := explainConfigDBError(path, err)
+	if !errors.Is(got, err) || !strings.Contains(got.Error(), path+" is damaged: stop PiCache and run `picache db check`") {
+		t.Fatalf("damaged: %v", got)
+	}
+	if other := errors.New("other"); explainConfigDBError(path, other) != other || explainConfigDBError(path, nil) != nil {
+		t.Fatal("an error that is not SQLite's was changed")
+	}
+	// A file this user cannot write (as root nothing is refused).
+	if os.Geteuid() == 0 {
+		return
+	}
+	if err := os.WriteFile(path, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	} else {
+		if err := os.Chmod(path, 0o400); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	}
+	if hint := writableHint(path); !strings.Contains(hint, "is not writable by PiCache") || !strings.Contains(hint, "chown -R picache:picache "+dir) {
+		t.Fatalf("unwritable: %q", hint)
 	}
 }
 

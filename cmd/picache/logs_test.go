@@ -164,6 +164,32 @@ func TestEnvFileSkipsToken(t *testing.T) {
 	}
 }
 
+// OPS-8: of a key listed twice the last line wins, as for systemd's
+// EnvironmentFile= (which the service reads), so the CLI's health check
+// probes the listener the service binds; the environment still wins.
+func TestEnvFileLastLineWins(t *testing.T) {
+	cliEnv(t)
+	for _, k := range []string{"PICACHE_DNS_LISTEN", "PICACHE_WEB_LISTEN"} {
+		t.Setenv(k, "") // restored after the test
+		os.Unsetenv(k)
+	}
+	t.Setenv("PICACHE_LOG_FORMAT", "text")
+	f := filepath.Join(t.TempDir(), "picache.env")
+	if err := os.WriteFile(f, []byte("PICACHE_DNS_LISTEN=:53\nPICACHE_WEB_LISTEN=:8080\nPICACHE_LOG_FORMAT=json\n"+
+		"# appended later\nPICACHE_DNS_LISTEN=10.0.0.3:53\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PICACHE_ENV_FILE", f)
+	if err := loadEnvFile(); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"PICACHE_DNS_LISTEN": "10.0.0.3:53", "PICACHE_WEB_LISTEN": ":8080", "PICACHE_LOG_FORMAT": "text"} {
+		if got := os.Getenv(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+}
+
 func TestEscapeControls(t *testing.T) {
 	if got := escapeControls("a\x1b[31mb\u202ec\x7fd\u0085e\u2066f\n"); got != `a\u001b[31mb\u202ec\u007fd\u0085e\u2066f\u000a` {
 		t.Fatalf("escaped %q", got)

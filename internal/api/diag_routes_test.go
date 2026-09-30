@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/applog"
+	"github.com/hustenreizjuengling/picache/internal/auth"
 	"github.com/hustenreizjuengling/picache/internal/db"
 	"github.com/hustenreizjuengling/picache/internal/hostinfo"
 	"github.com/hustenreizjuengling/picache/internal/logs"
@@ -268,6 +269,58 @@ func TestSystemLogStreamLimit(t *testing.T) {
 		t.Fatalf("query/cache stream: %v", err)
 	}
 	c()
+}
+
+// OPS-2: EndStreams (the start of the shutdown) ends the open event streams,
+// the application log's included, which nothing else ends while PiCache
+// stops, and a stream requested afterwards ends at once.
+func TestEndStreamsEndsOpenStreams(t *testing.T) {
+	e := newDiagEnv(t)
+	srv := httptest.NewServer(e.srv.Handler())
+	defer srv.Close()
+	open := func(path string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = coreHost
+		req.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: e.admin})
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+			t.Fatalf("%s: %d %q", path, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		return resp
+	}
+	// ended reports whether the stream's body ends within 5 s.
+	ended := func(resp *http.Response) bool {
+		done := make(chan struct{})
+		go func() { _, _ = io.Copy(io.Discard, resp.Body); close(done) }()
+		select {
+		case <-done:
+			return true
+		case <-time.After(5 * time.Second):
+			resp.Body.Close()
+			return false
+		}
+	}
+	// The headers are sent after subscribing: the streams are open.
+	appLog, queries := open("/api/v1/stream/system-log"), open("/api/v1/stream/queries")
+	defer appLog.Body.Close()
+	defer queries.Body.Close()
+	e.srv.EndStreams()
+	e.srv.EndStreams() // a second call does nothing
+	if !ended(appLog) || !ended(queries) {
+		t.Fatal("an open stream did not end")
+	}
+	later := open("/api/v1/stream/cache")
+	defer later.Body.Close()
+	if !ended(later) {
+		t.Fatal("a stream opened after EndStreams did not end at once")
+	}
 }
 
 // The warning history: viewers see no security entries and no names, the

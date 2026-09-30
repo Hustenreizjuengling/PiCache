@@ -115,6 +115,87 @@ func TestParseUpstream(t *testing.T) {
 	}
 }
 
+// A port written as host#port (as other DNS software writes local
+// resolvers) is the port of udp, tcp, tls and quic upstreams; url.Parse
+// makes it a fragment, which was dropped, so such an upstream was asked
+// on the default port. Any other fragment is refused; DoH keeps refusing
+// fragments. Raw and Display keep the typed form.
+func TestParseUpstreamHashPort(t *testing.T) {
+	for _, tc := range []struct{ in, proto, addr string }{
+		{"10.0.0.53#5353", "udp", "10.0.0.53:5353"},
+		{"127.0.0.1#5335", "udp", "127.0.0.1:5335"},
+		{"udp://10.0.0.53#5353", "udp", "10.0.0.53:5353"},
+		{"UDP://10.0.0.53#5353", "udp", "10.0.0.53:5353"},
+		{"tcp://10.0.0.53#5353", "tcp", "10.0.0.53:5353"},
+		{"tls://dns.example#8853", "tls", "dns.example:8853"},
+		{"quic://dns.example#8853", "quic", "dns.example:8853"},
+		{"[fd00::53]#5335", "udp", "[fd00::53]:5335"},
+		{"tcp://[fd00::53]#5335", "tcp", "[fd00::53]:5335"},
+		{"tls://[2001:db8::1]#8853", "tls", "[2001:db8::1]:8853"},
+		{"[fe80::1%eth0]#5353", "udp", "[fe80::1%eth0]:5353"},
+		{"dns.example#5353", "udp", "dns.example:5353"},
+		{"10.0.0.53/#5353", "udp", "10.0.0.53:5353"},
+		{"10.0.0.53#1", "udp", "10.0.0.53:1"},
+		{"10.0.0.53#65535", "udp", "10.0.0.53:65535"},
+		{"10.0.0.53#053", "udp", "10.0.0.53:53"},
+	} {
+		spec, err := ParseUpstream(" " + tc.in + " ")
+		if err != nil {
+			t.Errorf("%q: %v", tc.in, err)
+			continue
+		}
+		if spec.Proto != tc.proto || spec.Addr() != tc.addr || spec.Raw != tc.in || spec.Display() != tc.in || UpstreamDisplay(tc.in) != tc.in {
+			t.Errorf("%q: %s %s raw %q display %q", tc.in, spec.Proto, spec.Addr(), spec.Raw, spec.Display())
+		}
+	}
+	const twice, notPort, doh = "the port is given twice", `only a port between 1 and 65535 may follow "#"`, "must not contain credentials or fragment"
+	for _, tc := range []struct{ in, want string }{
+		{"10.0.0.53:53#5353", twice},
+		{"udp://10.0.0.53:5353#5353", twice},
+		{"[fd00::53]:53#5335", twice},
+		{"tls://dns.example:853#853", twice},
+		{"quic://dns.example:853#8853", twice},
+		{"10.0.0.53#", notPort},
+		{"10.0.0.53#0", notPort},
+		{"10.0.0.53#00", notPort},
+		{"10.0.0.53#65536", notPort},
+		{"10.0.0.53#99999999999999999999", notPort},
+		{"10.0.0.53#abc", notPort},
+		{"10.0.0.53#+53", notPort},
+		{"10.0.0.53#-53", notPort},
+		{"10.0.0.53#5353/x", notPort},
+		{"10.0.0.53#%35353", notPort},
+		{"10.0.0.53#53#53", notPort},
+		{"tcp://[fd00::53]#dns", notPort},
+		{"tls://dns.example#comment", notPort},
+		{"quic://dns.example#", notPort},
+		{"https://dns.example/dns-query#443", doh},
+		{"https://dns.example#443", doh},
+		{"h3://dns.example/dns-query#443", doh},
+	} {
+		_, err := ParseUpstream(tc.in)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: err = %v, want %q", tc.in, err, tc.want)
+		} else if tc.want != doh && !strings.Contains(err.Error(), "write the port as host:port") {
+			t.Errorf("%q: %v does not say how to write the port", tc.in, err)
+		}
+	}
+	// A setting stored with #port by an earlier version (which accepted
+	// and ignored it) loads and validates.
+	a := Defaults()
+	a.DNS.Upstreams = []string{"10.0.0.53#5353", "[fd00::53]#5335"}
+	a.DNS.FallbackUpstreams = []string{"tls://9.9.9.9#853"}
+	a.DNS.LocalPTRUpstreams = []string{"192.168.1.1#53"}
+	a.normalize()
+	if err := a.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	a.DNS.Upstreams = []string{"10.0.0.53#dns"}
+	if err := a.Validate(); err == nil || !strings.Contains(err.Error(), "dns.upstreams[0]") {
+		t.Fatalf("invalid #: %v", err)
+	}
+}
+
 // A document stored by a version without the updates section gets its
 // defaults: daily checks on, stable releases only.
 func TestUpdatesDefaultsForOlderDocuments(t *testing.T) {

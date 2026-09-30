@@ -5,6 +5,205 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Unraid:** the template now passes `--restart=unless-stopped
+  --stop-timeout=30` in *Extra Parameters*. An existing container keeps its
+  parameters: add both there (**Docker → picache → Edit**, then switch on
+  *Advanced View* at the top right: the basic view does not show the
+  field), or PiCache stays stopped after **System → Restart**, a restore,
+  switching the DHCP server on or a crash, and the network has no DNS.
+
+### Added
+
+- **Guide "Moving from another DNS filter"** (docs/GUIDES.md): how to
+  bring lists, own rules (adblock-style and regular-expression lists),
+  local records (hosts files), conditional forwarders, clients and groups
+  and DHCP reservations over with PiCache's importers, with the
+  conversions of the usual text formats and the order of the switch-over.
+
+### Changed
+
+- **README** rewritten for 1.0: features, requirements, installation,
+  network set-up, data, backups, updates and going back, development,
+  troubleshooting, security and known limitations, with current
+  screenshots.
+
+- **Prometheus metrics:** `/metrics` accepts an API token of scope read;
+  admin tokens keep working, sessions and sync tokens are still refused.
+  The scrape configuration no longer needs a token that can change the
+  settings, and the UI and the guide suggest a read-only token.
+- **Installing an older release:** `install.sh` and `get-picache.sh`
+  refuse a release older than the installed one, because the older version
+  cannot open a database the newer one migrated and would not start. The
+  message gives the safe order: unless the upgrade notes say that the older
+  version opens the database, stop PiCache and put the copy named after it
+  back first, then install with `PICACHE_ALLOW_DOWNGRADE=1` (as for the
+  Debian package) and the options of the run (`--without-updater` is not
+  kept between runs). The Debian package's steps after a failed upgrade
+  use the same order.
+
+### Fixed
+
+- **DNS over TCP:** a reply that cannot be written within 10 s now closes
+  the connection. A client that stopped reading held its connection, a
+  handler and an in-flight slot until it closed the socket (the DNS library
+  never applies a write timeout).
+- **DoH upstreams:** an HTTP/2 connection that died silently (lost NAT
+  state, a router reboot) is pinged after 10 s without a frame and replaced
+  within about 15 s. Before, queries timed out on it until cancelled
+  requests had used up the server's stream limit, for minutes on a quiet
+  network.
+- **DoH upstreams:** every dial ends with the attempt timeout, and an
+  upstream gets at most 4 connections (dials included). A black-holed
+  upstream left a socket and a goroutine behind every request for about two
+  minutes, so memory grew with the query rate.
+- **DoH and DoT upstreams:** queries no longer fail with "unexpected EOF",
+  "EOF" or "connection reset" when the server closes a connection just as
+  a query is sent on it, or cuts the TLS handshake of a new connection.
+  dns.quad9.net closes its HTTP/2 connections after seconds to minutes
+  without announcing it (no GOAWAY) and closes or resets a share of new
+  TLS handshakes, on its DoH and DoT ports; the query of that moment
+  failed (about 0.2–0.6 % of the queries), went to the fallback DNS, and
+  the health check warned "fallback DNS in use". Such a query is now sent
+  once more, at once, over a new connection and within the same time
+  limit (a closed reused connection also for HTTP/3 upstreams); at most
+  once per query. A reply with an HTTP status, a malformed reply, a
+  certificate error, a timeout or a refused connection is never a reason
+  to send it again.
+- **Health check `upstreams`:** a single query answered by the fallback DNS
+  made the check warn "fallback DNS in use" for 5 minutes, several times a
+  day with the default upstreams. It now warns once the fallback answered
+  at least 3 queries within 5 minutes, and still at once while no default
+  upstream is healthy.
+- **Upstreams with the port written as `#port`:** `10.0.0.53#5353`, the way
+  other DNS filters write local resolvers such as `127.0.0.1#5335`, was
+  accepted but asked on port 53, as upstream, fallback, group upstream and
+  conditional-forwarder target (the forwarder import too). Plain, `tcp://`,
+  `tls://` and `quic://` upstreams now take the port after `#` like after
+  `:`, and are kept and shown as typed. An upstream an earlier version
+  saved this way reaches the intended port after the update, without a
+  change. Other text after `#` (a port after `:` as well, a name, 0 or a
+  number over 65535) is refused ("write the port as host:port"); an entry
+  an earlier version saved with such text is ignored with a warning in the
+  log until it is corrected. DoH URLs still refuse `#`. Support bundles
+  reduce the address of a `#port` upstream like that of a `:port` one
+  (before, `203.0.113.53#5353` became `*.113.53#5353`).
+- **Stale clock:** a host without a real-time clock whose time was
+  restored from its last shutdown could not reach any encrypted upstream
+  once their certificates had been renewed meanwhile, so every name, the
+  NTP servers' included, failed. While the host clock is not synchronised,
+  PiCache now checks the upstreams' certificates at the start of the renewed
+  certificate's validity (its chain must verify; an expired certificate and
+  a synchronised clock change nothing) and logs a warning.
+- **DNSSEC:** a device's share of the chain lookups now waits for its turn
+  within the validation's time, like the global limit, instead of failing
+  at once (25 per second with a burst of 200 instead of 20 and 100), so a
+  cold burst of new zones from one device no longer gets SERVFAIL. The
+  share is keyed by the device's MAC address when it is known, so IPv6
+  privacy addresses or extra addresses no longer get a share each. A
+  refused lookup is logged once per device with the `dns.rateLimitExempt`
+  hint instead of a warning per zone.
+- **Encrypted upstreams by name:** when the first bootstrap address of a
+  DoT, DoH or DoQ upstream drops the packets silently (a broken IPv6 path
+  with IPv6 preferred for the bootstrap, a filtered anycast address), every
+  connection attempt gives the next address its share of the time. Before,
+  an attempt could spend all of it on the first address, so a DoT or DoQ
+  upstream stayed down as long as that address did not answer.
+- **Fallback upstreams:** while every default upstream is unhealthy, the
+  fallbacks answer after 500 ms instead of after the whole 3 s attempt; the
+  default upstreams are still asked, so their recovery ends this at once.
+- Flaky tests on Windows (the DoT answered counter, a loopback RTT of 0)
+  and data races in test fakes; CI runs the DNS and netutil tests under the
+  race detector.
+- **Restarts:** DNS stays up until the web UI and the download cache
+  have stopped, and open event streams end at once. An open application
+  log held every stop for 12 s with DNS already down, longer than
+  `docker stop` waits by default (10 s), so PiCache was killed before it
+  wrote its last log batch. A download on the cache port is now cut after
+  3 s (its client resumes it) instead of holding the stop for 12 s.
+- **Admin password file:** a `PICACHE_ADMIN_PASSWORD_FILE` left in
+  `picache.env` (or in the compose file) after its file was deleted no
+  longer stops PiCache once an account exists; it logs a warning instead.
+  Before the first account exists a missing file still stops the start.
+- **Command line and `picache.env`:** of a variable listed twice the CLI
+  now uses the last line, like systemd. `picache healthcheck` and
+  `sudo picache update` could probe another DNS listener than the service
+  bound, report it unhealthy and roll back a good update.
+- **Memory limit:** `GOMEMLIMIT` and the entry budget of the blocklists
+  follow a `MemoryMax=` of `picache.service`, limits of the cgroups above
+  it and cgroup v1 limits (for example Synology's Container Manager), not
+  only the limit a container sees at the root of its cgroup namespace.
+- **Start errors:** a `picache.db` that PiCache cannot write now names the
+  cause (the file or the data directory belongs to another user, with the
+  `chown` command, or the file system is read-only), and a damaged one
+  points to `picache db check`; neither is called a "pre-upgrade backup"
+  error any more.
+- **Downgrades without the copy:** from this release on, an older version
+  started on a newer `picache.db` refuses before it copies the database
+  under its own name or records its version. Before, the next start of the
+  newer version saved the migrated database as the older version's copy
+  and could prune the genuine one. Versions before 1.0.0 still behave that
+  way: put the copy back before you start one of them (DEPLOYMENT "Going
+  back to an earlier version").
+- **Full data disk:** saving a setting answers 503 "the data disk is full"
+  instead of "internal error (see server log)".
+- **Broken `logs.db`:** only the newest `logs.db.broken-*` copy is kept;
+  each earlier corruption or downgrade left a copy of up to 2 GiB.
+- **Follower sync:** a reload that fails after the sync was committed fails
+  the run, so the next run applies the export again, including lists whose
+  address, kind or format changed (reloaded, not kept with the old ones)
+  and the downloaded copies of lists that run removed. Before, the follower
+  answered with the previous configuration while its database held the new
+  one, and the sync was reported as successful.
+- **`get-picache.sh`:** it works on hosts that mount `/tmp` noexec (it runs
+  the downloaded program below `/var/tmp` or `$TMPDIR`), and a noexec
+  directory is named as the cause instead of "the downloaded binary does
+  not run on this machine".
+- **System → Updates:** the notice shown while a pre-release runs on the
+  stable channel pointed to the switch "Include pre-releases", which was
+  replaced by the update channel in 0.15.0; it now says to choose the
+  channel Beta.
+- **Documentation:** scheduled backups are off by default, and
+  `keys/master.key` and `tls/` (the local CA your devices trust) belong
+  next to every backup and move (DEPLOYMENT "Backup and restore");
+  `picache.prev` exists only after an update from the web UI or
+  `sudo picache update`, so check its version before going back with it;
+  the update channel and the install proxy are on **System → Updates**;
+  the maintenance commands ignore `PICACHE_ADMIN_PASSWORD_FILE`; the
+  development command no longer opens DoT on all interfaces; the compose
+  files no longer claim that a container cannot read the host's clock
+  state.
+
+### Security
+
+- **Encrypted upstreams:** queries to DoT, DoH, DoQ and HTTP/3 upstreams
+  are padded to multiples of 128 bytes (EDNS Padding, RFC 8467), so their
+  length no longer reveals the length of the name, and resolvers pad their
+  replies too.
+- SECURITY and ARCHITECTURE now name the residual risk of DNS rebinding to
+  global IPv6 addresses of the LAN, and how to cover a static prefix.
+- **Web UI connections:** the HTTP and HTTPS web listeners accept at
+  most 64 connections per client address, 256 for the IPv6 addresses of
+  one /64 of the LAN together, and 1024 in total (trusted reverse proxies
+  count only toward the total), like the other listeners; this machine may
+  open 64 more, so a host that fills the total cannot fail PiCache's health
+  check, mark the container unhealthy or roll back an update. One host in
+  the allowed networks could open idle connections until the kernel
+  stopped PiCache for lack of memory (about 1 GB for 25 000 idle HTTP/2
+  connections), and DNS with it.
+- **`get-picache.sh --version`:** the downloaded binary must report the
+  release asked for. The signature holds for every release, so a mirror
+  given with `PICACHE_RELEASE_BASE` could serve an older signed release
+  under a newer version and the script installed it; without `--version`
+  it names the installed version next to the new one.
+- **Sign-in throttling:** attempts in flight now count as failures, so
+  concurrent sign-ins and password confirmations get no more password
+  checks than the same requests one after another. Before, parallel
+  requests passed the check together: ten from one address got ten
+  guesses where the lockout allows five, and a delayed username several
+  per delay.
+
 ## [0.17.0] - 2026-09-30
 
 ### Upgrade notes

@@ -169,8 +169,9 @@ func (w *WebAccess) shouldWarn(ip netip.Addr) bool {
 
 // Listener wraps a web listener (stage 1): a connection whose peer the
 // current ACL does not allow is closed right after accept, before TLS and
-// HTTP. No connection cap is added (a cap per address would throttle
-// everyone behind a reverse proxy); the HTTP server timeouts bound them.
+// HTTP. It adds no connection cap itself: the app wraps the result in its
+// web connection limiter (app.webLimiter: per client, per IPv6 /64 and in
+// total; trusted proxies only in total, loopback with a reserve beyond it).
 func (w *WebAccess) Listener(ln net.Listener) net.Listener { return &webListener{Listener: ln, w: w} }
 
 type webListener struct {

@@ -53,7 +53,9 @@ services:
     security_opt: ["no-new-privileges:true"]
     tmpfs:
       - /tmp:size=64m
-    # PiCache shuts down within 15 s; give it time to close its databases.
+    # PiCache usually stops within a second (DNS stays up until the web UI
+    # and the download cache have stopped); give it up to 30 s to close its
+    # databases.
     stop_grace_period: 30s
     volumes:
       # Configuration, logs, keys (local disk only; never a NAS).
@@ -99,9 +101,9 @@ services:
     #   # compressed generations) or to a syslog server (plain text).
     #   PICACHE_LOG_FILE: /data/picache.log
     #   PICACHE_LOG_SYSLOG: "udp://192.168.1.10:514"
-    #   # NTP server (switched on under System -> Network; the clock state
-    #   # usually cannot be read in a container: answers then say
-    #   # unsynchronised).
+    #   # NTP server (switched on under System -> Network). The container
+    #   # reads the host's clock state: keep the host's time synchronised
+    #   # (Docker Desktop's VM reports its clock as not synchronised).
     #   PICACHE_NTP_LISTEN: ":123"
     #   # A settings document applied on the first start (readable by
     #   # 65532), e.g. from a Docker config or secret.

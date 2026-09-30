@@ -5,13 +5,281 @@ it is; replace the placeholders in angle brackets (`<LAN-CIDR>`, `<PiCache
 IP>`, …). Steps that were not tried on a real device or installation are
 marked *not verified on a real device*.
 
-Contents: [Unbound as a local recursive resolver](#unbound-as-a-local-recursive-resolver) ·
+Contents: [Moving from another DNS filter](#moving-from-another-dns-filter) ·
+[Unbound as a local recursive resolver](#unbound-as-a-local-recursive-resolver) ·
 [Filtering away from home](#filtering-away-from-home) ·
 [Home Assistant](#home-assistant) · [Firewall rules](#firewall-rules)
 
 See also [DEPLOYMENT.md](DEPLOYMENT.md) (installation),
 [ROUTERS.md](ROUTERS.md) (router settings) and [DEVICES.md](DEVICES.md)
 (single devices).
+
+---
+
+## Moving from another DNS filter
+
+PiCache cannot read another filter's database, but everything such a filter
+holds can be exported as text and pasted into PiCache's importers. Every
+importer shows a **preview** first and saves **all or nothing**: one line
+with an error (the preview names the line and the reason) means nothing is
+saved until you fix or remove it (the rule import offers **Remove the lines
+with errors**). Query history and statistics do not move over.
+
+### What goes where
+
+| In the old filter | Typical export | In PiCache |
+|---|---|---|
+| Subscribed block and allow lists | their URLs | **Filtering → Blocklists → Add blocklist** / **Add allowlist**, or the catalogue ([below](#2-lists)) |
+| Own block and allow rules, block and allow domain lists | adblock-style lines (`\|\|example.com^`, `@@\|\|example.com^`), domain names, hosts lines | **Filtering → Rules → Import** |
+| Regular-expression lists | one expression per line | **Filtering → Rules → Import**, each wrapped in `/…/` |
+| Blocked answer addresses | addresses and networks | **Filtering → Rules → Rules for answer addresses** (by hand), or a list with the content *Answer IP addresses* |
+| Local DNS records | a hosts file, or `address=/name/ip` lines | **Local DNS → Records → Import hosts file** |
+| CNAME and wildcard records | `cname=` lines, `address=/name/ip` for a name and its subdomains | **Local DNS → Records → Add record** (by hand) |
+| Conditional forwarding | `server=/domain/ip` lines, or a setting "network, router, local domain" | **Local DNS → Forwarders → Import**, or the router resolver ([below](#5-conditional-forwarding)) |
+| Clients and groups, per-client rules | a list of names, addresses and MAC addresses | **Clients & groups** (by hand or through the API) |
+| DHCP reservations | `dhcp-host=` lines, a CSV or hosts file | **DNS → DHCP → Reserved addresses → Import** |
+| Upstream servers, blocking reply, retention | settings | **DNS settings**, **System → Logs & privacy** (by hand) |
+
+Work in this order: groups and clients first (the imports can assign rules
+and records to groups), then lists, rules, local records, forwarders and
+reservations, then the switch-over. The commands below are for a shell
+with `sed` (any Linux or macOS machine, or Git Bash); check what they
+write before you paste it. `<PiCache IP>` is PiCache's address.
+
+### Before you start: where PiCache runs
+
+- **On another machine or container** (the easy way): install PiCache
+  there ([DEPLOYMENT.md](DEPLOYMENT.md)) and keep the old filter running
+  until the [switch-over](#8-switch-over) is complete.
+- **On the same machine:** both need port 53. The installer notices that
+  port 53 is taken and installs PiCache without starting it. Let PiCache
+  answer on a spare port while you move the configuration over: add
+  `PICACHE_DNS_LISTEN=127.0.0.1:1053` to `/etc/picache/picache.env`, then
+  `sudo systemctl start picache` (Docker: `PICACHE_DNS_LISTEN: "127.0.0.1:1053"`
+  under `environment:`). If the old filter's web interface holds port 8080,
+  open PiCache at `https://<PiCache IP>:8443/`.
+
+Then complete the [first-run setup](DEPLOYMENT.md#first-run-setup).
+
+### 1. Groups and clients
+
+There is no import for clients. Create the groups first (**Clients &
+groups → Groups → Add group**), then the clients (**Clients → Add
+client**, or **Seen recently → Add as client** for devices that already
+asked PiCache). A client is identified by IP addresses, networks (CIDR),
+MAC addresses, `clientid:<id>` (encrypted DNS), `iface:<interface>` or
+`host:<name>`. A client gets exactly the groups you give it: keep
+**Default** among them if the Default group's lists and rules should
+still apply to it. Devices you do not add are in Default.
+
+Per-client rules of the old filter (rules that name a client or a client
+tag) become groups: create a group for the devices, give them that group,
+and import the rules for it (step 3). For a single device, **Allow only for
+this device** / **Block only for this device** in a query log row creates a
+group of its own and the rule for it.
+
+Many clients can be created with an admin API token (**System → API
+tokens**) from a tab-separated file of name, address, MAC address and
+group id (`GET /api/v1/groups` lists the ids; the Default group is `1`).
+The commands use HTTPS, so the token does not cross the network in clear
+text: download PiCache's CA as `picache-ca.crt` under **System → HTTPS
+certificate** first (with a certificate of your own, use its name and
+leave out `--cacert`). Each line prints what it added and the HTTP status;
+the loop stops at the first status other than 201 and shows the reply (a
+307 means a plain `http://` address met **Redirect HTTP to HTTPS**):
+
+```sh
+export PICACHE_TOKEN=pc_...
+while IFS="$(printf '\t')" read -r name ip mac group; do
+  code=$(curl -sS --cacert picache-ca.crt -o reply.json -w '%{http_code}' \
+    -H "Authorization: Bearer $PICACHE_TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$name\",\"identifiers\":[\"$ip\",\"$mac\"],\"groupIds\":[$group]}" \
+    "https://<PiCache IP>:8443/api/v1/clients")
+  echo "$name: $code"
+  [ "$code" = 201 ] || { cat reply.json; echo; break; }
+done < clients.tsv
+```
+
+### 2. Lists
+
+The lists your old filter subscribes to work in PiCache as they are: hosts
+files, domain lists and adblock-style lists (`$important`, `$badfilter`,
+`$dnstype` and `$denyallow` are understood; lines with other modifiers are
+counted as unsupported and skipped). Look for each list in the catalogue of
+**Filtering → Blocklists** first (it keeps the list's category and
+maintainer); add the others with **Add blocklist** or **Add allowlist**:
+the address (https; plain http only for a private IP address), the groups,
+and **Plain domain names**: whether a line that is only a name blocks just
+that name (the default) or its subdomains too. HaGeZi Multi NORMAL is
+subscribed on a new installation; disable it if you do not want it. At
+most 100 lists.
+
+A list file of your own can go to `<data>/lists/local/` (for example
+`/var/lib/picache/lists/local/own.txt`, readable by the service user) and be
+added as `file:///var/lib/picache/lists/local/own.txt`, or be imported as
+rules (step 3). Many URLs at once, one per line in `lists.txt`, go to the
+Default group with:
+
+```sh
+while read -r url; do
+  code=$(curl -sS --cacert picache-ca.crt -o reply.json -w '%{http_code}' \
+    -H "Authorization: Bearer $PICACHE_TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"url\":\"$url\",\"enabled\":true}" "https://<PiCache IP>:8443/api/v1/filter/lists")
+  echo "$url: $code"
+  [ "$code" = 201 ] || { cat reply.json; echo; break; }
+done < lists.txt
+```
+
+(`"kind":"allow"` adds an allowlist, `"groupIds":[1,2]` other groups.) An
+allowlist never lifts parental controls or the lists of the category
+switches (adult content, gambling, dating, piracy, bypass).
+
+### 3. Own rules
+
+**Filtering → Rules → Import** takes one rule per line and assigns the
+rules to the groups you choose in the dialog:
+
+| Line | Becomes |
+|---|---|
+| `example.com`, `\|example.com^` | block this name only |
+| `\|\|example.com^`, `*.example.com` | block the name and its subdomains |
+| `0.0.0.0 example.com tracker.example.com` (hosts) | block these names only |
+| `/^ad[0-9]*\.example\.net$/` | block by a regular expression (RE2: no back-references) |
+| `@@` before any of these but hosts lines | an allow rule |
+| `$dnstype=AAAA`, `$denyallow=a.example.com`, `$important` | a rule for these query types, with exceptions; `$important` is accepted and dropped |
+| `$dnsrewrite=NXDOMAIN` (`REFUSED`, `NOERROR`), `$dnsrewrite=192.0.2.10` | the rule's own reply |
+| `/re/;querytype=A,AAAA`, `;invert`, `;reply=nxdomain` | the suffixes of regular-expression lists |
+| lines starting with `!` or `#`, empty lines | skipped |
+
+The preview refuses, and you convert:
+
+- `$client=…` and `$ctag=…`: remove the modifier and import those lines
+  for the group you created in step 1.
+- `$badfilter`: drop the line and the line it cancels.
+- `$dnsrewrite` to another name, or a CNAME: create a local record (step 4).
+- `;reply=none` (no answer at all): add the name to **DNS settings →
+  Protection → Dropped domains**.
+- An address or a network as a rule: add it under **Rules for answer
+  addresses** on the same page.
+- URL rules and other modifiers (`$third-party`, …) have no meaning for DNS:
+  drop them.
+
+Converting the usual formats (check the output, then paste or load it):
+
+```sh
+# a regular-expression list: wrap every expression in /…/, keep ;querytype= and the like
+sed -E -e '/^[[:space:]]*(#|$)/d' -e 's#^([^;]*)(;.*)?$#/\1/\2#' regex.list > regex-rules.txt
+# a list of exact names to allow
+sed -E -e '/^[[:space:]]*(#|$)/d' -e 's/^/@@/' allow.list > allow-rules.txt
+# a list of names to block with their subdomains ("wildcard" lists)
+sed -E -e '/^[[:space:]]*(#|$)/d' -e 's/.*/||&^/' wildcard.list > wildcard-rules.txt
+```
+
+A list of exact names to block needs no conversion. Your allow rules win
+over every list; your block rules for exact names and subdomains win over
+the lists too, your regular-expression block rules only over the lists'
+own patterns. At most 20 000 lines per import, 20 000 rules, 1 000 of them
+regular expressions. **Filtering → Why is this blocked?** tests a name for
+a device and shows which rule or list decides.
+
+### 4. Local DNS records
+
+**Local DNS → Records → Import hosts file** turns every name of a hosts
+file (`<address> <name> [<alias> …]`) into an A or AAAA record for everyone
+or for groups you choose. Loopback lines and names like `localhost` are
+skipped. Lines with `0.0.0.0` or `::` are refused: such a file is a
+blocklist (step 2). Wildcard names (`*.apps.example.lan`), CNAME, TXT, SRV,
+MX and other types are created with **Add record** (a wildcard matches the
+subdomains only). PiCache also answers reverse lookups of the imported
+addresses by itself.
+
+`address=/name/address` lines (dnsmasq style) become a hosts file, and
+their blocking forms (`address=/name/0.0.0.0`, `address=/name/`) become
+rules:
+
+```sh
+sed -n -E 's#^address=/([^/]+)/([0-9a-fA-F.:]+)$#\2 \1#p' dnsmasq.conf |
+  grep -v -E '^(0\.0\.0\.0|::) ' > records-hosts.txt        # Local DNS → Records → Import hosts file
+sed -n -E 's#^address=/([^/]+)/(0\.0\.0\.0|::)?$#||\1^#p' dnsmasq.conf > address-rules.txt   # Filtering → Rules → Import
+```
+
+Such an `address=` line also answers every name below the name; add a
+wildcard record `*.<name>` by hand where that is needed. Lines with
+several names (`address=/a/b/…`) are not converted: split them first.
+
+### 5. Conditional forwarding
+
+**Local DNS → Forwarders → Import** takes one forwarder per line:
+`[/domain1/domain2/]server1 server2 …` (up to 16 domains and 8 servers;
+`#` as the server means PiCache's default upstreams, `[//]` the
+single-label names that nothing local answers). Servers are written like
+upstreams: `10.0.0.53`, `10.0.0.53:5353` or `10.0.0.53#5353`, `[fd00::53]`
+(IPv6 in brackets), `tls://dns.example.net`, `https://…`. A port works in
+both forms, so `server=/domain/address` lines (dnsmasq style) convert with:
+
+```sh
+sed -n -E 's#^server=(/.+/)([^/]*)$#[\1]\2#p' dnsmasq.conf > forwarders.txt
+```
+
+`server=/domain/` without a server (never forward) has no forwarder;
+create local records instead.
+`rev-server=192.168.1.0/24,192.168.1.1` becomes
+`[/1.168.192.in-addr.arpa/]192.168.1.1`. Imported forwarders do not
+validate DNSSEC; switch **Validate DNSSEC** on per forwarder where its
+servers resolve public, signed zones.
+
+**Asking the router for local names** (a setting "conditional forwarding"
+with a network, the router's address and the local domain) usually needs
+no forwarder: set **DNS settings → Local names → Local domain** to the
+router's domain (for example `fritz.box`) and keep **Router resolver** on
+automatic. PiCache then asks the router for names below the local domain,
+for bare names such as `nas` and for reverse lookups of private
+addresses. For a network that is not private, add it under **More private
+networks for reverse lookups**; for another server, import a forwarder.
+
+### 6. DHCP reservations
+
+Only if the old filter handed out addresses: **DNS → DHCP → Reserved
+addresses → Import** takes a CSV (`mac,ip,hostname,comment`), a hosts file with the MAC
+address as comment (`ip name # mac`) or lines `mac ip [hostname]`, with a
+preview. `dhcp-host=mac,ip[,name]` lines (dnsmasq style) convert with:
+
+```sh
+sed -n -E 's#^dhcp-host=([0-9A-Fa-f:]{17}),([0-9.]+)(,([A-Za-z0-9-]+))?$#\1 \2 \4#p' dnsmasq.conf > reservations.txt
+```
+
+Other forms (with a lease time, a tag or a client identifier) are skipped
+by this command; add them by hand. Set up the range and switch the old DHCP
+server off before you switch PiCache's on: PiCache refuses to serve while
+another DHCP server answers ([DHCP server](DEPLOYMENT.md#dhcp-server)).
+
+### 7. Settings
+
+Upstream servers (**DNS settings → Upstream DNS servers**: `9.9.9.9`,
+a local resolver as `127.0.0.1#5335` or `127.0.0.1:5335`, `tls://…`,
+`https://…`, `quic://…`, `sdns://…`), the reply for blocked
+names (**DNS settings → Blocking**), the rate limit (**DNS settings →
+Rate limit**), the access list (**DNS settings → Access**) and the query log retention and privacy
+(**System → Logs & privacy**) are set by hand. The defaults are a good
+start: Quad9 over DNS-over-HTTPS, DNSSEC validation, blocked names
+answered with `0.0.0.0`/`::`, 7 days of query log.
+
+### 8. Switch-over
+
+1. Test PiCache before any device depends on it: `dig @<PiCache IP>
+   example.com` (on the same machine `dig @127.0.0.1 -p 1053 example.com`),
+   a name you block, a local name and a forwarded name.
+2. Point one device at PiCache by hand and watch it in the **Query log**.
+3. On the same machine: stop and disable the old filter, remove the
+   `PICACHE_DNS_LISTEN` line and restart PiCache (`sudo systemctl restart
+   picache`). If PiCache now answers on the old filter's address, the
+   router needs no change.
+4. Otherwise set the DNS server of the router's DHCP server to PiCache
+   ([ROUTERS.md](ROUTERS.md)), IPv6 included.
+5. Keep the old filter running (on its own machine) until **DNS → Network
+   check** shows your devices asking PiCache: devices move when they renew
+   their lease or reconnect. Then switch it off.
+6. Switch on scheduled backups (**System → Backup & restore**).
 
 ---
 
@@ -83,7 +351,8 @@ Fedora and RHEL, `bind` on Arch and `bind-utils` on openSUSE.)
 
 Under **DNS → DNS settings → Upstreams** (or with `picache config set dns`):
 
-- **Upstream DNS servers** (`dns.upstreams`): `udp://127.0.0.1:5335` only.
+- **Upstream DNS servers** (`dns.upstreams`): `udp://127.0.0.1:5335` only
+  (`127.0.0.1#5335`, as other DNS filters' guides write it, works as well).
 - **Mode** (`dns.upstreamMode`): `strict`.
 - **DNSSEC mode** (`dns.dnssecMode`): `passthrough` (**Pass through**).
   PiCache then sets the DO bit and passes Unbound's AD flag through;
@@ -340,7 +609,9 @@ The webhook body is `{event, severity, title, message, time, instance,
 hostname, version}` ([API.md](API.md#notifications--routes_notifygo)).
 
 **Optional: Prometheus.** A Prometheus server can scrape `/metrics` (not
-Home Assistant). Only with care: it needs an **admin** token and the setting
+Home Assistant). It needs an API token with **Read only** access (create one
+with an expiry under **System → API tokens**; an admin token works too, but
+whoever reads the file could then change the settings) and the setting
 **System → API tokens → Prometheus metrics** (`web.metricsEnabled`), which
 is off by default.
 
@@ -350,7 +621,7 @@ scrape_configs:
   - job_name: picache
     scheme: http
     authorization:
-      credentials_file: /etc/prometheus/picache-admin-token
+      credentials_file: /etc/prometheus/picache-token
     static_configs:
       - targets: ["<PiCache IP>:8080"]
 ```

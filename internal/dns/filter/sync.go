@@ -229,7 +229,10 @@ func (e *Engine) ReplaceSynced(ctx context.Context, tx *sql.Tx, s *SyncedLists) 
 // SyncApplied brings the engine in line with the committed sync: the
 // lists are reloaded from the database (a kept list keeps its parsed copy;
 // a new or changed one is downloaded; the copies of removed lists and of
-// changed ones are deleted), the rules and IP rules rebuilt.
+// changed ones are deleted), the rules and IP rules rebuilt. It compares
+// with what the engine holds, not only with ch: when the reload of an
+// earlier run failed after its commit, the next run finds every row kept
+// and none removed although the engine still holds the lists from before.
 func (e *Engine) SyncApplied(ctx context.Context, ch *SyncChange) error {
 	e.listMu.Lock()
 	defer e.listMu.Unlock()
@@ -249,7 +252,7 @@ func (e *Engine) SyncApplied(ctx context.Context, ch *SyncChange) error {
 	for _, f := range fresh {
 		l := f.List
 		rt, had := e.lists[l.ID]
-		if had && ch.kept[l.ID] {
+		if had && ch.kept[l.ID] && rt.URL == l.URL && rt.Kind == l.Kind && rt.Format == l.Format {
 			oldFormat := rt.format()
 			wasEnabled := rt.Enabled
 			rt.Name, rt.NameAuto, rt.PlainDomains, rt.Category, rt.CatalogKey = l.Name, l.NameAuto, l.PlainDomains, l.Category, l.CatalogKey
@@ -279,6 +282,11 @@ func (e *Engine) SyncApplied(ctx context.Context, ch *SyncChange) error {
 		}
 		f.Status, f.jitter, f.wantDownload = statusPending, newJitter(), l.Enabled
 		next[l.ID] = f
+	}
+	for id := range e.lists {
+		if _, ok := next[id]; !ok { // removed by a run whose reload failed
+			e.removeFiles(id)
+		}
 	}
 	e.lists = next
 	e.parseGen++

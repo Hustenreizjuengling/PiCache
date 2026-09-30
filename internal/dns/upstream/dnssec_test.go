@@ -3,8 +3,10 @@ package upstream
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +18,6 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/dns/dnssec"
 	"github.com/hustenreizjuengling/picache/internal/dns/dnssec/dnssectest"
-	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -995,19 +996,23 @@ func TestRootSignaturesOfSilentUpstreamExpire(t *testing.T) {
 	})
 }
 
+// TestChainShares: a client's chain lookups beyond its share wait for
+// their turn within the validation's deadline instead of failing; a
+// lookup that would not get its turn in time is refused locally (never
+// cached, the client alone), and another client validates with its own
+// share.
 func TestChainShares(t *testing.T) {
 	st := newStore(t, validateMode(up1))
 	synctest.Test(t, func(t *testing.T) {
 		u, _, _ := dnssectest.ExampleAt(t, time.Now())
 		r := newTestResolver(t, st, signedOptions(u), map[string]*fakeTransport{up1: serveU(u)})
 		defer r.Close()
-		// A share of 5 chain exchanges per client, and a global rate that
-		// makes lookups wait for their turn.
-		r.val.shares = netutil.NewRateLimiterMax(1, 5, 16)
-		r.val.limiter.SetLimit(10)
-		r.val.limiter.SetBurst(1)
-		attacker := WithClient(context.Background(), netip.MustParseAddr("192.168.1.66"))
-		victim := WithClient(context.Background(), netip.MustParseAddr("192.168.1.10"))
+		var logs testLog
+		r.log = slog.New(slog.NewTextHandler(&logs, nil))
+		// A share of 5 chain exchanges and 1 more per second per client.
+		r.val.shares = newChainShares(1, 5, 16)
+		attacker := WithClient(context.Background(), "mac 02:00:00:00:00:66", netip.MustParseAddr("192.168.1.66"))
+		victim := WithClient(context.Background(), "192.168.1.10/32", netip.MustParseAddr("192.168.1.10"))
 		resolve := func(ctx context.Context, name string) Info {
 			t.Helper()
 			_, info, err := r.Resolve(ctx, query(name, dns.TypeA, 1, true), noECS)
@@ -1017,25 +1022,153 @@ func TestChainShares(t *testing.T) {
 			return info
 		}
 		// The first validation needs 5 chain lookups (root, com and
-		// example.com keys): each waits for the global rate, none fails.
+		// example.com keys): the share's burst.
+		start := time.Now()
 		wantVerdict(t, resolve(attacker, "www.example.com."), dnssec.Secure)
-		// The client's share is used up: its next lookup is refused, a
-		// local failure that no cache keeps.
-		info := resolve(attacker, "www.unsigned.com.")
+		if d := time.Since(start); d != 0 {
+			t.Fatalf("the burst waited %v", d)
+		}
+		// The share is used up: the next lookup waits for its turn (a
+		// second) and the answer is validated.
+		wantVerdict(t, resolve(attacker, "www.unsigned.com."), dnssec.Insecure)
+		if d := time.Since(start); d < time.Second || d > 2*time.Second {
+			t.Fatalf("waited %v for the share, want about a second", d)
+		}
+
+		// One lookup per 10 s: the fourth of a cold validation would
+		// outlast its deadline and is refused at once, a local failure
+		// that no cache keeps.
+		r.FlushCache()
+		r.val.shares = newChainShares(0.1, 3, 16)
+		start = time.Now()
+		info := resolve(attacker, "www.example.com.")
 		wantVerdict(t, info, dnssec.Bogus)
 		if !strings.Contains(info.DNSSEC.Reason, "chain lookup rate limit") {
 			t.Fatalf("reason %q", info.DNSSEC.Reason)
 		}
+		if d := time.Since(start); d != 0 {
+			t.Fatalf("the refusal waited %v", d)
+		}
 		if _, _, failures := r.val.v.Stats(); failures != 0 {
 			t.Fatalf("%d chain failures cached", failures)
 		}
-		// Another client validates the same name with its own share.
+		// Refused again: one WARN for the client, naming its address (never
+		// its MAC), and none per zone.
+		wantVerdict(t, resolve(attacker, "www.example.com."), dnssec.Bogus)
+		if out := logs.String(); strings.Count(out, "exceed its share") != 1 || !strings.Contains(out, "client=192.168.1.66") ||
+			strings.Contains(out, "02:00:00:00:00:66") || strings.Contains(out, "DNSSEC validation failed") {
+			t.Fatalf("log: %s", out)
+		}
+		// Another client validates with its own share (the root and com
+		// keys are cached by now).
 		info = resolve(victim, "www.unsigned.com.")
 		wantVerdict(t, info, dnssec.Insecure)
 		if info.Cached {
 			t.Fatal("the refused answer was cached")
 		}
 	})
+}
+
+// TestChainLookupsWaitForTheGlobalRate: beyond the global burst, chain
+// lookups wait for their turn of the global rate within the validation's
+// deadline instead of failing; the device's share leaves them room here.
+func TestChainLookupsWaitForTheGlobalRate(t *testing.T) {
+	st := newStore(t, validateMode(up1))
+	synctest.Test(t, func(t *testing.T) {
+		u, _, _ := dnssectest.ExampleAt(t, time.Now())
+		r := newTestResolver(t, st, signedOptions(u), map[string]*fakeTransport{up1: serveU(u)})
+		defer r.Close()
+		r.val.shares = newChainShares(1000, 1000, 16)
+		r.val.limiter.SetLimit(10)
+		r.val.limiter.SetBurst(1)
+		client := WithClient(context.Background(), "192.168.1.10/32", netip.MustParseAddr("192.168.1.10"))
+		start := time.Now()
+		_, info, err := r.Resolve(client, query("www.example.com.", dns.TypeA, 1, true), noECS)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 5 chain lookups (root, com and example.com keys): the first at
+		// once, each further one 100 ms after the one before.
+		wantVerdict(t, info, dnssec.Secure)
+		if d := time.Since(start); d < 400*time.Millisecond || d > 500*time.Millisecond {
+			t.Fatalf("validated after %v, want about 0.4 s", d)
+		}
+	})
+}
+
+// testLog collects log output written from any goroutine.
+type testLog struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *testLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *testLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// TestChainBurstOfNewZones: a cold burst of new zones from one client
+// that needs more chain lookups than its share's burst waits for its turn
+// and is validated without a single bogus answer (SERVFAIL).
+func TestChainBurstOfNewZones(t *testing.T) {
+	st := newStore(t, validateMode(up1))
+	synctest.Test(t, func(t *testing.T) {
+		u, com, _ := dnssectest.ExampleAt(t, time.Now())
+		const zones = chainClientBurst + 60 // one DS lookup each, plus the root and com keys
+		for i := range zones {
+			z := u.AddChild(com, "z"+strconv.Itoa(i)+".com", false)
+			z.A("www.z"+strconv.Itoa(i)+".com", "192.0.2.10")
+		}
+		r := newTestResolver(t, st, signedOptions(u), map[string]*fakeTransport{up1: serveU(u)})
+		defer r.Close()
+		client := WithClient(context.Background(), "mac 02:00:00:00:00:20", netip.MustParseAddr("fd00::20"))
+		sem := make(chan struct{}, 50) // 50 queries at a time
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var failed []string
+		for i := range zones {
+			wg.Go(func() {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				name := "www.z" + strconv.Itoa(i) + ".com."
+				_, info, err := r.Resolve(client, query(name, dns.TypeA, 1, true), noECS)
+				if err != nil || info.DNSSEC == nil || info.DNSSEC.Status != dnssec.Insecure {
+					mu.Lock()
+					failed = append(failed, name)
+					mu.Unlock()
+				}
+			})
+		}
+		wg.Wait()
+		if len(failed) != 0 {
+			t.Fatalf("%d of %d answers not validated: %v", len(failed), zones, failed[:min(len(failed), 5)])
+		}
+	})
+}
+
+// TestChainSharesBounded: at most max shares are kept (the least recently
+// used dropped) and unused ones are forgotten.
+func TestChainSharesBounded(t *testing.T) {
+	s := newChainShares(1, 1, 2)
+	now := time.Now()
+	for _, k := range []string{"a", "b", "a", "c"} {
+		s.limiter(k, now)
+	}
+	if _, ok := s.m["b"]; ok || s.len() != 2 {
+		t.Fatalf("kept %d shares, b kept %v", s.len(), ok)
+	}
+	s.limiter("c", now.Add(time.Minute))
+	s.sweep(time.Minute, now.Add(time.Minute+time.Second))
+	if _, ok := s.m["c"]; !ok || s.len() != 1 {
+		t.Fatalf("after the sweep: %d shares, c kept %v", s.len(), ok)
+	}
 }
 
 func TestBackgroundPanicIsContained(t *testing.T) {

@@ -10,7 +10,8 @@
 # `systemd-analyze verify` of the installed units, the firewall hints
 # (firewalld and ufw stand-ins), the SELinux relabel (selinuxenabled and
 # restorecon stand-ins), the refusal next to the Debian package (a
-# dpkg-query stand-in), Raspberry Pi OS (ID=raspbian) as Debian, the purge
+# dpkg-query stand-in), the refusal of a downgrade (PICACHE_ALLOW_DOWNGRADE),
+# Raspberry Pi OS (ID=raspbian) as Debian, the purge
 # (the default paths with /var/log/picache and the account deleted, or the
 # account kept and locked for a custom PICACHE_DATA_DIR) and
 # get-picache.sh's CA-bundle and OpenSSL checks on the distribution's own
@@ -364,6 +365,31 @@ echo "== rejects a binary that is not PiCache"
 printf '#!/bin/sh\necho hello\n' >/tmp/other
 if sh /src/deploy/install.sh --binary /tmp/other 2>/dev/null; then fail "accepted a foreign binary"; fi
 /usr/local/bin/picache version | grep -q '^picache ' || fail "installed binary was replaced"
+
+echo "== a downgrade is refused unless PICACHE_ALLOW_DOWNGRADE=1"
+cp /usr/local/bin/picache /tmp/picache.installed
+printf '#!/bin/sh\necho "picache v99.1.0 (commit x, built y)"\n' >/tmp/newer
+install -m 0755 /tmp/newer /usr/local/bin/picache
+printf '#!/bin/sh\necho "picache v99.0.0 (commit x, built y)"\n' >/tmp/older
+before=$(starts)
+out=$(sh /src/deploy/install.sh --binary /tmp/older 2>&1) && fail "installed an older release"
+echo "$out" | grep -qF 'picache v99.0.0 is older than the installed v99.1.0. v99.1.0 may have migrated the database, which v99.0.0 then refuses' ||
+	fail "no downgrade message: $out"
+echo "$out" | grep -qF 'unless the upgrade notes say that v99.0.0 opens this database, first stop PiCache (sudo systemctl stop picache) and put the copy made before the upgrade (/var/lib/picache/backups/picache-v99.0.0-*.db) in place as /var/lib/picache/picache.db, deleting picache.db-wal and picache.db-shm; then run: sudo PICACHE_ALLOW_DOWNGRADE=1 sh /src/deploy/install.sh --binary /tmp/older' ||
+	fail "no downgrade steps: $out"
+echo "$out" | grep -q -- '--binary /tmp/older$' || fail "the command names options that were not given: $out"
+# The command repeats the options: without --without-updater it would
+# install the update helper again.
+out=$(sh /src/deploy/install.sh --binary /tmp/older --without-updater --nightly 2>&1) && fail "installed an older release"
+echo "$out" | grep -qF 'sudo PICACHE_ALLOW_DOWNGRADE=1 sh /src/deploy/install.sh --binary /tmp/older --without-updater --nightly' ||
+	fail "the command lost the options: $out"
+grep -q v99.1.0 /usr/local/bin/picache || fail "the installed binary was replaced"
+[ ! -e /usr/local/bin/.picache.new ] || fail "the staged binary was left"
+[ "$(starts)" = "$before" ] || fail "restarted after refusing the downgrade"
+out=$(sh /src/deploy/install.sh --binary /tmp/newer 2>&1) || fail "a reinstall of the same release was refused: $out"
+PICACHE_ALLOW_DOWNGRADE=1 sh /src/deploy/install.sh --binary /tmp/older >/dev/null 2>&1 || fail "PICACHE_ALLOW_DOWNGRADE=1 was refused"
+grep -q v99.0.0 /usr/local/bin/picache || fail "not downgraded with PICACHE_ALLOW_DOWNGRADE=1"
+install -m 0755 /tmp/picache.installed /usr/local/bin/picache
 
 echo "== port 53 in use: prints the fix, does not start"
 nc -lu 127.0.0.53 53 &

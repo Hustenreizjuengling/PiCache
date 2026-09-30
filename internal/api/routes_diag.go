@@ -163,7 +163,7 @@ func (s *Server) streamSystemLog(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	defer cancel()
-	return sse(w, r, "record", ch, s.logsAlive(r))
+	return sse(w, r, "record", ch, s.logsAlive(r), s.streamsDone)
 }
 
 // logLevelResponse is the answer of PUT /system/log/level.

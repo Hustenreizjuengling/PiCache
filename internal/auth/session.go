@@ -76,9 +76,11 @@ func (a *Service) Login(ctx context.Context, username, password, totp string, me
 		dkey := deviceThrottleKey(dev.id)
 		checked, counted = []string{ckey, dkey}, []string{ckey, ukey, dkey}
 	}
-	if err := a.throttle.allow(a.now(), checked...); err != nil {
+	release, err := a.throttle.allow(a.now(), checked...)
+	if err != nil {
 		return nil, err
 	}
+	defer release() // the attempt counts as in flight until its outcome is recorded
 	fail := func(reason string, err error) (*Session, error) {
 		a.recordFailure(counted...)
 		a.auditFailure(ctx, meta, reason)
@@ -390,9 +392,11 @@ func (a *Service) checkUserPassword(ctx context.Context, p *Principal, pw string
 	if p.SessionID != "" {
 		akey = sessionThrottleKey(p.SessionID)
 	}
-	if err := a.throttle.allow(a.now(), ckey, akey); err != nil {
+	release, err := a.throttle.allow(a.now(), ckey, akey)
+	if err != nil {
 		return false, "", err
 	}
+	defer release()
 	ok := false
 	if len(pw) <= maxPasswordBytes {
 		if ok, _, err = a.checkPassword(ctx, u.passwordHash, pw); err != nil {

@@ -219,9 +219,12 @@ commands, from /etc/picache/picache.env (or $PICACHE_ENV_FILE) if present
 `
 
 // loadEnvFile applies KEY=VALUE lines from $PICACHE_ENV_FILE or
-// /etc/picache/picache.env. Variables already set in the environment win.
-// PICACHE_TOKEN is never applied from the file (the service's environment
-// file must not hold an API token; a warning names the line).
+// /etc/picache/picache.env. Variables already set in the environment win;
+// of a key listed twice the last line wins, as for systemd's
+// EnvironmentFile= (the service), so the CLI's health check probes the
+// listeners the service binds. PICACHE_TOKEN is never applied from the
+// file (the service's environment file must not hold an API token; a
+// warning names the line).
 func loadEnvFile() error {
 	path := os.Getenv("PICACHE_ENV_FILE")
 	explicit := path != ""
@@ -236,6 +239,7 @@ func loadEnvFile() error {
 		return fmt.Errorf("env file: %w", err)
 	}
 	defer f.Close()
+	vals := map[string]string{}
 	sc := bufio.NewScanner(io.LimitReader(f, 1<<20))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -255,11 +259,17 @@ func loadEnvFile() error {
 			fmt.Fprintf(os.Stderr, "picache: warning: PICACHE_TOKEN in %s is ignored; set it in the environment or use --token-file\n", path)
 			continue
 		}
+		vals[k] = v
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	for k, v := range vals {
 		if _, set := os.LookupEnv(k); !set {
 			_ = os.Setenv(k, v)
 		}
 	}
-	return sc.Err()
+	return nil
 }
 
 // newLogger returns the logger of PiCache: the stderr handler (created at

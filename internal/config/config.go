@@ -89,6 +89,10 @@ type Config struct {
 	// provisions the first admin. The app clears it after provisioning.
 	AdminPassword        string `json:"-"`
 	AdminPasswordFromEnv bool   `json:"-"` // true if the plain env var was used (warn)
+	// AdminPasswordFileMissing is the path of a PICACHE_ADMIN_PASSWORD_FILE
+	// that does not exist (a line left after the first start): the start
+	// fails only while no account exists, else it warns (app).
+	AdminPasswordFileMissing string `json:"-"`
 
 	MasterKeyFile string // PICACHE_MASTER_KEY_FILE: optional external master key
 
@@ -346,11 +350,17 @@ func (c *Config) applyEnv(getenv func(string) string, secrets bool) error {
 		return nil
 	}
 	if f := getenv("PICACHE_ADMIN_PASSWORD_FILE"); f != "" {
+		// Read here, before the privilege drop. A file that does not exist
+		// is needed only while no account exists, which the app decides.
 		b, err := os.ReadFile(f)
-		if err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			c.AdminPasswordFileMissing = f
+		case err != nil:
 			return fmt.Errorf("PICACHE_ADMIN_PASSWORD_FILE: %w", err)
+		default:
+			c.AdminPassword = strings.TrimRight(string(b), "\r\n")
 		}
-		c.AdminPassword = strings.TrimRight(string(b), "\r\n")
 	} else if v := getenv("PICACHE_ADMIN_PASSWORD"); v != "" {
 		c.AdminPassword = v
 		c.AdminPasswordFromEnv = true

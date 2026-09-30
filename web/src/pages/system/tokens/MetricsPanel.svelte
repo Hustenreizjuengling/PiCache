@@ -2,7 +2,8 @@
   @component
   The Prometheus endpoint (settings.web.metricsEnabled, off by default).
   Switching applies immediately; when on, shows the URL and a scrape config
-  for this address. Scraping needs an admin API token. Over HTTPS the
+  for this address. Scraping needs an API token of scope read or admin
+  (read is enough). Over HTTPS the
   certificate check depends on the certificate in use: the local CA's
   certificate as ca_file, the legacy self-signed certificate itself, or
   nothing for certificate files and uploads (a public or your own CA).

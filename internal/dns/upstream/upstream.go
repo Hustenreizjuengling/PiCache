@@ -5,7 +5,9 @@
 //
 // The default set (Resolve, LookupIP) is the configured upstreams, the
 // clock-guard set while the clock guard is active, and the fallbacks, asked
-// only when no default upstream replied at all. Its answers are classified
+// only when no default upstream replied at all (while every default
+// upstream is unhealthy: when none replied within 500 ms, exchangeHedged).
+// Its answers are classified
 // at fetch time when the upstream blocked the name itself (Info.Block: EDE
 // 15–17, 0.0.0.0/::, block pages, Quad9's NXDOMAIN without RA), may carry
 // the client subnet of the query (part of the cache key) and are ordered by
@@ -25,8 +27,10 @@
 //
 // Upstream queries are built fresh for every exchange: random ID (0 for
 // DoH), RD=1, AD=1, our OPT with a 1232-byte buffer and DO=1 if the client
-// set DO or dns.dnssecMode is passthrough or validate. Client EDNS options,
-// the CD bit and the client's ID never reach an upstream.
+// set DO or dns.dnssecMode is passthrough or validate; the encrypted
+// transports (DoT, DoH, DoQ, HTTP/3) add EDNS padding to a multiple of 128
+// bytes and remove the padding of the reply. Client EDNS options, the CD
+// bit and the client's ID never reach an upstream.
 //
 // DNSSEC (docs/ARCHITECTURE.md 7.6; mode validate): the answers of the
 // validated routes (the default route, the group sets, the validating
@@ -39,8 +43,8 @@
 // holds whether the fetch validates. Chain lookups (DS, DNSKEY; DO=1,
 // CD=0, fresh ID) use the route that answered (only its fallbacks when
 // they answered the fetch), bypass the response cache and are counted in
-// the upstream statistics; a fetch started for a client (WithClient)
-// draws on that client's share of them. In validate
+// the upstream statistics; a fetch started for a client (WithClient: its
+// device key) draws on that device's share of them. In validate
 // mode every returned message carries AD exactly when its verdict is
 // secure and it is not stale; the upstream's AD is discarded on every
 // route. Modes off and passthrough pass the upstream's AD on. Probes
@@ -62,11 +66,17 @@
 // (version.Date; ignored when "unknown"), encrypted upstreams are skipped and
 // queries go over plain UDP/TCP to the bootstrap IPs (logged once at WARN,
 // reported by ClockGuard). Certificate errors alone never trigger this.
+// A stale host clock (not synchronised, behind a genuine certificate of an
+// encrypted upstream that is not yet valid by it) is handled by checking
+// the certificates at the start of that certificate's validity instead
+// (certTime, learnCertFloor), never by plain DNS.
 //
 // Bounds: response cache ≤ dns.cacheSize entries and 64 MiB of wire data
 // (responses above 16 KiB are not cached; TTLs capped at 7 days), 4096
 // distinct in-flight queries, 16 upstreams per set, 64 ResolveVia sets,
-// 256 queued stale refreshes, 4 idle DoT connections per upstream, DoH
+// 256 queued stale refreshes, 4 idle DoT connections per upstream, 4 DoH
+// connections per upstream (each dial bounded by the attempt timeout, a
+// silent HTTP/2 connection pinged after 10 s and closed 5 s later), DoH
 // bodies ≤ 64 KiB, 64 bootstrap hostnames, 1024 LookupIP results; the
 // duplicate check covers sections of at most 256 records; 16 EDE options
 // examined per reply, EDE texts ≤ 200 bytes; fastest-address probes: 8
@@ -74,10 +84,10 @@
 // second, 4096 cached results (10 minutes). DNSSEC: the bounds of the
 // dnssec package per validation context (32 chain lookups, 4 s, 16
 // signature verifications of which 2 failed, 256 NSEC3 hashes, …), 1024
-// chain steps in flight, 50 new chain exchanges per second (burst 200;
-// a lookup waits for its turn within its context's deadline) of which 20
-// per second (burst 100) for one client (4096 clients tracked; beyond its
-// share a lookup fails at once), GOMAXPROCS concurrent signature
+// chain steps in flight, 50 new chain exchanges per second (burst 200) of
+// which 25 per second (burst 200) for one client key (4096 keys tracked;
+// a lookup waits for its turn of both within its context's deadline, else
+// it is refused at once), GOMAXPROCS concurrent signature
 // verifications, the key cache (16 384 zone states, 8 MiB) and the
 // failure cache (4096 entries); a bogus answer is cached min(its TTL,
 // 30 s) after a cryptographic failure and 5 s otherwise, never served
@@ -90,6 +100,7 @@ package upstream
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"log/slog"
@@ -232,6 +243,11 @@ type options struct {
 	probeDial func(ctx context.Context, network, address string) (net.Conn, error)
 	// quicIdle is the idle timeout of QUIC connections (DoQ, HTTP/3).
 	quicIdle time.Duration
+	// dohPingAfter and dohPingTimeout are the HTTP/2 health check of the
+	// DoH connections (0: dohPingAfter, dohPingTimeout); dohDial dials one
+	// address of a DoH upstream (nil: net.Dialer).
+	dohPingAfter, dohPingTimeout time.Duration
+	dohDial                      func(ctx context.Context, network, address string) (net.Conn, error)
 	// DNSSEC timings (0: the defaults): the probe interval, the retry
 	// while an upstream is unknown, the time of one probe query, the
 	// quiet time before time checks resume and the maintenance tick.
@@ -249,13 +265,15 @@ func defaultOptions() options {
 	}
 }
 
-// withDefaults fills the DNSSEC timings left at zero.
+// withDefaults fills the DNSSEC timings and the DoH health check left at
+// zero.
 func (o options) withDefaults() options {
 	for _, v := range []struct {
 		p *time.Duration
 		d time.Duration
 	}{{&o.probeEvery, probeEvery}, {&o.probeRetry, probeRetry}, {&o.probeTimeout, probeQueryTimeout},
-		{&o.resumeAfter, resumeAfter}, {&o.dnssecTick, dnssecTick}} {
+		{&o.resumeAfter, resumeAfter}, {&o.dnssecTick, dnssecTick}, {&o.dohPingAfter, dohPingAfter},
+		{&o.dohPingTimeout, dohPingTimeout}} {
 		if *v.p <= 0 {
 			*v.p = v.d
 		}
@@ -328,6 +346,14 @@ type Resolver struct {
 
 	guardLogged  atomic.Bool
 	lastFallback atomic.Int64 // unix nanoseconds a fallback last answered a fetch; 0 = never
+	// fallbackAt is a ring of the times (unix nanoseconds, 0 = none) the
+	// fallbacks answered the last FallbackTimesKept fetches, written at
+	// fallbackSeq (FallbacksSince).
+	fallbackAt  [FallbackTimesKept]atomic.Int64
+	fallbackSeq atomic.Uint64
+	// certFloor is a lower bound of the real time learned from an
+	// upstream's certificate (learnCertFloor; unix nanoseconds, 0 = none).
+	certFloor atomic.Int64
 
 	// val is the DNSSEC state: the validator, the time checks, the probes
 	// and the validating forwarders (dnssec.go).
@@ -459,7 +485,6 @@ func (r *Resolver) onSettings(old, next settings.DNS) {
 			r.val.probeAllSoon()
 		}
 	}
-	r.val.keyShares(next)
 }
 
 // rebuild replaces the default upstream sets and drops all ResolveVia sets
@@ -564,6 +589,70 @@ func (r *Resolver) clockBehind() bool {
 	return !r.opts.buildDate.IsZero() && time.Now().Before(r.opts.buildDate)
 }
 
+// certTime is the clock of the certificate checks of the encrypted
+// upstreams: the host clock, or the lower bound of the real time learned
+// from an upstream's certificate while the host clock is behind it
+// (learnCertFloor). A later clock never accepts a certificate that has
+// expired by the host clock; it only accepts one whose validity started
+// before the bound.
+func (r *Resolver) certTime() time.Time {
+	now := time.Now()
+	if f := r.certFloor.Load(); f != 0 && now.UnixNano() < f {
+		return time.Unix(0, f)
+	}
+	return now
+}
+
+// learnCertFloor lets a host whose clock is stale (restored from the last
+// shutdown on a device without a real-time clock, and not synchronised
+// yet) reach its encrypted upstreams once their certificates were renewed
+// while it was off. It learns a lower bound of the real time from err, a
+// failed exchange with u: the TLS handshake failed because a certificate
+// was not yet valid by the host clock, the host clock is readable and not
+// synchronised (SetClockReader), and the chain verifies against the roots
+// for u's host name at the start of that certificate's validity (a CA
+// never dates a certificate ahead, so the real time is at least that).
+// certTime then checks certificates at that time while the host clock is
+// behind it. It reports whether the bound was raised (the attempt is worth
+// repeating). A certificate that has expired, an unverifiable chain, a
+// synchronised or unreadable host clock never change anything: with a
+// correct clock nothing is relaxed.
+func (r *Resolver) learnCertFloor(err error, u *upstream) bool {
+	var cve *tls.CertificateVerificationError
+	var cie x509.CertificateInvalidError
+	if err == nil || !errors.As(err, &cve) || !errors.As(cve.Err, &cie) || cie.Reason != x509.Expired ||
+		cie.Cert == nil || len(cve.UnverifiedCertificates) == 0 {
+		return false
+	}
+	now, from := time.Now(), cie.Cert.NotBefore
+	if !now.Before(from) || from.UnixNano() <= r.certFloor.Load() {
+		return false // expired, or not later than the bound in use
+	}
+	if unsynced, _ := r.val.hostClock(now); !unsynced {
+		return false
+	}
+	inter := x509.NewCertPool()
+	for _, c := range cve.UnverifiedCertificates[1:] {
+		inter.AddCert(c)
+	}
+	if _, err := cve.UnverifiedCertificates[0].Verify(x509.VerifyOptions{DNSName: u.host, Roots: r.opts.rootCAs,
+		Intermediates: inter, CurrentTime: from}); err != nil {
+		return false
+	}
+	for {
+		old := r.certFloor.Load()
+		if from.UnixNano() <= old {
+			return false
+		}
+		if r.certFloor.CompareAndSwap(old, from.UnixNano()) {
+			break
+		}
+	}
+	r.log.Warn("the system clock is behind the certificate of an encrypted upstream and not synchronised: certificates are checked at the start of its validity until the clock has passed it",
+		slog.String("upstream", u.display), slog.Time("validFrom", from), slog.Time("now", now))
+	return true
+}
+
 // viaSet returns the (cached) upstream set for ResolveVia and LookupPTR.
 func (r *Resolver) viaSet(upstreams []string) (*upstreamSet, error) {
 	if len(upstreams) == 0 {
@@ -639,6 +728,29 @@ func (r *Resolver) LastFallback() time.Time {
 		return time.Unix(0, ns).UTC()
 	}
 	return time.Time{}
+}
+
+// FallbackTimesKept is how many of the latest fallback answers
+// FallbacksSince remembers.
+const FallbackTimesKept = 8
+
+// noteFallback records that a fallback answered a fetch.
+func (r *Resolver) noteFallback() {
+	now := time.Now().UnixNano()
+	r.lastFallback.Store(now)
+	r.fallbackAt[r.fallbackSeq.Add(1)%FallbackTimesKept].Store(now)
+}
+
+// FallbacksSince returns how many fetches the fallbacks answered after
+// since, counting only the latest FallbackTimesKept.
+func (r *Resolver) FallbacksSince(since time.Time) int {
+	n := 0
+	for i := range r.fallbackAt {
+		if ns := r.fallbackAt[i].Load(); ns != 0 && ns > since.UnixNano() {
+			n++
+		}
+	}
+	return n
 }
 
 // setStats returns the statistics of a set's upstreams; withDNSSEC adds

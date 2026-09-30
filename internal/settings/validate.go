@@ -75,9 +75,12 @@ func UpstreamDisplay(s string) string {
 // upstreams (udp/tcp) may be given by name; whether such a name may be used
 // (PublicUpstreamName) depends on the local domain and is checked by the
 // callers. A DNS stamp (sdns://, parseStamp) is recognised before the URL
-// is parsed and kept byte for byte.
+// is parsed and kept byte for byte. udp, tcp, tls and quic also take the
+// port as "#port" (127.0.0.1#5335, as other DNS software writes it; the URL
+// parser would make it a fragment and drop it); any other text after "#"
+// is refused.
 //
-//	9.9.9.9 | 9.9.9.9:53 | [2620:fe::fe]:53 | dns.example | udp://… | tcp://… | tls://dns.quad9.net[:853] |
+//	9.9.9.9 | 9.9.9.9:53 | 9.9.9.9#53 | [2620:fe::fe]:53 | dns.example | udp://… | tcp://… | tls://dns.quad9.net[:853] |
 //	https://dns.quad9.net/dns-query | quic://dns.example[:853] | h3://dns.example/dns-query | sdns://…
 func ParseUpstream(s string) (UpstreamSpec, error) {
 	s = strings.TrimSpace(s)
@@ -119,6 +122,13 @@ func ParseUpstream(s string) (UpstreamSpec, error) {
 		}
 		spec.Port = n
 	}
+	if strings.Contains(s, "#") && spec.Proto != "https" && spec.Proto != "h3" { // DoH refuses a fragment below
+		n, err := hashPort(u)
+		if err != nil {
+			return spec, err
+		}
+		spec.Port = n
+	}
 	switch spec.Proto {
 	case "udp", "tcp":
 		if u.Path != "" && u.Path != "/" {
@@ -152,6 +162,20 @@ func ParseUpstream(s string) (UpstreamSpec, error) {
 		return spec, errors.New("invalid hostname")
 	}
 	return spec, nil
+}
+
+// hashPort returns the port of an upstream written as host#port: the
+// fragment, 1–65535 in decimal digits only, and no port after ":" too.
+func hashPort(u *url.URL) (int, error) {
+	if u.Port() != "" {
+		return 0, errors.New(`the port is given twice (":" and "#"); write the port as host:port`)
+	}
+	f := u.EscapedFragment()
+	n, err := strconv.Atoi(f)
+	if f == "" || strings.Trim(f, "0123456789") != "" || err != nil || n < 1 || n > 65535 {
+		return 0, errors.New(`only a port between 1 and 65535 may follow "#"; write the port as host:port`)
+	}
+	return n, nil
 }
 
 // escapeZone percent-encodes the zone of a bracketed IPv6 literal

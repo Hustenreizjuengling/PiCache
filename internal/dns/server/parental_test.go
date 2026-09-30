@@ -98,7 +98,7 @@ func parentalEnv(t *testing.T) (*testEnv, *fakeParental) {
 	}}
 	e := pipelineEnv(t)
 	e.srv.d.Parental = p
-	e.flt.rules["school.example"] = filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 4, Name: "school.example"}
+	e.flt.setRule("school.example", filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", RuleID: 4, Name: "school.example"})
 	e.cl.set(&clients.Identity{IP: netip.MustParseAddr("127.0.0.1"), ClientID: 7, Name: "tablet", GroupIDs: []int64{1, 2}})
 	return e, p
 }
@@ -181,7 +181,9 @@ func TestParentalIndependentOfPause(t *testing.T) {
 // when everything else is blocked.
 func TestParentalKeepsLocalNames(t *testing.T) {
 	e, p := parentalEnv(t)
+	p.mu.Lock()
 	p.all = &handDecision
+	p.mu.Unlock()
 	for _, tc := range []struct {
 		name  string
 		qtype uint16

@@ -376,8 +376,8 @@ func TestACLReaderDropsBeforeParsing(t *testing.T) {
 
 func TestLookup(t *testing.T) {
 	e := newEnv(t, func(a *settings.All) { a.DownloadCache.Enabled = true })
-	e.flt.check["ads.example.com"] = listBlock("TestList")
-	e.flt.matches = []filter.Match{{Action: "block", Source: "list", Name: "TestList", Applies: true, Decisive: true}}
+	e.flt.setCheck("ads.example.com", listBlock("TestList"))
+	e.flt.setMatches([]filter.Match{{Action: "block", Source: "list", Name: "TestList", Applies: true, Decisive: true}})
 	ctx := context.Background()
 	caller := netip.MustParseAddr("192.168.1.44")
 

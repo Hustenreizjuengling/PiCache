@@ -125,9 +125,9 @@ func (r *Resolver) resolve(ctx context.Context, req *dns.Msg, rt route, ecs neti
 // validating fetch: k.val), orders its addresses (mode fastest_addr,
 // default and group sets, not for a bogus answer) and caches it with its
 // verdict. The chain lookups of the validation draw on client's share of
-// the chain exchanges (WithClient; invalid: none). It owns the reply until
+// the chain exchanges (WithClient; zero: none). It owns the reply until
 // it returns; afterwards the reply is shared read-only.
-func (r *Resolver) fetch(ctx context.Context, k cacheKey, rt route, client netip.Addr) (exchangeResult, error) {
+func (r *Resolver) fetch(ctx context.Context, k cacheKey, rt route, client chainClient) (exchangeResult, error) {
 	d := r.set.Get().DNS
 	q := newQuery(k.name, k.qtype, k.qclass, k.do)
 	addECS(q, k.ecs)
@@ -275,7 +275,7 @@ func (r *Resolver) refreshLoop(ctx context.Context) {
 			return
 		case j := <-r.refreshQ:
 			_, _ = r.doFlight(ctx, j.key, func(fctx context.Context) (exchangeResult, error) {
-				return r.fetch(fctx, j.key, j.rt, netip.Addr{})
+				return r.fetch(fctx, j.key, j.rt, chainClient{})
 			})
 			r.cache.endRefresh(j.key, time.Now())
 		}

@@ -375,7 +375,7 @@ func (s *Server) logsStreamQueries(w http.ResponseWriter, r *http.Request) error
 		return err // 429 beyond the subscriber limit, 503 when unavailable
 	}
 	defer cancel()
-	return sse(w, r, "query", ch, s.logsAlive(r))
+	return sse(w, r, "query", ch, s.logsAlive(r), s.streamsDone)
 }
 
 func (s *Server) logsStreamCache(w http.ResponseWriter, r *http.Request) error {
@@ -384,5 +384,5 @@ func (s *Server) logsStreamCache(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	defer cancel()
-	return sse(w, r, "request", ch, s.logsAlive(r))
+	return sse(w, r, "request", ch, s.logsAlive(r), s.streamsDone)
 }

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/dns/filter"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
@@ -12,32 +11,39 @@ import (
 
 // The health check "upstreams" with fallbacks (first match): clock guard
 // warns; no healthy default upstream and no healthy fallback fails; no
-// healthy default upstream, or a fallback that answered within 5 minutes,
-// warns.
+// healthy default upstream warns at once; otherwise at least 3 fallback
+// answers within 5 minutes warn (one or two did for 5 minutes before).
 func TestUpstreamHealth(t *testing.T) {
-	now := time.Now()
 	up := []upstream.UpstreamStat{{Upstream: "a", Healthy: true}}
 	down := []upstream.UpstreamStat{{Upstream: "a", Healthy: false}}
 	fbUp := []upstream.UpstreamStat{{Upstream: "f", Healthy: true}}
 	fbDown := []upstream.UpstreamStat{{Upstream: "f", Healthy: false}}
-	const fallbackMsg = "fallback DNS in use: the upstream DNS servers are not answering"
+	const (
+		downMsg   = "fallback DNS in use: the upstream DNS servers are not answering"
+		recentMsg = "fallback DNS in use: the upstream DNS servers left several queries of the last 5 minutes unanswered"
+	)
 	for _, tc := range []struct {
 		name      string
 		guard     bool
 		stats, fb []upstream.UpstreamStat
-		last      time.Time
+		recent    int // fallback answers within the last 5 minutes
 		status    string
 		msg       string
 	}{
-		{"all fine", false, up, fbUp, time.Time{}, "ok", ""},
-		{"clock guard", true, down, nil, time.Time{}, "warn", "system clock is not set; using unencrypted DNS to the bootstrap servers"},
-		{"down without fallbacks", false, down, []upstream.UpstreamStat{}, time.Time{}, "fail", "no upstream DNS server is answering"},
-		{"down, fallbacks down", false, down, fbDown, now, "fail", "no upstream DNS server is answering"},
-		{"down, fallback healthy", false, down, fbUp, time.Time{}, "warn", fallbackMsg},
-		{"fallback used recently", false, up, fbUp, now.Add(-4 * time.Minute), "warn", fallbackMsg},
-		{"fallback used long ago", false, up, fbUp, now.Add(-6 * time.Minute), "ok", ""},
+		{"all fine", false, up, fbUp, 0, "ok", ""},
+		{"clock guard", true, down, nil, 0, "warn", "system clock is not set; using unencrypted DNS to the bootstrap servers"},
+		{"down without fallbacks", false, down, []upstream.UpstreamStat{}, 0, "fail", "no upstream DNS server is answering"},
+		{"down, fallbacks down", false, down, fbDown, 5, "fail", "no upstream DNS server is answering"},
+		{"down, fallback healthy", false, down, fbUp, 0, "warn", downMsg}, // at once, before any fallback answer
+		{"down, fallback answering", false, down, fbUp, 1, "warn", downMsg},
+		// A fallback answer or two (a handshake the provider cut) while the
+		// default upstreams are healthy is no reason to warn.
+		{"one fallback answer", false, up, fbUp, 1, "ok", ""},
+		{"two fallback answers", false, up, fbUp, 2, "ok", ""},
+		{"three fallback answers", false, up, fbUp, 3, "warn", recentMsg},
+		{"many fallback answers", false, up, fbUp, upstream.FallbackTimesKept, "warn", recentMsg},
 	} {
-		st, msg, hint := upstreamHealth(tc.guard, tc.stats, tc.fb, tc.last, now, nil)
+		st, msg, hint := upstreamHealth(tc.guard, tc.stats, tc.fb, tc.recent, nil)
 		if st != tc.status || msg != tc.msg || (st != "ok" && hint == "") {
 			t.Errorf("%s: %s %q %q", tc.name, st, msg, hint)
 		}
@@ -59,7 +65,7 @@ func TestUpstreamHealth(t *testing.T) {
 			Names: []string{"Kids", "Teens"}}}, up, "warn", groupMsg},
 		{"default down first", []upstream.GroupUpstreamStat{{Upstreams: down, Names: []string{"Kids"}}}, down, "fail", "no upstream DNS server is answering"},
 	} {
-		st, msg, hint := upstreamHealth(false, tc.stats, nil, time.Time{}, now, tc.groups)
+		st, msg, hint := upstreamHealth(false, tc.stats, nil, 0, tc.groups)
 		if st != tc.status || msg != tc.msg || (st != "ok" && hint == "") {
 			t.Errorf("%s: %s %q %q", tc.name, st, msg, hint)
 		}

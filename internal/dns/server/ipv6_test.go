@@ -281,7 +281,7 @@ func dns64Upstream(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) 
 func TestDNS64Synthesis(t *testing.T) {
 	e := newEnv(t, func(a *settings.All) { a.DNS.DNS64.Enabled = true }).serve()
 	e.up.setAnswer(dns64Upstream)
-	e.flt.check["ads.tracker.example"] = listBlock("Ads")
+	e.flt.setCheck("ads.tracker.example", listBlock("Ads"))
 
 	aaaa := func(name string) (*dns.Msg, []string) {
 		t.Helper()

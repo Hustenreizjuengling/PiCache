@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,8 +12,12 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
+	"github.com/hustenreizjuengling/picache/internal/clients"
 	"github.com/hustenreizjuengling/picache/internal/dhcp"
+	"github.com/hustenreizjuengling/picache/internal/dlcache/proxy"
+	dnsserver "github.com/hustenreizjuengling/picache/internal/dns/server"
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
+	"github.com/hustenreizjuengling/picache/internal/logs"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/update"
 	"github.com/hustenreizjuengling/picache/internal/version"
@@ -189,7 +194,36 @@ func TestMetricsEndpointAccess(t *testing.T) {
 		t.Fatal("401 must carry WWW-Authenticate: Bearer")
 	}
 	coreWantError(t, e.do("GET", "/metrics", "", session), http.StatusForbidden, "forbidden", "")
-	coreWantError(t, e.do("GET", "/metrics", "", readTok), http.StatusForbidden, "forbidden", "")
+	// G10-1: a read token is enough (least privilege for the scrape
+	// configuration); an admin token keeps working, a sync token never reads.
+	ctx, log := t.Context(), slog.New(slog.DiscardHandler)
+	reg, err := clients.New(ctx, e.db, nil, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dns, err := dnsserver.New(ctx, dnsserver.Deps{DB: e.db, Settings: e.set, Clients: reg, Log: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := upstream.New(e.set, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = up.Close() })
+	px, err := proxy.New(ctx, proxy.Deps{DB: e.db, Settings: e.set, Log: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.d.DNS, e.srv.d.Upstream, e.srv.d.Proxy, e.srv.d.Logs = dns, up, px, logs.Discard("test", log)
+	syncTok := e.createToken(t, session, "sync")
+	coreWantError(t, e.do("GET", "/metrics", "", syncTok), http.StatusForbidden, "forbidden", "")
+	for name, tok := range map[string]string{"read": readTok, "admin": e.createToken(t, session, "admin")} {
+		w := e.do("GET", "/metrics", "", tok)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "picache_build_info") ||
+			!strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+			t.Fatalf("%s token: %d %s", name, w.Code, w.Body)
+		}
+	}
 }
 
 func TestWriteMetrics(t *testing.T) {

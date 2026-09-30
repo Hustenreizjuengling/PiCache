@@ -47,13 +47,13 @@ func TestRuleReplies(t *testing.T) {
 		a.Filter.BlockingMode = "nxdomain"
 		a.DownloadCache.Enabled = true
 	})
-	e.flt.check["null.example"] = replyRule("null.example", "null", "", "")
-	e.flt.check["nodata.example"] = replyRule("nodata.example", "nodata", "", "")
-	e.flt.check["refused.example"] = replyRule("refused.example", "refused", "", "")
-	e.flt.check["custom.example"] = replyRule("custom.example", "custom_ip", "192.0.2.9", "")
-	e.flt.check["self.example"] = replyRule("self.example", "custom_ip", "self", "self")
-	e.flt.check["global.example"] = ruleBlock("global.example")
-	e.flt.check["list.example"] = listBlock("Ads")
+	e.flt.setCheck("null.example", replyRule("null.example", "null", "", ""))
+	e.flt.setCheck("nodata.example", replyRule("nodata.example", "nodata", "", ""))
+	e.flt.setCheck("refused.example", replyRule("refused.example", "refused", "", ""))
+	e.flt.setCheck("custom.example", replyRule("custom.example", "custom_ip", "192.0.2.9", ""))
+	e.flt.setCheck("self.example", replyRule("self.example", "custom_ip", "self", "self"))
+	e.flt.setCheck("global.example", ruleBlock("global.example"))
+	e.flt.setCheck("list.example", listBlock("Ads"))
 	cases := []struct {
 		name  string
 		qtype uint16
@@ -85,8 +85,8 @@ func TestRuleReplies(t *testing.T) {
 		t.Errorf("a custom_ip rule is blocked traffic: %+v", ev)
 	}
 	// Step 8: a user rule blocks a download service name with its reply.
-	e.svc["dl.steamcontent.com"] = "steam"
-	e.flt.rules["dl.steamcontent.com"] = replyRule("dl.steamcontent.com", "custom_ip", "192.0.2.8", "")
+	e.svc.set("dl.steamcontent.com", "steam")
+	e.flt.setRule("dl.steamcontent.com", replyRule("dl.steamcontent.com", "custom_ip", "192.0.2.8", ""))
 	if m := e.answerOf("dl.steamcontent.com", dns.TypeA); !slices.Equal(answerIPs(m.Answer), []string{"192.0.2.8"}) {
 		t.Errorf("step 8: %v", m)
 	}
@@ -104,7 +104,7 @@ func TestRuleReplies(t *testing.T) {
 	// The 7c guard: a blocked name takes the normal path and the rule's reply.
 	e.srv.d.Parental = &fakeParental{safe: map[string]parental.SafeSearchRewrite{
 		"www.google.com": {Target: "forcesafesearch.google.com", Group: "Kids"}}}
-	e.flt.check["www.google.com"] = replyRule("www.google.com", "refused", "", "")
+	e.flt.setCheck("www.google.com", replyRule("www.google.com", "refused", "", ""))
 	if m := e.answerOf("www.google.com", dns.TypeA); m.Rcode != dns.RcodeRefused {
 		t.Errorf("7c guard: %v", m)
 	}
@@ -131,18 +131,18 @@ func TestSelfReplyNotForDownloadServices(t *testing.T) {
 		a.Filter.BlockingMode, a.Filter.BlockingIPv4, a.Filter.BlockingIPv6 = "custom_ip", "self", "self"
 		a.DownloadCache.Enabled = true
 	})
-	e.svc["cdn.steamcontent.com"] = "steam"
-	e.svc["dl.delivery.mp.microsoft.com"] = "wsus"
-	e.svc["img.steamcontent.com"] = "steam"
-	e.svc["other.steamcontent.com"] = "steam"
+	e.svc.set("cdn.steamcontent.com", "steam")
+	e.svc.set("dl.delivery.mp.microsoft.com", "wsus")
+	e.svc.set("img.steamcontent.com", "steam")
+	e.svc.set("other.steamcontent.com", "steam")
 	// Step 8 with the global mode, step 8 with a rule's self reply, a list
 	// decision (step 11 while the download cache is off for the name).
-	e.flt.rules["cdn.steamcontent.com"] = ruleBlock("cdn.steamcontent.com")
-	e.flt.rules["dl.delivery.mp.microsoft.com"] = replyRule("dl.delivery.mp.microsoft.com", "custom_ip", "self", "self")
+	e.flt.setRule("cdn.steamcontent.com", ruleBlock("cdn.steamcontent.com"))
+	e.flt.setRule("dl.delivery.mp.microsoft.com", replyRule("dl.delivery.mp.microsoft.com", "custom_ip", "self", "self"))
 	// An explicit address of this server is the same as self.
-	e.flt.rules["img.steamcontent.com"] = replyRule("img.steamcontent.com", "custom_ip", testCacheIP.String(), "")
+	e.flt.setRule("img.steamcontent.com", replyRule("img.steamcontent.com", "custom_ip", testCacheIP.String(), ""))
 	// Any other address is answered as configured.
-	e.flt.rules["other.steamcontent.com"] = replyRule("other.steamcontent.com", "custom_ip", "192.0.2.7", "")
+	e.flt.setRule("other.steamcontent.com", replyRule("other.steamcontent.com", "custom_ip", "192.0.2.7", ""))
 	for _, name := range []string{"cdn.steamcontent.com", "dl.delivery.mp.microsoft.com", "img.steamcontent.com"} {
 		for _, qt := range []uint16{dns.TypeA, dns.TypeAAAA} {
 			if m := e.answerOf(name, qt); !isNodataSOA(m) {
@@ -155,10 +155,10 @@ func TestSelfReplyNotForDownloadServices(t *testing.T) {
 	}
 	// A list block of a download service name (a client that bypasses the
 	// download cache) and a parental protection-list block.
-	e.flt.check["bypass.steamcontent.com"] = listBlock("Games")
-	e.svc["bypass.steamcontent.com"] = "steam"
-	e.flt.protect["x.steamcontent.com"] = listBlock("Protect")
-	e.svc["x.steamcontent.com"] = "steam"
+	e.flt.setCheck("bypass.steamcontent.com", listBlock("Games"))
+	e.svc.set("bypass.steamcontent.com", "steam")
+	e.flt.setProtect("x.steamcontent.com", listBlock("Protect"))
+	e.svc.set("x.steamcontent.com", "steam")
 	e.update(func(a *settings.All) { a.DownloadCache.Enabled = false })
 	for _, name := range []string{"bypass.steamcontent.com", "x.steamcontent.com"} {
 		if m := e.answerOf(name, dns.TypeA); !isNodataSOA(m) {
@@ -166,7 +166,7 @@ func TestSelfReplyNotForDownloadServices(t *testing.T) {
 		}
 	}
 	// Every other blocked name still gets this server's address.
-	e.flt.check["ads.example"] = listBlock("Ads")
+	e.flt.setCheck("ads.example", listBlock("Ads"))
 	if m := e.answerOf("ads.example", dns.TypeA); !slices.Equal(answerIPs(m.Answer), []string{testCacheIP.String()}) {
 		t.Errorf("self for other names: %v", m)
 	}
@@ -186,19 +186,25 @@ func TestQueryTypeAtCallSites(t *testing.T) {
 	e := newEnv(t, func(a *settings.All) { a.DownloadCache.Enabled = true })
 	allow := filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "subtree", RuleID: 5, Name: "x"}
 	// 11
-	e.flt.check["typed.example"], e.flt.types["typed.example"] = listBlock("L"), dns.TypeAAAA
+	e.flt.setCheck("typed.example", listBlock("L"))
+	e.flt.setType("typed.example", dns.TypeAAAA)
 	// 7a: an allow rule for A lifts nothing for AAAA.
-	e.flt.protect["adult.example"] = listBlock("Adult")
-	e.flt.rules["adult.example"], e.flt.ruleTypes["adult.example"] = allow, dns.TypeA
+	e.flt.setProtect("adult.example", listBlock("Adult"))
+	e.flt.setRule("adult.example", allow)
+	e.flt.setRuleType("adult.example", dns.TypeA)
 	// 8
-	e.svc["cdn.steamcontent.com"] = "steam"
-	e.flt.rules["cdn.steamcontent.com"], e.flt.types["cdn.steamcontent.com"] = ruleBlock("cdn.steamcontent.com"), dns.TypeAAAA
+	e.svc.set("cdn.steamcontent.com", "steam")
+	e.flt.setRule("cdn.steamcontent.com", ruleBlock("cdn.steamcontent.com"))
+	e.flt.setType("cdn.steamcontent.com", dns.TypeAAAA)
 	// 10
-	e.flt.check["use-application-dns.net"], e.flt.types["use-application-dns.net"] = allow, dns.TypeA
+	e.flt.setCheck("use-application-dns.net", allow)
+	e.flt.setType("use-application-dns.net", dns.TypeA)
 	// 14c: the rebind exemption of an allow rule for A.
-	e.flt.rules["rebind.example"], e.flt.ruleTypes["rebind.example"] = allow, dns.TypeA
+	e.flt.setRule("rebind.example", allow)
+	e.flt.setRuleType("rebind.example", dns.TypeA)
 	// 14
-	e.flt.check["target.example"], e.flt.types["target.example"] = listBlock("T"), dns.TypeAAAA
+	e.flt.setCheck("target.example", listBlock("T"))
+	e.flt.setType("target.example", dns.TypeAAAA)
 	e.up.setAnswer(func(req *dns.Msg, via []string) (*dns.Msg, upstream.Info, error) {
 		q := req.Question[0]
 		switch normalizeName(q.Name) {
@@ -244,7 +250,7 @@ func TestQueryTypeAtCallSites(t *testing.T) {
 	e.update(func(a *settings.All) { a.DNS.DNS64.Enabled = true })
 	e.up.setAnswer(dns64Upstream)
 	e.lookupAs("v4only.example", "AAAA", "192.168.1.50")
-	if got := e.flt.checkedTypes["v4only.example"]; len(got) == 0 || slices.ContainsFunc(got, func(q uint16) bool { return q != dns.TypeAAAA }) {
+	if got := e.flt.checkedTypesOf("v4only.example"); len(got) == 0 || slices.ContainsFunc(got, func(q uint16) bool { return q != dns.TypeAAAA }) {
 		t.Errorf("DNS64 checks with %v", got)
 	}
 }
@@ -262,11 +268,11 @@ func ipBlock(name string, list int64) filter.Decision {
 func TestResponseIPCheck(t *testing.T) {
 	e := newEnv(t, nil)
 	bad := netip.MustParseAddr("198.51.100.66")
-	e.flt.ips[bad] = ipBlock("Bad addresses", 5)
-	e.flt.ips[netip.MustParseAddr("2001:db8::66")] = filter.Decision{Action: filter.ActionBlock, Source: "ip-rule", Kind: "ip",
-		RuleID: 3, Name: "2001:db8::66"}
-	e.flt.ips[testCacheIP] = ipBlock("Bad addresses", 5)
-	e.flt.check["allowed.example"] = filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", Name: "allowed.example"}
+	e.flt.setIP(bad, ipBlock("Bad addresses", 5))
+	e.flt.setIP(netip.MustParseAddr("2001:db8::66"), filter.Decision{Action: filter.ActionBlock, Source: "ip-rule", Kind: "ip",
+		RuleID: 3, Name: "2001:db8::66"})
+	e.flt.setIP(testCacheIP, ipBlock("Bad addresses", 5))
+	e.flt.setCheck("allowed.example", filter.Decision{Action: filter.ActionAllow, Source: "rule", Kind: "exact", Name: "allowed.example"})
 	if _, err := e.srv.CreateForwarder(t.Context(), ForwarderInput{Domain: "corp.example", Upstreams: []string{"10.9.9.9"}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -394,12 +400,12 @@ func TestResponseIPCheck(t *testing.T) {
 		return m, upstream.Info{Upstream: "u"}, nil
 	})
 	synth := netip.MustParseAddr("2001:db8:64::cb00:7109")
-	e.flt.ips[synth] = ipBlock("Wide", 6)
+	e.flt.setIP(synth, ipBlock("Wide", 6))
 	if res := e.lookupAs("list64.example", "AAAA", "192.168.1.50"); res.Status != StatusForwarded ||
 		!slices.Equal(res.Answers, []string{"list64.example.\t60\tIN\tAAAA\t2001:db8:64::cb00:7109"}) {
 		t.Errorf("a list entry around the DNS64 prefix: %+v", res)
 	}
-	e.flt.ips[synth] = filter.Decision{Action: filter.ActionBlock, Source: "ip-rule", Kind: "ip", RuleID: 4, Name: synth.String()}
+	e.flt.setIP(synth, filter.Decision{Action: filter.ActionBlock, Source: "ip-rule", Kind: "ip", RuleID: 4, Name: synth.String()})
 	if res := e.lookupAs("rule64.example", "AAAA", "192.168.1.50"); res.Status != StatusBlockedIP {
 		t.Errorf("an IP rule for the synthesised address: %+v", res)
 	}

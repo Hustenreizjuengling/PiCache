@@ -19,7 +19,8 @@
 //
 // Serving: UDP with (&dns.Server{PacketConn: pc, Handler: h}).ActivateAndServe()
 // (miekg replies from the query's destination address via IP_PKTINFO) and TCP
-// with Listener: ln, MaxTCPQueries 128, IdleTimeout 8 s. DoT (docs/
+// with Listener: ln, MaxTCPQueries 128, IdleTimeout 8 s and every reply
+// written within 10 s (else the connection is closed). DoT (docs/
 // ARCHITECTURE.md 19) is served the same way on TLS listeners (the queries
 // of a connection one after another, in order; handshake and writes
 // bounded by 10 s, the first message by 10 s, a started one by the idle
@@ -111,6 +112,9 @@ const (
 	udpReadSize   = dns.DefaultMsgSize
 	tcpIdle       = 8 * time.Second
 	maxTCPQueries = 128
+	// tcpWriteTimeout bounds every reply over plain TCP; a reply that is
+	// not written by then closes the connection.
+	tcpWriteTimeout = 10 * time.Second
 
 	// DoT: the first message and the TLS handshake (and every write)
 	// within dotTimeout; a started message within dotIdle.
@@ -565,8 +569,7 @@ func (s *Server) Serve(ctx context.Context, udp []net.PacketConn, tcp, dot []net
 		servers = append(servers, &dns.Server{PacketConn: pc, Handler: h, UDPSize: udpReadSize, DecorateReader: s.decorateReader})
 	}
 	for _, ln := range tcp {
-		servers = append(servers, &dns.Server{Listener: ln, Handler: h, MaxTCPQueries: maxTCPQueries,
-			IdleTimeout: func() time.Duration { return tcpIdle }})
+		servers = append(servers, newTCPServer(ln, h))
 	}
 	dh := &dnsHandler{s: s, ctx: ctx, proto: ProtoDoT}
 	for _, ln := range dot {
@@ -616,6 +619,45 @@ func (s *Server) Serve(ctx context.Context, udp []net.PacketConn, tcp, dot []net
 		return fmt.Errorf("dns: %w", runErr)
 	}
 	return nil
+}
+
+// newTCPServer serves plain DNS over TCP: at most 128 queries per
+// connection, answered one after another; the first query and every
+// further one within the idle time of 8 s; every reply within 10 s
+// (tcpDeadlines).
+func newTCPServer(ln net.Listener, h dns.Handler) *dns.Server {
+	return &dns.Server{Listener: tcpDeadlines(ln), Handler: h, MaxTCPQueries: maxTCPQueries,
+		IdleTimeout: func() time.Duration { return tcpIdle }}
+}
+
+// tcpDeadlines wraps a plain TCP listener: every reply is written within
+// tcpWriteTimeout, and a reply that could not be written closes the
+// connection (a partly written message leaves the stream unusable). So a
+// client that stops reading holds its connection, the handler goroutine
+// and its in-flight slot for at most that long: miekg never applies
+// Server.WriteTimeout, and its idle timeout bounds only the reads.
+func tcpDeadlines(ln net.Listener) net.Listener { return &tcpListener{Listener: ln} }
+
+type tcpListener struct{ net.Listener }
+
+func (l *tcpListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &tcpConn{Conn: c}, nil
+}
+
+// tcpConn bounds every write and closes the connection after a failed one.
+type tcpConn struct{ net.Conn }
+
+func (c *tcpConn) Write(b []byte) (int, error) {
+	_ = c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
+	n, err := c.Conn.Write(b)
+	if err != nil {
+		_ = c.Conn.Close()
+	}
+	return n, err
 }
 
 // maintain sweeps the rate limiter, samples the query rate and ends elapsed

@@ -67,7 +67,7 @@ fixes; please test against it or a current build of `main`.
 | Hostile blocklists, cache-domains data or NAS content | Sizes, counts, names and patterns are validated; public-suffix patterns are rejected. Lists of answer addresses can never block broad, private or special networks (the IP guard). List titles are cleaned before they become names. Files are accessed through `os.Root`. Slice files carry validated, CRC-checked headers. Details in [DNS protection](#dns-protection). |
 | Family resolvers of client groups failing open | A group's own resolver (a family preset or its own upstreams) fails closed: when it cannot be reached, its clients get SERVFAIL, never an answer of the default upstreams, the fallbacks or the unfiltered bootstrap servers. Details in [DNS protection](#dns-protection). |
 | Web UI takeover on first start | One-time setup token (logged and stored with mode 0600, compared in constant time, first user created atomically), or provisioning from `PICACHE_ADMIN_PASSWORD_FILE`. After setup, `/auth/setup` answers 403 at once, uses no share of the global attempt limit and counts as a failed attempt of the caller. |
-| Password guessing | argon2id; per client 5 failures → 15 min lockout; per user name a delay from the 5th failure (1 s, doubling, at most 30 s, reset by a successful sign-in), never a lockout; TOTP failures count; a global attempt limit; optional TOTP with single-use codes. Every sign-in gives the browser a device cookie (sealed with the master key, `HttpOnly`, 180 days, not a credential): a browser that signed in before is throttled by its own device key (5 failures → 15 min) instead of the user-name delay, so failed attempts from other LAN hosts cannot keep it out, and a copied device cookie allows no more guesses than one client. Password confirmations of signed-in users (tokens, TOTP, password change, restore) are throttled per client and per session (5 failures → 15 min each) and by the global limit, not by the user-name delay. |
+| Password guessing | argon2id; per client 5 failures → 15 min lockout; per user name a delay from the 5th failure (1 s, doubling, at most 30 s, reset by a successful sign-in), never a lockout; TOTP failures count; attempts in flight count as failures until they end, so parallel requests get no more guesses than the same requests one after another; a global attempt limit; optional TOTP with single-use codes. Every sign-in gives the browser a device cookie (sealed with the master key, `HttpOnly`, 180 days, not a credential): a browser that signed in before is throttled by its own device key (5 failures → 15 min) instead of the user-name delay, so failed attempts from other LAN hosts cannot keep it out, and a copied device cookie allows no more guesses than one client. Password confirmations of signed-in users (tokens, TOTP, password change, restore) are throttled per client and per session (5 failures → 15 min each) and by the global limit, not by the user-name delay. |
 | Session theft, CSRF | 256-bit session tokens stored hashed; cookie `HttpOnly`, `SameSite=Strict`; over HTTPS `Secure` and named `__Host-picache_session`, so a plain-HTTP origin on the same host cannot plant or overwrite it; behind a TLS-terminating reverse proxy the same applies when the proxy is trusted and sends `X-Forwarded-Proto: https`, else `PICACHE_WEB_SECURE_COOKIES` sets `Secure`; idle and absolute timeouts; sessions re-checked on every request; cross-origin protection; JSON-only request bodies. A stolen session alone cannot create API tokens or enrol TOTP (both need the current password); changing the password ends all other sessions and all API tokens (unless kept explicitly); enabling TOTP ends all other sessions. |
 | API token misuse | Tokens have scope `read`, `admin` or `sync` (the configuration export only) and can never manage tokens, passwords, TOTP or sessions, nor restore a backup, install an update, manage accounts or change the HTTPS certificate (these need an interactive session; accounts, restores, updates and certificates an admin's). An admin token acts with admin rights only while its owner is an admin (checked on every request); demoting an account deletes its admin and sync tokens (read tokens stay). Backups never contain accounts (users, password hashes, TOTP secrets, sessions, tokens), and a restore keeps the accounts and tokens of the running instance, so an admin token cannot become the interactive account. Live streams re-check the token every 15 s. |
 | Malicious backup upload | A restore needs an interactive session and the current password. Uploads with triggers, views, virtual tables, generated columns, tables or indexes the running PiCache does not have, indexes defined differently from the running PiCache's (including named indexes disguised as automatic ones), or altered account tables are refused, at upload and again at the next start. The restore keeps the accounts, API tokens and audit log of the running instance and ends all sessions. Every database connection runs with `trusted_schema` off. PiCache creates no triggers or views: any found in `picache.db` (e.g. planted through a restore by an older version) are removed at start with a warning, by `picache reset-password`, and from every backup copy; revoking sessions or tokens and scrubbing a backup verify that the rows are really gone. |
@@ -84,7 +84,7 @@ fixes; please test against it or a current build of `main`.
 | Network discovery scan | Admins only, audited, at most one per minute: one empty UDP datagram per address of this machine's private IPv4 subnets (at most 512, at most 200 per second) from an unprivileged socket; no raw sockets or capabilities. Details in [Parental controls and the network check](#parental-controls-and-the-network-check). |
 | DHCP server (optional) | Off by default; switched on in the web UI by an admin (`PICACHE_DHCP=off` prevents it); no DHCP port is open while it is off. Serves one chosen interface, never relayed requests, never while its own address is dynamic or another DHCP server was detected. Every DHCPv4, DHCPv6 and ICMPv6 packet is parsed with strict bounds checks, rate limited and dropped when malformed; replies cannot be aimed at hosts outside the LAN. Router advertisements never make PiCache a router. `CAP_NET_RAW` is used only at start (while router advertisements are on) and then dropped on every thread; PiCache refuses to run if that fails. Details in [DHCP server](#dhcp-server). |
 | Privilege escalation | The service runs unprivileged and never holds `CAP_SYS_ADMIN`. NAS mounts are done by systemd on request of a separate root helper that re-validates every request and never trusts the database: it opens it read-only as a regular file (no links, FIFOs or devices) with an untrusted schema, touches only names derived from the target id, never follows links in the service-owned request directory, and runs sandboxed with a memory limit. |
-| Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total. |
+| Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total on every TCP listener (the web UI: 64 per client address, 256 for the IPv6 addresses of one on-link, ULA or link-local /64 together, and 1024 in total; trusted reverse proxies count only toward the total, and this machine has a reserve of 64 beyond it, so a host that fills the total cannot fail the health check and roll back an update), so idle connections from one host cannot grow PiCache until the kernel stops it. A DNS reply over TCP or DoT that the client does not read within 10 s ends its wait (over TCP the connection is closed). Dials to DoH upstreams end with the 3 s attempt, at most 4 connections per upstream, so a black-holed upstream leaves nothing pending. |
 | Malicious or tampered update | A release is installed only if its `SHA256SUMS` carries an Ed25519 signature by a key compiled into the running binary, the binary matches its checksum and reports the expected version. The web UI can only queue a version number; the root helper installs exactly that release from the fixed GitHub repository and never an older one. Starting an update needs a browser session and the password. Details in [Updates](#updates). |
 
 Known residual risks:
@@ -439,8 +439,10 @@ are in [ARCHITECTURE.md §15.1](ARCHITECTURE.md#151-notifications-internalnotify
 - **Only what the admin configured leaves the host.** Channels are created
   by admins (browser session or admin API token). PiCache sends a `POST` to
   exactly the configured URL (`http` or `https`); it follows no redirects,
-  uses no proxy, verifies TLS certificates, gives up after 10 seconds and
-  reads at most 4 KiB of the answer, which it discards.
+  uses no proxy unless *Notifications* is switched on for the outbound
+  proxy (**System → Network**; then a tunnel to the checked address),
+  verifies TLS certificates, gives up after 10 seconds and reads at most
+  4 KiB of the answer, which it discards.
 - **Private addresses are allowed on purpose.** The usual receivers run on
   the LAN or on the same host (Home Assistant, a self-hosted ntfy or
   Gotify), so unlike list downloads and the cache proxy, notifications may
@@ -696,6 +698,24 @@ with their own targets, the router, the local domain) is trusted as
 configured; `dns.rebindAllow` (by default `plex.direct`), the names of
 `web.allowedHosts` and user allow rules exempt names on purpose.
 
+Residual risk: **global IPv6 addresses of your LAN are not covered.** On
+a network with public IPv6 (for example a provider prefix of 2003:… or
+2a02:…), a public name may resolve to the global address of your router,
+NAS or printer inside your LAN's /64, or to the visitor's own IPv6 address,
+which a web page learns from the connection; PiCache passes such an
+answer, and browsers treat these addresses as public. The page can then
+reach a service that listens on IPv6 and accepts requests for foreign host
+names. PiCache does not block these addresses by default because a public
+name pointing at a LAN device's global address is also the usual,
+legitimate way to reach your own services (dynamic DNS for a NAS, the only
+way in on DS-Lite connections); blocking them would break that without
+notice. If your prefix is static, an IP rule for it (Filtering → Rules →
+Rules for answer addresses, for example `2001:db8:1234:5600::/56`) blocks
+such answers, with allow rules for your own dynamic-DNS names. In any
+case, keep the web interfaces of your devices behind a password and, where
+you can, let services listen on IPv4 or unique-local (fd00::/8) addresses
+only.
+
 **Lists of answer addresses and IP rules.** A list of the format "answer
 addresses" and the IP rules block an answer when one of its addresses is
 listed (for example a threat feed of known malicious servers). A hostile
@@ -756,6 +776,14 @@ router, the bootstrap servers or with PiCache's own lookups, and a reply
 that carries another subnet is discarded. Client subnets sent by clients
 are never forwarded (they are only logged, anonymised with the client
 addresses).
+
+**Query sizes on encrypted upstreams.** Queries to DoT, DoH, DoQ and
+HTTP/3 upstreams are padded to multiples of 128 bytes (EDNS Padding, RFC
+8467), and resolvers pad their replies to padded queries, so someone who
+watches the encrypted connection does not learn the length of each name
+from the packet sizes. Plain DNS, the bootstrap servers and DNSCrypt (which
+pads on its own) are not affected. Timing and the number of queries
+remain visible.
 
 **Fastest-address probes.** With the upstream mode `fastest_addr` (off by
 default) PiCache opens TCP connections to the addresses of answers, which
@@ -829,10 +857,17 @@ verdict and the path to them.
   50 iterations or a 64-byte salt (CVE-2023-50868), 32 chain lookups and
   4 seconds; verifications share a semaphore of one per CPU, chain lookups
   a global limit of 50 per second (a lookup waits for its turn), of which
-  the queries of one device may start at most 20, so one device cannot
-  starve the validation of the others; a refused lookup is not remembered
-  as a failure of the zone. Cached and local answers never wait for
-  validation, and the per-client rate limit applies.
+  the queries of one device may start at most 25 (they wait for their turn
+  too), so one device cannot starve the validation of the others. A device
+  is its MAC address when PiCache's neighbour table knows it, so its IPv6
+  privacy addresses and any addresses it adds share one share; otherwise
+  (the table is not readable, a routed source) it is its address (a public
+  source: its network). Residual risk: a device that also forges extra MAC
+  addresses, or several colluding devices, can take the whole global limit;
+  then uncached signed names of other devices may fail (SERVFAIL) while it
+  lasts, cached answers never. A refused lookup is not remembered as a
+  failure of the zone. Cached and local answers never wait for validation,
+  and the per-client rate limit applies.
 - **Trust anchors** (the root zone's key signing keys KSK-2017 and
   KSK-2024) are compiled into PiCache and never downloaded or updated at
   runtime, so nobody can plant an anchor; a future root key rollover needs
@@ -996,7 +1031,8 @@ the database itself and delete copies you no longer need.
       is checked. If the local CA's key may have been read, a new local CA is
       created and the old one removed from your devices.
 - [ ] `/metrics` stays disabled unless you scrape it (it then requires an
-      admin token).
+      API token: give Prometheus a read token with an expiry, never an admin
+      token).
 - [ ] Only needed host names are in `PICACHE_WEB_HOSTS` / the allowed hosts.
 
 **Deployment**
@@ -1014,8 +1050,15 @@ the database itself and delete copies you no longer need.
 - [ ] The system clock is synchronised (NTP). Encrypted upstreams depend on
       it. While the clock is before the binary's build date, PiCache falls
       back to plain DNS to its bootstrap servers. A build without a build
-      date (such as the image `docker compose up --build` builds) has no such
-      fallback: its encrypted upstreams fail until the clock is right.
+      date (a plain `go build` without `-ldflags`; releases, `make` and the
+      image `docker compose up --build` builds all carry their build time)
+      has no such fallback: its encrypted upstreams fail until the clock is
+      right. A
+      clock that is behind but after the build date (restored from the last
+      shutdown) and reported as not synchronised is handled differently:
+      the upstreams' certificates are checked at the start of the renewed
+      certificate's validity (never an expired one), so encrypted DNS keeps
+      working and the host can resolve its NTP servers.
 - [ ] The DHCP server is switched on only if PiCache hands out addresses;
       then the machine has a static address and the router's DHCP server is
       off. On a host that runs another DHCP server, set `PICACHE_DHCP=off`
@@ -1039,7 +1082,8 @@ the database itself and delete copies you no longer need.
       PiCache and the people who may see the configuration.
 - [ ] Notification channels use `https` where the receiver supports it,
       and access tokens go into the secret field, not into the URL.
-- [ ] `keys/master.key` is backed up separately from the database (or the key
+- [ ] `keys/master.key` and `tls/` (the local CA) are backed up separately
+      from the database and kept as private as the key itself (or the key
       comes from a systemd credential / Docker secret). A systemd credential
       is given to `picache-storage.service` too when host-apply mounts SMB
       shares with a stored password.

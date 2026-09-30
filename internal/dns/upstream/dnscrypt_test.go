@@ -73,12 +73,23 @@ type dnscryptServer struct {
 	resPK    [32]byte
 	certs    [][]byte
 	udp, tcp atomic.Int32
+
+	// mu guards the knobs below: tests change them while the server runs
+	// (configure).
+	mu sync.Mutex
 	// mangle, if set, returns bad UDP replies sent before the genuine one.
 	mangle func(reply []byte) [][]byte
 	// truncateUDP answers every UDP query with TC set.
 	truncateUDP bool
 	// dropGenuine sends only the replies of mangle.
 	dropGenuine bool
+}
+
+// configure changes the knobs of the running server.
+func (s *dnscryptServer) configure(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fn()
 }
 
 func startDNSCrypt(t *testing.T, es uint16) *dnscryptServer {
@@ -196,19 +207,22 @@ func (s *dnscryptServer) encrypted(in []byte, network string) [][]byte {
 	if q.Unpack(plain) != nil {
 		return nil
 	}
+	s.mu.Lock()
+	truncateUDP, mangle, dropGenuine := s.truncateUDP, s.mangle, s.dropGenuine
+	s.mu.Unlock()
 	m := answerA(q, "192.0.2.222", 60)
-	if network == "udp" && s.truncateUDP {
+	if network == "udp" && truncateUDP {
 		m.Answer, m.Truncated = nil, true
 	}
 	wire, _ := m.Pack()
 	_, _ = rand.Read(nonce[12:])
 	box := dnscryptSeal(s.es, dnscryptPad(wire, 0), &nonce, &shared)
 	reply := append(append(append([]byte{}, dnscryptResolverMagic...), nonce[:]...), box...)
-	if s.mangle != nil && network == "udp" {
-		if s.dropGenuine {
-			return s.mangle(reply)
+	if mangle != nil && network == "udp" {
+		if dropGenuine {
+			return mangle(reply)
 		}
-		return append(s.mangle(reply), reply)
+		return append(mangle(reply), reply)
 	}
 	return [][]byte{reply}
 }
@@ -253,7 +267,7 @@ func TestDNSCryptRoundTrips(t *testing.T) {
 // TestDNSCryptTruncatedUsesTCP: a truncated UDP reply is retried over TCP.
 func TestDNSCryptTruncatedUsesTCP(t *testing.T) {
 	s := startDNSCrypt(t, 2)
-	s.truncateUDP = true
+	s.configure(func() { s.truncateUDP = true })
 	spec, _ := settings.ParseUpstream(s.stamp())
 	tr := newDNSCrypt(spec)
 	q := newQuery("tc.example.", dns.TypeA, dns.ClassINET, false)
@@ -274,15 +288,17 @@ func TestDNSCryptTruncatedUsesTCP(t *testing.T) {
 // requests an early refresh.
 func TestDNSCryptDiscardsForeignReplies(t *testing.T) {
 	s := startDNSCrypt(t, 1)
-	s.mangle = func(reply []byte) [][]byte {
-		foreign := bytes.Clone(reply)
-		foreign[8] ^= 0xff // another query's nonce
-		magic := bytes.Clone(reply)
-		magic[0] ^= 0xff
-		broken := bytes.Clone(reply)
-		broken[len(broken)-1] ^= 0xff // fails authentication
-		return [][]byte{foreign, magic, broken}
-	}
+	s.configure(func() {
+		s.mangle = func(reply []byte) [][]byte {
+			foreign := bytes.Clone(reply)
+			foreign[8] ^= 0xff // another query's nonce
+			magic := bytes.Clone(reply)
+			magic[0] ^= 0xff
+			broken := bytes.Clone(reply)
+			broken[len(broken)-1] ^= 0xff // fails authentication
+			return [][]byte{foreign, magic, broken}
+		}
+	})
 	spec, _ := settings.ParseUpstream(s.stamp())
 	tr := newDNSCrypt(spec)
 	q := newQuery("foreign.example.", dns.TypeA, dns.ClassINET, false)
@@ -304,8 +320,10 @@ func TestDNSCryptDiscardsForeignReplies(t *testing.T) {
 	}
 
 	// Only a foreign reply arrives: the attempt times out.
-	s.dropGenuine = true
-	s.mangle = func(reply []byte) [][]byte { f := bytes.Clone(reply); f[9] ^= 1; return [][]byte{f} }
+	s.configure(func() {
+		s.dropGenuine = true
+		s.mangle = func(reply []byte) [][]byte { f := bytes.Clone(reply); f[9] ^= 1; return [][]byte{f} }
+	})
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel2()
 	if _, err := tr.exchange(ctx2, q, wire); err == nil || !errors.Is(err, errTimeout) {

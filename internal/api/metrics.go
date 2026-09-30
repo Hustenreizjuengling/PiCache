@@ -17,7 +17,10 @@ import (
 )
 
 // registerMetrics registers GET /metrics (Prometheus text format). It is 404
-// unless settings.Web.MetricsEnabled and requires an admin API token.
+// unless settings.Web.MetricsEnabled and requires an API token of scope read
+// or admin (a read token reads everything it exports on the R routes, so a
+// scrape configuration never needs a token that can change settings);
+// sessions and sync tokens are refused.
 func (s *Server) registerMetrics() {
 	s.mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -31,8 +34,8 @@ func (s *Server) registerMetrics() {
 			writeError(w, r, s.log, err)
 			return
 		}
-		if p.TokenID == 0 || p.Scope != auth.ScopeAdmin {
-			writeError(w, r, s.log, apperr.Forbidden("metrics require an admin API token (Authorization: Bearer pc_…)"))
+		if p.TokenID == 0 || p.Scope != auth.ScopeRead && p.Scope != auth.ScopeAdmin {
+			writeError(w, r, s.log, apperr.Forbidden("metrics require an API token of scope read (Authorization: Bearer pc_…)"))
 			return
 		}
 		var buf bytes.Buffer

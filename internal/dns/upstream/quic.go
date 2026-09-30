@@ -3,13 +3,11 @@ package upstream
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"os"
 	"sync"
 	"time"
@@ -75,25 +73,16 @@ func (q *quicDialer) dial(ctx context.Context, address string, tlsConf *tls.Conf
 	if err != nil {
 		return nil, err
 	}
-	lastErr := errNoAddrs
-	for _, a := range addrs {
-		c, err := quic.DialAddr(ctx, netip.AddrPortFrom(a, port).String(), tlsConf, conf)
-		if err == nil {
-			return c, nil
-		}
-		lastErr = err
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	return nil, lastErr
+	return dialAddrs(ctx, addrs, port, func(ctx context.Context, address string) (*quic.Conn, error) {
+		return quic.DialAddr(ctx, address, tlsConf, conf)
+	})
 }
 
 // doqTransport is DNS over QUIC (RFC 9250, ALPN "doq"): one QUIC
 // connection per upstream, reused and dialled again after it failed or
 // idled out; one bidirectional stream per query (2-byte length prefix,
-// message ID 0, the send side closed after the query); at most 64
-// streams at a time.
+// message ID 0, padded (padQuery), the send side closed after the query);
+// at most 64 streams at a time.
 type doqTransport struct {
 	address string // host:port for the dialer
 	dialer  quicDialer
@@ -107,9 +96,9 @@ type doqTransport struct {
 	closed bool
 }
 
-func newDoQ(spec settings.UpstreamSpec, boot *bootstrap, roots *x509.CertPool, idle time.Duration) *doqTransport {
+func newDoQ(spec settings.UpstreamSpec, boot *bootstrap, enc encOpts, idle time.Duration) *doqTransport {
 	quietQUIC()
-	conf := clientTLS(spec.Host, tls.VersionTLS13, roots, spec.Pins)
+	conf := clientTLS(spec.Host, tls.VersionTLS13, enc, spec.Pins)
 	conf.NextProtos = []string{"doq"}
 	return &doqTransport{
 		address: spec.Addr(),
@@ -132,7 +121,7 @@ func (t *doqTransport) exchange(ctx context.Context, q *dns.Msg, wire []byte) (*
 	if err != nil {
 		return nil, ctxErr(ctx, err)
 	}
-	m, err := t.roundTrip(ctx, conn, wire)
+	m, err := t.roundTrip(ctx, conn, padQuery(q, wire))
 	if err != nil {
 		if conn.Context().Err() != nil {
 			t.drop(conn) // the connection failed or idled out: dial again next time
@@ -140,6 +129,7 @@ func (t *doqTransport) exchange(ctx context.Context, q *dns.Msg, wire []byte) (*
 		return nil, ctxErr(ctx, err)
 	}
 	m.Id = q.Id
+	dropPadding(m)
 	return m, nil
 }
 
@@ -264,7 +254,8 @@ func (t *doqTransport) close() {
 // h3Transport is DNS over HTTPS over HTTP/3 (h3://): RFC 8484 POST with ID
 // 0 through an http3.Transport per upstream (the QUIC configuration of
 // DoQ, response headers at most 16 KiB, bodies at most 64 KiB, no
-// redirects, no proxies). https:// upstreams never switch to HTTP/3.
+// redirects, no proxies; queries padded, padQuery). https:// upstreams
+// never switch to HTTP/3.
 type h3Transport struct {
 	url    string
 	tr     *http3.Transport
@@ -272,12 +263,12 @@ type h3Transport struct {
 	stop   context.CancelFunc // ends the dial in progress (close)
 }
 
-func newH3(spec settings.UpstreamSpec, boot *bootstrap, roots *x509.CertPool, idle time.Duration) *h3Transport {
+func newH3(spec settings.UpstreamSpec, boot *bootstrap, enc encOpts, idle time.Duration) *h3Transport {
 	quietQUIC()
 	d := &quicDialer{d: bootDialer{boot: boot, fixed: spec.DialAddr}}
 	life, stop := context.WithCancel(context.Background())
 	tr := &http3.Transport{
-		TLSClientConfig:        clientTLS(spec.Host, tls.VersionTLS13, roots, spec.Pins),
+		TLSClientConfig:        clientTLS(spec.Host, tls.VersionTLS13, enc, spec.Pins),
 		QUICConfig:             quicConfig(idle, h3MaxUniStreams),
 		Dial:                   sharedDial(life, d.dial),
 		MaxResponseHeaderBytes: 16 << 10,
@@ -310,7 +301,7 @@ func sharedDial(life context.Context, dial quicDialFunc) quicDialFunc {
 }
 
 func (t *h3Transport) exchange(ctx context.Context, q *dns.Msg, wire []byte) (*dns.Msg, error) {
-	m, err := exchangeHTTP(ctx, t.client, t.url, q, wire)
+	m, err := exchangeHTTP(ctx, t.client, t.url, q, padQuery(q, wire))
 	if err != nil && errors.Is(err, http3.ErrTransportClosed) {
 		return nil, errClosed
 	}

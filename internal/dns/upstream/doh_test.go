@@ -29,6 +29,13 @@ type dohServer struct {
 
 func startDoH(t *testing.T, answer func(w http.ResponseWriter, q *dns.Msg)) *dohServer {
 	t.Helper()
+	return startDoHCert(t, nil, answer)
+}
+
+// startDoHCert is startDoH with the certificate cert (nil: the httptest
+// certificate); d.pool trusts the served certificate itself.
+func startDoHCert(t *testing.T, cert *tls.Certificate, answer func(w http.ResponseWriter, q *dns.Msg)) *dohServer {
+	t.Helper()
 	d := &dohServer{}
 	d.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/dns-query" ||
@@ -52,6 +59,9 @@ func startDoH(t *testing.T, answer func(w http.ResponseWriter, q *dns.Msg)) *doh
 	}))
 	d.srv.EnableHTTP2 = true
 	d.srv.Config.ErrorLog = log.New(io.Discard, "", 0) // expected handshake failures
+	if cert != nil {
+		d.srv.TLS = &tls.Config{Certificates: []tls.Certificate{*cert}}
+	}
 	d.srv.StartTLS()
 	t.Cleanup(d.srv.Close)
 	d.pool = x509.NewCertPool()
@@ -250,6 +260,91 @@ func TestDoTReconnectsAfterServerClosedIdleConnection(t *testing.T) {
 	if accepted.Load() != 3 {
 		t.Errorf("connections = %d, want 3", accepted.Load())
 	}
+}
+
+// TestDoTResendsWhenServerCutsHandshake: dns.quad9.net also closes or
+// resets the TLS handshake of a share of new connections on its DoT port;
+// the query is sent once more over another new connection. Not after a
+// certificate error, and at most once per query (a query already sent
+// again after a stale pooled connection is not sent a third time).
+func TestDoTResendsWhenServerCutsHandshake(t *testing.T) {
+	start := func(t *testing.T, cut func(n int32) string, maxQueries int) (string, *x509.CertPool, *cutListener) {
+		cert, pool := testCert(t)
+		raw, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl := &cutListener{Listener: raw, cut: cut}
+		ln := tls.NewListener(cl, &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"dot"}})
+		serve(t, &dns.Server{Listener: ln, Net: "tcp-tls", MaxTCPQueries: maxQueries,
+			Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) { _ = w.WriteMsg(answerA(q, "192.0.2.87", 60)) })})
+		return "tls://" + raw.Addr().String(), pool, cl
+	}
+	resolve := func(t *testing.T, up string, pool *x509.CertPool, n int) (*Resolver, []error) {
+		st := newStore(t, func(d *settings.DNS) { d.Upstreams = []string{up}; d.CacheEnabled = false })
+		opts := testOptions()
+		opts.rootCAs = pool
+		r := newTestResolver(t, st, opts, nil)
+		var errs []error
+		for i := range n {
+			_, _, err := r.Resolve(context.Background(), query("dot"+strconv.Itoa(i)+".example.", dns.TypeA, uint16(i), false), noECS)
+			errs = append(errs, err)
+		}
+		return r, errs
+	}
+	first := func(how string) func(int32) string {
+		return func(n int32) string {
+			if n == 1 {
+				return how
+			}
+			return ""
+		}
+	}
+	for _, how := range []string{"eof", "reset"} {
+		t.Run(how, func(t *testing.T) {
+			up, pool, cl := start(t, first(how), 0)
+			r, errs := resolve(t, up, pool, 2)
+			defer r.Close()
+			if errs[0] != nil || errs[1] != nil {
+				t.Fatalf("errors %v", errs)
+			}
+			if st := r.Stats(); st[0].Errors != 0 {
+				t.Errorf("the cut handshake counted as an upstream error: %+v", st[0])
+			}
+			if n := cl.accepted.Load(); n != 2 {
+				t.Errorf("connections = %d, want 2", n)
+			}
+		})
+	}
+	t.Run("bad certificate", func(t *testing.T) {
+		up, _, cl := start(t, nil, 0)
+		r, errs := resolve(t, up, x509.NewCertPool(), 1)
+		defer r.Close()
+		if errs[0] == nil {
+			t.Fatal("an untrusted certificate was accepted")
+		}
+		if n := cl.accepted.Load(); n != 1 {
+			t.Errorf("connections = %d, want 1 (no resend)", n)
+		}
+	})
+	t.Run("once per query", func(t *testing.T) {
+		// One query per connection: the second query finds its pooled
+		// connection closed, and the handshake of the new one is cut.
+		up, pool, cl := start(t, func(n int32) string {
+			if n == 2 {
+				return "reset"
+			}
+			return ""
+		}, 1)
+		r, errs := resolve(t, up, pool, 2)
+		defer r.Close()
+		if errs[0] != nil || errs[1] == nil {
+			t.Fatalf("errors %v, want the second query to fail", errs)
+		}
+		if n := cl.accepted.Load(); n != 2 {
+			t.Errorf("connections = %d, want 2 (one resend)", n)
+		}
+	})
 }
 
 type countingListener struct {

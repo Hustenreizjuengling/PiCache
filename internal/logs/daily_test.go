@@ -224,6 +224,9 @@ func TestYearOfDailyRowsIsFast(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fills a year of daily top lists")
 	}
+	if raceEnabled {
+		t.Skip("a timing test: the race detector slows it down many times")
+	}
 	s, _ := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now()

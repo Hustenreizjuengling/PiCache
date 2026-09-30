@@ -8,9 +8,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"encoding/pem"
+	"errors"
 	"io"
 	stdlog "log"
 	"log/slog"
@@ -19,8 +21,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -294,6 +298,124 @@ func TestSyncMapsGroupsByName(t *testing.T) {
 	}
 	if groups, _ := f.clients.Groups(ctx); len(groups) != 2 {
 		t.Fatalf("the follower's groups changed: %+v", groups)
+	}
+}
+
+// RQ-05: a reload that fails after the commit fails the run (its state is
+// not stored), so the next run applies the export again and the components
+// follow the tables instead of keeping the previous configuration.
+func TestSyncReloadFailureFailsTheRun(t *testing.T) {
+	ctx := context.Background()
+	p, f := syncApp(t), syncApp(t)
+	kidsP := seedPrimary(t, p, 0)
+	exp := exportOf(t, p, allSynced...)
+	// Every read of the components fails after the commit: the reader pool
+	// is swapped for a closed one (the transaction uses the writer).
+	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	good := f.cdb.R
+	f.cdb.R = closed
+	err = f.applySync(ctx, exp, allSynced)
+	f.cdb.R = good
+	if err == nil || !strings.Contains(err.Error(), "reload after the sync") {
+		t.Fatalf("a failed reload: %v", err)
+	}
+	if recs, _ := f.dns.Records(ctx); len(recs) != 1 {
+		t.Fatalf("the tables were not committed: records %+v", recs)
+	}
+	if f.filter.Check("x.games.example", 1, []int64{kidsP}).Blocked() {
+		t.Fatal("test setup: the filter was reloaded")
+	}
+	if err := f.applySync(ctx, exp, allSynced); err != nil {
+		t.Fatalf("the next run: %v", err)
+	}
+	if !f.filter.Check("x.games.example", 1, []int64{kidsP}).Blocked() {
+		t.Error("the next run did not reload the filter")
+	}
+}
+
+// CR-2: the run after a failed reload brings the lists in line with the
+// database although the database already equals the export: a list whose
+// URL and kind changed in the failed run is reloaded with them (not kept
+// with its old ones), and the downloaded copies of the lists that run
+// removed or changed are deleted.
+func TestSyncRetryAppliesChangedAndRemovedLists(t *testing.T) {
+	ctx := context.Background()
+	p, f := syncApp(t), syncApp(t)
+	seedPrimary(t, p, 0)
+	gone, err := p.filter.CreateList(ctx, filter.ListInput{URL: "https://lists.example/gone.txt", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.applySync(ctx, exportOf(t, p, allSynced...), allSynced); err != nil {
+		t.Fatal(err)
+	}
+	lists, err := p.filter.Lists(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kids filter.List
+	for _, l := range lists {
+		if l.URL == "https://lists.example/kids.txt" {
+			kids = l
+		}
+	}
+	if kids.ID == 0 {
+		t.Fatalf("test setup: no kids list in %+v", lists)
+	}
+	// The follower has downloaded both lists.
+	copyOf := func(id int64) string { return filepath.Join(f.paths.ListsDir, strconv.FormatInt(id, 10)+".txt") }
+	for _, id := range []int64{kids.ID, gone.ID} {
+		if err := os.WriteFile(copyOf(id), []byte("ads.example\n"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The primary turns the kids list into an allowlist of another URL and
+	// removes the other list; the follower's reload of that run fails.
+	if _, err := p.filter.UpdateList(ctx, kids.ID, filter.ListInput{URL: "https://lists.example/allow.txt", Kind: "allow",
+		Enabled: true, GroupIDs: kids.GroupIDs}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.filter.DeleteList(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	exp := exportOf(t, p, allSynced...)
+	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	good := f.cdb.R
+	f.cdb.R = closed
+	err = f.applySync(ctx, exp, allSynced)
+	f.cdb.R = good
+	if err == nil || !strings.Contains(err.Error(), "reload after the sync") {
+		t.Fatalf("a failed reload: %v", err)
+	}
+	if err := f.applySync(ctx, exp, allSynced); err != nil {
+		t.Fatalf("the next run: %v", err)
+	}
+	got, err := f.filter.Lists(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]filter.List{}
+	for _, l := range got {
+		byID[l.ID] = l
+	}
+	if l := byID[kids.ID]; l.URL != "https://lists.example/allow.txt" || l.Kind != "allow" {
+		t.Fatalf("the changed list after the retry: %+v", l)
+	}
+	if _, ok := byID[gone.ID]; ok || len(got) != len(lists)-1 {
+		t.Fatalf("the follower's lists after the retry: %+v", got)
+	}
+	for _, id := range []int64{kids.ID, gone.ID} {
+		if _, err := os.Stat(copyOf(id)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the copy of list %d was kept: %v", id, err)
+		}
 	}
 }
 

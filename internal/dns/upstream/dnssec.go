@@ -17,7 +17,6 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/hustenreizjuengling/picache/internal/dns/dnssec"
-	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -33,10 +32,11 @@ const (
 	dnssecTick        = time.Second      // the maintenance loop (probes due, time checks)
 	chainRate         = 50               // new chain exchanges per second (all routes)
 	chainBurst        = 200
-	chainClientRate   = 20               // new chain exchanges per second started for one client (its share of chainRate)
-	chainClientBurst  = 100              // the burst of that share
+	chainClientRate   = 25               // new chain exchanges per second started for one client (its share of chainRate: half)
+	chainClientBurst  = 200              // the burst of that share (the global burst: a device alone may use all of it)
 	maxChainClients   = 4096             // clients whose share is tracked (the least recently seen evicted)
 	chainClientIdle   = time.Minute      // a client's share is forgotten after this long without a chain exchange
+	refusalLogEvery   = 10 * time.Minute // one WARN per client whose chain lookups were refused
 	probeFailLimit    = 3                // probes in a row without a reply after which an upstream's root signatures no longer count
 	bogusLogEvery     = 10 * time.Minute // one WARN per zone
 	bogusLogZones     = 1024
@@ -67,8 +67,9 @@ const (
 )
 
 var (
-	// errChainRate refuses a chain exchange beyond the global rate or the
-	// client's share: a local refusal the validator never caches.
+	// errChainRate refuses a chain exchange that could not get its turn
+	// of the global rate or of the client's share within the
+	// validation's deadline: a local refusal the validator never caches.
 	errChainRate = dnssec.ErrRateLimited
 	// ErrDNSSECTestRunning and ErrDNSSECTestTooSoon refuse a DNSSEC test
 	// while one runs (409) and within 10 s of the last start (429).
@@ -153,9 +154,9 @@ func (p *probeState) stateOrUnknown() string {
 type validation struct {
 	r       *Resolver
 	v       *dnssec.Validator
-	limiter *rate.Limiter        // new chain exchanges
-	shares  *netutil.RateLimiter // each client's share of them (keyed like the DNS rate limit)
-	probes  chan struct{}        // probes at a time
+	limiter *rate.Limiter // new chain exchanges
+	shares  *chainShares  // each client's share of them (WithClient)
+	probes  chan struct{} // probes at a time
 
 	clockMu     sync.Mutex
 	clockRead   func() (synced, readable bool)
@@ -166,8 +167,9 @@ type validation struct {
 	reason      string
 	lastBad     time.Time // the last time a reason to suspend held
 
-	logMu  sync.Mutex
-	logged map[string]time.Time // zone → last bogus WARN
+	logMu   sync.Mutex
+	logged  map[string]time.Time // zone → last bogus WARN
+	refused map[string]time.Time // client key → last WARN about its refused chain lookups
 
 	testMu    sync.Mutex
 	testLast  time.Time
@@ -177,19 +179,12 @@ type validation struct {
 
 func newValidation(r *Resolver) *validation {
 	val := &validation{r: r, limiter: rate.NewLimiter(chainRate, chainBurst), probes: make(chan struct{}, maxProbes),
-		shares: netutil.NewRateLimiterMax(chainClientRate, chainClientBurst, maxChainClients),
-		logged: map[string]time.Time{}, kickProbe: make(chan struct{}, 1)}
+		shares: newChainShares(chainClientRate, chainClientBurst, maxChainClients),
+		logged: map[string]time.Time{}, refused: map[string]time.Time{}, kickProbe: make(chan struct{}, 1)}
 	val.v = dnssec.New(dnssec.Config{Base: r.life, Spawn: r.goTracked, Anchors: r.opts.anchors, NewRootKey: func() {
 		r.log.Warn("a new DNSSEC root key is published: update PiCache before it is used")
 	}})
-	val.keyShares(r.set.Get().DNS)
 	return val
-}
-
-// keyShares keys the clients' shares of the chain exchanges like the DNS
-// rate limit (dns.rateLimitIpv4Prefix and rateLimitIpv6Prefix).
-func (val *validation) keyShares(d settings.DNS) {
-	val.shares.Reconfigure(chainClientRate, chainClientBurst, nil, d.RateLimitIPv4Prefix, d.RateLimitIPv6Prefix)
 }
 
 // validating reports DNSSEC mode validate.
@@ -319,8 +314,10 @@ func degraded(u *upstream) string {
 // validateFetch validates a fetched answer of a validating fetch (rcode
 // NOERROR or NXDOMAIN; not RRSIG, NSEC or NSEC3 queries): its verdict, or
 // the upstream's own block of a chain reply (Info.Block). Its chain
-// lookups draw on client's share of the chain exchanges (invalid: none).
-func (r *Resolver) validateFetch(ctx context.Context, rt route, k cacheKey, res *exchangeResult, d settings.DNS, client netip.Addr) {
+// lookups draw on client's share of the chain exchanges (a zero client:
+// none). A bogus verdict is logged per zone, a local refusal
+// (Result.Local) is not: chainLookup logged it per client.
+func (r *Resolver) validateFetch(ctx context.Context, rt route, k cacheKey, res *exchangeResult, d settings.DNS, client chainClient) {
 	switch k.qtype {
 	case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
 		return
@@ -345,7 +342,7 @@ func (r *Resolver) validateFetch(ctx context.Context, rt route, k cacheKey, res 
 	}
 	res.verdict = verdictOf(out)
 	res.val = valMeta{lookupFailure: out.Lookup, local: out.Local, expires: out.Expires}
-	if out.Status == dnssec.Bogus {
+	if out.Status == dnssec.Bogus && !out.Local {
 		r.val.logBogus(out, now)
 	}
 }
@@ -364,21 +361,21 @@ func chainRoute(rt route, res *exchangeResult) route {
 // fresh query (DO=1, CD=0, RD=1, a fresh ID, no client subnet) through the
 // route that answered, never another; not cached, not filtered or logged,
 // counted in the upstream statistics. At most chainClientRate new
-// exchanges per second for the client the fetch was started for (a valid
-// client: one its DNS rate limit applies to) and chainRate for all of
-// them: a lookup beyond the client's share fails at once, one beyond the
-// global rate waits for its turn within its context's deadline; both
-// refusals are local (errChainRate, never cached). A reply of the default
-// or a group set that the upstream classifies as its own block ends the
-// validation.
-func (r *Resolver) chainLookup(rt route, client netip.Addr) dnssec.LookupFunc {
+// exchanges per second (burst chainClientBurst) for the client the fetch
+// was started for (a client key: one its DNS rate limit applies to) and
+// chainRate for all of them: a lookup waits for its turn of both within
+// its context's deadline; one that would not get it in time is refused
+// locally (errChainRate, never cached; logged once per client key and
+// refusalLogEvery). A reply of the default or a group set that the
+// upstream classifies as its own block ends the validation.
+func (r *Resolver) chainLookup(rt route, client chainClient) dnssec.LookupFunc {
 	return func(ctx context.Context, name string, qtype uint16) (dnssec.Reply, error) {
-		if client.IsValid() {
-			if ok, _ := r.val.shares.Allow(client); !ok {
-				return dnssec.Reply{}, errChainRate
-			}
+		if client.key != "" && r.val.shares.wait(ctx, client.key) != nil {
+			r.val.logRefused(client, time.Now())
+			return dnssec.Reply{}, errChainRate
 		}
 		if r.val.limiter.Wait(ctx) != nil {
+			r.val.logRefused(chainClient{}, time.Now())
 			return dnssec.Reply{}, errChainRate
 		}
 		q := newQuery(name, qtype, dns.ClassINET, true)
@@ -401,19 +398,64 @@ func (r *Resolver) chainLookup(rt route, client netip.Addr) dnssec.LookupFunc {
 
 type clientKey struct{}
 
-// WithClient returns ctx carrying the address of the client a query is
-// answered for (the DNS server sets it for clients its rate limit applies
-// to): in DNSSEC mode validate the chain lookups of a fetch started for
-// that query draw on the client's own share of the chain exchanges, so one
-// client cannot use up the global rate (docs/ARCHITECTURE.md 7.6).
-func WithClient(ctx context.Context, ip netip.Addr) context.Context {
-	return context.WithValue(ctx, clientKey{}, ip)
+// chainClient is the client a fetch was started for (WithClient): the key
+// of its share of the chain exchanges and its source address (logged; a
+// zero chainClient is none).
+type chainClient struct {
+	key    string
+	source netip.Addr
 }
 
-// clientOf returns the client address of WithClient (invalid: none).
-func clientOf(ctx context.Context) netip.Addr {
-	ip, _ := ctx.Value(clientKey{}).(netip.Addr)
-	return ip
+// WithClient returns ctx carrying the client a query is answered for (the
+// DNS server sets it for clients its rate limit applies to): key names the
+// device (its MAC when it is known, else its rate-limit key), source is
+// the query's source address. In DNSSEC mode validate the chain lookups of
+// a fetch started for that query draw on that device's own share of the
+// chain exchanges, so one device cannot use up the global rate
+// (docs/ARCHITECTURE.md 7.6). An empty key is none.
+func WithClient(ctx context.Context, key string, source netip.Addr) context.Context {
+	return context.WithValue(ctx, clientKey{}, chainClient{key: key, source: source})
+}
+
+// clientOf returns the client of WithClient (zero: none).
+func clientOf(ctx context.Context) chainClient {
+	c, _ := ctx.Value(clientKey{}).(chainClient)
+	return c
+}
+
+// logRefused logs at WARN that chain lookups of a client (zero: the
+// global rate) were refused because they could not get their turn in
+// time, at most once per client key per refusalLogEvery (1024 keys
+// remembered). It names the client by its source address (masked like
+// every client address while they are anonymised), never by its MAC: a
+// router or another DNS server forwarding a whole network to PiCache needs
+// that address in dns.rateLimitExempt.
+func (val *validation) logRefused(c chainClient, now time.Time) {
+	key := c.key
+	val.logMu.Lock()
+	if last, ok := val.refused[key]; ok && now.Sub(last) < refusalLogEvery {
+		val.logMu.Unlock()
+		return
+	}
+	if len(val.refused) >= bogusLogZones {
+		for k, t := range val.refused {
+			if now.Sub(t) >= refusalLogEvery {
+				delete(val.refused, k)
+			}
+		}
+		if len(val.refused) >= bogusLogZones {
+			val.logMu.Unlock()
+			return
+		}
+	}
+	val.refused[key] = now
+	val.logMu.Unlock()
+	if key == "" {
+		val.r.log.Warn("DNSSEC chain lookups exceed their global rate: validations that cannot wait for their turn fail (SERVFAIL)")
+		return
+	}
+	val.r.log.Warn("a client's DNSSEC chain lookups exceed its share: its validations that cannot wait for their turn fail (SERVFAIL; if it is a router or another DNS server forwarding to PiCache, add it to dns.rateLimitExempt)",
+		slog.String("client", c.source.String()))
 }
 
 // chainError shortens the error of a chain exchange for the failure
@@ -549,7 +591,7 @@ func (r *Resolver) dnssecLoop(ctx context.Context) {
 			now := time.Now()
 			r.val.timeChecks(now)
 			r.probeDue(ctx, now)
-			r.val.shares.Sweep(chainClientIdle)
+			r.val.shares.sweep(chainClientIdle, now)
 		}
 		select {
 		case <-ctx.Done():
@@ -971,7 +1013,7 @@ func (r *Resolver) testName(ctx context.Context, rt route, name, expect string, 
 	up := res.up
 	out := r.val.v.Validate(ctx, &dnssec.Request{
 		Route: rt.set.id, Name: fq, Type: dns.TypeA, Msg: res.msg, Degraded: degraded(up),
-		Lookup: r.chainLookup(chainRoute(rt, &res), netip.Addr{}), AnchorMismatch: func() { r.val.reprobe(up) },
+		Lookup: r.chainLookup(chainRoute(rt, &res), chainClient{}), AnchorMismatch: func() { r.val.reprobe(up) },
 		Now: time.Now(), TimeChecks: timeChecks, MaxTTL: d.CacheMaxTTL,
 	})
 	if out.Status == "" {

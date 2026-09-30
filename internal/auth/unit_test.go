@@ -143,7 +143,7 @@ func TestThrottle(t *testing.T) {
 				}
 				th.fail(now, c1, u)
 			}
-			err := th.allow(now.Add(tc.check), tc.keys...)
+			_, err := th.allow(now.Add(tc.check), tc.keys...)
 			if locked := apperr.KindOf(err) == apperr.KindTooMany; locked != tc.locked {
 				t.Fatalf("locked = %v (err %v), want %v", locked, err, tc.locked)
 			}
@@ -163,10 +163,10 @@ func TestThrottle(t *testing.T) {
 		for range 100 {
 			th.fail(t0, u)
 		}
-		if err := th.allow(t0.Add(userDelayMax-time.Second), u); apperr.KindOf(err) != apperr.KindTooMany {
+		if _, err := th.allow(t0.Add(userDelayMax-time.Second), u); apperr.KindOf(err) != apperr.KindTooMany {
 			t.Fatalf("within the delay: %v", err)
 		}
-		if err := th.allow(t0.Add(userDelayMax), u); err != nil {
+		if _, err := th.allow(t0.Add(userDelayMax), u); err != nil {
 			t.Fatalf("after 30 s: %v", err)
 		}
 	})
@@ -177,22 +177,68 @@ func TestThrottle(t *testing.T) {
 		}
 		th.succeed(c1, u)
 		th.fail(t0, c1, u)
-		if err := th.allow(t0, c1, u); err != nil {
+		if _, err := th.allow(t0, c1, u); err != nil {
 			t.Fatal(err)
 		}
 	})
 	t.Run("global rate", func(t *testing.T) {
 		th := newThrottle()
 		for i := range globalAttempts {
-			if err := th.allow(t0, clientThrottleKey(fmt.Sprintf("10.0.0.%d", i))); err != nil {
+			if _, err := th.allow(t0, clientThrottleKey(fmt.Sprintf("10.0.0.%d", i))); err != nil {
 				t.Fatalf("attempt %d: %v", i, err)
 			}
 		}
-		if err := th.allow(t0, c1); apperr.KindOf(err) != apperr.KindTooMany {
+		if _, err := th.allow(t0, c1); apperr.KindOf(err) != apperr.KindTooMany {
 			t.Fatalf("global limit not enforced: %v", err)
 		}
-		if err := th.allow(t0.Add(time.Second), c1); err != nil {
+		if _, err := th.allow(t0.Add(time.Second), c1); err != nil {
 			t.Fatalf("limit must refill: %v", err)
+		}
+	})
+	t.Run("attempts in flight count as failures", func(t *testing.T) {
+		th := newThrottle()
+		var releases []func()
+		for i := range maxFailures {
+			release, err := th.allow(t0, c1, userThrottleKey(fmt.Sprintf("user%d", i)))
+			if err != nil {
+				t.Fatalf("attempt %d: %v", i, err)
+			}
+			releases = append(releases, release)
+		}
+		if _, err := th.allow(t0, c1, u); apperr.KindOf(err) != apperr.KindTooMany {
+			t.Fatalf("a sixth attempt of the client while five are in flight: %v", err)
+		}
+		th.fail(t0, c1) // one of them failed: 1 failure and 4 in flight
+		releases[0]()
+		if _, err := th.allow(t0, c1, u); apperr.KindOf(err) != apperr.KindTooMany {
+			t.Fatalf("one failure and four in flight: %v", err)
+		}
+		for _, release := range releases[1:] { // ended without a failure
+			release()
+		}
+		if len(th.pending) != 0 {
+			t.Fatalf("reservations left: %v", th.pending)
+		}
+		if _, err := th.allow(t0.Add(time.Second), c1, u); err != nil {
+			t.Fatalf("one failure, nothing in flight: %v", err)
+		}
+	})
+	t.Run("a delayed username allows one attempt at a time", func(t *testing.T) {
+		th := newThrottle()
+		for range maxFailures {
+			th.fail(t0, u)
+		}
+		later := t0.Add(userDelay(maxFailures))
+		release, err := th.allow(later, c1, u)
+		if err != nil {
+			t.Fatalf("after the delay: %v", err)
+		}
+		if _, err := th.allow(later, c2, u); apperr.KindOf(err) != apperr.KindTooMany {
+			t.Fatalf("a second attempt for the delayed username from another client: %v", err)
+		}
+		release()
+		if _, err := th.allow(later, c2, u); err != nil {
+			t.Fatalf("after the first ended: %v", err)
 		}
 	})
 	t.Run("sweep", func(t *testing.T) {

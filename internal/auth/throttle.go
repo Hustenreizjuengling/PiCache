@@ -27,6 +27,12 @@ import (
 // with several addresses can still keep the delay running, so a browser
 // that signed in before (device key) and a signed-in session (session key)
 // are not subject to it.
+//
+// Attempts in flight count as failures until they end (allow reserves them
+// before the password is checked), so concurrent requests get no more
+// password checks than the same requests one after another: a key refuses a
+// new attempt while its failures and its attempts in flight together reach
+// the next lockout or delay.
 const (
 	maxFailures     = 5
 	failureWindow   = 15 * time.Minute
@@ -48,16 +54,29 @@ type failRecord struct {
 	lockedUntil time.Time // client keys: lockout; username keys: delay
 }
 
+// current returns the failures of the record's current window at now.
+func (r *failRecord) current(now time.Time, user bool) int {
+	switch {
+	case user && now.Sub(r.last) >= failureWindow:
+		return 0
+	case !user && now.Sub(r.first) > failureWindow:
+		return 0
+	}
+	return r.count
+}
+
 // throttle tracks failed attempts per client key and per username and
 // enforces the global attempt rate.
 type throttle struct {
-	mu     sync.Mutex
-	fails  map[string]*failRecord
-	global *rate.Limiter
+	mu      sync.Mutex
+	fails   map[string]*failRecord
+	pending map[string]int // attempts in flight per key (allow reserves, the release it returns frees)
+	global  *rate.Limiter
 }
 
 func newThrottle() *throttle {
-	return &throttle{fails: map[string]*failRecord{}, global: rate.NewLimiter(globalAttempts, globalAttempts)}
+	return &throttle{fails: map[string]*failRecord{}, pending: map[string]int{},
+		global: rate.NewLimiter(globalAttempts, globalAttempts)}
 }
 
 // clientThrottleKey returns the throttle key of a client IP (/32 or /64).
@@ -97,9 +116,13 @@ func userDelay(n int) time.Duration {
 }
 
 // allow reports an apperr.TooMany error if any key is locked out or delayed,
-// or the global attempt rate is exceeded. Blocked callers do not consume
-// global tokens, so a locked attacker cannot starve other users.
-func (t *throttle) allow(now time.Time, keys ...string) error {
+// if the failures and the attempts in flight of a key that has attempts in
+// flight reach maxFailures (they would lock or delay it), or if the global
+// attempt rate is exceeded. Blocked callers do not consume global tokens, so
+// a locked attacker cannot starve other users. An allowed attempt is
+// reserved on every key until the caller calls release, exactly once and
+// after fail or succeed recorded its outcome.
+func (t *throttle) allow(now time.Time, keys ...string) (release func(), err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var until time.Time
@@ -110,14 +133,42 @@ func (t *throttle) allow(now time.Time, keys ...string) error {
 	}
 	if wait := until.Sub(now); wait > 0 {
 		if wait < time.Minute {
-			return apperr.TooMany("too many failed attempts; try again in %d second(s)", int(math.Ceil(wait.Seconds())))
+			return nil, apperr.TooMany("too many failed attempts; try again in %d second(s)", int(math.Ceil(wait.Seconds())))
 		}
-		return apperr.TooMany("too many failed attempts; try again in %d minute(s)", int(math.Ceil(wait.Minutes())))
+		return nil, apperr.TooMany("too many failed attempts; try again in %d minute(s)", int(math.Ceil(wait.Minutes())))
+	}
+	for _, k := range keys {
+		n := t.pending[k]
+		if n == 0 {
+			continue
+		}
+		if r := t.fails[k]; r != nil {
+			n += r.current(now, isUserKey(k))
+		}
+		if n >= maxFailures {
+			return nil, apperr.TooMany("too many attempts at once; try again in a few seconds")
+		}
 	}
 	if !t.global.AllowN(now, 1) {
-		return apperr.TooMany("too many login attempts; try again in a few seconds")
+		return nil, apperr.TooMany("too many login attempts; try again in a few seconds")
 	}
-	return nil
+	for _, k := range keys {
+		t.pending[k]++
+	}
+	return func() { t.release(keys) }, nil
+}
+
+// release ends the attempts in flight that allow reserved on keys.
+func (t *throttle) release(keys []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, k := range keys {
+		if n := t.pending[k] - 1; n > 0 {
+			t.pending[k] = n
+		} else {
+			delete(t.pending, k)
+		}
+	}
 }
 
 // fail records a failed attempt for every key: the fifth failure of a client

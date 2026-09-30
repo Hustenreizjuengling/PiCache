@@ -240,8 +240,8 @@ const de: Messages<typeof en> = {
   'tokens.scopeLabel': 'Zugriff',
   'tokens.scope.read': 'Nur lesen',
   'tokens.scope.admin': 'Admin',
-  'tokens.scopeHelp.read': 'Darf Status, Statistiken und Logs lesen. Darf nichts ändern.',
-  'tokens.scopeHelp.admin': 'Darf außerdem Einstellungen ändern, Sicherungen herunterladen und /metrics lesen.',
+  'tokens.scopeHelp.read': 'Darf Status, Statistiken, Logs und /metrics lesen. Darf nichts ändern.',
+  'tokens.scopeHelp.admin': 'Darf außerdem Einstellungen ändern und Sicherungen herunterladen.',
   'tokens.scope.sync': 'Sync (nur der Konfigurationsexport)',
   'tokens.scope.syncShort': 'Sync',
   'tokens.scopeHelp.sync':
@@ -423,18 +423,18 @@ const de: Messages<typeof en> = {
   'metrics.title': 'Prometheus-Metriken',
   'metrics.description': 'Stellt Zähler für DNS, Cache und Speicher im Prometheus-Textformat bereit.',
   'metrics.toggle': 'Metriken unter /metrics bereitstellen',
-  'metrics.toggleHelp': 'Standardmäßig aus. Zum Abrufen ist ein Admin-API-Token nötig.',
+  'metrics.toggleHelp': 'Standardmäßig aus. Zum Abrufen ist ein API-Token nötig; „Nur lesen“ genügt.',
   'metrics.enabled': 'Metrik-Endpunkt eingeschaltet',
   'metrics.disabled': 'Metrik-Endpunkt ausgeschaltet',
   'metrics.url': 'Endpunkt',
   'metrics.scrape': 'Beispiel für die Scrape-Konfiguration',
-  'metrics.scrapeHelp': 'Speichere ein Admin-API-Token auf dem Prometheus-Rechner in /etc/prometheus/picache-token.',
+  'metrics.scrapeHelp': 'Speichere ein API-Token mit „Nur lesen“ auf dem Prometheus-Rechner in /etc/prometheus/picache-token.',
   'metrics.scrapeHelpTls':
-    'Speichere ein Admin-API-Token in /etc/prometheus/picache-token und das CA-Zertifikat von PiCache (System > HTTPS-Zertifikat) als /etc/prometheus/picache-ca.crt.',
+    'Speichere ein API-Token mit „Nur lesen“ in /etc/prometheus/picache-token und das CA-Zertifikat von PiCache (System > HTTPS-Zertifikat) als /etc/prometheus/picache-ca.crt.',
   'metrics.scrapeHelpSelfSigned':
-    'Speichere ein Admin-API-Token in /etc/prometheus/picache-token. PiCache verwendet noch sein selbstsigniertes Zertifikat: Kopiere <data>/tls/cert.pem nach /etc/prometheus/picache-cert.pem.',
+    'Speichere ein API-Token mit „Nur lesen“ in /etc/prometheus/picache-token. PiCache verwendet noch sein selbstsigniertes Zertifikat: Kopiere <data>/tls/cert.pem nach /etc/prometheus/picache-cert.pem.',
   'metrics.scrapeHelpOwnCert':
-    'Speichere ein Admin-API-Token in /etc/prometheus/picache-token. Prometheus prüft das Zertifikat von PiCache mit den vertrauenswürdigen CAs des Systems; bei einem Zertifikat deiner eigenen CA ergänzt du eine tls_config mit dieser CA als ca_file.',
+    'Speichere ein API-Token mit „Nur lesen“ in /etc/prometheus/picache-token. Prometheus prüft das Zertifikat von PiCache mit den vertrauenswürdigen CAs des Systems; bei einem Zertifikat deiner eigenen CA ergänzt du eine tls_config mit dieser CA als ca_file.',
 
   // Audit-Log
   'audit.title': 'Audit-Log',
@@ -1180,7 +1180,7 @@ const de: Messages<typeof en> = {
   'updates.dev.noBase': 'Diese Version hat keine Versionsnummer, deshalb gilt jede veröffentlichte Version als neuer.',
   'updates.pre.title': 'Du verwendest eine Vorabversion',
   'updates.pre.text':
-    'Angeboten werden nur stabile Versionen. Schalte „Vorabversionen einbeziehen“ ein, um auch den nächsten Release Candidate zu bekommen.',
+    'Angeboten werden nur stabile Versionen. Wähle den Update-Kanal „Beta“, um auch den nächsten Release Candidate zu bekommen.',
 
   'updates.release.title': 'Neu in {version}',
   'updates.release.github': 'Release auf GitHub',

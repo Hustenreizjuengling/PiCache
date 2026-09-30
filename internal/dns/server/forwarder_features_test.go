@@ -341,3 +341,30 @@ func TestImportForwarders(t *testing.T) {
 		t.Errorf("more than 256: %+v %v", res.Errors, err)
 	}
 }
+
+// A port written as "#port" (dnsmasq's server=/corp.example/10.0.0.53#5353)
+// is the target's port: the line imports as written. Any other text after
+// "#" is an error of the line.
+func TestImportForwardersHashPort(t *testing.T) {
+	e := newEnv(t, nil)
+	ctx := context.Background()
+	res, err := e.srv.ImportForwarders(ctx, ForwarderImport{Text: "[/corp.example/]10.0.0.53#5353 [fd00::53]#5335\n" +
+		"[/bad.example/]10.0.0.53#dns\n" +
+		"[/twice.example/]10.0.0.53:53#5353\n"})
+	if err != nil || res.Applied || res.Added != 1 || len(res.Errors) != 2 ||
+		res.Errors[0].Line != 2 || res.Errors[0].Field != "upstreams" || !strings.Contains(res.Errors[0].Message, "write the port as host:port") ||
+		res.Errors[1].Line != 3 || res.Errors[1].Field != "upstreams" || !strings.Contains(res.Errors[1].Message, "given twice") {
+		t.Fatalf("import %+v %v", res, err)
+	}
+	res, err = e.srv.ImportForwarders(ctx, ForwarderImport{Text: "[/corp.example/]10.0.0.53#5353 [fd00::53]#5335\n"})
+	if err != nil || !res.Applied || res.Added != 1 {
+		t.Fatalf("import %+v %v", res, err)
+	}
+	list, err := e.srv.Forwarders(ctx)
+	if err != nil || len(list) != 1 || !slices.Equal(list[0].Upstreams, []string{"10.0.0.53#5353", "[fd00::53]#5335"}) {
+		t.Fatalf("forwarders %+v %v", list, err)
+	}
+	if _, err := e.srv.CreateForwarder(ctx, ForwarderInput{Domain: "tls.example", Upstreams: []string{"tls://10.0.0.53#8853#x"}, Enabled: true}); err == nil {
+		t.Error("tls://10.0.0.53#8853#x accepted")
+	}
+}

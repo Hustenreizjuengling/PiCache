@@ -128,14 +128,14 @@ pkg_restart() {
 	arch=${DPKG_MAINTSCRIPT_ARCH:-$(dpkg --print-architecture 2>/dev/null || echo '<arch>')}
 	warn "PiCache did not become healthy within $HEALTH_WAIT s after the upgrade from $old.
 Last log lines (without the setup token) follow. To go back to $tag (a .deb upgrade has no automatic rollback):
-  1. install the previous package again:
-       sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_${tag#v}_$arch.deb
-  2. put the database copy made before the upgrade back:
+  1. stop PiCache and put the database copy made before the upgrade back
+     (before $tag starts: a version before 1.0.0 would copy this database and prune the copies):
        sudo systemctl stop picache
        sudo ls $DATA_DIR/backups/          # picache-$tag-<timestamp>.db
        sudo install -m 0600 -o picache -g picache $DATA_DIR/backups/picache-$tag-<timestamp>.db $DATA_DIR/picache.db
        sudo rm -f $DATA_DIR/picache.db-wal $DATA_DIR/picache.db-shm
-       sudo systemctl start picache
+  2. install the previous package again (it starts PiCache):
+       sudo PICACHE_ALLOW_DOWNGRADE=1 apt install ./picache_${tag#v}_$arch.deb
 See docs/DEPLOYMENT.md \"Going back to an earlier version\"."
 	journal_tail
 }

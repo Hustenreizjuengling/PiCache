@@ -301,8 +301,138 @@ func TestShutdownWaitsForComponentsAfterHTTPGrace(t *testing.T) {
 		flushed.Store(true)
 	})
 	start := time.Now()
-	a.shutdown([]*http.Server{hs}, &srv, &bg)
+	a.shutdown([]*http.Server{hs}, nil, func() {}, &srv, &bg)
 	if !flushed.Load() {
 		t.Fatalf("shutdown returned after %v without waiting for the components", time.Since(start))
+	}
+}
+
+// OPS-2: DNS keeps answering while the HTTP servers stop: the serve context
+// (DNS, the other servers, the components) is cancelled only after every
+// HTTP server finished, and a download on the cache port is cut after
+// cacheShutdownGrace instead of holding DNS and the restart for the web
+// grace.
+func TestShutdownStopsDNSAfterTheHTTPServers(t *testing.T) {
+	defer func(h, c time.Duration) { httpShutdownGrace, cacheShutdownGrace = h, c }(httpShutdownGrace, cacheShutdownGrace)
+	httpShutdownGrace, cacheShutdownGrace = 5*time.Second, 200*time.Millisecond
+
+	a := newApp(&config.Config{DataDir: t.TempDir()}, slog.New(slog.DiscardHandler))
+	var srv, bg sync.WaitGroup
+	serve := func(h http.HandlerFunc) (*http.Server, string) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		hs := &http.Server{Handler: h}
+		srv.Go(func() { _ = hs.Serve(ln) })
+		return hs, "http://" + ln.Addr().String()
+	}
+	entered := make(chan struct{})
+	var webDone atomic.Bool
+	web, webURL := serve(func(w http.ResponseWriter, r *http.Request) { // a request that needs 300 ms
+		close(entered)
+		time.Sleep(300 * time.Millisecond)
+		webDone.Store(true)
+		_, _ = w.Write([]byte("ok"))
+	})
+	cache, cacheURL := serve(func(w http.ResponseWriter, r *http.Request) { // a download that never ends
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	resp, err := http.Get(cacheURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	go func() {
+		if r, err := http.Get(webURL); err == nil {
+			r.Body.Close()
+		}
+	}()
+	<-entered
+
+	stopped := false
+	stop := func() { // cancels DNS and the components
+		stopped = true
+		if !webDone.Load() {
+			t.Error("DNS was stopped while a web request was still running")
+		}
+		for _, u := range []string{webURL, cacheURL} {
+			if c, err := net.DialTimeout("tcp", strings.TrimPrefix(u, "http://"), time.Second); err == nil {
+				c.Close()
+				t.Errorf("DNS was stopped while %s still accepted connections", u)
+			}
+		}
+	}
+	start := time.Now()
+	a.shutdown([]*http.Server{web}, cache, stop, &srv, &bg)
+	if !stopped {
+		t.Fatal("the serve context was never cancelled")
+	}
+	if d := time.Since(start); d >= 2*time.Second {
+		t.Fatalf("shutdown took %v: the download held it", d)
+	}
+}
+
+// CR-3: serve's context is not the parent's. A cancelled parent (SIGTERM)
+// starts the shutdown, but the context DNS runs in stays live until the web
+// servers drained their requests, and is cancelled before serve returns.
+func TestServeKeepsDNSUntilTheWebDrained(t *testing.T) {
+	a := newApp(&config.Config{DataDir: t.TempDir()}, slog.New(slog.DiscardHandler))
+	entered, dnsDone := make(chan struct{}), make(chan struct{})
+	webURL := make(chan string, 1)
+	var webDone atomic.Bool
+	start := func(ctx context.Context, goRun func(string, func() error), bg *sync.WaitGroup) ([]*http.Server, *http.Server) {
+		goRun("dns", func() error {
+			<-ctx.Done()
+			if !webDone.Load() {
+				t.Error("DNS was stopped while a web request was still running")
+			}
+			close(dnsDone)
+			return nil
+		})
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Error(err)
+			return nil, nil
+		}
+		web := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { // a request that needs 300 ms
+			close(entered)
+			time.Sleep(300 * time.Millisecond)
+			webDone.Store(true)
+			_, _ = w.Write([]byte("ok"))
+		})}
+		goRun("web", func() error { return web.Serve(ln) })
+		webURL <- "http://" + ln.Addr().String()
+		return []*http.Server{web}, nil
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	served := make(chan error, 1)
+	go func() { served <- a.serveWith(parent, start) }()
+	go func() {
+		if r, err := http.Get(<-webURL); err == nil {
+			r.Body.Close()
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the web request never arrived")
+	}
+	cancel() // SIGTERM
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serve = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not return after the parent was cancelled")
+	}
+	select {
+	case <-dnsDone:
+	default:
+		t.Fatal("serve returned with DNS still running")
 	}
 }

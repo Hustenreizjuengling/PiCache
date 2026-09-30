@@ -4,7 +4,8 @@
 # test hook is needed) with shell-function stand-ins for uname and openssl
 # and a stand-in dpkg-query early in PATH (a name with "-" cannot be a
 # portable shell function), and checks the architecture table, the refusal
-# of OpenSSL 1.1 and the refusal next to the Debian package.
+# of OpenSSL 1.1, the refusal next to the Debian package, the version
+# comparison and the downgrade refusal, and the noexec message.
 #
 #   scripts/test-get-picache.sh
 set -eu
@@ -77,6 +78,68 @@ check "dpkg: unpacked" "$refusal" 1 "DPKG_STATUS='install ok unpacked' check_not
 check "dpkg: config-files" "ok" 0 "DPKG_STATUS='deinstall ok config-files' check_not_packaged; echo ok"
 check "dpkg: not-installed" "ok" 0 "DPKG_STATUS='unknown ok not-installed' check_not_packaged; echo ok"
 check "dpkg: unknown package" "ok" 0 "check_not_packaged; echo ok"
+
+# SemVer precedence of release versions (as internal/update's Compare).
+for pair in v0.16.1:v0.17.0 v0.9.9:v0.10.0 v1.2.3:v1.2.4 v1.9.0:v1.10.0 v0.17.0-rc.1:v0.17.0 v0.17.0-rc.1:v0.17.0-rc.2 \
+	v0.17.0-rc.2:v0.17.0-rc.10 v0.17.0-alpha:v0.17.0-alpha.1 v0.17.0-1:v0.17.0-alpha v0.17.1-nightly.20260930.1:v0.17.1 \
+	v0.17.1-nightly.20260930.1:v0.17.1-nightly.20261001.1 v0.17.0:v0.17.1-nightly.20260930.1; do
+	lo=${pair%%:*}
+	hi=${pair#*:}
+	check "$lo < $hi" "lt" 0 "if semver_lt $lo $hi; then echo lt; fi"
+	check "not $hi < $lo" "ge" 0 "if semver_lt $hi $lo; then echo lt; else echo ge; fi"
+done
+check "equal" "ge" 0 "if semver_lt v1.2.3 v1.2.3; then echo lt; else echo ge; fi"
+
+# Only release versions are compared (development builds never).
+for pair in "picache v0.17.0 (commit abc, built x, go1.27.1, linux/amd64)|v0.17.0" \
+	"picache v0.17.0-rc.1 (commit abc)|v0.17.0-rc.1" "picache v0.17.0-3-gabc1234 (commit abc)|" \
+	"picache v0.17.0-dirty (commit abc)|" "picache dev (commit none)|" "hello|"; do
+	check "release_version ${pair%%|*}" "[${pair#*|}]" 0 "printf '[%s]' \"\$(release_version '${pair%%|*}')\""
+done
+
+# A downgrade is refused unless PICACHE_ALLOW_DOWNGRADE=1; an upgrade, a
+# reinstall and development builds are not.
+stub() { printf '#!/bin/sh\necho "picache %s (commit x)"\n' "$1" >"$tmp/installed"; chmod 0755 "$tmp/installed"; }
+downgrade="INSTALLED_BIN=$tmp/installed ENV_FILE=$tmp/picache.env check_downgrade"
+printf 'PICACHE_DATA_DIR="/srv/picache-data"\n' >"$tmp/picache.env"
+stub v0.17.0
+check "downgrade refused" 'picache v0.16.1 is older than the installed v0.17.0. v0.17.0 may have migrated the database, which v0.16.1 then refuses: PiCache would not start. To go back anyway (docs/DEPLOYMENT.md "Going back to an earlier version"): unless the upgrade notes say that v0.16.1 opens this database, first stop PiCache (sudo systemctl stop picache) and put the copy made before the upgrade (/srv/picache-data/backups/picache-v0.16.1-*.db) in place as /srv/picache-data/picache.db, deleting picache.db-wal and picache.db-shm; then run get-picache.sh again with PICACHE_ALLOW_DOWNGRADE=1 (... | sudo PICACHE_ALLOW_DOWNGRADE=1 sh -s -- --version v0.16.1)' 1 \
+	"$downgrade 'picache v0.16.1 (commit y)'"
+# The command repeats the options of the run: without --without-updater it
+# would install the update helper again.
+check "downgrade refused with options" '(... | sudo PICACHE_ALLOW_DOWNGRADE=1 sh -s -- --version v0.16.1 --with-host-apply --without-updater)' 1 \
+	"pass=' --with-host-apply --without-updater'; $downgrade 'picache v0.16.1 (commit y)'"
+check "downgrade refused, default data directory" '(/var/lib/picache/backups/picache-v0.16.1-*.db) in place as /var/lib/picache/picache.db' 1 \
+	"INSTALLED_BIN=$tmp/installed ENV_FILE=$tmp/none check_downgrade 'picache v0.16.1 (commit y)'"
+check "downgrade allowed" "ok" 0 "PICACHE_ALLOW_DOWNGRADE=1 $downgrade 'picache v0.16.1 (commit y)'; echo ok"
+check "upgrade" "ok" 0 "$downgrade 'picache v0.17.1 (commit y)'; echo ok"
+check "reinstall" "ok" 0 "$downgrade 'picache v0.17.0 (commit y)'; echo ok"
+check "development build" "ok" 0 "$downgrade 'picache v0.16.1-2-gabc1234 (commit y)'; echo ok"
+check "nothing installed" "ok" 0 "INSTALLED_BIN=$tmp/none check_downgrade 'picache v0.1.0 (commit y)'; echo ok"
+stub v0.17.0-rc.2
+check "pre-release to its release" "ok" 0 "$downgrade 'picache v0.17.0 (commit y)'; echo ok"
+check "release candidate downgrade" "is older than the installed v0.17.0-rc.2" 1 "$downgrade 'picache v0.17.0-rc.1 (commit y)'"
+
+# With --version the downloaded binary must report exactly that release: a
+# mirror that serves another signed release (an older one without a fix)
+# under download/v0.17.1/ is refused, also on a fresh installation.
+check "the release asked for" "ok" 0 "version=v0.17.1; check_version 'picache v0.17.1 (commit y)'; echo ok"
+check "another release under the version" "the downloaded binary reports v0.17.0 instead of v0.17.1: the files downloaded for v0.17.1 belong to another release" 1 \
+	"version=v0.17.1; check_version 'picache v0.17.0 (commit y)'"
+check "a newer release under the version" "reports v0.18.0 instead of v0.17.1" 1 "version=v0.17.1; check_version 'picache v0.18.0 (commit y)'"
+check "a development build under the version" "reports no release version instead of v0.17.1" 1 \
+	"version=v0.17.1; check_version 'picache v0.17.1-dirty (commit y)'"
+check "latest" "ok" 0 "version=''; check_version 'picache v0.16.0 (commit y)'; echo ok"
+
+# A binary that cannot be executed (status 126, as on a noexec /tmp) is
+# reported as such, not as the wrong architecture.
+printf '#!/bin/sh\necho "picache v0.17.0 (commit x)"\n' >"$tmp/noexec"
+chmod 0644 "$tmp/noexec"
+check "noexec" "cannot be run in $tmp: its file system is probably mounted noexec. Set TMPDIR" 1 "run_binary $tmp/noexec"
+printf '#!/bin/sh\necho "cannot execute binary file" >&2\nexit 2\n' >"$tmp/wrongarch"
+chmod 0755 "$tmp/wrongarch"
+check "wrong architecture" "the downloaded binary does not run on this machine" 1 "run_binary $tmp/wrongarch"
+check "runs" "picache v0.17.0 (commit x)" 0 "chmod 0755 $tmp/noexec; run_binary $tmp/noexec; echo \"\$v\""
 
 if [ "$failures" -gt 0 ]; then
 	echo "$failures check(s) failed" >&2

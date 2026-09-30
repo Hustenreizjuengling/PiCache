@@ -176,7 +176,7 @@ func (w *wpadLeases) LeaseAddr(name string) (netip.Addr, uint32, bool) {
 // default upstreams.
 func TestSingleLabelOrderAndOff(t *testing.T) {
 	e := singleLabelEnv(t, nil)
-	e.flt.check["ads"] = filter.Decision{Action: filter.ActionBlock, Source: "list", Kind: "exact", Name: "L"}
+	e.flt.setCheck("ads", filter.Decision{Action: filter.ActionBlock, Source: "list", Kind: "exact", Name: "L"})
 	if r := e.query("udp", "ads", dns.TypeA); !slices.Equal(answerIPs(r.Answer), []string{"0.0.0.0"}) {
 		t.Errorf("a blocked bare name: %v", r)
 	}

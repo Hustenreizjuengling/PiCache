@@ -1,6 +1,7 @@
 package dnsserver
 
 import (
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -8,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/hustenreizjuengling/picache/internal/dns/upstream"
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 )
 
 // DNSSEC statuses of the verdicts (the dnssec package's; logs.QueryEvent
@@ -56,6 +58,24 @@ func (s *Server) bogusServfail(qc *qctx, v *upstream.Verdict, upstreamName strin
 	r := s.servfail(qc, bogusReason(v))
 	r.upstream, r.dnssec, r.dnssecFail = upstreamName, v, true
 	return r
+}
+
+// chainClientKey is the key of the share of the DNSSEC chain exchanges
+// that the fetches of a query from the source ip draw on (7.6): its
+// device, so that the addresses of one device (IPv6 privacy addresses,
+// addresses it adds) share one. It is the MAC the neighbour table knows
+// for the source ("mac <MAC>") when the identity is the source's own (not
+// a client a trusted forwarder named in EDNS), else the source's DNS
+// rate-limit key (netutil.RateKey: one address of the LAN, the network of
+// a public source). On-link IPv6 is not keyed by its /64: a home network
+// is one /64, so all of its IPv6 devices would share one share and one of
+// them could starve the others.
+func chainClientKey(qc *qctx, ip netip.Addr) string {
+	if qc.id != nil && qc.id.MAC != "" && !qc.derived && !qc.ednsMAC {
+		return "mac " + qc.id.MAC
+	}
+	d := &qc.set.DNS
+	return netutil.RateKey(ip, d.RateLimitIPv4Prefix, d.RateLimitIPv6Prefix).String()
 }
 
 // verdictRank orders the statuses: the worst verdict of a combined answer

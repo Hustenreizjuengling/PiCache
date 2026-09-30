@@ -43,6 +43,7 @@ cd web && npm ci && npm run check            # svelte-check (0 errors, 0 warning
 cd web && npm run build                      # also checks the bundle sizes
 GOOS=linux GOARCH=arm GOARM=7 go vet ./...   # 32-bit ARM
 GOARCH=386 go test ./...                     # 32-bit (on Linux or Windows amd64)
+CGO_ENABLED=1 go test -race ./internal/dns/... ./internal/netutil/...   # race detector (needs cgo and a C compiler)
 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 shellcheck -s sh deploy/install.sh scripts/*.sh
 shellcheck -s sh -e SC2154 -e SC2034 deploy/debian/*.sh   # fragments of the maintainer scripts
@@ -68,7 +69,7 @@ Run the backend on unprivileged ports with a local data directory:
 make build
 bin/picache serve --dev --data-dir ./data --cache-dir ./cache \
   --dns-listen 127.0.0.1:1053 --cache-listen off --sni-listen off \
-  --web-listen 127.0.0.1:8080 --web-tls-listen off
+  --web-listen 127.0.0.1:8080 --web-tls-listen off --dot-listen off
 ```
 
 `./data` and `./cache` are ignored by git. Get the setup token with
@@ -163,7 +164,8 @@ By contributing, you agree that your contributions are licensed under the
 Maintainers publish releases by pushing a tag. Versions follow
 [SemVer](https://semver.org/) with a `v` prefix: `vX.Y.Z`, or `vX.Y.Z-rc.N`
 for a pre-release. Every tag with a hyphen becomes a GitHub pre-release, which
-PiCache offers only to installations with **Include pre-releases** on. The
+PiCache offers only to installations on the update channel **Beta** (or
+**Nightly**). The
 rules for the release files are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#14-releases-and-updates)
 (section 14).

@@ -266,6 +266,62 @@ func (f *fakeFilter) CheckIP(ip netip.Addr, groups []int64) filter.Decision {
 	return f.ips[ip.Unmap()]
 }
 
+// The setters change the decisions under f.mu: the server reads them in
+// its handler goroutines, and a query sent over a socket orders nothing
+// for the race detector.
+
+func (f *fakeFilter) setCheck(name string, d filter.Decision) { f.set(f.check, name, d) }
+func (f *fakeFilter) setRule(name string, d filter.Decision)  { f.set(f.rules, name, d) }
+func (f *fakeFilter) setProtect(name string, d filter.Decision) {
+	f.set(f.protect, name, d)
+}
+
+func (f *fakeFilter) set(m map[string]filter.Decision, name string, d filter.Decision) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m[name] = d
+}
+
+// setScope limits the decisions of name to group.
+func (f *fakeFilter) setScope(name string, group int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scoped[name] = group
+}
+
+// setType limits the decisions of name to qtype.
+func (f *fakeFilter) setType(name string, qtype uint16) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.types[name] = qtype
+}
+
+// setRuleType limits the user-rule decisions of name to qtype.
+func (f *fakeFilter) setRuleType(name string, qtype uint16) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ruleTypes[name] = qtype
+}
+
+func (f *fakeFilter) setIP(ip netip.Addr, d filter.Decision) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ips[ip] = d
+}
+
+func (f *fakeFilter) setMatches(m []filter.Match) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.matches = m
+}
+
+// checkedTypesOf returns the query types Check was asked with for name.
+func (f *fakeFilter) checkedTypesOf(name string) []uint16 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.checkedTypes[name])
+}
+
 // lastChecked returns the groups of the last Check of qname.
 func (f *fakeFilter) lastChecked(qname string) []int64 {
 	f.mu.Lock()
@@ -291,11 +347,26 @@ func ruleBlock(pattern string) filter.Decision {
 	return filter.Decision{Action: filter.ActionBlock, Source: "rule", Kind: "exact", RuleID: 9, Name: pattern}
 }
 
-type fakeServices map[string]string
+// fakeServices matches the names set with set (under mu).
+type fakeServices struct {
+	mu sync.Mutex
+	m  map[string]string
+}
 
-func (f fakeServices) MatchDNS(qname string) (string, bool) {
-	s, ok := f[qname]
+func (f *fakeServices) MatchDNS(qname string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.m[qname]
 	return s, ok
+}
+
+func (f *fakeServices) set(name, service string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.m == nil {
+		f.m = map[string]string{}
+	}
+	f.m[name] = service
 }
 
 type fakeClients struct {
@@ -435,7 +506,7 @@ type testEnv struct {
 	up      *fakeUpstream
 	flt     *fakeFilter
 	cl      *fakeClients
-	svc     fakeServices
+	svc     *fakeServices
 	logs    *fakeLogger
 	dcReady atomic.Bool
 	udp     string
@@ -485,7 +556,7 @@ func newEnv(t *testing.T, mutate func(*settings.All)) *testEnv {
 		up:   &fakeUpstream{},
 		flt:  newFakeFilter(),
 		cl:   &fakeClients{ids: map[netip.Addr]*clients.Identity{}, seen: map[netip.Addr]int{}, transient: map[netip.Addr]int{}},
-		svc:  fakeServices{},
+		svc:  &fakeServices{},
 		logs: &fakeLogger{},
 	}
 	e.dcReady.Store(true)

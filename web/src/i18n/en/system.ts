@@ -232,8 +232,8 @@ export default {
   'tokens.scopeLabel': 'Access',
   'tokens.scope.read': 'Read only',
   'tokens.scope.admin': 'Admin',
-  'tokens.scopeHelp.read': 'Can read status, statistics and logs. Cannot change anything.',
-  'tokens.scopeHelp.admin': 'Can also change settings, download backups and read /metrics.',
+  'tokens.scopeHelp.read': 'Can read status, statistics, logs and /metrics. Cannot change anything.',
+  'tokens.scopeHelp.admin': 'Can also change settings and download backups.',
   'tokens.scope.sync': 'Sync (configuration export only)',
   'tokens.scope.syncShort': 'Sync',
   'tokens.scopeHelp.sync':
@@ -412,18 +412,18 @@ export default {
   'metrics.title': 'Prometheus metrics',
   'metrics.description': 'Exports DNS, cache and storage counters in the Prometheus text format.',
   'metrics.toggle': 'Serve metrics at /metrics',
-  'metrics.toggleHelp': 'Off by default. Scraping needs an admin API token.',
+  'metrics.toggleHelp': 'Off by default. Scraping needs an API token; read only is enough.',
   'metrics.enabled': 'Metrics endpoint turned on',
   'metrics.disabled': 'Metrics endpoint turned off',
   'metrics.url': 'Endpoint',
   'metrics.scrape': 'Example scrape configuration',
-  'metrics.scrapeHelp': 'Save an admin API token in /etc/prometheus/picache-token on the Prometheus host.',
+  'metrics.scrapeHelp': 'Save a read-only API token in /etc/prometheus/picache-token on the Prometheus host.',
   'metrics.scrapeHelpTls':
-    'Save an admin API token in /etc/prometheus/picache-token and PiCache’s CA certificate (System > HTTPS certificate) as /etc/prometheus/picache-ca.crt.',
+    'Save a read-only API token in /etc/prometheus/picache-token and PiCache’s CA certificate (System > HTTPS certificate) as /etc/prometheus/picache-ca.crt.',
   'metrics.scrapeHelpSelfSigned':
-    'Save an admin API token in /etc/prometheus/picache-token. PiCache still uses its self-signed certificate: copy <data>/tls/cert.pem to /etc/prometheus/picache-cert.pem.',
+    'Save a read-only API token in /etc/prometheus/picache-token. PiCache still uses its self-signed certificate: copy <data>/tls/cert.pem to /etc/prometheus/picache-cert.pem.',
   'metrics.scrapeHelpOwnCert':
-    'Save an admin API token in /etc/prometheus/picache-token. Prometheus checks PiCache’s certificate against the system’s trusted CAs; for a certificate of your own CA add a tls_config with that CA as ca_file.',
+    'Save a read-only API token in /etc/prometheus/picache-token. Prometheus checks PiCache’s certificate against the system’s trusted CAs; for a certificate of your own CA add a tls_config with that CA as ca_file.',
 
   // audit log
   'audit.title': 'Audit log',
@@ -1154,7 +1154,7 @@ export default {
   'updates.dev.noBase': 'This build has no release version, so every release counts as newer.',
   'updates.pre.title': 'You are running a pre-release',
   'updates.pre.text':
-    'Only stable releases are offered. Turn on “Include pre-releases” to get the next release candidate as well.',
+    'Only stable releases are offered. Choose the update channel “Beta” to get the next release candidate as well.',
 
   'updates.release.title': 'What’s new in {version}',
   'updates.release.github': 'Release on GitHub',

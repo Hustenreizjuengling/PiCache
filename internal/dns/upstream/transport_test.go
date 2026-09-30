@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -53,7 +54,9 @@ func TestPlainUDPRetriesOverTCPOnTruncation(t *testing.T) {
 	if udp.Load() != 1 || tcp.Load() != 1 {
 		t.Errorf("udp=%d tcp=%d, want 1/1", udp.Load(), tcp.Load())
 	}
-	if info.Upstream != addr.String() || info.RTT <= 0 {
+	// A loopback exchange can finish within one tick of a coarse
+	// monotonic clock (Windows): an RTT of 0 is possible.
+	if info.Upstream != addr.String() || info.RTT < 0 {
 		t.Errorf("info = %+v", info)
 	}
 }
@@ -196,5 +199,43 @@ func TestUnreachableUpstreamFailsFast(t *testing.T) {
 	}
 	if want := fmt.Sprintf("tcp://%s", addr); stats[0].Upstream != want {
 		t.Errorf("upstream = %q, want %q", stats[0].Upstream, want)
+	}
+}
+
+// An upstream written as host#port (as other DNS software writes local
+// resolvers) is asked on that port, as a default upstream and as a
+// forwarder target (ResolveVia). The URL parser made the port a fragment
+// that was dropped, so such an upstream was asked on port 53.
+func TestHashPortUpstreamReachesItsPort(t *testing.T) {
+	var udp, tcp atomic.Int32
+	addr := startDNS(t, func(w dns.ResponseWriter, q *dns.Msg) {
+		if w.RemoteAddr().Network() == "udp" {
+			udp.Add(1)
+		} else {
+			tcp.Add(1)
+		}
+		_ = w.WriteMsg(answerA(q, "192.0.2.53", 60))
+	})
+	port := strconv.Itoa(int(addr.Port()))
+	for i, up := range []string{"127.0.0.1#" + port, "tcp://127.0.0.1#" + port} {
+		st := newStore(t, func(d *settings.DNS) { d.Upstreams = []string{up}; d.CacheEnabled = false })
+		r := newTestResolver(t, st, testOptions(), nil)
+		m, info, err := r.Resolve(context.Background(), query("hash"+strconv.Itoa(i)+".example.", dns.TypeA, 7, false), noECS)
+		if err != nil {
+			r.Close()
+			t.Fatalf("%s: %v", up, err)
+		}
+		if ip, _ := firstA(t, m); ip != "192.0.2.53" || info.Upstream != up {
+			t.Errorf("%s: answer %s from %q", up, ip, info.Upstream)
+		}
+		if i == 0 {
+			if _, _, err := r.ResolveVia(context.Background(), query("fwd.corp.example.", dns.TypeA, 8, false), []string{"127.0.0.1#" + port}); err != nil {
+				t.Errorf("forwarder target: %v", err)
+			}
+		}
+		r.Close()
+	}
+	if udp.Load() != 2 || tcp.Load() != 1 {
+		t.Errorf("udp=%d tcp=%d, want 2/1", udp.Load(), tcp.Load())
 	}
 }

@@ -75,15 +75,17 @@ func (r *Resolver) newTransport(spec settings.UpstreamSpec, boot *bootstrap) tra
 			return t
 		}
 	}
+	enc := encOpts{roots: r.opts.rootCAs, now: r.certTime}
 	switch spec.Proto {
 	case "tls":
-		return newDoT(spec, boot, r.opts.rootCAs)
+		return newDoT(spec, boot, enc)
 	case "https":
-		return newDoH(spec, boot, r.opts.rootCAs)
+		return newDoH(spec, boot, enc, dohTuning{dialTimeout: r.opts.attempt, pingAfter: r.opts.dohPingAfter,
+			pingTimeout: r.opts.dohPingTimeout, dial: r.opts.dohDial})
 	case "quic":
-		return newDoQ(spec, boot, r.opts.rootCAs, r.opts.quicIdle)
+		return newDoQ(spec, boot, enc, r.opts.quicIdle)
 	case "h3":
-		return newH3(spec, boot, r.opts.rootCAs, r.opts.quicIdle)
+		return newH3(spec, boot, enc, r.opts.quicIdle)
 	case "dnscrypt":
 		return newDNSCrypt(spec)
 	}
@@ -159,6 +161,13 @@ func (s *upstreamStats) failure(err error, now time.Time) (becameUnhealthy bool)
 	return s.fails == unhealthyAfter
 }
 
+// healthy reports fewer than unhealthyAfter failures in a row.
+func (s *upstreamStats) healthy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fails < unhealthyAfter
+}
+
 // score is the expected cost of asking this upstream (lower is better):
 // the EWMA RTT multiplied by a penalty for recent consecutive failures.
 func (s *upstreamStats) score() float64 {
@@ -214,14 +223,20 @@ type exchangeResult struct {
 const (
 	primaryBudget  = 7 * time.Second
 	fallbackBudget = 2500 * time.Millisecond
+	// fallbackHedge: while every default upstream is unhealthy, the
+	// fallbacks are asked when none of them replied within this time,
+	// instead of after the whole attempt (exchangeHedged).
+	fallbackHedge = 500 * time.Millisecond
 )
 
 // exchangeRoute sends q through rt: the upstreams of rt.set according to
 // the mode and, when every attempt ended without any reply (transport
 // errors, timeouts) and the route has fallbacks, all fallbacks in
-// parallel. A reply of any rcode never leads to the fallbacks. Mode
-// fastest_addr asks the default set like parallel and ResolveVia sets like
-// load_balance. With rt.fallbackOnly only the fallbacks are asked.
+// parallel. A reply of any rcode never leads to the fallbacks. While every
+// upstream of rt.set is unhealthy, the fallbacks do not wait for the
+// whole attempt (exchangeHedged). Mode fastest_addr asks the default set
+// like parallel and ResolveVia sets like load_balance. With
+// rt.fallbackOnly only the fallbacks are asked.
 func (r *Resolver) exchangeRoute(ctx context.Context, rt route, q *dns.Msg, d settings.DNS) (exchangeResult, error) {
 	wire, err := q.Pack()
 	if err != nil {
@@ -241,6 +256,9 @@ func (r *Resolver) exchangeRoute(ctx context.Context, rt route, q *dns.Msg, d se
 	if rt.fallbackOnly {
 		return r.exchangeFallbacks(ctx, rt, q, wire)
 	}
+	if rt.set.unhealthy() {
+		return r.exchangeHedged(ctx, rt, q, wire, mode, min(timeout, primaryBudget))
+	}
 	res, err := r.exchangeSet(ctx, rt.set, q, wire, mode, min(timeout, primaryBudget))
 	if err == nil || ctx.Err() != nil || errors.Is(err, errClosed) {
 		return res, err
@@ -250,6 +268,81 @@ func (r *Resolver) exchangeRoute(ctx context.Context, rt route, q *dns.Msg, d se
 		return exchangeResult{}, fmt.Errorf("%w; fallback: %w", err, ferr)
 	}
 	return fres, nil
+}
+
+// exchangeHedged is exchangeRoute while every upstream of rt.set is
+// unhealthy (a dead default upstream would cost every fetch the whole
+// attempt before the fallbacks answer): the upstreams of rt.set are asked
+// as usual, so their recovery is noticed, and all fallbacks as well once
+// none of them replied within fallbackHedge (at once when they all failed
+// before). The first good reply wins and ends the other phase (its
+// attempts are not counted); a SERVFAIL or REFUSED is returned only when
+// nothing better arrives.
+func (r *Resolver) exchangeHedged(ctx context.Context, rt route, q *dns.Msg, wire []byte, mode string, budget time.Duration) (exchangeResult, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type outcome struct {
+		res exchangeResult
+		err error
+	}
+	ch := make(chan outcome, 2)
+	run := func(fn func() (exchangeResult, error)) bool {
+		return r.goTracked(func() {
+			o := outcome{err: errInternal} // sent even if the exchange panics
+			defer func() { ch <- o }()
+			o.res, o.err = fn()
+		})
+	}
+	if !run(func() (exchangeResult, error) { return r.exchangeSet(ctx, rt.set, q, wire, mode, budget) }) {
+		return exchangeResult{}, errClosed
+	}
+	hedge := time.NewTimer(fallbackHedge)
+	defer hedge.Stop()
+	pending, asked := 1, false
+	askFallbacks := func() {
+		if !asked && run(func() (exchangeResult, error) { return r.exchangeFallbacks(ctx, rt, q, wire) }) {
+			pending++
+		}
+		asked = true
+	}
+	var soft exchangeResult
+	var errs []error
+	for pending > 0 {
+		select {
+		case o := <-ch:
+			pending--
+			switch {
+			case o.err != nil:
+				errs = append(errs, o.err)
+				if ctx.Err() == nil && !errors.Is(o.err, errClosed) {
+					askFallbacks()
+				}
+			case softFailure(o.res.msg):
+				if soft.msg == nil {
+					soft = o.res
+				}
+			default:
+				return o.res, nil
+			}
+		case <-hedge.C:
+			askFallbacks()
+		}
+	}
+	if soft.msg != nil {
+		return soft, nil
+	}
+	return exchangeResult{}, errors.Join(errs...)
+}
+
+// unhealthy reports whether every upstream of s is unhealthy
+// (unhealthyAfter failures in a row).
+func (s *upstreamSet) unhealthy() bool {
+	for _, u := range s.ups {
+		if u.st.healthy() {
+			return false
+		}
+	}
+	return len(s.ups) > 0
 }
 
 // exchangeFallbacks asks all fallbacks of rt at once, for at most
@@ -262,7 +355,7 @@ func (r *Resolver) exchangeFallbacks(ctx context.Context, rt route, q *dns.Msg, 
 		return exchangeResult{}, err
 	}
 	res.fallback = true
-	r.lastFallback.Store(time.Now().UnixNano())
+	r.noteFallback()
 	return res, nil
 }
 
@@ -361,6 +454,9 @@ func (r *Resolver) attempt(ctx context.Context, u *upstream, q *dns.Msg, wire []
 	defer cancel()
 	start := time.Now()
 	m, err := u.t.exchange(actx, q, wire)
+	if err != nil && actx.Err() == nil && r.learnCertFloor(err, u) {
+		m, err = u.t.exchange(actx, q, wire) // checked at the learned time now
+	}
 	rtt := time.Since(start)
 	if err == nil {
 		if m.Id != q.Id {

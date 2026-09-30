@@ -91,17 +91,23 @@ func blocklistsHealth(blockingEnabled bool, fs filter.Stats, budget int) (status
 	return "ok", "", ""
 }
 
-// fallbackRecent is how long after a fallback answered the health check
-// says that fallback DNS is in use.
-const fallbackRecent = 5 * time.Minute
+// While the default upstreams are healthy, the health check says that
+// fallback DNS is in use once the fallbacks answered fallbackWarnAnswers
+// fetches within fallbackRecent: a single fallback answer (a connection
+// the provider cut, a lost packet) is no reason to warn.
+const (
+	fallbackRecent      = 5 * time.Minute
+	fallbackWarnAnswers = 3
+)
 
 // upstreamHealth evaluates the health check "upstreams" (first match): the
 // clock guard warns; no default upstream healthy and no healthy fallback
-// (or none configured) fails; no default upstream healthy, or a fallback
-// that answered within the last 5 minutes, warns; a group set that could
-// not be built or has no healthy upstream warns (its clients get SERVFAIL:
+// (or none configured) fails; no default upstream healthy warns; the
+// fallbacks having answered at least fallbackWarnAnswers fetches within
+// the last 5 minutes (recentFallbacks) warns; a group set that could not
+// be built or has no healthy upstream warns (its clients get SERVFAIL:
 // group sets have no fallbacks); ok otherwise.
-func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, lastFallback, now time.Time,
+func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, recentFallbacks int,
 	groups []upstream.GroupUpstreamStat) (status, msg, hint string) {
 	healthy := func(list []upstream.UpstreamStat) int {
 		n := 0
@@ -118,8 +124,11 @@ func upstreamHealth(clockGuard bool, stats, fallbacks []upstream.UpstreamStat, l
 		return "warn", "system clock is not set; using unencrypted DNS to the bootstrap servers", "enable NTP (e.g. systemd-timesyncd) on the host"
 	case primaryDown && healthy(fallbacks) == 0:
 		return "fail", "no upstream DNS server is answering", "check the internet connection and the upstream settings"
-	case primaryDown || (!lastFallback.IsZero() && now.Sub(lastFallback) < fallbackRecent):
+	case primaryDown:
 		return "warn", "fallback DNS in use: the upstream DNS servers are not answering", "check the internet connection and the upstream settings"
+	case recentFallbacks >= fallbackWarnAnswers:
+		return "warn", "fallback DNS in use: the upstream DNS servers left several queries of the last 5 minutes unanswered",
+			"check the internet connection and the upstream settings"
 	}
 	for _, g := range groups {
 		if g.Error != "" || (len(g.Upstreams) > 0 && healthy(g.Upstreams) == 0) {
@@ -179,7 +188,7 @@ func (a *App) evalHealth(ctx context.Context) api.Health {
 	add("listeners", st, msg, hint)
 
 	// Upstreams (+ clock guard, fallbacks)
-	st, msg, hint = upstreamHealth(a.up.ClockGuard(), a.up.Stats(), a.up.FallbackStats(), a.up.LastFallback(), time.Now(), a.up.GroupStats())
+	st, msg, hint = upstreamHealth(a.up.ClockGuard(), a.up.Stats(), a.up.FallbackStats(), a.up.FallbacksSince(time.Now().Add(-fallbackRecent)), a.up.GroupStats())
 	add("upstreams", st, msg, hint)
 
 	// DNSSEC (validate mode only)

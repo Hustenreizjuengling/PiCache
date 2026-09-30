@@ -44,8 +44,10 @@ import (
 // time. A run validates everything first
 // with the API's validators and limits, replaces the synced tables in one
 // transaction (each domain package keeps its SQL), commits, then applies
-// the synced settings and reloads the components. Any error keeps nothing
-// of the run.
+// the synced settings and reloads the components. An error before the
+// commit keeps nothing of the run; an error after it (the settings, a
+// reload) fails the run too, so its state is not stored and the next run
+// applies the export again.
 const (
 	syncStateKey     = "sync.state" // app_meta: the last applied export
 	syncFirstDelay   = time.Minute
@@ -613,7 +615,8 @@ func (m *groupMapper) ids(in []int64) ([]int64, error) {
 
 // applySync validates and applies the synced sections of exp (checked by
 // checkExport): one transaction for the tables, then the settings, then
-// the reloads.
+// the reloads. An error of the settings or a reload after the commit is
+// returned too, so the run is not recorded as applied.
 func (a *App) applySync(ctx context.Context, exp *api.ConfigExport, sections []string) error {
 	sec, err := decodeSections(exp, sections)
 	if err != nil {
@@ -765,8 +768,11 @@ func (a *App) applySync(ctx context.Context, exp *api.ConfigExport, sections []s
 	if sec.pa != nil {
 		errs = append(errs, a.parental.Reload(ctx))
 	}
+	// A failed reload fails the run: its state is not stored, so the next
+	// run applies the export again instead of leaving the components on the
+	// previous configuration while the tables hold the new one.
 	if err := errors.Join(errs...); err != nil {
-		a.log.Warn("sync: reload after the sync", slog.Any("err", err))
+		return fmt.Errorf("reload after the sync: %w", err)
 	}
 	return nil
 }

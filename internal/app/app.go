@@ -296,8 +296,9 @@ func (a *App) prepareLogDir() {
 	_ = os.MkdirAll(filepath.Dir(filepath.Clean(a.cfg.LogFile)), 0o750)
 }
 
-func (a *App) build(ctx context.Context) error {
-	var err error
+func (a *App) build(ctx context.Context) (err error) {
+	// A damaged or unwritable picache.db names its cause and the fix.
+	defer func() { err = explainConfigDBError(a.paths.ConfigDB, err) }()
 	log := a.log
 	a.storeMu.Lock()
 	a.storeClosed = false // Run builds again after a failed restore (closeState ran)
@@ -308,8 +309,10 @@ func (a *App) build(ctx context.Context) error {
 	if err := a.removePlantedSchema(ctx); err != nil {
 		return err
 	}
+	// Its own errors name the copy; a failed migration of the app schema
+	// is no backup error.
 	if err := a.preUpgradeBackup(ctx); err != nil {
-		return fmt.Errorf("pre-upgrade backup: %w", err)
+		return err
 	}
 	if a.set, err = settings.Open(ctx, a.cdb, log); err != nil {
 		return err
@@ -434,6 +437,9 @@ func (a *App) build(ctx context.Context) error {
 			a.auth.Audit(ctx, &auth.Principal{Username: "cli"}, "", "system.restore", "", map[string]any{"sections": a.restoreSections})
 		}
 	}
+	if err := a.checkAdminPasswordFile(ctx); err != nil {
+		return err
+	}
 	if pw := a.cfg.AdminPassword; pw != "" {
 		err := a.auth.Provision(ctx, a.cfg.AdminUser, pw)
 		a.cfg.AdminPassword = ""
@@ -541,6 +547,29 @@ func (a *App) build(ctx context.Context) error {
 	return nil
 }
 
+// checkAdminPasswordFile handles a PICACHE_ADMIN_PASSWORD_FILE that names a
+// file that does not exist (config.Config.AdminPasswordFileMissing): while
+// no account exists the admin cannot be provisioned, so the start fails;
+// afterwards the file is not needed and a line left in picache.env (or a
+// Docker secret removed without the variable) is only a warning.
+func (a *App) checkAdminPasswordFile(ctx context.Context) error {
+	f := a.cfg.AdminPasswordFileMissing
+	if f == "" {
+		return nil
+	}
+	required, err := a.auth.SetupRequired(ctx)
+	if err != nil {
+		return err
+	}
+	if required {
+		return fmt.Errorf("PICACHE_ADMIN_PASSWORD_FILE: %s does not exist and no account exists yet: create the file, "+
+			"or remove the variable and create the admin with the setup token", f)
+	}
+	a.log.Warn("PICACHE_ADMIN_PASSWORD_FILE names a file that does not exist; an account exists, so it is not needed: remove the variable",
+		slog.String("file", f))
+	return nil
+}
+
 // syncGroupUpstreams hands the upstreams of the enabled client groups to
 // the resolver, which builds one set per distinct list (ARCHITECTURE 7.4).
 func (a *App) syncGroupUpstreams(ctx context.Context) {
@@ -556,8 +585,10 @@ func (a *App) syncGroupUpstreams(ctx context.Context) {
 	a.up.SetGroupUpstreams(groups)
 }
 
-// openLogs opens logs.db. A broken database is moved aside and recreated;
-// if that fails too, logging is disabled (DNS must never depend on logs).
+// openLogs opens logs.db. A broken database is moved aside and recreated
+// (only the newest broken copy is kept: each can be as large as
+// logs.maxDbSizeMiB); if that fails too, logging is disabled (DNS must
+// never depend on logs).
 func (a *App) openLogs(ctx context.Context) {
 	open := func() (*db.DB, *logs.Store, error) {
 		d, err := db.Open(a.paths.LogsDB, 4)
@@ -576,6 +607,10 @@ func (a *App) openLogs(ctx context.Context) {
 		a.log.Error("logs.db cannot be opened; moving it aside and starting a fresh one", slog.Any("err", err))
 		ts := time.Now().UTC().Format("20060102T150405")
 		for _, sfx := range []string{"", "-wal", "-shm"} {
+			older, _ := filepath.Glob(a.paths.LogsDB + sfx + ".broken-*")
+			for _, f := range older {
+				_ = os.Remove(f)
+			}
 			_ = os.Rename(a.paths.LogsDB+sfx, a.paths.LogsDB+sfx+".broken-"+ts)
 		}
 		d, st, err = open()
@@ -645,8 +680,24 @@ func (a *App) applyDetectedDefaults(ctx context.Context) {
 	}
 }
 
-func (a *App) serve(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
+func (a *App) serve(parent context.Context) error {
+	return a.serveWith(parent, a.startServers)
+}
+
+// startFunc starts servers and background components in ctx, the serve
+// context: goRun runs a server (its error, unless the context is done,
+// shuts PiCache down), bg tracks the components. It returns the HTTP
+// servers shutdown drains: the web and DoH servers and the download
+// cache's server (nil: none).
+type startFunc func(ctx context.Context, goRun func(name string, fn func() error), bg *sync.WaitGroup) (servers []*http.Server, cache *http.Server)
+
+// serveWith runs start and blocks until parent is cancelled (SIGTERM,
+// SIGINT), a server fails or a restart is requested, then shuts down. The
+// servers and the background components run in their own context, which
+// shutdown cancels only after the HTTP servers stopped: a cancelled parent
+// starts the shutdown, it does not take DNS down at once.
+func (a *App) serveWith(parent context.Context, start startFunc) error {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	defer cancel()
 	errc := make(chan error, 16)
 	var srv, bg sync.WaitGroup
@@ -657,6 +708,24 @@ func (a *App) serve(ctx context.Context) error {
 			}
 		})
 	}
+	servers, cacheSrv := start(ctx, goRun, &bg)
+	var runErr error
+	select {
+	case <-parent.Done():
+	case runErr = <-errc:
+		a.log.Error("fatal error, shutting down", slog.Any("err", runErr))
+	case <-a.restart:
+		a.log.Warn("restart requested via the API")
+		runErr = ErrRestart
+	}
+	a.shutdown(servers, cacheSrv, cancel, &srv, &bg)
+	a.log.Info("stopped")
+	return runErr
+}
+
+// startServers starts the servers and the background components of
+// PiCache (startFunc).
+func (a *App) startServers(ctx context.Context, goRun func(string, func() error), bg *sync.WaitGroup) ([]*http.Server, *http.Server) {
 	// The web certificate is loaded (or created) and a pending web access
 	// reset applied before the web listeners serve.
 	a.webTLS.start()
@@ -688,7 +757,7 @@ func (a *App) serve(ctx context.Context) error {
 		goRun("sni", func() error { return a.sni.Serve(ctx, limited) })
 	}
 
-	var servers []*http.Server
+	var servers []*http.Server // web and DoH, drained with httpShutdownGrace
 	cacheSrv := &http.Server{
 		Handler:           a.proxy.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -696,17 +765,24 @@ func (a *App) serve(ctx context.Context) error {
 		MaxHeaderBytes:    64 << 10,
 		ErrorLog:          slog.NewLogLogger(a.log.Handler(), slog.LevelDebug),
 	}
-	servers = append(servers, cacheSrv)
 	for _, ln := range a.ln.cache {
 		limited := netutil.LimitListener(ln, aclFn, 256, 4096)
 		goRun("cache", func() error { return cacheSrv.Serve(limited) })
 	}
 
 	servers = append(servers, dohServers...)
+	servers = append(servers, a.serveWeb(goRun, a.api.Handler())...)
+	a.log.Info("PiCache is running", slog.Any("listeners", a.Listeners()), slog.String("instance", a.instanceID))
+	return servers, cacheSrv
+}
 
+// serveWeb starts the web servers with handler on the HTTP and HTTPS web
+// listeners and returns them.
+func (a *App) serveWeb(goRun func(string, func() error), handler http.Handler) []*http.Server {
+	var servers []*http.Server
 	newWeb := func() *http.Server {
 		return &http.Server{
-			Handler:           a.api.Handler(),
+			Handler:           handler,
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       60 * time.Second,
 			WriteTimeout:      120 * time.Second,
@@ -719,11 +795,15 @@ func (a *App) serve(ctx context.Context) error {
 		}
 	}
 	// The web listeners close connections from addresses outside the web
-	// ACL right after accept (stage 1; the API checks every request too).
+	// ACL right after accept (stage 1; the API checks every request too),
+	// then cap the connections per client, per IPv6 /64 and in total,
+	// shared by HTTP and HTTPS (webLimiter; trusted proxies only in total,
+	// loopback in total and its reserve).
+	limit := newWebLimiter(func(ip netip.Addr) bool { return a.web.Get().TrustedProxy(ip) }, webLimits, a.log)
 	webSrv := newWeb()
 	servers = append(servers, webSrv)
 	for _, ln := range a.ln.web {
-		guarded := a.web.Listener(ln)
+		guarded := limit.Listener(a.web.Listener(ln))
 		goRun("web", func() error { return webSrv.Serve(guarded) })
 	}
 	if len(a.ln.webTLS) > 0 {
@@ -733,55 +813,62 @@ func (a *App) serve(ctx context.Context) error {
 		webTLS.TLSConfig = a.webTLS.tlsConfig()
 		servers = append(servers, webTLS)
 		for _, ln := range a.ln.webTLS {
-			guarded := a.web.Listener(ln)
+			guarded := limit.Listener(a.web.Listener(ln))
 			goRun("web-tls", func() error { return webTLS.ServeTLS(guarded, "", "") })
 		}
 	}
-
-	a.log.Info("PiCache is running", slog.Any("listeners", a.Listeners()), slog.String("instance", a.instanceID))
-	var runErr error
-	select {
-	case <-ctx.Done():
-	case runErr = <-errc:
-		a.log.Error("fatal error, shutting down", slog.Any("err", runErr))
-	case <-a.restart:
-		a.log.Warn("restart requested via the API")
-		runErr = ErrRestart
-	}
-	cancel()
-	a.shutdown(servers, &srv, &bg)
-	a.log.Info("stopped")
-	return runErr
+	return servers
 }
 
-// Shutdown budgets. HTTP servers get httpShutdownGrace to finish their
-// requests and are then closed. The background components, cancelled when
-// the shutdown starts, get their own componentStopWait after that, so a long
-// download on the cache port cannot use up the time they need to flush
-// before the databases close. Together with closing the cache store (at most
-// 10 s for running operations) this stays below Docker's stop_grace_period
-// of 30 s.
+// Shutdown budgets. The web and DoH servers get httpShutdownGrace to finish
+// their requests, the download cache's server cacheShutdownGrace (a
+// download that is cut off is resumed by its client with a range request),
+// then they are closed. The background components, cancelled after that,
+// get their own componentStopWait, so a long request cannot use up the time
+// they need to flush before the databases close. Together with closing the
+// cache store (at most 10 s for running operations) this stays below
+// Docker's stop_grace_period of 30 s; without a long request PiCache stops
+// well within Docker's default of 10 s.
 var (
-	httpShutdownGrace = 12 * time.Second
-	serverStopWait    = time.Second
-	componentStopWait = 5 * time.Second
+	httpShutdownGrace  = 12 * time.Second
+	cacheShutdownGrace = 3 * time.Second
+	serverStopWait     = time.Second
+	componentStopWait  = 5 * time.Second
 )
 
-// shutdown stops the HTTP servers, closes the listeners and waits for the
-// server goroutines (srv) and the background components (bg), each within
-// its own budget.
-func (a *App) shutdown(servers []*http.Server, srv, bg *sync.WaitGroup) {
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-	defer shutCancel()
+// shutdown stops PiCache in the order that keeps DNS answering longest, so
+// a restart or an update interrupts DNS only for the flush of the
+// components and the next start:
+//
+//  1. The API's event streams end (http.Server.Shutdown would wait its whole
+//     grace for them) and the HTTP servers (servers and cache, which may be
+//     nil) stop accepting, finish their requests within their grace and are
+//     then closed. DNS, DoT, NTP and the SNI pass-through keep answering
+//     meanwhile: their serve context (stop) is still running.
+//  2. stop cancels the serve context: DNS and the other servers of that
+//     context stop, and so do the background components (bg).
+//  3. The listeners are closed and the server goroutines (srv) and the
+//     components are awaited, each within its own budget.
+func (a *App) shutdown(servers []*http.Server, cache *http.Server, stop context.CancelFunc, srv, bg *sync.WaitGroup) {
+	if a.api != nil {
+		a.api.EndStreams()
+	}
+	drain := func(s *http.Server, grace time.Duration) {
+		ctx, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		if err := s.Shutdown(ctx); err != nil {
+			_ = s.Close() // grace period over: drop the remaining connections
+		}
+	}
 	var wg sync.WaitGroup
 	for _, s := range servers {
-		wg.Go(func() {
-			if err := s.Shutdown(shutCtx); err != nil {
-				_ = s.Close() // grace period over: drop the remaining connections
-			}
-		})
+		wg.Go(func() { drain(s, httpShutdownGrace) })
+	}
+	if cache != nil {
+		wg.Go(func() { drain(cache, cacheShutdownGrace) })
 	}
 	wg.Wait()
+	stop()
 	a.ln.closeAll()
 	if !waitFor(srv, serverStopWait) {
 		a.log.Warn("some servers did not stop in time")
