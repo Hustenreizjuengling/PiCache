@@ -82,7 +82,9 @@ func TestBogusIsServfail(t *testing.T) {
 	if c := e.up.last(); !c.do {
 		t.Fatal("DO not handed to the upstream package")
 	}
-	// Counters since the start.
+	// Counters since the start: they are bumped after the reply is written,
+	// right before the query is logged, so wait for the third log event.
+	e.logs.waitEvent(t, "bad.example.com", 2)
 	if st := e.srv.Stats().DNSSEC; st.Bogus != 3 {
 		t.Fatalf("counters %+v", st)
 	}
