@@ -5,6 +5,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-02
+
 ### Fixed
 
 - Conditional forwarding: a target on another port of this machine (a local
@@ -1675,7 +1677,8 @@ First release.
   Docker installations update with
   `docker compose pull && docker compose up -d`.
 
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.17.0...v1.0.0
 [0.17.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.16.0...v0.16.1
