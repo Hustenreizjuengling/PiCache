@@ -104,18 +104,52 @@ func (t *fwdTable) match(name string, explicitOnly bool) *fwdEntry {
 func upstreamIPs(specs []string) []netip.Addr {
 	var out []netip.Addr
 	for _, u := range specs {
-		spec, err := settings.ParseUpstream(u)
-		switch {
-		case err != nil:
-		case spec.DialAddr.IsValid():
-			out = append(out, spec.DialAddr.Addr().Unmap())
-		case spec.IsIPLit:
-			if ip, err := netip.ParseAddr(spec.Host); err == nil {
-				out = append(out, ip.Unmap().WithZone(""))
-			}
+		if ap, ok := upstreamAddr(u); ok {
+			out = append(out, ap.Addr())
 		}
 	}
 	return out
+}
+
+// upstreamAddr returns the address and port an upstream is dialled at: an
+// IP literal or the address of a DNS stamp (false: a host name).
+func upstreamAddr(u string) (netip.AddrPort, bool) {
+	spec, err := settings.ParseUpstream(u)
+	switch {
+	case err != nil:
+	case spec.DialAddr.IsValid():
+		return netip.AddrPortFrom(spec.DialAddr.Addr().Unmap(), spec.DialAddr.Port()), true
+	case spec.IsIPLit:
+		if ip, err := netip.ParseAddr(spec.Host); err == nil {
+			return netip.AddrPortFrom(ip.Unmap().WithZone(""), uint16(spec.Port)), true
+		}
+	}
+	return netip.AddrPort{}, false
+}
+
+// localResolverOnly reports whether src is this machine (loopback or an own
+// address) and the targets via name src only on ports other than 53, 853
+// and 443 (PiCache's own DNS, DoT/DoQ and DoH ports): a resolver on another
+// port of this machine shares its source address with every local client,
+// so a query from src proves no loop. Such a loop is bounded by the
+// in-flight de-duplication and the upstream timeout.
+func (s *Server) localResolverOnly(src netip.Addr, via []string) bool {
+	if !src.IsLoopback() && !s.host.Load().isOwn(src) {
+		return false
+	}
+	found := false
+	for _, u := range via {
+		ap, ok := upstreamAddr(u)
+		if !ok || ap.Addr() != src {
+			continue
+		}
+		switch ap.Port() {
+		case 53, 853, 443:
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // Forwarders lists conditional forwarders (by domain, then id).

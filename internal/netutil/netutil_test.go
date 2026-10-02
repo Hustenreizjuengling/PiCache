@@ -2,6 +2,7 @@ package netutil
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"slices"
@@ -109,11 +110,20 @@ func TestRateLimiter(t *testing.T) {
 func TestSafeDialerFilter(t *testing.T) {
 	ctx := context.Background()
 	d := &SafeDialer{OwnAddrs: func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("93.184.215.14")} }}
-	if _, err := d.Filter(ctx, []netip.Addr{netip.MustParseAddr("192.168.1.1")}); err == nil {
-		t.Fatal("private address must be refused")
+	if _, err := d.Filter(ctx, []netip.Addr{netip.MustParseAddr("192.168.1.1")}); !errors.Is(err, ErrForbiddenDestination) || errors.Is(err, ErrOwnDestination) {
+		t.Fatalf("private address must be refused as forbidden, not as own: %v", err)
 	}
-	if _, err := d.Filter(ctx, []netip.Addr{netip.MustParseAddr("93.184.215.14")}); err == nil {
-		t.Fatal("own address must be refused")
+	// This machine's addresses: ErrOwnDestination (an ErrForbiddenDestination),
+	// also with private addresses allowed and through NAT64.
+	for _, a := range []string{"93.184.215.14", "127.0.0.1", "::1", "64:ff9b::7f00:1"} {
+		_, err := d.Filter(WithAllowPrivate(ctx), []netip.Addr{netip.MustParseAddr(a)})
+		if !errors.Is(err, ErrOwnDestination) || !errors.Is(err, ErrForbiddenDestination) {
+			t.Fatalf("%s: want ErrOwnDestination, got %v", a, err)
+		}
+	}
+	// Own and other refused addresses: the plain error.
+	if _, err := d.Filter(ctx, []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("10.0.0.1")}); !errors.Is(err, ErrForbiddenDestination) || errors.Is(err, ErrOwnDestination) {
+		t.Fatalf("own and private: %v", err)
 	}
 	got, err := d.Filter(ctx, []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("8.8.8.8")})
 	if err != nil || len(got) != 1 || got[0].String() != "8.8.8.8" {

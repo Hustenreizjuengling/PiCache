@@ -94,7 +94,9 @@ check "equal" "ge" 0 "if semver_lt v1.2.3 v1.2.3; then echo lt; else echo ge; fi
 # Only release versions are compared (development builds never).
 for pair in "picache v0.17.0 (commit abc, built x, go1.27.1, linux/amd64)|v0.17.0" \
 	"picache v0.17.0-rc.1 (commit abc)|v0.17.0-rc.1" "picache v0.17.0-3-gabc1234 (commit abc)|" \
-	"picache v0.17.0-dirty (commit abc)|" "picache dev (commit none)|" "hello|"; do
+	"picache v0.17.0-dirty (commit abc)|" "picache dev (commit none)|" "hello|" \
+	"picache v1.1.0-beta-1 (commit abc)|v1.1.0-beta-1" "picache v1.1.0-beta-1-3-gabc1234 (commit abc)|" \
+	"picache v1.1.0-beta-1-dirty (commit abc)|" "picache v1.1.0-rc.1-12-g0123456789ab-dirty (commit abc)|"; do
 	check "release_version ${pair%%|*}" "[${pair#*|}]" 0 "printf '[%s]' \"\$(release_version '${pair%%|*}')\""
 done
 
@@ -120,6 +122,10 @@ check "nothing installed" "ok" 0 "INSTALLED_BIN=$tmp/none check_downgrade 'picac
 stub v0.17.0-rc.2
 check "pre-release to its release" "ok" 0 "$downgrade 'picache v0.17.0 (commit y)'; echo ok"
 check "release candidate downgrade" "is older than the installed v0.17.0-rc.2" 1 "$downgrade 'picache v0.17.0-rc.1 (commit y)'"
+# A pre-release with "-" in its identifiers is a release version too.
+stub v1.1.0-beta-2
+check "pre-release with a hyphen: downgrade" "is older than the installed v1.1.0-beta-2" 1 "$downgrade 'picache v1.1.0-beta-1 (commit y)'"
+check "pre-release with a hyphen: upgrade" "ok" 0 "$downgrade 'picache v1.1.0 (commit y)'; echo ok"
 
 # Without --version, a latest release older than the installed one (a
 # release candidate newer than the latest stable release) is nothing to do:

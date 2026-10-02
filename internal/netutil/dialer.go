@@ -14,6 +14,10 @@ import (
 // ErrForbiddenDestination is returned when the SSRF guard refuses an address.
 var ErrForbiddenDestination = errors.New("destination address not allowed")
 
+// ErrOwnDestination is the ErrForbiddenDestination of a destination whose
+// addresses are all this machine's (loopback or its own addresses).
+var ErrOwnDestination = fmt.Errorf("%w: the destination is this machine", ErrForbiddenDestination)
+
 type allowPrivateKey struct{}
 
 // WithAllowPrivate marks ctx so that SafeDialer (with AllowPrivate == nil)
@@ -109,7 +113,8 @@ func (d *SafeDialer) DialContext(ctx context.Context, network, address string) (
 	return nil, lastErr
 }
 
-// Filter returns the addresses that may be dialed, in order.
+// Filter returns the addresses that may be dialed, in order
+// (ErrOwnDestination when all of them are this machine's).
 func (d *SafeDialer) Filter(ctx context.Context, addrs []netip.Addr) ([]netip.Addr, error) {
 	allowPrivate := false
 	if d.AllowPrivate != nil {
@@ -123,17 +128,20 @@ func (d *SafeDialer) Filter(ctx context.Context, addrs []netip.Addr) ([]netip.Ad
 	}
 	mine := own()
 	var out []netip.Addr
+	self := func(ip netip.Addr) bool { return ip.IsLoopback() || slices.Contains(mine, ip) }
 	forbidden := func(ip netip.Addr) bool {
-		return !ip.IsValid() || ip.IsUnspecified() || ip.IsLoopback() || inAny(ip, alwaysForbidden) || slices.Contains(mine, ip)
+		return !ip.IsValid() || ip.IsUnspecified() || self(ip) || inAny(ip, alwaysForbidden)
 	}
+	onlySelf := len(addrs) > 0
 	for _, ip := range addrs {
 		ip = Canon(ip)
-		if forbidden(ip) {
-			continue
-		}
 		// NAT64/6to4/IPv4-compatible addresses reach their embedded IPv4
 		// address, which must pass the same checks.
-		if v4, ok := EmbeddedIPv4(ip); ok && forbidden(v4) {
+		v4, embedded := EmbeddedIPv4(ip)
+		if !self(ip) && !(embedded && self(v4)) {
+			onlySelf = false
+		}
+		if forbidden(ip) || embedded && forbidden(v4) {
 			continue
 		}
 		if !allowPrivate && !IsPublicUnicast(ip) {
@@ -141,8 +149,11 @@ func (d *SafeDialer) Filter(ctx context.Context, addrs []netip.Addr) ([]netip.Ad
 		}
 		out = append(out, ip)
 	}
-	if len(out) == 0 {
-		return nil, ErrForbiddenDestination
+	switch {
+	case len(out) > 0:
+		return out, nil
+	case onlySelf:
+		return nil, ErrOwnDestination
 	}
-	return out, nil
+	return nil, ErrForbiddenDestination
 }

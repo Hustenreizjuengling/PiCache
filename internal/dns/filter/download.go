@@ -225,6 +225,8 @@ func errorText(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		msg = "download timed out"
+	case errors.Is(err, netutil.ErrOwnDestination):
+		msg = "destination address not allowed (it is PiCache's own address; add a list on this machine as a file:// URL in the local lists folder)"
 	case errors.Is(err, netutil.ErrForbiddenDestination):
 		msg = "destination address not allowed (private or local addresses are refused)"
 	default:

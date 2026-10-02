@@ -353,14 +353,15 @@ func (s *Server) resolveVia(qc *qctx, via []string, ips []netip.Addr, validate b
 // group set (groupUpstream; fail closed) or else the default set with the
 // client subnet of dns.ecs; validate asks a forwarder's targets with
 // DNSSEC validation. A query from one of the target resolvers themselves
-// (the source address) is refused with errLoop (loop guard). An answer
+// (the source address) is refused with errLoop (loop guard), except from a
+// resolver on another port of this machine (localResolverOnly). An answer
 // with a bogus verdict is a *bogusError for a client with CD=0 (step 13v:
 // bogus data never reaches the later steps).
 func (s *Server) exchange(qc *qctx, q dns.Question, via []string, ips []netip.Addr, validate bool) (*dns.Msg, upstream.Info, error) {
 	if s.d.Upstream == nil {
 		return nil, upstream.Info{}, errNoUpstream
 	}
-	if slices.Contains(ips, qc.source) {
+	if slices.Contains(ips, qc.source) && !s.localResolverOnly(qc.source, via) {
 		return nil, upstream.Info{}, errLoop
 	}
 	req := upstreamRequest(qc.req, q)

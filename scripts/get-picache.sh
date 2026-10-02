@@ -159,11 +159,14 @@ ENV_FILE=/etc/picache/picache.env
 
 # release_version OUTPUT prints the version in the output of `picache
 # version` ("picache v1.2.3 (commit …)") when it is a release version
-# (vX.Y.Z or vX.Y.Z-pre), else nothing: development builds are never
-# compared.
+# (vX.Y.Z or vX.Y.Z-pre, "-" allowed in pre), else nothing: development
+# builds (`git describe`: -N-g<hash>, -dirty) are never compared, as in
+# internal/update's ParseRunning.
 release_version() {
-	rv=$(printf '%s\n' "$1" | sed -n '1s/^picache \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-[0-9A-Za-z.]*\)\{0,1\}\) .*/\1/p')
-	case $rv in *-dirty) rv="" ;; esac
+	rv=$(printf '%s\n' "$1" | sed -n '1s/^picache \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-[0-9A-Za-z.-]*\)\{0,1\}\) .*/\1/p')
+	if printf '%s\n' "$rv" | grep -Eq -- '(-[0-9]+-g[0-9a-f]{4,40}|-dirty)$'; then
+		rv=""
+	fi
 	printf '%s' "$rv"
 }
 

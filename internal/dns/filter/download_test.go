@@ -2,6 +2,7 @@ package filter
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
@@ -359,6 +361,19 @@ func TestCheckRedirect(t *testing.T) {
 		if err := checkRedirect(u, c.orig, c.private); (err == nil) != c.ok {
 			t.Errorf("redirect to %s from %s: err = %v", c.to, c.orig, err)
 		}
+	}
+}
+
+func TestErrorTextNamesOwnAddress(t *testing.T) {
+	// A list on PiCache's own address (the SafeDialer's error inside the
+	// url.Error of the request) names it, without the URL.
+	own := &url.Error{Op: "Get", URL: "http://192.168.1.2/list.txt?token=secret", Err: fmt.Errorf("192.168.1.2: %w", netutil.ErrOwnDestination)}
+	if got := errorText(own); !strings.Contains(got, "PiCache's own address") || strings.Contains(got, "secret") {
+		t.Errorf("own address: %q", got)
+	}
+	other := &url.Error{Op: "Get", URL: "https://lists.example/list.txt", Err: fmt.Errorf("lists.example: %w", netutil.ErrForbiddenDestination)}
+	if got := errorText(other); got != "destination address not allowed (private or local addresses are refused)" {
+		t.Errorf("forbidden address: %q", got)
 	}
 }
 

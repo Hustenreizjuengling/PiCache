@@ -291,12 +291,17 @@ install_binary() {
 		;;
 	esac
 	check_downgrade "$out"
-	# The versions for the summary ("" when the old binary does not run).
+	# The versions for the summary ("" when the old binary does not run) and
+	# their release versions (going back).
 	previous_version=""
+	previous_release=""
 	if [ -x "$BIN" ]; then
-		previous_version=$(version_word "$("$BIN" version 2>/dev/null)")
+		previous_out=$("$BIN" version 2>/dev/null) || previous_out=""
+		previous_version=$(version_word "$previous_out")
+		previous_release=$(release_version "$previous_out")
 	fi
 	current_version=$(version_word "$out")
+	current_release=$(release_version "$out")
 	mv -f "$tmp" "$BIN"
 	say "installed $BIN: $out"
 }
@@ -317,11 +322,14 @@ setup_done() {
 
 # release_version OUTPUT prints the version in the output of `picache
 # version` ("picache v1.2.3 (commit …)") when it is a release version
-# (vX.Y.Z or vX.Y.Z-pre), else nothing: development builds are never
-# compared.
+# (vX.Y.Z or vX.Y.Z-pre, "-" allowed in pre), else nothing: development
+# builds (`git describe`: -N-g<hash>, -dirty) are never compared, as in
+# internal/update's ParseRunning.
 release_version() {
-	rv=$(printf '%s\n' "$1" | sed -n '1s/^picache \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-[0-9A-Za-z.]*\)\{0,1\}\) .*/\1/p')
-	case $rv in *-dirty) rv="" ;; esac
+	rv=$(printf '%s\n' "$1" | sed -n '1s/^picache \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\(-[0-9A-Za-z.-]*\)\{0,1\}\) .*/\1/p')
+	if printf '%s\n' "$rv" | grep -Eq -- '(-[0-9]+-g[0-9a-f]{4,40}|-dirty)$'; then
+		rv=""
+	fi
 	printf '%s' "$rv"
 }
 
@@ -1008,12 +1016,15 @@ nesting feature (pct set <ctid> --features nesting=1) and restart it." >&2
 
 # print_summary prints where to find PiCache and, until the setup is done
 # ($was_set_up, setup_done before the start), the setup token and the next
-# steps; an installation that is set up gets the versions of the update.
+# steps; an installation that is set up gets the versions of the update (or
+# of going back to an older release).
 print_summary() {
 	web_listen=$(env_value PICACHE_WEB_LISTEN)
 	say ""
 	if [ "$was_set_up" -eq 0 ]; then
 		say "PiCache is running."
+	elif [ -n "$previous_release" ] && [ -n "$current_release" ] && semver_lt "$current_release" "$previous_release"; then
+		say "PiCache went back from $previous_version to $current_version and is running."
 	elif [ -n "$previous_version" ] && [ -n "$current_version" ] && [ "$previous_version" != "$current_version" ]; then
 		say "PiCache was updated from $previous_version to $current_version and is running."
 	else

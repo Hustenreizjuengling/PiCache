@@ -5,6 +5,25 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Conditional forwarding: a target on another port of this machine (a local
+  resolver such as `127.0.0.1#5335`) now also answers queries from this
+  machine itself; the loop guard answered them with SERVFAIL. Ports 53, 853
+  and 443 of this machine (PiCache itself) stay guarded.
+- Blocklists: a list on PiCache's own address now fails with a message that
+  says so and points to `file://` lists in `<data>/lists/local/`, instead
+  of "private or local addresses are refused".
+- Installer: `install.sh` and `get-picache.sh` treat a pre-release with a
+  hyphen (`v1.1.0-beta-1`) as a release version, so the downgrade refusal
+  covers it; going back with `PICACHE_ALLOW_DOWNGRADE=1` prints "went back
+  from … to …" instead of "updated from".
+
+### Changed
+
+- Dependencies: SQLite driver modernc.org/sqlite 1.60.0, Vite 8.3.1 (web UI
+  build only).
+
 ## [1.0.0] - 2026-09-30
 
 The first stable release. The release candidates 1.0.0-rc.1 and 1.0.0-rc.2

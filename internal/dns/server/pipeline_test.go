@@ -514,6 +514,32 @@ func TestRouterResolverAndLoopGuard(t *testing.T) {
 	}
 }
 
+func TestLoopGuardSkipsLocalResolverOnAnotherPort(t *testing.T) {
+	e := newEnv(t, nil).serve()
+	ctx := context.Background()
+	// A resolver on another port of this machine: queries from this
+	// machine are forwarded to it.
+	if _, err := e.srv.CreateForwarder(ctx, ForwarderInput{Domain: "unbound.example", Upstreams: []string{"127.0.0.1#5335"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.query("udp", "a.unbound.example", dns.TypeA); r.Rcode != dns.RcodeSuccess {
+		t.Errorf("local resolver on :5335: rcode %s", dns.RcodeToString[r.Rcode])
+	}
+	if c := e.up.callsFor("a.unbound.example"); len(c) != 1 || !slices.Equal(c[0].via, []string{"127.0.0.1:5335"}) {
+		t.Errorf("calls %v", c)
+	}
+	// Port 53 of this machine is PiCache itself: still a loop.
+	if _, err := e.srv.CreateForwarder(ctx, ForwarderInput{Domain: "self.example", Upstreams: []string{"127.0.0.1"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.query("udp", "a.self.example", dns.TypeA); r.Rcode != dns.RcodeServerFailure {
+		t.Errorf("loop guard: rcode %s", dns.RcodeToString[r.Rcode])
+	}
+	if c := e.up.callsFor("a.self.example"); len(c) != 0 {
+		t.Errorf("loop guard must not forward: %v", c)
+	}
+}
+
 func TestIgnoreLogsAndSeen(t *testing.T) {
 	e := newEnv(t, nil).serve()
 	client := netip.MustParseAddr("127.0.0.1")

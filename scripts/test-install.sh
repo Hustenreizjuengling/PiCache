@@ -414,8 +414,16 @@ grep -q v99.1.0 /usr/local/bin/picache || fail "the installed binary was replace
 [ ! -e /usr/local/bin/.picache.new ] || fail "the staged binary was left"
 [ "$(starts)" = "$before" ] || fail "restarted after refusing the downgrade"
 out=$(sh /src/deploy/install.sh --binary /tmp/newer 2>&1) || fail "a reinstall of the same release was refused: $out"
-PICACHE_ALLOW_DOWNGRADE=1 sh /src/deploy/install.sh --binary /tmp/older >/dev/null 2>&1 || fail "PICACHE_ALLOW_DOWNGRADE=1 was refused"
+out=$(PICACHE_ALLOW_DOWNGRADE=1 sh /src/deploy/install.sh --binary /tmp/older 2>&1) || fail "PICACHE_ALLOW_DOWNGRADE=1 was refused: $out"
 grep -q v99.0.0 /usr/local/bin/picache || fail "not downgraded with PICACHE_ALLOW_DOWNGRADE=1"
+echo "$out" | grep -qxF "PiCache went back from v99.1.0 to v99.0.0 and is running." || fail "going back: no went-back line: $out"
+# A pre-release with "-" in its identifiers is a release version, not a
+# development build.
+printf '#!/bin/sh\necho "picache v99.1.0-beta-2 (commit x, built y)"\n' >/tmp/newer
+printf '#!/bin/sh\necho "picache v99.1.0-beta-1 (commit x, built y)"\n' >/tmp/older
+install -m 0755 /tmp/newer /usr/local/bin/picache
+out=$(sh /src/deploy/install.sh --binary /tmp/older 2>&1) && fail "installed an older pre-release"
+echo "$out" | grep -qF 'picache v99.1.0-beta-1 is older than the installed v99.1.0-beta-2.' || fail "no pre-release downgrade message: $out"
 install -m 0755 /tmp/picache.installed /usr/local/bin/picache
 
 echo "== port 53 in use: prints the fix, does not start"
