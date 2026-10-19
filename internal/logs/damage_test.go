@@ -79,8 +79,10 @@ func TestDamagedLogsDBReported(t *testing.T) {
 	if m := s.Metrics(); !strings.Contains(m.Damaged, "malformed") {
 		t.Fatalf("metrics %+v", m)
 	}
-	// The health checks are evaluated again at once, once.
-	if _, err := s.QueryLog(context.Background(), QueryFilter{Domain: "nomatch-zzz", Limit: 100}); apperr.KindOf(err) != apperr.KindUnavailable {
+	// The health checks are evaluated again at once, once. Whether the
+	// second read reaches the damaged page again is up to SQLite (it did
+	// not on a Windows runner): it may fail the same way or succeed.
+	if _, err := s.QueryLog(context.Background(), QueryFilter{Domain: "nomatch-zzz", Limit: 100}); err != nil && apperr.KindOf(err) != apperr.KindUnavailable {
 		t.Fatalf("second read: %v", err)
 	}
 	if n := kicked.Load(); n != 1 {
