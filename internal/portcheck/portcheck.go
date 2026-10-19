@@ -38,7 +38,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -275,7 +274,7 @@ func dialTCP(ctx context.Context, addr string, timeout time.Duration) int {
 		_ = conn.Close()
 		return open
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) {
+	if refused(err) {
 		return closed
 	}
 	return noAnswer
