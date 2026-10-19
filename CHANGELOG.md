@@ -13,6 +13,13 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/etc/hosts` or DNS pointed elsewhere received the API token, over https
   without a certificate check.
 
+### Changed
+
+- Dependencies: SQLite driver modernc.org/sqlite 1.60.1 (faster binding of
+  statements with many parameters), golang.org/x/crypto 0.58.0, x/net
+  0.60.0 (HTTP/2 fixes), x/sync 0.24.0, x/sys 0.49.0, x/text 0.43.0;
+  Svelte 5.57.2 and Vite 8.3.4 (web UI build only).
+
 ## [1.0.1] - 2026-10-02
 
 ### Fixed
