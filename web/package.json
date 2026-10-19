@@ -13,10 +13,10 @@
     "@fontsource-variable/atkinson-hyperlegible-next": "5.3.0",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tsconfig/svelte": "5.0.8",
-    "svelte": "5.57.1",
+    "svelte": "5.57.2",
     "svelte-check": "4.7.6",
     "typescript": "6.0.3",
-    "vite": "8.3.1"
+    "vite": "8.3.4"
   },
   "dependencies": {
     "uplot": "1.6.32"
