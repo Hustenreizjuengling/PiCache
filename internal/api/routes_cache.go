@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -15,11 +16,14 @@ import (
 
 // GroupView is a content group as shown in the Library: the store
 // aggregate plus its display label (UserLabel: set by the user, not
-// built-in) and the number of clients that downloaded it.
+// built-in), the API path of its icon (a Steam app's, while
+// downloadCache.steamNames is on) and the number of clients that
+// downloaded it.
 type GroupView struct {
 	cachestore.GroupUsage `json:",inline"`
 	Label                 string `json:"label"`
 	UserLabel             bool   `json:"userLabel"`
+	Icon                  string `json:"icon,omitempty"`
 	Clients               int    `json:"clients"`
 }
 
@@ -39,6 +43,7 @@ func (s *Server) registerCacheRoutes() {
 	s.route("GET /api/v1/cache/services", permRead, s.cacheServices)
 	s.route("GET /api/v1/cache/groups", permRead, s.cacheGroups)
 	s.route("GET /api/v1/cache/groups/detail", permRead, s.cacheGroupDetail)
+	s.route("GET /api/v1/cache/icons/steam/{app}", permRead, s.cacheSteamIcon)
 	s.route("GET /api/v1/cache/objects", permRead, s.cacheObjects)
 	s.route("DELETE /api/v1/cache/objects/{id}", permAdmin, s.cacheDeleteObject)
 	s.route("POST /api/v1/cache/objects/{id}/pin", permAdmin, s.cachePinObject)
@@ -142,6 +147,7 @@ func (s *Server) groupViews(ctx context.Context, groups []cachestore.GroupUsage)
 			} else if l := s.d.Services.Label(out[i].GroupKey); l != "" {
 				out[i].Label = l
 			}
+			out[i].Icon = s.d.Services.IconPath(out[i].GroupKey)
 		}
 	}
 	if s.d.Logs != nil {
@@ -191,6 +197,32 @@ func (s *Server) cacheGroupDetail(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 	return ok(w, GroupDetail{Group: s.groupViews(r.Context(), groups.Items)[0], Clients: clients, Objects: objects})
+}
+
+// cacheSteamIcon serves the stored icon of a Steam app (a JPEG checked when
+// it was fetched); 404 while downloadCache.steamNames is off or there is
+// none. Browsers may keep it a day.
+func (s *Server) cacheSteamIcon(w http.ResponseWriter, r *http.Request) error {
+	app, err := strconv.ParseUint(r.PathValue("app"), 10, 32)
+	if err != nil || app == 0 {
+		return apperr.Invalid("app", "invalid app id")
+	}
+	if s.d.Services == nil {
+		return apperr.NotFound("icon", r.PathValue("app"))
+	}
+	icon, found, err := s.d.Services.SteamIcon(r.Context(), uint32(app))
+	if err != nil {
+		return err
+	}
+	if !found {
+		return apperr.NotFound("icon", r.PathValue("app"))
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("Content-Length", strconv.Itoa(len(icon)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(icon)
+	return nil
 }
 
 func (s *Server) cacheObjects(w http.ResponseWriter, r *http.Request) error {

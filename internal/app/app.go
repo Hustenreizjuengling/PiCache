@@ -420,6 +420,8 @@ func (a *App) build(ctx context.Context) (err error) {
 	if a.services, err = services.New(ctx, a.cdb, a.set, fetch, a.paths.CacheDomainsDir, log); err != nil {
 		return fmt.Errorf("services: %w", err)
 	}
+	// Steam names (downloadCache.steamNames) go out directly like RDAP.
+	a.services.SetSteamClient(newWhoisClient(lookup46), "PiCache/"+version.Version)
 	// The DHCP tables exist on every installation (backups, restores); the
 	// server is switched on in the web UI (not with PICACHE_DHCP=off).
 	if a.dhcp, err = dhcp.New(ctx, dhcp.Deps{
@@ -1035,10 +1037,11 @@ func newFetchClient(lookup netutil.Resolver, proxy func(context.Context) *netuti
 	}
 }
 
-// newWhoisClient is the HTTP client of the RDAP lookups (clients package):
-// resolution via the bypass resolver, public destinations only (no private
-// exception), TLS 1.2+ against the system roots, never a proxy; the
-// clients package bounds the redirects (https only) and the time.
+// newWhoisClient is the HTTP client of the RDAP lookups (clients package)
+// and of the Steam name lookups (services package): resolution via the
+// bypass resolver, public destinations only (no private exception), TLS
+// 1.2+ against the system roots, never a proxy; the packages bound the
+// redirects (RDAP: https only; Steam: none) and the time.
 func newWhoisClient(lookup netutil.Resolver) *http.Client {
 	d := &netutil.SafeDialer{Resolve: lookup, Timeout: 10 * time.Second,
 		AllowPrivate: func(context.Context) bool { return false }}

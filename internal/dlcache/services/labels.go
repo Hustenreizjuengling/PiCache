@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -38,13 +39,36 @@ func (r *Registry) loadLabels(ctx context.Context) (map[string]string, error) {
 }
 
 // Label returns the display label for a group key: user override, else the
-// built-in product label (Blizzard, Riot, …), else the rule default.
-// Never blocks on the network.
+// name of a Steam depot's app (while downloadCache.steamNames is on), else
+// the built-in product label (Blizzard, Riot, …), else the rule default.
+// Never blocks on the network (an unknown depot is only queued).
 func (r *Registry) Label(groupKey string) string {
 	if l, ok := (*r.labels.Load())[groupKey]; ok {
 		return l
 	}
+	if depot, ok := steamDepotID(groupKey); ok {
+		if l, _, ok := r.steam.label(depot); ok {
+			return l
+		}
+	}
 	return defaultLabel(groupKey, r.snap.Load().name)
+}
+
+// IconPath returns the API path of a group's icon ("" when it has none):
+// the icon of a Steam depot's app.
+func (r *Registry) IconPath(groupKey string) string {
+	if depot, ok := steamDepotID(groupKey); ok {
+		if _, app, ok := r.steam.label(depot); ok && app != 0 {
+			return "/cache/icons/steam/" + strconv.FormatUint(uint64(app), 10)
+		}
+	}
+	return ""
+}
+
+// SteamIcon returns the stored icon (JPEG) of a Steam app; ok=false while
+// downloadCache.steamNames is off or there is none.
+func (r *Registry) SteamIcon(ctx context.Context, app uint32) (icon []byte, ok bool, err error) {
+	return r.steam.icon(ctx, app)
 }
 
 // UserLabel returns the user's label override for a group key; ok=false
@@ -63,9 +87,9 @@ func (r *Registry) Labels(keys []string) map[string]string {
 	return out
 }
 
-// SearchLabels returns the group keys whose user label or built-in product
-// label contains q (case-insensitive), for Library search by name. The
-// result is sorted and bounded.
+// SearchLabels returns the group keys whose user label, built-in product
+// label or Steam app name contains q (case-insensitive), for Library search
+// by name. The result is sorted and bounded.
 func (r *Registry) SearchLabels(q string) []string {
 	q = strings.ToLower(strings.TrimSpace(q))
 	if q == "" {
@@ -80,6 +104,11 @@ func (r *Registry) SearchLabels(q string) []string {
 	}
 	for k, l := range productLabels {
 		if _, overridden := user[k]; !overridden && strings.Contains(strings.ToLower(l), q) {
+			out = append(out, k)
+		}
+	}
+	for _, depot := range r.steam.search(q) {
+		if k := "steam:depot:" + strconv.FormatUint(uint64(depot), 10); user[k] == "" {
 			out = append(out, k)
 		}
 	}

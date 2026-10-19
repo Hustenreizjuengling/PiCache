@@ -2,7 +2,7 @@
   @component
   Cache › Cache settings: turning the download cache on (after a check of address,
   storage, services and port) and off; the cache address and DNS answer
-  lifetime; clients allowed to force a refresh; retention and free space;
+  lifetime; clients allowed to force a refresh; Steam names; retention and free space;
   slices and parallel downloads; the download service list. Edits of both
   sections (downloadCache, cache) are saved together from the bar at the bottom.
 -->
@@ -271,6 +271,17 @@
         {#if l.allowPrivateUpstreams}
           <Notice tone="fail" title={t('cache.settings.privateUpstreamsWarnTitle')}>{t('cache.settings.privateUpstreamsWarn')}</Notice>
         {/if}
+      </div>
+    </Panel>
+
+    <Panel id="cache-set-names" title={t('cache.settings.namesTitle')} description={t('cache.settings.namesText')}>
+      <div class="form">
+        <Toggle
+          id="cache-field-steamNames" label={t('cache.settings.steamNames')}
+          description={t('cache.settings.steamNamesHelp')}
+          disabled={readOnly}
+          bind:checked={() => !!l.steamNames, (v) => (l.steamNames = v)}
+        />
       </div>
     </Panel>
 

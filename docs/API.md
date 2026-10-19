@@ -441,8 +441,9 @@ All return 503 `unavailable` when no store is online (except `/cache/state`).
 |---|---|---|---|
 | GET `/cache/state` | R | – | `api.StoreState` |
 | GET `/cache/services` | R | – | `[]cachestore.ServiceUsage` |
-| GET `/cache/groups` | R | `?service&search&sort&desc&limit&offset` | `listing.Page[GroupView]`, `GroupView = cachestore.GroupUsage + {label:string, userLabel:bool, clients:int}` (`userLabel`: the label was set by a user); `hits`/`bytesServed` count only bytes served from the cache; search also matches labels (`services.SearchLabels` → `GroupQuery.SearchKeys`); client counts via `logs.GroupClientCounts` |
+| GET `/cache/groups` | R | `?service&search&sort&desc&limit&offset` | `listing.Page[GroupView]`, `GroupView = cachestore.GroupUsage + {label:string, userLabel:bool, icon?:string, clients:int}` (`userLabel`: the label was set by a user; `icon` (1.1.0): the API path of the group's icon, today `/cache/icons/steam/<app>` for a Steam depot whose app has a stored icon while `downloadCache.steamNames` is on, ARCHITECTURE 8.4; the label is then the app's name unless a user set one); `hits`/`bytesServed` count only bytes served from the cache; search also matches labels and Steam app names (`services.SearchLabels` → `GroupQuery.SearchKeys`); client counts via `logs.GroupClientCounts` |
 | GET `/cache/groups/detail` | R | `?service&key` | `{group:GroupView, clients:[]logs.GroupClient, objects:listing.Page[cachestore.Object]}` (exact `GroupQuery.GroupKey`) |
+| GET `/cache/icons/steam/{app}` | R | – | (1.1.0) the stored icon of a Steam app (`services.SteamIcon`): `Content-Type: image/jpeg`, `Cache-Control: private, max-age=86400`; 404 `not_found` while `downloadCache.steamNames` is off or none is stored, 400 `app` for an ID outside 1–4294967295 |
 | GET `/cache/objects` | R | `?service&group&search&sort&desc&limit&offset` | `listing.Page[cachestore.Object]` |
 | DELETE `/cache/objects/{id}` | A | – | 204 (400 for malformed ids) |
 | POST `/cache/objects/{id}/pin` | A | `{pinned:bool}` | 204 |

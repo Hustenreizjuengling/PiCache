@@ -3,11 +3,13 @@
   Cache › Library: what is cached. A per-service summary (also the service
   filter), then the content groups with size, completeness, retention and
   usage; searchable (labels too), sortable and paged on the server. A row
-  opens the group's details (?group=<key>&groupService=<service>).
+  opens the group's details (?group=<key>&groupService=<service>). Steam
+  depots show their game's name and icon while Steam names are on; admins
+  who see Steam depots without it are offered to switch it on.
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
-  import { api, isApiError, resource, type GroupSort, type GroupView } from '$lib/api'
+  import { api, apiUrl, isApiError, resource, type GroupSort, type GroupView } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatBytes, formatDate, formatDateTime, formatNumber, formatPercent, formatRelative } from '$lib/format'
   import { href, router } from '$lib/router.svelte'
@@ -58,6 +60,40 @@
   )
 
   const storeOffline = $derived(isApiError(groups.error, 'unavailable') || isApiError(usage.error, 'unavailable'))
+
+  // ---- Steam names (downloadCache.steamNames): offered to admins who see Steam depots
+
+  const steamNames = resource(
+    (signal) => api.settings.get({ signal }).then((s) => s.downloadCache.steamNames ?? true),
+    { interval: 5 * 60_000 },
+  )
+  let steamHintHidden = $state(loadPref('cache.library.steamHint') === 'hidden')
+  let steamTurningOn = $state(false)
+  const showSteamHint = $derived(
+    session.isAdmin &&
+      steamNames.data === false &&
+      !steamHintHidden &&
+      !!groups.data?.items.some((g) => g.groupKey.startsWith('steam:depot:')),
+  )
+
+  async function steamNamesOn() {
+    steamTurningOn = true
+    try {
+      await api.settings.patch('downloadCache', { steamNames: true })
+      toast.success(t('cache.library.steamHintDone'))
+      void steamNames.refresh()
+      refresh()
+    } catch (err) {
+      toast.error(err)
+    } finally {
+      steamTurningOn = false
+    }
+  }
+
+  function hideSteamHint() {
+    steamHintHidden = true
+    savePref('cache.library.steamHint', 'hidden')
+  }
   const store = $derived(appStatus.overview.data?.store)
 
   function refresh() {
@@ -118,9 +154,12 @@
 </script>
 
 {#snippet contentCell(g: GroupView)}
-  <span class="content">
-    <span class="label" title={g.label}>{g.label}</span>
-    {#if g.label !== g.groupKey}<span class="key mono" title={g.groupKey}>{g.groupKey}</span>{/if}
+  <span class="content-row">
+    {#if g.icon}<img class="icon" src={apiUrl(g.icon)} alt="" width="32" height="32" loading="lazy" />{/if}
+    <span class="content">
+      <span class="label" title={g.label}>{g.label}</span>
+      {#if g.label !== g.groupKey}<span class="key mono" title={g.groupKey}>{g.groupKey}</span>{/if}
+    </span>
   </span>
 {/snippet}
 
@@ -169,6 +208,17 @@
       {#if usage.error}<p class="err">{errorText(usage.error)}</p>{/if}
     </Panel>
 
+    {#if showSteamHint}
+      <Notice tone="info" icon="gamepad" title={t('cache.library.steamHintTitle')} ondismiss={hideSteamHint}>
+        {t('cache.library.steamHintText')}
+        {#snippet actions()}
+          <Button size="sm" variant="primary" loading={steamTurningOn} onclick={steamNamesOn}>{t('cache.library.steamHintOn')}</Button>
+          <Button size="sm" variant="ghost" href={href('/cache/settings', { jump: 'cache-set-names', field: 'cache-field-steamNames' })}>
+            {t('cache.library.steamHintSettings')}
+          </Button>
+        {/snippet}
+      </Notice>
+    {/if}
     <div class="toolbar">
       <FilterInput
         label={t('cache.library.search')}
@@ -243,6 +293,19 @@
 {/if}
 
 <style>
+  .content-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .icon {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--r-control);
+    object-fit: cover;
+  }
   .content {
     display: flex;
     flex-direction: column;

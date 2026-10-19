@@ -916,7 +916,7 @@
         "tags": [
           "Cache store (library, maintenance)"
         ],
-        "description": "Request: ?service&search&sort&desc&limit&offset\n\nResponse: listing.Page[GroupView], GroupView = cachestore.GroupUsage + {label:string, userLabel:bool, clients:int} (userLabel: the label was set by a user); hits/bytesServed count only bytes served from the cache; search also matches labels (services.SearchLabels → GroupQuery.SearchKeys); client counts via logs.GroupClientCounts",
+        "description": "Request: ?service&search&sort&desc&limit&offset\n\nResponse: listing.Page[GroupView], GroupView = cachestore.GroupUsage + {label:string, userLabel:bool, icon?:string, clients:int} (userLabel: the label was set by a user; icon (1.1.0): the API path of the group's icon, /cache/icons/steam/<app> for a Steam depot whose app has a stored icon while downloadCache.steamNames is on; the label is then the app's name unless a user set one); hits/bytesServed count only bytes served from the cache; search also matches labels and Steam app names (services.SearchLabels → GroupQuery.SearchKeys); client counts via logs.GroupClientCounts",
         "parameters": [
           {
             "name": "service",
@@ -1160,6 +1160,55 @@
           },
           "401": {
             "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "R",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/cache/icons/steam/{app}": {
+      "get": {
+        "operationId": "getCacheIconsSteam",
+        "summary": "The icon of a Steam app",
+        "tags": [
+          "Cache store (library, maintenance)"
+        ],
+        "description": "Request: –\n\nResponse: (1.1.0) the stored icon of a Steam app (services.SteamIcon): Content-Type: image/jpeg, Cache-Control: private, max-age=86400; 404 not_found while downloadCache.steamNames is off or none is stored, 400 app for an ID outside 1–4294967295",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The icon of a Steam app.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
           },
           "default": {
             "$ref": "#/components/responses/Error"
@@ -13301,6 +13350,9 @@
               "domainsSource": {
                 "type": "string"
               },
+              "steamNames": {
+                "type": "boolean"
+              },
               "updateIntervalHours": {
                 "type": "integer"
               },
@@ -13329,7 +13381,8 @@
               "updateIntervalHours",
               "disabledServices",
               "nocacheClients",
-              "allowPrivateUpstreams"
+              "allowPrivateUpstreams",
+              "steamNames"
             ]
           },
           "cache": {
@@ -14239,6 +14292,9 @@
           },
           "userLabel": {
             "type": "boolean"
+          },
+          "icon": {
+            "type": "string"
           },
           "clients": {
             "type": "integer"

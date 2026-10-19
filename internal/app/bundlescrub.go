@@ -78,7 +78,8 @@ var settingRules = map[string]settingRule{
 
 	"downloadCache.allowPrivateUpstreams": ruleKeep, "downloadCache.cacheIpv4": ruleAddr, "downloadCache.cacheIpv6": ruleAddr,
 	"downloadCache.disabledServices": ruleKeep, "downloadCache.dnsTtl": ruleKeep, "downloadCache.domainsSource": ruleUpstream,
-	"downloadCache.enabled": ruleKeep, "downloadCache.nocacheClients": ruleAddr, "downloadCache.updateIntervalHours": ruleKeep,
+	"downloadCache.enabled": ruleKeep, "downloadCache.nocacheClients": ruleAddr, "downloadCache.steamNames": ruleKeep,
+	"downloadCache.updateIntervalHours": ruleKeep,
 
 	"filter.blockIcloudPrivateRelay": ruleKeep, "filter.blockMozillaCanary": ruleKeep, "filter.blockedTtl": ruleKeep,
 	"filter.blockingIpv4": ruleAddr, "filter.blockingIpv6": ruleAddr, "filter.blockingMode": ruleKeep,

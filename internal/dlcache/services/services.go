@@ -5,7 +5,8 @@
 // grouping/labels (docs/ARCHITECTURE.md 8.1, 8.2 steps 5–6, 8.4).
 //
 // Tables (picache.db, component "services"): services_custom,
-// services_extra_domains, services_labels.
+// services_extra_domains, services_labels, and the Steam names cache
+// services_steam_apps and services_steam_depots (steam.go).
 //
 // The source is untrusted network input:
 //   - domain_files entries must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.txt$;
@@ -109,6 +110,7 @@ type Registry struct {
 
 	snap   atomic.Pointer[snapshot]
 	labels atomic.Pointer[map[string]string] // user labels (copy on write)
+	steam  *steamNames
 
 	// mu guards the fields below and serialises rebuilds and DB writes. It
 	// is never held while calling settings.Update (whose listeners take it).
@@ -152,6 +154,10 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client,
 		return nil, err
 	}
 	if err := r.loadDB(ctx); err != nil {
+		return nil, err
+	}
+	r.steam = newSteamNames(d, r.log, func() bool { return set.Get().DownloadCache.SteamNames })
+	if err := r.steam.load(ctx); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -204,9 +210,12 @@ func signal(ch chan struct{}) {
 // Start fetches the source if it is missing or stale, refreshes it every
 // downloadCache.updateIntervalHours (±10 %, 0 = manual only) and refetches when
 // the source URL changes. Failed fetches are retried with backoff (1 min to
-// 1 h). Blocks until ctx is done.
+// 1 h). The Steam names worker runs alongside. Blocks until ctx is done.
 func (r *Registry) Start(ctx context.Context) {
 	defer r.unsub()
+	var wg sync.WaitGroup
+	wg.Go(func() { r.steam.run(ctx) })
+	defer wg.Wait()
 	for {
 		var timer *time.Timer
 		var fire <-chan time.Time

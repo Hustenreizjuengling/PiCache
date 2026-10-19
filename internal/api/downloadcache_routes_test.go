@@ -44,6 +44,7 @@ type downloadCacheEnv struct {
 	srv *Server
 	reg *services.Registry
 	src *dcSource
+	db  *db.DB
 }
 
 func newDownloadCacheEnv(t *testing.T) *downloadCacheEnv {
@@ -93,7 +94,7 @@ func newDownloadCacheEnv(t *testing.T) *downloadCacheEnv {
 		t.Fatal(err)
 	}
 	s := &Server{d: Deps{Settings: st, Services: reg, SNI: sni.New(sni.Deps{Settings: st, Log: log}), Auth: as, Log: log}, log: log}
-	return &downloadCacheEnv{srv: s, reg: reg, src: src}
+	return &downloadCacheEnv{srv: s, reg: reg, src: src, db: d}
 }
 
 // call runs h like s.route does after authentication (admin principal).
@@ -275,5 +276,46 @@ func TestDownloadCacheRoutesRegistered(t *testing.T) {
 		if _, matched := s.mux.Handler(httptest.NewRequest(method, path, nil)); matched == "" {
 			t.Errorf("%s not registered", pattern)
 		}
+	}
+}
+
+// GET /cache/icons/steam/{app} serves a stored icon only while Steam names
+// are on.
+func TestCacheSteamIcon(t *testing.T) {
+	e := newDownloadCacheEnv(t)
+	ctx := context.Background()
+	icon := []byte("\xFF\xD8\xFF\xE0 not decoded here")
+	if _, err := e.db.W.ExecContext(ctx, `INSERT INTO services_steam_apps (app_id, name, icon_hash, icon, fetched_at)
+		VALUES (2567870, 'Chained Together', 'h', ?, 1)`, icon); err != nil {
+		t.Fatal(err)
+	}
+	get := func(app string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/v1/cache/icons/steam/"+app, nil)
+		r.SetPathValue("app", app)
+		w := httptest.NewRecorder()
+		if err := e.srv.cacheSteamIcon(w, r); err != nil {
+			writeError(w, r, e.srv.log, err)
+		}
+		return w
+	}
+	for _, app := range []string{"0", "-1", "x", "4294967296"} {
+		dcWantError(t, get(app), http.StatusBadRequest, "app", "invalid app id")
+	}
+	if w := get("2567870"); w.Code != http.StatusNotFound {
+		t.Fatalf("off: %d", w.Code)
+	}
+	if _, err := e.srv.d.Settings.Update(ctx, func(a *settings.All) error {
+		a.DownloadCache.SteamNames = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := get("2567870")
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/jpeg" ||
+		w.Header().Get("Cache-Control") != "private, max-age=86400" || w.Body.String() != string(icon) {
+		t.Fatalf("icon: %d %v %q", w.Code, w.Header(), w.Body)
+	}
+	if w := get("2567871"); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown app: %d", w.Code)
 	}
 }

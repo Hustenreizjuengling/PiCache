@@ -172,6 +172,12 @@ const de: Messages<typeof en> = {
   'library.labelTitle': 'Name',
   'library.labelField': 'Anzeigename',
   'library.labelHelp': 'Wird statt der Inhalts-ID gezeigt, z. B. das Spiel, zu dem dieses Steam-Depot gehört.',
+  'library.steamHintTitle': 'Namen der Steam-Spiele anzeigen?',
+  'library.steamHintText':
+    'Steam-Downloads werden mit ihrer Depot-Nummer aufgeführt. PiCache kann das Spiel und sein Icon nachschlagen; dabei erfährt api.steamcmd.net, ein Drittanbieter, welche Spiele dein Netzwerk herunterlädt.',
+  'library.steamHintOn': 'Namen abrufen',
+  'library.steamHintSettings': 'Einstellungen',
+  'library.steamHintDone': 'Steam-Namen sind eingeschaltet. Die Namen erscheinen, sobald sie nachgeschlagen sind (etwa ein Spiel pro Sekunde).',
   'library.saveLabel': 'Name speichern',
   'library.resetLabel': 'Automatischen Namen nutzen',
   'library.labelSaved': 'Name gespeichert',
@@ -672,6 +678,11 @@ const de: Messages<typeof en> = {
   'settings.privateUpstreamsWarnTitle': 'Clients erreichen über den Cache dein privates Netzwerk',
   'settings.privateUpstreamsWarn':
     'Jeder, der den Cache nutzen kann, kann PiCache Daten von Geräten in deinem Netzwerk abrufen lassen. Schalte das nach dem Testen wieder aus.',
+  'settings.namesTitle': 'Namen in der Bibliothek',
+  'settings.namesText': 'Wie Inhalte im Cache benannt werden.',
+  'settings.steamNames': 'Namen und Icons von Steam-Spielen abrufen',
+  'settings.steamNamesHelp':
+    'Zeigt das Spiel, den Workshop-Inhalt oder den DLC statt der Steam-Depot-Nummer. PiCache fragt dazu api.steamcmd.net, einen Drittanbieter-Spiegel der Steam-App-Informationen, nach den Depots, die dein Netzwerk herunterlädt, und lädt die Icons von Steams Servern. Beide sehen die öffentliche Adresse dieses Geräts und welche Spiele heruntergeladen werden.',
   'settings.retentionTitle': 'Aufbewahrung',
   'settings.retentionText': 'Wann Inhalte aus dem Cache entfernt werden. Angeheftete Inhalte bleiben immer.',
   'settings.maxAge': 'Inhalte entfernen, die nicht genutzt wurden seit',

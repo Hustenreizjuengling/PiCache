@@ -167,6 +167,12 @@ export default {
   'library.labelTitle': 'Name',
   'library.labelField': 'Display name',
   'library.labelHelp': 'Shown instead of the content ID, e.g. the game this Steam depot belongs to.',
+  'library.steamHintTitle': 'Show the names of Steam games?',
+  'library.steamHintText':
+    'Steam downloads are listed by depot number. PiCache can look up the game and its icon; this asks api.steamcmd.net, a third-party service, which games your network downloads.',
+  'library.steamHintOn': 'Look up names',
+  'library.steamHintSettings': 'Settings',
+  'library.steamHintDone': 'Steam names are on. Names appear as they are looked up (about one game per second).',
   'library.saveLabel': 'Save name',
   'library.resetLabel': 'Use the automatic name',
   'library.labelSaved': 'Name saved',
@@ -649,6 +655,11 @@ export default {
   'settings.privateUpstreamsWarnTitle': 'Clients can reach your private network through the cache',
   'settings.privateUpstreamsWarn':
     'Anyone who can use the cache may make PiCache fetch from devices in your network. Turn this off again when you are done testing.',
+  'settings.namesTitle': 'Names in the Library',
+  'settings.namesText': 'How cached content is named.',
+  'settings.steamNames': 'Look up Steam game names and icons',
+  'settings.steamNamesHelp':
+    'Shows the game, workshop content or DLC instead of the Steam depot number. PiCache asks api.steamcmd.net, a third-party mirror of Steam’s app information, about the depots your network downloads and fetches the icons from Steam’s servers. Both see this machine’s public address and which games are being downloaded.',
   'settings.retentionTitle': 'Retention',
   'settings.retentionText': 'When cached content is removed. Pinned content is always kept.',
   'settings.maxAge': 'Remove content not used for',

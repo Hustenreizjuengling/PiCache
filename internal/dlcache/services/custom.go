@@ -43,6 +43,21 @@ var migrations = []string{
 		label      TEXT    NOT NULL,
 		updated_at INTEGER NOT NULL
 	) WITHOUT ROWID;`,
+	// v2 (1.1.0): the Steam names cache (steam.go).
+	`CREATE TABLE services_steam_apps (
+		app_id     INTEGER PRIMARY KEY,
+		name       TEXT    NOT NULL DEFAULT '',
+		type       TEXT    NOT NULL DEFAULT '',
+		icon_hash  TEXT    NOT NULL DEFAULT '',
+		icon       BLOB,
+		fetched_at INTEGER NOT NULL
+	);
+	CREATE TABLE services_steam_depots (
+		depot_id   INTEGER PRIMARY KEY,
+		app_id     INTEGER NOT NULL,
+		kind       TEXT    NOT NULL DEFAULT '',
+		fetched_at INTEGER NOT NULL
+	);`,
 }
 
 // customService is a row of services_custom; its host patterns are its

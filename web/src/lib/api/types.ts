@@ -631,6 +631,8 @@ export interface DownloadCacheSettings {
   disabledServices: string[]
   nocacheClients: string[]
   allowPrivateUpstreams: boolean
+  /** Look up Steam app names and icons (1.1.0; absent from older servers). */
+  steamNames?: boolean
 }
 
 /** settings.Cache */
@@ -2577,6 +2579,8 @@ export interface GroupView extends GroupUsage {
   label: string
   /** The label was set by a user (not the automatic name). Absent from older servers. */
   userLabel?: boolean
+  /** API path of the group's icon (1.1.0): a Steam app's while Steam names are on. */
+  icon?: string
   clients: number
 }
 

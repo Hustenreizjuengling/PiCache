@@ -269,6 +269,9 @@ type DownloadCache struct {
 	DisabledServices      []string `json:"disabledServices"`
 	NocacheClients        []string `json:"nocacheClients"`        // CIDRs whose ?nocache=1 is honoured (default: none)
 	AllowPrivateUpstreams bool     `json:"allowPrivateUpstreams"` // DANGEROUS: disables the SSRF guard
+	// SteamNames looks up the app names and icons of Steam depots
+	// (api.steamcmd.net, Steam's CDN; off by default: it sends data out).
+	SteamNames bool `json:"steamNames"`
 }
 
 // Cache configures the slice store and retention.

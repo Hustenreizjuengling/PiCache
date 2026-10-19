@@ -5,6 +5,22 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Steam names in the Library** (`downloadCache.steamNames`, **Cache
+  settings → Names in the Library**, off by default): Steam downloads show
+  the game's name and icon instead of "Steam depot <number>", with
+  "· Workshop" and "· DLC" for workshop content and DLC, and shared
+  depots under the app they belong to (e.g. Steamworks Common
+  Redistributables). PiCache finds the game through api.steamcmd.net, a
+  third-party mirror of Steam's app information, and fetches the icons
+  from Steam's CDN; both see this machine's public address and which games
+  are downloaded. At most one request per second and 2000 per day, results
+  kept in picache.db (never restored), icons served by PiCache itself
+  (`GET /api/v1/cache/icons/steam/{app}`). Library search also finds games
+  by name; a name you set yourself still wins. Admins who see Steam
+  depots in the Library are offered to switch it on.
+
 ### Security
 
 - Command line: a loopback API URL given by name (`http://localhost:8080`,
