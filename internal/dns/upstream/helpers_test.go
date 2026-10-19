@@ -166,29 +166,48 @@ func query(name string, qtype uint16, id uint16, do bool) *dns.Msg {
 	return m
 }
 
-// startDNS serves h over UDP and TCP on the same 127.0.0.1 port. The TCP
-// port is chosen first: Windows hosts reserve TCP port ranges (Hyper-V)
-// that UDP ephemeral ports may fall into.
-func startDNS(t *testing.T, h dns.HandlerFunc) netip.AddrPort {
+// listenPair listens on the same 127.0.0.1 port with TCP and UDP. Windows
+// hosts reserve TCP and UDP port ranges (Hyper-V, WinNAT) that the other
+// protocol's ephemeral ports may fall into, so the attempts alternate
+// between choosing the TCP and the UDP port first.
+func listenPair(t *testing.T) (net.Listener, net.PacketConn) {
 	t.Helper()
 	var lastErr error
-	for range 50 {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
+	for i := range 100 {
+		var ln net.Listener
+		var pc net.PacketConn
+		var err error
+		if i%2 == 0 {
+			if ln, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+				t.Fatal(err)
+			}
+			if pc, err = net.ListenPacket("udp", ln.Addr().String()); err != nil {
+				_ = ln.Close()
+			}
+		} else {
+			if pc, err = net.ListenPacket("udp", "127.0.0.1:0"); err != nil {
+				t.Fatal(err)
+			}
+			if ln, err = net.Listen("tcp", pc.LocalAddr().String()); err != nil {
+				_ = pc.Close()
+			}
 		}
-		pc, err := net.ListenPacket("udp", ln.Addr().String())
-		if err != nil {
-			_ = ln.Close()
-			lastErr = err
-			continue
+		if err == nil {
+			return ln, pc
 		}
-		serve(t, &dns.Server{PacketConn: pc, Handler: h})
-		serve(t, &dns.Server{Listener: ln, Handler: h})
-		return netip.MustParseAddrPort(pc.LocalAddr().String())
+		lastErr = err
 	}
 	t.Fatalf("no free UDP/TCP port pair: %v", lastErr)
-	return netip.AddrPort{}
+	return nil, nil
+}
+
+// startDNS serves h over UDP and TCP on the same 127.0.0.1 port.
+func startDNS(t *testing.T, h dns.HandlerFunc) netip.AddrPort {
+	t.Helper()
+	ln, pc := listenPair(t)
+	serve(t, &dns.Server{PacketConn: pc, Handler: h})
+	serve(t, &dns.Server{Listener: ln, Handler: h})
+	return netip.MustParseAddrPort(pc.LocalAddr().String())
 }
 
 func serve(t *testing.T, s *dns.Server) {

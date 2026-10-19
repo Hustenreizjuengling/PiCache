@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -101,18 +100,7 @@ func startDNSCrypt(t *testing.T, es uint16) *dnscryptServer {
 	copy(s.resPK[:], rp)
 	now := time.Now()
 	s.certs = [][]byte{testDNSCryptCert(sk, es, s.resPK, s.magic, 7, now.Add(-time.Hour), now.Add(time.Hour))}
-	var ln net.Listener
-	var pc net.PacketConn
-	for range 50 {
-		var err error
-		if ln, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
-			t.Fatal(err)
-		}
-		if pc, err = net.ListenPacket("udp", ln.Addr().String()); err == nil {
-			break
-		}
-		_ = ln.Close()
-	}
+	ln, pc := listenPair(t)
 	s.addr = netip.MustParseAddrPort(pc.LocalAddr().String())
 	var wg sync.WaitGroup
 	t.Cleanup(func() { _ = pc.Close(); _ = ln.Close(); wg.Wait() })
