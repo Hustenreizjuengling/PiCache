@@ -36,7 +36,7 @@ var expectedClasses = func() map[string]routeClass {
 		"PUT /api/v1/parental/groups/{id}/pause", "DELETE /api/v1/parental/groups/{id}/pause",
 		"POST /api/v1/dns/cache/flush", "POST /api/v1/dns/upstreams/test",
 		"POST /api/v1/filter/lists/refresh", "POST /api/v1/filter/lists/{id}/refresh", "POST /api/v1/download-cache/source/refresh",
-		"POST /api/v1/network/scan", "POST /api/v1/dhcp/probe", "POST /api/v1/notifications/channels/{id}/test",
+		"POST /api/v1/network/scan", "POST /api/v1/network/ports/run", "POST /api/v1/dhcp/probe", "POST /api/v1/notifications/channels/{id}/test",
 		"POST /api/v1/storage/targets/{id}/test", "POST /api/v1/storage/targets/{id}/benchmark", "DELETE /api/v1/storage/benchmark",
 		"POST /api/v1/cache/verify",
 		"PUT /api/v1/system/log/level", "DELETE /api/v1/system/log/level", "POST /api/v1/system/events/{id}/ack",
@@ -88,7 +88,9 @@ var expectedClasses = func() map[string]routeClass {
 		"POST /api/v1/clients/batch", "POST /api/v1/groups/batch", "PUT /api/v1/groups/{id}/upstreams",
 		// 0.15.0: forgetting one address or device, the listeners of the
 		// next start.
-		"DELETE /api/v1/clients/known", "PUT /api/v1/system/listeners")
+		"DELETE /api/v1/clients/known", "PUT /api/v1/system/listeners",
+		// 1.1.0: forgetting a device's port check results.
+		"DELETE /api/v1/network/ports/device")
 	add(destroy,
 		"POST /api/v1/system/restore", "POST /api/v1/dhcp/reset", "DELETE /api/v1/dhcp/leases",
 		"POST /api/v1/cache/services/{service}/purge", "POST /api/v1/cache/groups/delete", "POST /api/v1/storage/targets/{id}/init",

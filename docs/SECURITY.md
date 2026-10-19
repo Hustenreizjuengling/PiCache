@@ -83,6 +83,7 @@ fixes; please test against it or a current build of `main`.
 | Outbound notifications | Only admins configure channels. PiCache sends only to the URLs they entered (http or https, no redirects, no proxy unless *Notifications* is switched on for the outbound proxy, verified TLS, 10 s), and never to link-local (cloud metadata), multicast or unspecified addresses. Private and loopback addresses are allowed on purpose. A stored secret is never sent to a changed server. Messages carry no secrets, passwords, tokens, session data or user names. Details in [Notifications](#notifications). |
 | Scheduled backups | Same content as downloaded backups (no accounts; sealed secrets only on request), written only to the data directory or to a storage target's store, without following symbolic links. Details in [Scheduled backups](#scheduled-backups). |
 | Network discovery scan | Admins only, audited, at most one per minute: one empty UDP datagram per address of this machine's private IPv4 subnets (at most 512, at most 200 per second) from an unprivileged socket; no raw sockets or capabilities. Details in [Parental controls and the network check](#parental-controls-and-the-network-check). |
+| Port checks (optional) | Off by default; admins only. Plain TCP connects (no data, no raw sockets, no capabilities) to common ports of the IPv4 devices in PiCache's own private networks, at most 100 per second and 256 devices; looks like a port scan to devices and intrusion detection. Results are readable with read access and never part of a backup. Details in [Parental controls and the network check](#parental-controls-and-the-network-check). |
 | DHCP server (optional) | Off by default; switched on in the web UI by an admin (`PICACHE_DHCP=off` prevents it); no DHCP port is open while it is off. Serves one chosen interface, never relayed requests, never while its own address is dynamic or another DHCP server was detected. Every DHCPv4, DHCPv6 and ICMPv6 packet is parsed with strict bounds checks, rate limited and dropped when malformed; replies cannot be aimed at hosts outside the LAN. Router advertisements never make PiCache a router. `CAP_NET_RAW` is used only at start (while router advertisements are on) and then dropped on every thread; PiCache refuses to run if that fails. Details in [DHCP server](#dhcp-server). |
 | Privilege escalation | The service runs unprivileged and never holds `CAP_SYS_ADMIN`. NAS mounts are done by systemd on request of a separate root helper that re-validates every request and never trusts the database: it opens it read-only as a regular file (no links, FIFOs or devices) with an untrusted schema, touches only names derived from the target id, never follows links in the service-owned request directory, and runs sandboxed with a memory limit. |
 | Resource exhaustion | Every cache, queue, map and upload is bounded; query timeouts, a size cap for the log database, connection caps per client and in total on every TCP listener (the web UI: 64 per client address, 256 for the IPv6 addresses of one on-link, ULA or link-local /64 together, and 1024 in total; trusted reverse proxies count only toward the total, and this machine has a reserve of 64 beyond it, so a host that fills the total cannot fail the health check and roll back an update), so idle connections from one host cannot grow PiCache until the kernel stops it. DNS over TCP, DoT and DoH (32 per client, 1024 in total per listener) give way at the total: a client that would hold fewer connections than the client holding the most gets a slot, and the oldest connection of that client is closed; this machine has a reserve of 64. A host with many source addresses therefore cannot keep other clients off TCP DNS by holding every slot. Residual risk: an attacker with more addresses than there are slots, each holding one connection, keeps newcomers out (they would hold as many as it); many IPv6 addresses of one on-link /64 are separate clients here. A DNS reply over TCP or DoT that the client does not read within 10 s ends its wait (over TCP the connection is closed). Dials to DoH upstreams end with the 3 s attempt, at most 4 connections per upstream, so a black-holed upstream leaves nothing pending. |
@@ -685,6 +686,21 @@ and [§17](ARCHITECTURE.md#17-network-check-internalappnetcheckgo).
   addresses with ARP. It is not available in a container bridge network, on
   systems other than Linux, or for IPv6. A scan can wake devices that sleep
   and may appear in the logs of intrusion detection on the LAN.
+- **The port checks** (off by default; switched on by an admin under
+  *Network check → Open ports*) try a TCP connection to about 40 common
+  ports, plus up to 32 ports you add, on every IPv4 device PiCache sees in
+  its own private networks, once a day by default or when an admin starts
+  a check (audited as `network.ports.run`). Each attempt is an ordinary
+  unprivileged connect that is closed at once: nothing is sent, nothing is
+  read, no raw sockets, no capabilities; at most 100 attempts per second,
+  256 devices, never this machine, public addresses or IPv6. To every
+  device and to intrusion detection on the LAN this **looks like a port
+  scan**: security software on PCs, NAS or routers may warn about
+  PiCache, and sleeping devices may wake up. The results (which services
+  run on which device) can be read by every account and token with read
+  access, like the device list; they stay in `logs.db` (kept 180 days)
+  and are never part of a backup. Changes can be sent as the notification
+  *Open ports changed*.
 
 ## DNS protection
 

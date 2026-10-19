@@ -3,8 +3,9 @@
   DNS › Network check: do all devices use PiCache? One verdict sentence,
   the router and PiCache's addresses, a card with concrete steps for every
   check that needs attention (FRITZ!Box or other routers), the passed
-  checks, the devices of the network with a scan and "Add as client", and
-  the interfaces of this machine (addresses, networks, gateways, link).
+  checks, the devices of the network with a scan and "Add as client" (and
+  their open ports), the port checks, and the interfaces of this machine
+  (addresses, networks, gateways, link).
   Read-only principals see everything without scan and add actions.
   "Set up a device" opens the device guides (#/dns/network/devices).
   Query: ?show=unused (only devices that do not use PiCache)
@@ -12,7 +13,16 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte'
   import { t } from '$i18n/index.svelte'
-  import { api, isApiError, resource, toApiError, type NetworkCheck, type NetworkCheckItem, type Resource } from '$lib/api'
+  import {
+    api,
+    isApiError,
+    resource,
+    toApiError,
+    type NetworkCheck,
+    type NetworkCheckItem,
+    type PortChecksState,
+    type Resource,
+  } from '$lib/api'
   import { errorText } from '$lib/errors'
   import { formatDateTime, formatRelative } from '$lib/format'
   import { href, router } from '$lib/router.svelte'
@@ -23,6 +33,7 @@
   import DeviceGuides from './network/DeviceGuides.svelte'
   import DevicesPanel from './network/DevicesPanel.svelte'
   import InterfacesPanel from './network/InterfacesPanel.svelte'
+  import PortsPanel from './network/PortsPanel.svelte'
 
   let { params }: PageProps = $props()
 
@@ -32,6 +43,10 @@
     interval: () => (following || check.data?.scan.running ? 2_000 : 30_000),
   })
   const groups = resource((signal) => api.groups.list({ signal }))
+  // Port checks (absent without logs.db: 503); every 2 s while one runs.
+  const ports: Resource<PortChecksState> = resource((signal) => api.network.ports({ signal }), {
+    interval: () => (ports.data?.running ? 2_000 : 30_000),
+  })
 
   const net = $derived(check.data)
   const checks = $derived(net ? sortedChecks(net.checks ?? []) : [])
@@ -247,7 +262,9 @@
         onscan={scan}
         ondismissnote={() => (note = undefined)}
         onchanged={() => check.refresh()}
+        ports={ports.data}
       />
+      <PortsPanel checks={ports.data} error={ports.error} devices={net?.devices ?? []} onchanged={() => ports.refresh()} />
       <InterfacesPanel />
     {/if}
   </div>

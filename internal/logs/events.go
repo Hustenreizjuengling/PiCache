@@ -43,7 +43,7 @@ const (
 // EventAreas are the areas of the history: the first part of the event
 // key ("health.failed" is in area health). Events of other areas are not
 // recorded.
-var EventAreas = []string{"health", "storage", "update", "backup", "security"}
+var EventAreas = []string{"health", "storage", "update", "backup", "security", "device"}
 
 // securityArea entries are shown to principals with admin scope only.
 const securityArea = "security"

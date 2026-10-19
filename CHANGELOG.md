@@ -20,6 +20,22 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`GET /api/v1/cache/icons/steam/{app}`). Library search also finds games
   by name; a name you set yourself still wins. Admins who see Steam
   depots in the Library are offered to switch it on.
+- **Open ports of the devices** (`clients.portChecks`, **DNS → Network
+  check → Open ports**, off by default): PiCache tries a TCP connection to
+  43 common ports (SSH, HTTP, SMB, RDP, printers, Home Assistant, Plex, …)
+  plus up to 32 ports you add on every IPv4 device of the device list,
+  every 24 hours (1–168) and on **Check now**. The device list shows each
+  device's open ports, a new panel lists what opened or closed, and the
+  new notification event **Open ports changed** (`device.ports`; warning
+  when a port opened, info when ports only closed) reports changes, one
+  message per check. A device that does not answer at all keeps its last
+  result; a port that looks closed is tried a second time first. Plain
+  unprivileged connects (nothing sent), at most 100 per second and 256
+  devices, never this machine, public addresses, IPv6 or a container
+  bridge network; to the devices it looks like a port scan. Results stay in
+  logs.db (changes 180 days) and are never part of a backup. API:
+  `GET /api/v1/network/ports`, `GET /api/v1/network/ports/changes`,
+  `POST /api/v1/network/ports/run`, `DELETE /api/v1/network/ports/device`.
 
 ### Security
 

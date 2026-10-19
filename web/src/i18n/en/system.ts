@@ -1101,6 +1101,9 @@ export default {
   'notifications.event.security.lockout.title': 'Sign-in locked',
   'notifications.event.security.lockout.text':
     'Too many failed sign-ins locked a client or a user name (once per lockout).',
+  'notifications.event.device.ports.title': 'Open ports changed',
+  'notifications.event.device.ports.text':
+    'A port check found ports that were opened or closed on devices of your network (one message per check; only closed ports: info).',
   'notifications.event.notify.test.title': 'Test message',
   'notifications.event.notify.test.text': 'Sent with “Send test message”; always delivered to that channel.',
 

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
+	"github.com/hustenreizjuengling/picache/internal/listing"
+	"github.com/hustenreizjuengling/picache/internal/portcheck"
 )
 
 // Network is implemented by internal/app: the network check and the
@@ -245,11 +247,99 @@ type NetworkScan struct {
 	Addresses  int       `json:"addresses,omitzero"`
 }
 
+// PortChecks is implemented by internal/portcheck: the port checks of the
+// devices of the local network (docs/ARCHITECTURE.md 17 "Port checks").
+type PortChecks interface {
+	// State returns the state and the checked devices with their open
+	// ports.
+	State(ctx context.Context) (portcheck.State, error)
+	// Changes returns the recorded changes, newest first ("" = every
+	// device).
+	Changes(ctx context.Context, device string, limit, offset int) (listing.Page[portcheck.Change], error)
+	// Run starts a check: apperr.Unavailable while the checks are off or
+	// cannot run here, apperr.Conflict while one runs, apperr.TooMany
+	// within a minute of the previous start.
+	Run(ctx context.Context) error
+	// Forget removes a device with its open ports and changes
+	// (apperr.NotFound if unknown).
+	Forget(ctx context.Context, device string) error
+}
+
 // registerNetworkRoutes registers the network check endpoints (docs/API.md).
 func (s *Server) registerNetworkRoutes() {
 	s.route("GET /api/v1/network/check", permRead, s.networkCheck)
 	s.route("POST /api/v1/network/scan", permAdmin, s.networkScan, routeExempt)
 	s.route("GET /api/v1/network/interfaces", permRead, s.networkInterfaces)
+	s.route("GET /api/v1/network/ports", permRead, s.networkPorts)
+	s.route("GET /api/v1/network/ports/changes", permRead, s.networkPortChanges)
+	s.route("POST /api/v1/network/ports/run", permAdmin, s.networkPortsRun, routeExempt)
+	s.route("DELETE /api/v1/network/ports/device", permAdmin, s.networkPortsForget)
+}
+
+var errNoPorts = apperr.Unavailable("port checks need the log database (logs.db), which is unavailable")
+
+func (s *Server) networkPorts(w http.ResponseWriter, r *http.Request) error {
+	if s.d.Ports == nil {
+		return errNoPorts
+	}
+	st, err := s.d.Ports.State(r.Context())
+	if err != nil {
+		return err
+	}
+	return ok(w, st)
+}
+
+func (s *Server) networkPortChanges(w http.ResponseWriter, r *http.Request) error {
+	if s.d.Ports == nil {
+		return errNoPorts
+	}
+	limit, err := qInt(r, "limit", 100)
+	if err != nil {
+		return err
+	}
+	offset, err := qInt(r, "offset", 0)
+	if err != nil {
+		return err
+	}
+	if limit < 1 || limit > 500 {
+		return apperr.Invalid("limit", "must be between 1 and 500")
+	}
+	if offset < 0 {
+		return apperr.Invalid("offset", "must not be negative")
+	}
+	page, err := s.d.Ports.Changes(r.Context(), qString(r, "device"), limit, offset)
+	if err != nil {
+		return err
+	}
+	return ok(w, page)
+}
+
+func (s *Server) networkPortsRun(w http.ResponseWriter, r *http.Request) error {
+	if s.d.Ports == nil {
+		return errNoPorts
+	}
+	if err := s.d.Ports.Run(r.Context()); err != nil {
+		return err
+	}
+	s.audit(r, "network.ports.run", "", nil)
+	return writeJSON(w, http.StatusAccepted, struct {
+		Started bool `json:"started"`
+	}{true})
+}
+
+func (s *Server) networkPortsForget(w http.ResponseWriter, r *http.Request) error {
+	if s.d.Ports == nil {
+		return errNoPorts
+	}
+	device := qString(r, "device")
+	if device == "" || len(device) > 64 {
+		return apperr.Invalid("device", "the device is required")
+	}
+	if err := s.d.Ports.Forget(r.Context(), device); err != nil {
+		return err
+	}
+	s.audit(r, "network.ports.forget", device, nil)
+	return noContent(w)
 }
 
 func (s *Server) networkInterfaces(w http.ResponseWriter, r *http.Request) error {

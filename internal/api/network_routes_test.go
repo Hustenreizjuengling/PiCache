@@ -11,6 +11,8 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/auth"
+	"github.com/hustenreizjuengling/picache/internal/listing"
+	"github.com/hustenreizjuengling/picache/internal/portcheck"
 )
 
 // fakeNetwork is a Network with a fixed check; Scan answers scanErr or
@@ -114,5 +116,91 @@ func TestNetworkRoutes(t *testing.T) {
 	entries, _, err := e.auth.AuditLog(context.Background(), auth.AuditQuery{Search: "network.scan", Limit: 10})
 	if err != nil || len(entries) != 1 || entries[0].Details != `{"addresses":253}` {
 		t.Fatalf("audit %+v %v", entries, err)
+	}
+}
+
+// fakePorts is a PortChecks with a fixed state; Run answers runErr.
+type fakePorts struct {
+	mu      sync.Mutex
+	runErr  error
+	runs    int
+	forgot  []string
+	lastQry [3]any
+}
+
+func (f *fakePorts) State(context.Context) (portcheck.State, error) {
+	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	return portcheck.State{Enabled: true, LastRun: at, Ports: []portcheck.Port{{Port: 22, Service: "SSH"}},
+		Devices: []portcheck.Device{{Device: "mac:aa:00:00:00:00:22", MAC: "aa:00:00:00:00:22", IP: "192.168.178.22",
+			FirstCheck: at, LastCheck: at, LastAnswer: at, Open: []portcheck.OpenPort{{Port: 22, Service: "SSH", Since: at}}}}}, nil
+}
+
+func (f *fakePorts) Changes(_ context.Context, device string, limit, offset int) (listing.Page[portcheck.Change], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastQry = [3]any{device, limit, offset}
+	return listing.Page[portcheck.Change]{Items: []portcheck.Change{}}, nil
+}
+
+func (f *fakePorts) Run(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runs++
+	return f.runErr
+}
+
+func (f *fakePorts) Forget(_ context.Context, device string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if device != "mac:aa:00:00:00:00:22" {
+		return apperr.NotFound("device", device)
+	}
+	f.forgot = append(f.forgot, device)
+	return nil
+}
+
+func TestNetworkPortRoutes(t *testing.T) {
+	e := newStorageTestEnv(t)
+	ce := &coreEnv{srv: New(e.srv.d), auth: e.auth, set: e.srv.d.Settings}
+	session := ce.provisionAndLogin(t)
+	readTok := ce.createToken(t, session, "read")
+	// Without logs.db: 503.
+	coreWantError(t, ce.do("GET", "/api/v1/network/ports", "", readTok), http.StatusServiceUnavailable, "unavailable", "")
+
+	fp := &fakePorts{}
+	e.srv.d.Ports = fp
+	ce = &coreEnv{srv: New(e.srv.d), auth: e.auth, set: e.srv.d.Settings}
+	w := ce.do("GET", "/api/v1/network/ports", "", readTok)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(),
+		`"devices":[{"device":"mac:aa:00:00:00:00:22","mac":"aa:00:00:00:00:22","ip":"192.168.178.22","firstCheck":"2026-10-20T12:00:00Z","lastCheck":"2026-10-20T12:00:00Z","lastAnswer":"2026-10-20T12:00:00Z","open":[{"port":22,"service":"SSH","since":"2026-10-20T12:00:00Z"}]}]`) {
+		t.Fatalf("state %d %s", w.Code, w.Body)
+	}
+	if w := ce.do("GET", "/api/v1/network/ports/changes?device=mac:aa:00:00:00:00:22&limit=5&offset=10", "", readTok); w.Code != http.StatusOK ||
+		fp.lastQry != [3]any{"mac:aa:00:00:00:00:22", 5, 10} {
+		t.Fatalf("changes %d %s %v", w.Code, w.Body, fp.lastQry)
+	}
+	coreWantError(t, ce.do("GET", "/api/v1/network/ports/changes?limit=501", "", readTok), http.StatusBadRequest, "invalid", "limit")
+	coreWantError(t, ce.do("GET", "/api/v1/network/ports/changes?offset=-1", "", readTok), http.StatusBadRequest, "invalid", "offset")
+
+	coreWantError(t, ce.do("POST", "/api/v1/network/ports/run", "", readTok), http.StatusForbidden, "forbidden", "")
+	if w := ce.do("POST", "/api/v1/network/ports/run", "", session); w.Code != http.StatusAccepted ||
+		strings.TrimSpace(w.Body.String()) != `{"started":true}` {
+		t.Fatalf("run %d %s", w.Code, w.Body)
+	}
+	fp.mu.Lock()
+	fp.runErr = apperr.Conflict("a port check is already running")
+	fp.mu.Unlock()
+	coreWantError(t, ce.do("POST", "/api/v1/network/ports/run", "", session), http.StatusConflict, "conflict", "")
+
+	coreWantError(t, ce.do("DELETE", "/api/v1/network/ports/device", "", session), http.StatusBadRequest, "invalid", "device")
+	coreWantError(t, ce.do("DELETE", "/api/v1/network/ports/device?device=ip:192.168.178.9", "", session), http.StatusNotFound, "not_found", "")
+	if w := ce.do("DELETE", "/api/v1/network/ports/device?device=mac:aa:00:00:00:00:22", "", session); w.Code != http.StatusNoContent {
+		t.Fatalf("forget %d %s", w.Code, w.Body)
+	}
+	for action, target := range map[string]string{"network.ports.run": "", "network.ports.forget": "mac:aa:00:00:00:00:22"} {
+		entries, _, err := e.auth.AuditLog(context.Background(), auth.AuditQuery{Search: action, Limit: 10})
+		if err != nil || len(entries) != 1 || entries[0].Target != target {
+			t.Errorf("audit %s: %+v %v", action, entries, err)
+		}
 	}
 }

@@ -156,6 +156,7 @@ type Deps struct {
 	Backups  ScheduledBackups // nil: the scheduled backup endpoints answer 503
 	Parental *parental.Engine // nil: the parental group endpoints answer 503
 	Network  Network          // nil: the network check endpoints answer 503
+	Ports    PortChecks       // nil: the port check endpoints answer 503 (no logs.db)
 	DHCP     DHCP             // nil: the DHCP endpoints answer 503
 	TLS      WebTLS           // nil: no TLS listener
 	// Encrypted is the state of encrypted DNS for clients (nil: GET

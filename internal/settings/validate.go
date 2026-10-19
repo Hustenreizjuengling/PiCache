@@ -359,6 +359,12 @@ func (a *All) normalize() {
 	l.CacheIPv6 = clean(l.CacheIPv6, true)
 	l.DisabledServices = clean(l.DisabledServices, true)
 	l.NocacheClients = clean(l.NocacheClients, true)
+	pc := &a.Clients.PortChecks
+	if pc.ExtraPorts == nil {
+		pc.ExtraPorts = []int{}
+	}
+	slices.Sort(pc.ExtraPorts)
+	pc.ExtraPorts = slices.Compact(pc.ExtraPorts)
 	a.Web.AllowedHosts = clean(a.Web.AllowedHosts, true)
 	a.Web.AllowedNetworks = normalizeList(a.Web.AllowedNetworks, normalizeAddrOrPrefix)
 	a.Web.TrustedProxies = normalizeList(a.Web.TrustedProxies, normalizeAddrOrPrefix)
@@ -732,7 +738,26 @@ func (a *All) Validate() error {
 	if err := a.Network.validate(); err != nil {
 		return err
 	}
+	if err := a.Clients.PortChecks.validate(); err != nil {
+		return err
+	}
 	return a.NTP.validate()
+}
+
+// validate checks the bounds of the port checks.
+func (p *PortChecks) validate() error {
+	if p.IntervalHours < MinPortCheckHours || p.IntervalHours > MaxPortCheckHours {
+		return apperr.Invalid("clients.portChecks.intervalHours", "must be between %d and %d", MinPortCheckHours, MaxPortCheckHours)
+	}
+	if len(p.ExtraPorts) > MaxPortCheckExtra {
+		return apperr.Invalid("clients.portChecks.extraPorts", "at most %d ports", MaxPortCheckExtra)
+	}
+	for i, port := range p.ExtraPorts {
+		if port < 1 || port > 65535 {
+			return apperr.Invalid("clients.portChecks.extraPorts["+strconv.Itoa(i)+"]", "must be a port between 1 and 65535")
+		}
+	}
+	return nil
 }
 
 // validate checks the form of the DHCP settings. The interface, the range,

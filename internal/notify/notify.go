@@ -83,6 +83,7 @@ const (
 	EventBackupFailed    = "backup.failed"
 	EventBackupSucceeded = "backup.succeeded"
 	EventSecurityLockout = "security.lockout"
+	EventDevicePorts     = "device.ports"
 	EventTest            = "notify.test"
 	// EventDropped is the summary of messages dropped by the rate limit. It
 	// goes to the channel that dropped them and cannot be selected.
@@ -120,6 +121,8 @@ var events = []EventInfo{
 		"A scheduled backup was written (channels with the minimum severity warning do not get it)."},
 	{EventSecurityLockout, SeverityWarning, "Sign-in lockout",
 		"Sign-in throttling locked out a client, a browser or a session, or started delaying a user name (once per lockout)."},
+	{EventDevicePorts, SeverityWarning, "Open ports changed",
+		"A port check found ports that were opened or closed on devices of the local network (one message per check; only closed ports: info)."},
 	{EventTest, SeverityInfo, "Test notification",
 		"Sent by the Send test button; always delivered to the tested channel."},
 }

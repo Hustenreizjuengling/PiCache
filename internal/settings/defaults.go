@@ -129,8 +129,9 @@ func Defaults() All {
 			LoadPerCPUMax:             2,
 			TemperatureMaxCelsius:     80,
 		},
-		Clients: Clients{NameSources: NameSources{PTR: true, DHCP: true}},
-		Sync:    Sync{Mode: SyncOff, IntervalMinutes: 15, Sections: []string{}},
-		NTP:     NTP{Stratum: 3},
+		Clients: Clients{NameSources: NameSources{PTR: true, DHCP: true},
+			PortChecks: PortChecks{IntervalHours: 24, ExtraPorts: []int{}}},
+		Sync: Sync{Mode: SyncOff, IntervalMinutes: 15, Sections: []string{}},
+		NTP:  NTP{Stratum: 3},
 	}
 }

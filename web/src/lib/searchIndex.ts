@@ -1,6 +1,7 @@
 // The settings search of the header (shell/GlobalSearch.svelte): every
 // settings panel, and every labelled control bound to a settings member on
-// DNS settings, Cache settings, Logs & privacy and System › Network.
+// DNS settings, Cache settings, Logs & privacy and System › Network, plus
+// the port checks of DNS › Network check.
 // `anchor` and `field` are literal, app-wide unique id="…" attributes of
 // the page sources (web/scripts/check-search-index.mjs checks them, the
 // routes and the keys). Matching runs in the browser only: the typed text
@@ -25,6 +26,7 @@ const DNS = '/dns/settings'
 const CACHE = '/cache/settings'
 const LOGS = '/system/logs'
 const NET = '/system/network'
+const NETCHECK = '/dns/network'
 
 export const SEARCH_INDEX: readonly SearchEntry[] = [
   // DNS settings: sections
@@ -151,6 +153,9 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
   { route: LOGS, anchor: 'logs-set-retention', field: 'logs-field-sessionRetentionDays', title: 'system.logs.downloadRetention', help: 'system.logs.downloadRetentionHelp', context: 'system.logs.retention.title' },
   { route: LOGS, anchor: 'logs-set-retention', field: 'logs-field-statsRetentionDays', title: 'system.logs.statsRetention', help: 'system.logs.statsRetentionHelp', context: 'system.logs.retention.title' },
   { route: LOGS, anchor: 'logs-set-retention', field: 'logs-field-seenRetentionDays', title: 'system.logs.seenRetention', help: 'system.logs.seenRetentionHelp', context: 'system.logs.retention.title' },
+  // DNS › Network check: the port checks (clients.portChecks)
+  { route: NETCHECK, anchor: 'network-ports', title: 'dns.network.ports.title', help: 'dns.network.ports.description' },
+  { route: NETCHECK, anchor: 'network-ports', field: 'ports-field-enabled', title: 'dns.network.ports.enabled', help: 'dns.network.ports.enabledHelp', context: 'dns.network.ports.title' },
   { route: LOGS, anchor: 'logs-set-retention', field: 'logs-field-maxDbSizeMiB', title: 'system.logs.maxDbSize', help: 'system.logs.maxDbSizeHelp', context: 'system.logs.retention.title' },
 
   // System › Network

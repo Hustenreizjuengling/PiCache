@@ -808,6 +808,17 @@ export interface ClientsSettings {
     /** RDAP lookups of the network owner of public source addresses (an annotation, never a name; sends data out). */
     whois: boolean
   }
+  /** Port checks of the devices of the local network (1.1.0; absent from older servers). */
+  portChecks?: PortChecksSettings
+}
+
+/** settings.PortChecks */
+export interface PortChecksSettings {
+  enabled: boolean
+  /** 1–168 */
+  intervalHours: number
+  /** Ports checked besides the built-in list (at most 32; sorted, unique). */
+  extraPorts: number[]
 }
 
 /**
@@ -1742,6 +1753,53 @@ export interface NetworkDevice {
   status: DeviceStatus
   vendor?: string
   macRandomized?: boolean
+}
+
+/** portcheck.Port: a checked port with its usual service. */
+export interface CheckedPort {
+  port: number
+  service?: string
+}
+
+/** portcheck.OpenPort */
+export interface OpenPort extends CheckedPort {
+  since: Timestamp
+}
+
+/** portcheck.Device: a device the port checks know. */
+export interface PortDevice {
+  /** "mac:<mac>" or "ip:<address>" */
+  device: string
+  mac?: string
+  ip: string
+  firstCheck: Timestamp
+  lastCheck: Timestamp
+  /** Absent: the device never answered a check. */
+  lastAnswer?: Timestamp
+  open: OpenPort[]
+}
+
+/** portcheck.State (GET /network/ports, 1.1.0) */
+export interface PortChecksState {
+  enabled: boolean
+  running: boolean
+  startedAt?: Timestamp
+  lastRun?: Timestamp
+  nextRun?: Timestamp
+  lastError?: string
+  ports: CheckedPort[]
+  devices: PortDevice[]
+}
+
+/** portcheck.Change */
+export interface PortChange {
+  id: number
+  time: Timestamp
+  device: string
+  ip: string
+  port: number
+  service?: string
+  opened: boolean
 }
 
 export type RouterKind = 'fritzbox' | 'generic' | 'unknown'

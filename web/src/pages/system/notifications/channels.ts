@@ -114,6 +114,7 @@ const KNOWN_EVENTS = [
   'backup.failed',
   'backup.succeeded',
   'security.lockout',
+  'device.ports',
   'notify.test',
 ] as const
 

@@ -367,6 +367,15 @@ const network = {
   scan: (o?: ReqOpts) => http.post<T.NetworkScanStarted>('/network/scan', undefined, o),
   /** This machine's interfaces with addresses, routes, gateways and counters (503 without the network check). */
   interfaces: (o?: ReqOpts) => http.get<T.NetworkInterfaces>('/network/interfaces', o),
+  /** Port checks: state and the open ports per device (1.1.0; 503 without logs.db). */
+  ports: (o?: ReqOpts) => http.get<T.PortChecksState>('/network/ports', o),
+  /** Recorded port changes, newest first ("" device: every device). */
+  portChanges: (q: { device?: string; limit?: number; offset?: number } = {}, o?: ReqOpts) =>
+    http.get<T.Page<T.PortChange>>('/network/ports/changes', { ...o, query: q }),
+  /** 202; 409 while one runs, 429 within 60 s of the last one, 503 while off or not possible here. */
+  runPorts: (o?: ReqOpts) => http.post<{ started: boolean }>('/network/ports/run', undefined, o),
+  /** Forgets a device's port check results (204). */
+  forgetPorts: (device: string, o?: ReqOpts) => http.del('/network/ports/device', { ...o, query: { device } }),
 }
 
 // ---------------------------------------------------------------- dhcp server

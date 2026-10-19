@@ -1125,6 +1125,9 @@ const de: Messages<typeof en> = {
   'notifications.event.security.lockout.title': 'Anmeldung gesperrt',
   'notifications.event.security.lockout.text':
     'Zu viele fehlgeschlagene Anmeldungen haben einen Client oder einen Benutzernamen gesperrt (einmal pro Sperre).',
+  'notifications.event.device.ports.title': 'Offene Ports geändert',
+  'notifications.event.device.ports.text':
+    'Eine Port-Prüfung hat Ports gefunden, die auf Geräten in deinem Netzwerk geöffnet oder geschlossen wurden (eine Nachricht pro Prüfung; nur geschlossene Ports: Info).',
   'notifications.event.notify.test.title': 'Testnachricht',
   'notifications.event.notify.test.text': 'Gesendet mit „Testnachricht senden“; wird diesem Kanal immer zugestellt.',
 

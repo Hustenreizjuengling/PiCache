@@ -11,10 +11,30 @@ import (
 )
 
 // Clients configures the names PiCache gives client addresses
-// (docs/ARCHITECTURE.md 7.1 step 5).
+// (docs/ARCHITECTURE.md 7.1 step 5) and the port checks of the devices of
+// the local network (17 "Port checks").
 type Clients struct {
 	NameSources NameSources `json:"nameSources"`
+	PortChecks  PortChecks  `json:"portChecks"`
 }
+
+// PortChecks configures the port checks: every IntervalHours (±10 %)
+// PiCache tries a TCP connection to the built-in list of common ports plus
+// ExtraPorts on the IPv4 devices of its neighbour table, keeps the open
+// ports and their changes and reports changes (event device.ports). Off by
+// default: it connects to every device of the local network.
+type PortChecks struct {
+	Enabled       bool  `json:"enabled"`
+	IntervalHours int   `json:"intervalHours"`
+	ExtraPorts    []int `json:"extraPorts"` // sorted, unique
+}
+
+// Bounds of clients.portChecks.
+const (
+	MinPortCheckHours = 1
+	MaxPortCheckHours = 168
+	MaxPortCheckExtra = 32
+)
 
 // NameSources switches the sources of the names of client addresses. The
 // first hit wins: a configured client name, the DHCP lease name (DHCP),

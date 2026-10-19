@@ -40,6 +40,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/netutil"
 	"github.com/hustenreizjuengling/picache/internal/notify"
 	"github.com/hustenreizjuengling/picache/internal/ntp"
+	"github.com/hustenreizjuengling/picache/internal/portcheck"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
@@ -84,8 +85,9 @@ type App struct {
 	dhcp     *dhcp.Service   // nil in tests that build parts of the App
 	backups  *backupScheduler
 	network  *netChecker
-	sync     *syncer     // the follower sync
-	ntp      *ntp.Server // the NTP server (answers on PICACHE_NTP_LISTEN while ntp.enabled)
+	ports    *portcheck.Checker // nil while logs.db is unavailable
+	sync     *syncer            // the follower sync
+	ntp      *ntp.Server        // the NTP server (answers on PICACHE_NTP_LISTEN while ntp.enabled)
 	api      *api.Server
 
 	outbound outboundProxy // the tunnel of network.proxy (proxyFor)
@@ -539,6 +541,11 @@ func (a *App) build(ctx context.Context) (err error) {
 	a.sni = sni.New(sni.Deps{Settings: a.set, Services: a.services, Lookup: lookup4, Clients: a.clients,
 		Logs: a.logs, ACL: a.acl, Log: log})
 	a.network = newNetChecker(a.netSources(), log)
+	if a.ldb != nil {
+		if a.ports, err = a.newPortChecker(ctx); err != nil {
+			return fmt.Errorf("port checks: %w", err)
+		}
+	}
 	a.ntp = ntp.New(ntp.Deps{
 		Settings: func() (bool, int, int, int) {
 			s := a.set.Get()
@@ -557,7 +564,7 @@ func (a *App) build(ctx context.Context) (err error) {
 		Config: a.cfg, Settings: a.set, Auth: a.auth, DNS: a.dns, Upstream: a.up, Filter: a.filter,
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
 		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
-		Parental: a.parental, Network: a.network, DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, AppLog: a.appLog, Diag: a,
+		Parental: a.parental, Network: a.network, Ports: a.portsAPI(), DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, AppLog: a.appLog, Diag: a,
 		Encrypted: a, Listeners: a, Sync: a.sync,
 		UI: webui.Handler(), Log: log,
 	})
@@ -802,7 +809,7 @@ func (a *App) startServers(ctx context.Context, goRun func(string, func() error)
 	for _, fn := range []func(context.Context){
 		a.logs.Start, a.up.Start, a.clients.Start, a.filter.Start, a.services.Start, a.auth.Start,
 		a.storage.Start, a.proxy.Start, a.storeLoop, a.evictLoop, a.healthLoop, a.updates.run,
-		a.notify.Start, a.backups.Start, a.network.Start, a.dhcp.Start, a.sync.Start,
+		a.notify.Start, a.backups.Start, a.network.Start, a.portLoop, a.dhcp.Start, a.sync.Start,
 		func(ctx context.Context) { a.acl.Run(ctx.Done(), time.Minute) }, // follows prefix changes within a minute
 		a.maintenanceLoop, // web ACL, web access reset, web certificate: every minute and on SIGHUP
 	} {

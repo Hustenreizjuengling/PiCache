@@ -29,6 +29,7 @@ export const RANGES = {
   seenRetentionDays: { min: 7, max: 365 },
   ntpStratum: { min: 2, max: 15 },
   syncIntervalMinutes: { min: 5, max: 1_440 },
+  portCheckHours: { min: 1, max: 168 },
 } satisfies Record<string, Range>
 
 /** The number fields of the logs settings (checked before saving). */

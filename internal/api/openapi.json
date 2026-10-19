@@ -7440,6 +7440,218 @@
         "x-picache-destructive": false
       }
     },
+    "/api/v1/network/ports": {
+      "get": {
+        "operationId": "getNetworkPorts",
+        "summary": "Port checks: state and devices",
+        "tags": [
+          "Network check"
+        ],
+        "description": "Request: –\n\nResponse: (1.1.0) portcheck.State = {enabled:bool, running:bool, startedAt?, lastRun?, nextRun?, lastError?:string, ports:[{port:int, service?:string}], devices:[{device:string (\"mac:<mac>\" or \"ip:<address>\"), mac?:string, ip:string, firstCheck, lastCheck, lastAnswer?, open:[{port:int, service?:string, since}]}]} (devices newest check first, at most 1024; lastAnswer absent: the device never answered a check; open the ports that accepted the last answered check; ARCHITECTURE 17 \"Port checks\"); 503 unavailable without logs.db",
+        "responses": {
+          "200": {
+            "description": "Port checks: state and devices.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/portcheck.State"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "R",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/network/ports/changes": {
+      "get": {
+        "operationId": "getNetworkPortsChanges",
+        "summary": "Port check changes",
+        "tags": [
+          "Network check"
+        ],
+        "description": "Request: ?device&limit&offset (limit 1–500, default 100)\n\nResponse: (1.1.0) listing.Page[portcheck.Change], Change = {id:int, time, device:string, ip:string, port:int, service?:string, opened:bool}, newest first; 400 limit outside 1–500, offset negative",
+        "parameters": [
+          {
+            "name": "device",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Port check changes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/portcheck.Change"
+                      }
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "next": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "R",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/network/ports/run": {
+      "post": {
+        "operationId": "postNetworkPortsRun",
+        "summary": "Start a port check",
+        "tags": [
+          "Network check"
+        ],
+        "description": "Request: –\n\nResponse: (1.1.0) 202 {started:true}: starts a port check now (it runs in the background; follow running in GET); 503 unavailable \"port checks are off: switch them on first\", in a container bridge network, on systems other than Linux, without a private IPv4 network or without logs.db; 409 while one runs, 429 within 60 s of the previous start. Audited as network.ports.run",
+        "responses": {
+          "202": {
+            "description": "Start a port check.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "started": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "started"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/network/ports/device": {
+      "delete": {
+        "operationId": "deleteNetworkPortsDevice",
+        "summary": "Forget a device's port check results",
+        "tags": [
+          "Network check"
+        ],
+        "description": "Request: ?device=<device>\n\nResponse: (1.1.0) 204: forgets a device's port check results (its open ports and changes; a later check records it again as a new device); 400 device missing or longer than 64 bytes, 404 unknown. Audited as network.ports.forget (target the device)",
+        "parameters": [
+          {
+            "name": "device",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Forget a device's port check results."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "locked",
+        "x-picache-destructive": false
+      }
+    },
     "/api/v1/network/scan": {
       "post": {
         "operationId": "postNetworkScan",
@@ -13765,10 +13977,33 @@
                   "hostsFile",
                   "whois"
                 ]
+              },
+              "portChecks": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "intervalHours": {
+                    "type": "integer"
+                  },
+                  "extraPorts": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "intervalHours",
+                  "extraPorts"
+                ]
               }
             },
             "required": [
-              "nameSources"
+              "nameSources",
+              "portChecks"
             ]
           },
           "sync": {
@@ -21206,6 +21441,157 @@
           "goVersion",
           "os",
           "arch"
+        ]
+      },
+      "portcheck.Port": {
+        "type": "object",
+        "properties": {
+          "port": {
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "port"
+        ]
+      },
+      "portcheck.OpenPort": {
+        "type": "object",
+        "properties": {
+          "port": {
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "port",
+          "since"
+        ]
+      },
+      "portcheck.Device": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "mac": {
+            "type": "string"
+          },
+          "ip": {
+            "type": "string"
+          },
+          "firstCheck": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastCheck": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastAnswer": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "open": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/portcheck.OpenPort"
+            }
+          }
+        },
+        "required": [
+          "device",
+          "ip",
+          "firstCheck",
+          "lastCheck",
+          "open"
+        ]
+      },
+      "portcheck.State": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastRun": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "nextRun": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string"
+          },
+          "ports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/portcheck.Port"
+            }
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/portcheck.Device"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "running",
+          "ports",
+          "devices"
+        ]
+      },
+      "portcheck.Change": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "device": {
+            "type": "string"
+          },
+          "ip": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          },
+          "opened": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "time",
+          "device",
+          "ip",
+          "port",
+          "opened"
         ]
       }
     }

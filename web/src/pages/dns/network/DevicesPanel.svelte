@@ -6,12 +6,13 @@
   ones that do not. Admins can scan the network so idle devices show up,
   and add a device as a client (MAC and addresses filled in; not while
   clients are synced from a primary). The limits of what PiCache can see
-  are explained below the table.
+  are explained below the table. While port checks are on (or have
+  results) a column shows each device's open ports.
   Query: ?show=unused
 -->
 <script lang="ts">
   import { t, tn } from '$i18n/index.svelte'
-  import type { ClientGroup, ClientInput, DeviceStatus, NetworkCheck, NetworkDevice } from '$lib/api'
+  import type { ClientGroup, ClientInput, DeviceStatus, NetworkCheck, NetworkDevice, PortChecksState, PortDevice } from '$lib/api'
   import { formatDateTime, formatNumber, formatRelative } from '$lib/format'
   import { href, router } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
@@ -37,10 +38,22 @@
     onscan: () => void
     ondismissnote: () => void
     onchanged: () => void
+    /** GET /network/ports (absent without port checks). */
+    ports?: PortChecksState
   }
 
-  let { net, loading, error, onretry, groups, starting, scanning, scanAddresses, note, onscan, ondismissnote, onchanged }: Props =
+  let { net, loading, error, onretry, groups, starting, scanning, scanAddresses, note, onscan, ondismissnote, onchanged, ports }: Props =
     $props()
+
+  // ---- open ports (by MAC: the port checks key devices like this table)
+
+  const portsByMac = $derived.by(() => {
+    const m = new Map<string, PortDevice>()
+    for (const p of ports?.devices ?? []) if (p.mac) m.set(p.mac, p)
+    return m
+  })
+  const showPorts = $derived(!!ports && (ports.enabled || ports.devices.length > 0))
+  const MAX_PORT_CHIPS = 4
 
   const bridge = $derived(net?.mode === 'bridge')
   const devices = $derived(net?.devices ?? [])
@@ -86,6 +99,17 @@
       format: (d) => formatNumber(d.queries24h),
     },
     { key: 'status', label: t('common.label.status'), sortable: true, value: (d) => STATUS[d.status]?.rank ?? 9, cell: statusCell },
+    ...(showPorts
+      ? [
+          {
+            key: 'ports',
+            label: t('dns.network.ports.column'),
+            sortable: true,
+            value: (d: NetworkDevice) => portsByMac.get(d.mac)?.open.length ?? -1,
+            cell: portsCell,
+          },
+        ]
+      : []),
     ...(canAdd ? [{ key: 'actions', label: t('common.label.actions'), align: 'right' as const, width: '1%', cell: actionCell }] : []),
   ])
 </script>
@@ -124,6 +148,24 @@
 
 {#snippet statusCell(d: NetworkDevice)}
   <Chip size="sm" tone={STATUS[d.status]?.tone ?? 'neutral'} label={t(`dns.network.devices.status.${d.status}`)} />
+{/snippet}
+
+{#snippet portsCell(d: NetworkDevice)}
+  {@const p = portsByMac.get(d.mac)}
+  {#if !p}
+    <span class="subtle">–</span>
+  {:else if !p.lastAnswer}
+    <span class="subtle" title={t('dns.network.ports.noAnswerHelp')}>{t('dns.network.ports.noAnswer')}</span>
+  {:else if p.open.length === 0}
+    <span class="subtle" title={t('dns.network.ports.checkedAt', { when: formatDateTime(p.lastAnswer) })}>{t('dns.network.ports.none')}</span>
+  {:else}
+    <span class="ports" title={p.open.map((o) => `${o.port}${o.service ? ` ${o.service}` : ''} · ${t('dns.network.ports.since', { date: formatDateTime(o.since) })}`).join('\n')}>
+      {#each p.open.slice(0, MAX_PORT_CHIPS) as o (o.port)}
+        <span class="port mono">{o.port}{#if o.service}<span class="svc">{o.service}</span>{/if}</span>
+      {/each}
+      {#if p.open.length > MAX_PORT_CHIPS}<span class="more">+{p.open.length - MAX_PORT_CHIPS}</span>{/if}
+    </span>
+  {/if}
 {/snippet}
 
 <!-- Configured clients need no action: their name links to the client. -->
@@ -280,5 +322,23 @@
   }
   .msg {
     padding-bottom: var(--sp-2);
+  }
+  .ports {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-width: 28ch;
+  }
+  .port {
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+  }
+  .svc {
+    margin-left: 4px;
+    font-family: var(--font);
+    color: var(--text-3);
   }
 </style>

@@ -1333,6 +1333,20 @@ show up; it is not needed for normal operation. Devices only appear after
 they talked on the network recently, and devices with hard-coded DNS servers
 or encrypted DNS never ask PiCache.
 
+**Open ports** (1.1.0, off by default) shows which common services the
+devices offer: switch on **Check the open ports of the devices** in the
+*Open ports* panel and PiCache tries a TCP connection to about 40 common
+ports (SSH, HTTP, SMB, RDP, printers, Home Assistant, Plex, …, plus up to 32
+ports you add) on every IPv4 device of the device list, once a day (1 to
+168 hours) and when you click **Check now**. The device list then shows the
+open ports of each device; a device that did not answer at all (asleep, or
+a firewall that drops everything) keeps its last result. Changes are listed
+in the panel's history and can be sent as the notification **Open ports
+changed** (*System → Notifications*). To the devices this looks like a port
+scan: security software on a PC, NAS or router may report PiCache, and it
+can wake sleeping devices. Checks need Linux with host networking (not in a
+Docker bridge network).
+
 **Set up a device** opens step-by-step guides for single devices (the
 address to enter, encrypted DNS, the browsers' own secure DNS), with this
 PiCache's addresses filled in ([DEVICES.md](DEVICES.md)). Admins of a fresh

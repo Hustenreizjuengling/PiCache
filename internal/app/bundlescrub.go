@@ -97,6 +97,7 @@ var settingRules = map[string]settingRule{
 
 	"clients.nameSources.ptr": ruleKeep, "clients.nameSources.dhcp": ruleKeep, "clients.nameSources.hostsFile": ruleKeep,
 	"clients.nameSources.whois": ruleKeep, "logs.seenRetentionDays": ruleKeep,
+	"clients.portChecks.enabled": ruleKeep, "clients.portChecks.intervalHours": ruleKeep, "clients.portChecks.extraPorts": ruleKeep,
 
 	"sync.mode": ruleKeep, "sync.source": ruleUpstream, "sync.tokenSet": ruleKeep, "sync.caPem": ruleSet,
 	"sync.intervalMinutes": ruleKeep, "sync.sections": ruleKeep,

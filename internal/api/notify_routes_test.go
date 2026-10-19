@@ -83,7 +83,7 @@ func TestNotifyRoutes(t *testing.T) {
 	var evs []notify.EventInfo
 	w := ce.do("GET", "/api/v1/notifications/events", "", readTok)
 	coreDecode(t, w, &evs)
-	if w.Code != http.StatusOK || len(evs) != 12 || evs[0].Key != "health.failed" || evs[0].Severity != notify.SeverityError ||
+	if w.Code != http.StatusOK || len(evs) != 13 || evs[0].Key != "health.failed" || evs[0].Severity != notify.SeverityError ||
 		evs[0].Title == "" || evs[0].Description == "" {
 		t.Fatalf("events %d %+v", w.Code, evs)
 	}
