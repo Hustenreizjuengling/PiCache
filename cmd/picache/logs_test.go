@@ -10,8 +10,10 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	neturl "net/url"
 	"os"
 	"path/filepath"
@@ -88,6 +90,51 @@ func TestAPIClientTokenPolicy(t *testing.T) {
 	}
 	if c, _, _ := newAPIClient("https://127.0.0.1:8443", ""); c.http.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("loopback https with the CA must verify")
+	}
+}
+
+// A loopback URL is dialed only on loopback addresses: a localhost that
+// resolves elsewhere gets no connection and no token.
+func TestAPIClientDialsLoopbackOnly(t *testing.T) {
+	cliEnv(t)
+	t.Setenv("PICACHE_TOKEN", "pc_secret")
+	var got atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Store(r.Header.Get("Authorization"))
+		fmt.Fprint(w, "{}")
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	lookup := lookupNetIP
+	t.Cleanup(func() { lookupNetIP = lookup })
+	for _, tc := range []struct {
+		addrs []string
+		ok    bool
+	}{
+		{[]string{"127.0.0.1"}, true},
+		{[]string{"::ffff:127.0.0.1"}, true},
+		{[]string{"192.0.2.1"}, false},
+		{[]string{"127.0.0.1", "192.0.2.1"}, false},
+	} {
+		lookupNetIP = func(context.Context, string, string) ([]netip.Addr, error) {
+			var ips []netip.Addr
+			for _, a := range tc.addrs {
+				ips = append(ips, netip.MustParseAddr(a))
+			}
+			return ips, nil
+		}
+		got.Store("")
+		c, _, err := newAPIClient("http://localhost:"+port, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = c.call(context.Background(), http.MethodGet, "/x", nil, nil, false, nil)
+		if tc.ok != (err == nil) || tc.ok != (got.Load() == "Bearer pc_secret") {
+			t.Errorf("%v: err %v, header %q", tc.addrs, err, got.Load())
+		}
+		if !tc.ok && (err == nil || !strings.Contains(err.Error(), "not a loopback address")) {
+			t.Errorf("%v: %v", tc.addrs, err)
+		}
 	}
 }
 

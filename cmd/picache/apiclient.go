@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -27,7 +28,8 @@ import (
 // a loopback http URL or to an https URL whose certificate is verified
 // against the system roots plus PiCache's local CA (<data>/tls/ca.crt). A
 // loopback https URL without a readable CA is not verified (like
-// healthcheck). No proxy, no redirects.
+// healthcheck); a loopback URL is dialed only on loopback addresses, so
+// either way the token cannot leave the host. No proxy, no redirects.
 
 const maxTokenFile = 4 << 10
 
@@ -112,6 +114,11 @@ func newAPIClient(flagURL, tokenFile string) (c *apiClient, usage bool, err erro
 	loopback := isLoopbackURL(u.String())
 	tr := &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second}
+	if loopback {
+		// localhost is resolved like any other name: only loopback
+		// addresses are dialed, so the token cannot leave the host.
+		tr.DialContext = dialLoopback
+	}
 	switch {
 	case u.Scheme == "http" && !loopback:
 		return nil, false, errRefused{u.Redacted()}
@@ -135,6 +142,36 @@ func newAPIClient(flagURL, tokenFile string) (c *apiClient, usage bool, err erro
 	}
 	return &apiClient{base: u, token: token, http: &http.Client{Transport: tr,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, false, nil
+}
+
+// lookupNetIP resolves the host of a loopback URL (tests replace it).
+var lookupNetIP = net.DefaultResolver.LookupNetIP
+
+// dialLoopback dials addr only when every address its host resolves to is
+// a loopback address, and then dials those addresses, never the name again.
+func dialLoopback(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := lookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range ips {
+		if !ip.Unmap().IsLoopback() {
+			return nil, fmt.Errorf("refusing to send the API token to %s: it resolves to %s, not a loopback address", host, ip)
+		}
+	}
+	var d net.Dialer
+	err = fmt.Errorf("%s has no address", host)
+	for _, ip := range ips {
+		var c net.Conn
+		if c, err = d.DialContext(ctx, network, net.JoinHostPort(ip.Unmap().String(), port)); err == nil {
+			return c, nil
+		}
+	}
+	return nil, err
 }
 
 // get sends GET <base><path>?<query> with the token.

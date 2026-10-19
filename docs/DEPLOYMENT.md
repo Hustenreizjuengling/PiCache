@@ -2514,8 +2514,9 @@ picache logs export --format ndjson --from 2026-09-01T00:00:00Z --to 2026-09-02T
   `http` URL, or to an `https` URL whose certificate is verified against the
   system's roots and PiCache's local CA (`<data>/tls/ca.crt`, when readable);
   a loopback `https` URL without a readable CA is not verified (like
-  `healthcheck`). Any other URL is refused ("refusing to send the API token
-  to …"). No proxy is used and redirects are not followed.
+  `healthcheck`). A loopback URL is only dialed on loopback addresses: a
+  `localhost` that resolves to anything else is refused. Any other URL is
+  refused ("refusing to send the API token to …"). No proxy is used and redirects are not followed.
 - The local listener is the effective web listener: `PICACHE_WEB_LISTEN`
   when `picache.env` is readable, else the one saved under **System →
   Network** (`<data>/listeners.json`, readable by root and the `picache`

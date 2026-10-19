@@ -5,6 +5,14 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Command line: a loopback API URL given by name (`http://localhost:8080`,
+  or `https://localhost:8443` without a readable local CA) is now dialed
+  only when the name resolves to loopback addresses. A `localhost` that
+  `/etc/hosts` or DNS pointed elsewhere received the API token, over https
+  without a certificate check.
+
 ## [1.0.1] - 2026-10-02
 
 ### Fixed
