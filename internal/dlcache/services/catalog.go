@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"html"
 	"image"
 	_ "image/jpeg" // icon formats
 	_ "image/png"
@@ -14,18 +15,21 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/db"
+	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// Store names (downloadCache.xboxNames and downloadCache.psnNames, off by
+// Store names (downloadCache.xboxNames, psnNames and windowsNames, off by
 // default: they send data out; docs/ARCHITECTURE.md 8.4): the Library names
-// a Microsoft Store / Xbox package or a PlayStation title after its store
-// entry and shows its icon.
+// a Microsoft Store / Xbox package, a PlayStation title or a Windows update
+// after its catalog entry and shows its icon. Epic builds are named from
+// their cached manifest, without a request.
 //
 //   - xbox:<package>: the package family name (<package>_<publisher id>,
 //     taken from the file name of a cached object of the group: the group
@@ -33,29 +37,44 @@ import (
 //     catalog (displaycatalog.mp.microsoft.com, products/lookup by
 //     PackageFamilyName, market US); the icon is the first square Logo,
 //     BoxArt or Tile image, scaled to 64×64 by store-images.s-microsoft.com.
-//   - psn:<title>: PS4 titles (CUSA…) are looked up in the PlayStation
-//     Store's title container (store.playstation.com, title_name; 404: no
-//     such title), the icon from its image route at 64×64. PS5 titles
-//     (PPSA…) are not listed there and keep their title ID.
+//   - psn:<title>: PS4 and PS5 titles (CUSA…, PPSA…) are looked up in the
+//     PlayStation Store's catalog (m.np.playstation.com, the title's concept
+//     in any region; the icon is its MASTER image scaled by
+//     image.api.playstation.com); a PS4 title it does not list also in the
+//     US title container (store.playstation.com, title_name; 404: no such
+//     title, the icon from its image route at 64×64).
+//   - win:kb<n>[:<file>]: the Microsoft Update Catalog's search page
+//     (www.catalog.update.microsoft.com, no API: the result titles are
+//     read from the HTML) names the update; of several results the one
+//     matching the product, architecture and .NET part of the file name
+//     wins. Expired updates are no longer listed (not found). No icon.
+//   - epic:<org>/<build>: the AppName and LaunchExe of the build's manifest
+//     (a cached object of the group whose path ends in .manifest, binary or
+//     JSON) give the name: the executable without its build suffixes, made
+//     readable ("RocketLeague.exe" → "Rocket League"). Read from the cache
+//     only; always on.
 //
-// Bounds as for the Steam names, per source: one request per second and
+// Bounds as for the Steam names, per online source: one request per second and
 // 2000 per day, a 10 minute pause after a failed request; one worker off
 // the request path (Label only enqueues; a queue of 256 groups); 15 s and
 // 1 MiB per answer, 64 KiB per icon, which must come from the source's own
-// image host and decode as a JPEG or PNG of at most 256×256 pixels; names
+// image hosts and decode as a JPEG or PNG of at most 256×256 pixels; names
 // cleaned like untrusted text and cut to 128 bytes. Results are kept 90
 // days, groups without an entry 7 days, at most 10 000 groups (the oldest
 // dropped). While a source is off nothing is looked up for it and its
-// stored names and icons are not used.
+// stored names and icons are not used. A manifest is read up to 256 KiB.
 //
 // Table (picache.db, component "services"): services_catalog (a cache:
 // never restored).
 
 const (
-	xboxCatalogURL = "https://displaycatalog.mp.microsoft.com/v7.0/products/lookup?alternateId=PackageFamilyName&market=US&languages=en-US&value="
-	xboxImageHost  = "store-images.s-microsoft.com"
-	psnTitleURL    = "https://store.playstation.com/store/api/chihiro/00_09_000/titlecontainer/US/en/999/%s_00"
-	psnImageHost   = "store.playstation.com"
+	xboxCatalogURL    = "https://displaycatalog.mp.microsoft.com/v7.0/products/lookup?alternateId=PackageFamilyName&market=US&languages=en-US&value="
+	xboxImageHost     = "store-images.s-microsoft.com"
+	psnConceptURL     = "https://m.np.playstation.com/api/catalog/v2/titles/%s_00/concepts?country=US&language=en&age=99"
+	psnConceptImage   = "image.api.playstation.com"
+	psnTitleURL       = "https://store.playstation.com/store/api/chihiro/00_09_000/titlecontainer/US/en/999/%s_00"
+	psnImageHost      = "store.playstation.com"
+	windowsCatalogURL = "https://www.catalog.update.microsoft.com/Search.aspx?q=KB"
 
 	catalogQueue    = 256
 	catalogMaxBody  = 1 << 20
@@ -64,11 +83,16 @@ const (
 	catalogMaxName  = 128
 	catalogMax      = 10_000
 	catalogIconSize = "w=64&h=64"
+	epicMaxManifest = 256 << 10
 )
 
 var (
-	psnTitleRE = regexp.MustCompile(`^CUSA\d{5}$`)
-	xboxPkgRE  = regexp.MustCompile(`^[A-Za-z0-9.\-]{1,128}$`)
+	psnTitleRE   = regexp.MustCompile(`^(?:CUSA|PPSA)\d{5}$`)
+	xboxPkgRE    = regexp.MustCompile(`^[A-Za-z0-9.\-]{1,128}$`)
+	windowsKBRE  = regexp.MustCompile(`^kb\d{6,8}(?::[a-z0-9.\-]{1,40})?$`)
+	epicBuildRE  = regexp.MustCompile(`^o-[a-z0-9]+/[0-9a-f]{32}$`)
+	windowsRowRE = regexp.MustCompile(`(?s)<a id='[0-9a-f-]{36}_link'[^>]*>\s*([^<]{1,400}?)\s*</a>`)
+	windowsBuild = regexp.MustCompile(`\s*\(\d+\.\d+\)$`)
 
 	// errNoPath: no cached object of the group names its package family
 	// (asked again when the group is shown next).
@@ -79,15 +103,20 @@ var (
 
 // catalogSource is one store whose names are looked up.
 type catalogSource struct {
-	fetcher         // its request budget
-	ns       string // group key namespace: "xbox", "psn"
-	enabled  func() bool
-	accept   *regexp.Regexp // IDs that can be looked up
-	iconHost string
+	fetcher          // its request budget
+	ns        string // group key namespace: "xbox", "psn", "win", "epic"
+	enabled   func() bool
+	offline   bool           // reads the cache only: no client needed
+	accept    *regexp.Regexp // IDs that can be looked up
+	iconHosts []string
 	// lookup returns the name ("" when the store has no entry) and the icon
 	// URL ("" when none) of an ID.
 	lookup func(ctx context.Context, c *catalogNames, src *catalogSource, id string) (name, icon string, err error)
 }
+
+// usable reports whether the source can resolve now (an online source needs
+// the lookup client).
+func (src *catalogSource) usable() bool { return src.offline || src.client.Load() != nil }
 
 type catalogEntry struct {
 	name string // "": no entry
@@ -99,12 +128,17 @@ type catalogEntry struct {
 // is none).
 type PathLookup func(ctx context.Context, service, groupKey string) (string, error)
 
+// ContentLookup returns the first bytes (at most limit) of a cached object
+// of a group whose path ends with suffix (nil when there is none).
+type ContentLookup func(ctx context.Context, service, groupKey, suffix string, limit int) ([]byte, error)
+
 // catalogNames resolves store package and title IDs to names (see above).
 type catalogNames struct {
-	db      *db.DB
-	log     *slog.Logger
-	sources map[string]*catalogSource
-	pathOf  atomic.Pointer[PathLookup]
+	db        *db.DB
+	log       *slog.Logger
+	sources   map[string]*catalogSource
+	pathOf    atomic.Pointer[PathLookup]
+	contentOf atomic.Pointer[ContentLookup]
 
 	mu      sync.RWMutex
 	entries map[string]catalogEntry
@@ -112,14 +146,18 @@ type catalogNames struct {
 	queue   chan string
 }
 
-func newCatalogNames(d *db.DB, log *slog.Logger, xbox, psn func() bool) *catalogNames {
+func newCatalogNames(d *db.DB, log *slog.Logger, cfg func() settings.DownloadCache) *catalogNames {
 	c := &catalogNames{db: d, log: log, entries: map[string]catalogEntry{}, queued: map[string]bool{},
 		queue: make(chan string, catalogQueue)}
 	c.sources = map[string]*catalogSource{
-		"xbox": {fetcher: newFetcher("Microsoft Store name", log), ns: "xbox", enabled: xbox, accept: xboxPkgRE,
-			iconHost: xboxImageHost, lookup: xboxLookup},
-		"psn": {fetcher: newFetcher("PlayStation name", log), ns: "psn", enabled: psn, accept: psnTitleRE,
-			iconHost: psnImageHost, lookup: psnLookup},
+		"xbox": {fetcher: newFetcher("Microsoft Store name", log), ns: "xbox", accept: xboxPkgRE,
+			enabled: func() bool { return cfg().XboxNames }, iconHosts: []string{xboxImageHost}, lookup: xboxLookup},
+		"psn": {fetcher: newFetcher("PlayStation name", log), ns: "psn", accept: psnTitleRE,
+			enabled: func() bool { return cfg().PSNNames }, iconHosts: []string{psnConceptImage, psnImageHost}, lookup: psnLookup},
+		"win": {fetcher: newFetcher("Windows update name", log), ns: "win", accept: windowsKBRE,
+			enabled: func() bool { return cfg().WindowsNames }, lookup: windowsLookup},
+		"epic": {fetcher: newFetcher("Epic manifest", log), ns: "epic", accept: epicBuildRE, offline: true,
+			enabled: func() bool { return true }, lookup: epicLookup},
 	}
 	return c
 }
@@ -183,7 +221,7 @@ func (c *catalogNames) label(key string) (name string, icon bool, ok bool) {
 
 // enqueue queues a group for the worker (dropped when the queue is full).
 func (c *catalogNames) enqueue(src *catalogSource, key string) {
-	if src.client.Load() == nil {
+	if !src.usable() {
 		return
 	}
 	c.mu.Lock()
@@ -235,7 +273,7 @@ func (c *catalogNames) run(ctx context.Context) {
 			return
 		case key = <-c.queue:
 		}
-		if src, id := c.source(key); src != nil && src.client.Load() != nil {
+		if src, id := c.source(key); src != nil && src.usable() {
 			c.resolve(ctx, src, key, id)
 		}
 		c.mu.Lock()
@@ -275,12 +313,12 @@ func (c *catalogNames) resolve(ctx context.Context, src *catalogSource, key, id 
 	}
 }
 
-// fetchIcon downloads and checks an icon: from the source's image host, a
-// JPEG or PNG of at most catalogMaxPixel pixels a side.
+// fetchIcon downloads and checks an icon: from one of the source's image
+// hosts, a JPEG or PNG of at most catalogMaxPixel pixels a side.
 func (c *catalogNames) fetchIcon(ctx context.Context, src *catalogSource, raw string) ([]byte, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host != src.iconHost || u.User != nil {
-		return nil, fmt.Errorf("%w: %q is not on %s", errBadIcon, cleanText(raw, 128), src.iconHost)
+	if err != nil || u.Scheme != "https" || !slices.Contains(src.iconHosts, u.Host) || u.User != nil {
+		return nil, fmt.Errorf("%w: %q is not on %s", errBadIcon, cleanText(raw, 128), strings.Join(src.iconHosts, ", "))
 	}
 	b, err := src.get(ctx, u.String(), catalogMaxIcon)
 	if err != nil {
@@ -381,8 +419,49 @@ func xboxLookup(ctx context.Context, c *catalogNames, src *catalogSource, pkg st
 	return lp.ProductTitle, "", nil
 }
 
-// psnLookup asks the PlayStation Store for a PS4 title.
+// psnLookup asks the PlayStation Store's catalog for a title, a PS4 title
+// it does not list also the US title container.
 func psnLookup(ctx context.Context, _ *catalogNames, src *catalogSource, title string) (string, string, error) {
+	name, icon, err := psnConcept(ctx, src, title)
+	if !errors.Is(err, errNotFound) || !strings.HasPrefix(title, "CUSA") {
+		return name, icon, err
+	}
+	return psnContainer(ctx, src, title)
+}
+
+// psnConcept looks a title up in the catalog: the concept (the game across
+// regions and platforms) that lists it.
+func psnConcept(ctx context.Context, src *catalogSource, title string) (string, string, error) {
+	b, err := src.get(ctx, fmt.Sprintf(psnConceptURL, title), catalogMaxBody)
+	if err != nil {
+		return "", "", err
+	}
+	var resp []struct {
+		ID    any    `json:"id"` // null: no such title
+		Name  string `json:"name"`
+		Media struct {
+			Images []struct {
+				Type string `json:"type"`
+				URL  string `json:"url"`
+			} `json:"images"`
+		} `json:"media"`
+	}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return "", "", fmt.Errorf("title %s: %w", title, err)
+	}
+	if len(resp) == 0 || resp[0].ID == nil || resp[0].Name == "" {
+		return "", "", errNotFound
+	}
+	for _, im := range resp[0].Media.Images {
+		if im.Type == "MASTER" && !strings.Contains(im.URL, "?") {
+			return resp[0].Name, im.URL + "?w=64", nil
+		}
+	}
+	return resp[0].Name, "", nil
+}
+
+// psnContainer looks a PS4 title up in the US title container.
+func psnContainer(ctx context.Context, src *catalogSource, title string) (string, string, error) {
 	u := fmt.Sprintf(psnTitleURL, title)
 	b, err := src.get(ctx, u, catalogMaxBody)
 	if err != nil {
@@ -405,6 +484,81 @@ func psnLookup(ctx context.Context, _ *catalogNames, src *catalogSource, title s
 	return name, u + "/image?" + catalogIconSize, nil
 }
 
+// windowsLookup asks the Microsoft Update Catalog for an update: the title
+// of the result that best matches the update file ("kb5065426" or
+// "kb5065426:windows11.0-x64[-ndp481]").
+func windowsLookup(ctx context.Context, _ *catalogNames, src *catalogSource, id string) (string, string, error) {
+	kb, file, _ := strings.Cut(id, ":")
+	b, err := src.get(ctx, windowsCatalogURL+kb[2:], catalogMaxBody)
+	if err != nil {
+		return "", "", err
+	}
+	best, bestScore := "", -1
+	for _, m := range windowsRowRE.FindAllSubmatch(b, 50) {
+		title := windowsBuild.ReplaceAllString(html.UnescapeString(string(m[1])), "")
+		if !strings.Contains(strings.ToUpper(title), strings.ToUpper(kb)) {
+			continue
+		}
+		if score := windowsMatch(title, file); score > bestScore {
+			best, bestScore = title, score
+		}
+	}
+	if best == "" {
+		return "", "", errNotFound
+	}
+	return best, "", nil
+}
+
+// windowsMatch scores how well a catalog title fits an update file: its
+// .NET part above all, then the product, then the architecture.
+func windowsMatch(title, file string) int {
+	t := strings.ToLower(title)
+	parts := strings.Split(file, "-")
+	dotNet := strings.HasPrefix(file, "ndp") || strings.HasPrefix(parts[len(parts)-1], "ndp")
+	score := 0
+	if strings.Contains(t, ".net") == dotNet {
+		score += 4
+	}
+	for prefix, names := range map[string][]string{
+		"windows11.0": {"windows 11"}, "windows10.0": {"windows 10"}, "windows8.1": {"windows 8.1"},
+		"windows8-rt": {"windows 8", "server 2012"}, "windows6.1": {"windows 7"}, "windows6.0": {"vista"},
+	} {
+		if strings.HasPrefix(file, prefix+"-") && slices.ContainsFunc(names, func(n string) bool { return strings.Contains(t, n) }) {
+			score += 2
+		}
+	}
+	for _, arch := range []string{"x64", "x86", "arm64"} {
+		if slices.Contains(parts, arch) && strings.Contains(t, arch) {
+			score++
+		}
+	}
+	return score
+}
+
+// epicLookup names an Epic build after its cached manifest.
+func epicLookup(ctx context.Context, c *catalogNames, _ *catalogSource, build string) (string, string, error) {
+	f := c.contentOf.Load()
+	if f == nil {
+		return "", "", errNoPath
+	}
+	b, err := (*f)(ctx, "epicgames", "epic:"+build, ".manifest", epicMaxManifest)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %v", errNoPath, err)
+	}
+	if b == nil {
+		return "", "", errNoPath
+	}
+	app, exe, err := parseEpicManifest(b)
+	if err != nil {
+		c.log.Debug("unreadable Epic manifest", slog.String("build", build), slog.Any("err", err))
+		return "", "", errNotFound
+	}
+	if name := epicName(app, exe); name != "" {
+		return name, "", nil
+	}
+	return "", "", errNotFound
+}
+
 // SetLookupClient sets the HTTP client of the name lookups (Steam and store
 // names; nil: none are made) and the User-Agent they send.
 func (r *Registry) SetLookupClient(c *http.Client, userAgent string) {
@@ -418,4 +572,10 @@ func (r *Registry) SetLookupClient(c *http.Client, userAgent string) {
 // (the publisher of an Xbox package is only in its file names).
 func (r *Registry) SetPathLookup(f PathLookup) {
 	r.catalog.pathOf.Store(&f)
+}
+
+// SetContentLookup sets how the store names read the start of a cached file
+// of a group (the manifest of an Epic build).
+func (r *Registry) SetContentLookup(f ContentLookup) {
+	r.catalog.contentOf.Store(&f)
 }

@@ -637,6 +637,7 @@ export interface DownloadCacheSettings {
   xboxNames?: boolean
   /** Look up PS4 title names and icons in the PlayStation Store (1.2.0). */
   psnNames?: boolean
+  windowsNames?: boolean
 }
 
 /** settings.Cache */

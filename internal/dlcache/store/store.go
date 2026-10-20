@@ -83,6 +83,10 @@ type Options struct {
 	// GroupKey derives the content group of an object rebuilt from its slice
 	// headers by Verify (services.GroupFor(...).Key). Default: "<service>:<host>".
 	GroupKey func(service, host, path string) string
+	// GroupRules is the version of the rules behind GroupKey: when it is
+	// newer than the one the index was last grouped with, Open moves the
+	// objects into the groups GroupKey derives now (regroup.go).
+	GroupRules int
 }
 
 // Meta is the object metadata recorded before the first slice is written.
@@ -424,23 +428,24 @@ func Open(ctx context.Context, opt Options) (*Store, error) {
 	return s, nil
 }
 
-// background removes stale temp files and, after an index reset, rebuilds
-// the index from the slice files.
+// background removes stale temp files, after an index reset rebuilds the
+// index from the slice files, and regroups the objects after a change of
+// the grouping rules.
 func (s *Store) background(rebuild bool) {
 	defer s.leave()
 	s.cleanTmp(s.ctx, time.Hour)
-	if !rebuild {
-		return
-	}
-	res, err := s.verify(s.ctx, true, nil)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.log.Error("index rebuild failed", slog.Any("err", err))
+	if rebuild {
+		res, err := s.verify(s.ctx, true, nil)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.log.Error("index rebuild failed", slog.Any("err", err))
+			}
+			return
 		}
-		return
+		s.log.Info("index rebuilt from slice files", slog.Int64("files", res.FilesScanned),
+			slog.Int64("added", res.Added), slog.Int64("corrupt", res.Corrupt), slog.Duration("duration", res.Duration))
 	}
-	s.log.Info("index rebuilt from slice files", slog.Int64("files", res.FilesScanned),
-		slog.Int64("added", res.Added), slog.Int64("corrupt", res.Corrupt), slog.Duration("duration", res.Duration))
+	s.regroupOnce(s.ctx)
 }
 
 // enter registers an in-flight call; false once the store is closed.

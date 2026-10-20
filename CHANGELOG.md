@@ -5,6 +5,55 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Names for every service of the cache-domains list.** The Library now
+  names what the download addresses reveal, built in and without asking
+  anyone:
+  - Final Fantasy XIV by part ("Final Fantasy XIV · Dawntrail", the
+    launcher, the base game) with the patch date as version.
+  - PlanetSide 2, EverQuest and EverQuest II (Daybreak), Guild Wars 2,
+    City of Heroes: Homecoming, Renegade X and Black Dawn, Path of Exile,
+    Escape from Tarkov and its launcher, Elite Dangerous, The Elder Scrolls
+    Online, Warframe, Call of Duty texture streaming, and Nexus Mods
+    downloads by game.
+  - Rockstar titles ("Grand Theft Auto V"), about 60 Ubisoft games by
+    product ID ("Tom Clancy's Rainbow Six Siege" instead of "Ubisoft
+    635"), EA titles from the path ("Bejeweled 3"), the EA app and Star
+    Wars: The Old Republic.
+  - Windows updates by Windows version, architecture and .NET part
+    ("KB5065426 · Windows 11 (x64)", "KB5066613 · .NET Framework 4.8.1 ·
+    Windows 11 (x64)") and the Malicious Software Removal Tool.
+  - Wii U and 3DS downloads by kind ("Wii U update 1010EC00").
+  - More Blizzard products (DOOM: The Dark Ages, The Outer Worlds 2, Tony
+    Hawk's Pro Skater 3 + 4, …), Riot's Legends of Runeterra, 2XKO,
+    Teamfight Tactics and Wild Rift, Epic's launcher and Unreal Engine.
+- **Epic games are named after their manifest** ("Rocket League" instead
+  of "Epic item e6bcca5b"): PiCache reads the build's manifest from the
+  cache; nothing is sent anywhere.
+- **Windows update names** (**Cache settings → Names in the Library**, off
+  by default, `downloadCache.windowsNames`): the title from the Microsoft
+  Update Catalog ("2025-09 Cumulative Update for Windows 11, version 25H2
+  for x64-based Systems (KB5065426)"). Microsoft sees this machine's public
+  address and which updates are downloaded.
+
+### Changed
+
+- **PS5 games are named too** when PlayStation names are on: PiCache now
+  asks the PlayStation Store's catalog, which also knows European title
+  IDs; icons come from Sony's image servers.
+- **Content cached before is regrouped once**: after the update the cache
+  moves its objects into the new groups in the background (pins move
+  along; a name you set on an old group stays with that group).
+- Some Blizzard labels follow Battle.net's current names ("Overwatch",
+  "Call of Duty HQ", "Battle.net Agent").
+
+### Fixed
+
+- ArenaNet's build pointers (`/latest/<n>`, `/latest32/<n>`,
+  `/latestmac64/<n>`) and Warframe's file index (`index.txt.lzma`) are no
+  longer cached: they change in place, so a cached copy could go stale.
+
 ## [1.2.0] - 2026-10-20
 
 ### Added

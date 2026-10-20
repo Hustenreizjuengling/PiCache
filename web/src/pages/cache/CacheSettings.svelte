@@ -294,6 +294,12 @@
           disabled={readOnly}
           bind:checked={() => !!l.psnNames, (v) => (l.psnNames = v)}
         />
+        <Toggle
+          id="cache-field-windowsNames" label={t('cache.settings.windowsNames')}
+          description={t('cache.settings.windowsNamesHelp')}
+          disabled={readOnly}
+          bind:checked={() => !!l.windowsNames, (v) => (l.windowsNames = v)}
+        />
       </div>
     </Panel>
 

@@ -656,7 +656,7 @@ export default {
   'settings.privateUpstreamsWarn':
     'Anyone who can use the cache may make PiCache fetch from devices in your network. Turn this off again when you are done testing.',
   'settings.namesTitle': 'Names in the Library',
-  'settings.namesText': 'How cached content is named. Steamworks redistributables and Microsoft 365 update channels are named without asking anyone.',
+  'settings.namesText': 'How cached content is named. Without asking anyone, PiCache names what the download addresses reveal (games of Blizzard, Riot, Ubisoft, Rockstar, Final Fantasy XIV and the other services, Steamworks redistributables, Microsoft 365 update channels, the Windows version of an update) and Epic games after their cached manifest.',
   'settings.steamNames': 'Look up Steam game names and icons',
   'settings.steamNamesHelp':
     'Shows the game, workshop content or DLC instead of the Steam depot number. PiCache asks api.steamcmd.net, a third-party mirror of Steam’s app information, about the depots your network downloads and fetches the icons from Steam’s servers. Both see this machine’s public address and which games are being downloaded.',
@@ -665,7 +665,10 @@ export default {
     'Shows the game or app instead of the package name (for example “Forza Horizon 5” instead of “624 F8 B84 B80”). PiCache asks Microsoft’s public product catalog about the packages your network downloads and fetches the icons from Microsoft’s image servers. Microsoft sees this machine’s public address and which games and apps are being downloaded.',
   'settings.psnNames': 'Look up PlayStation names and icons',
   'settings.psnNamesHelp':
-    'Shows the PS4 game instead of its title ID (CUSA…). PiCache asks the PlayStation Store about the titles your network downloads and fetches their icons from it. Sony sees this machine’s public address and which games are being downloaded. PS5 titles (PPSA…) are not listed there and keep their ID.',
+    'Shows the PS4 or PS5 game instead of its title ID (CUSA…, PPSA…). PiCache asks the PlayStation Store about the titles your network downloads and fetches their icons from Sony’s image servers. Sony sees this machine’s public address and which games are being downloaded.',
+  'settings.windowsNames': 'Look up Windows update names',
+  'settings.windowsNamesHelp':
+    'Shows the title of a Windows update (for example “2025-09 Cumulative Update for Windows 11, version 25H2 for x64-based Systems (KB5065426)”) instead of its KB number and Windows version. PiCache asks the Microsoft Update Catalog about the updates your network downloads. Microsoft sees this machine’s public address and which updates are being downloaded. Updates Microsoft has withdrawn keep their KB number.',
   'settings.retentionTitle': 'Retention',
   'settings.retentionText': 'When cached content is removed. Pinned content is always kept.',
   'settings.maxAge': 'Remove content not used for',

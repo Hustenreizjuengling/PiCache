@@ -41,33 +41,40 @@ func (r *Registry) loadLabels(ctx context.Context) (map[string]string, error) {
 // Label returns the display label for a group key: user override, else the
 // built-in product label (Blizzard, Riot, the Steamworks redistributables,
 // …), else the name of a Steam depot's app (while downloadCache.steamNames
-// is on) or the store name of an Xbox package or PlayStation title (while
-// downloadCache.xboxNames / psnNames is on), else the rule default. Never
-// blocks on the network (an unknown group is only queued).
+// is on), the store name of an Xbox package, PlayStation title or Windows
+// update (while downloadCache.xboxNames / psnNames / windowsNames is on) or
+// the name in an Epic build's manifest, else the rule default. Never blocks
+// on the network (an unknown group is only queued).
 func (r *Registry) Label(groupKey string) string {
 	if l, ok := (*r.labels.Load())[groupKey]; ok {
 		return l
 	}
+	_, fixed := productLabels[groupKey]
 	if depot, ok := steamDepotID(groupKey); ok {
 		// Asked also for a product label: it queues the lookup of the icon.
-		l, _, ok := r.steam.label(depot)
-		if _, fixed := productLabels[groupKey]; ok && !fixed {
+		if l, _, ok := r.steam.label(depot); ok && !fixed {
 			return l
 		}
-	} else if l, _, ok := r.catalog.label(groupKey); ok {
-		return l
+	} else if !fixed {
+		if l, _, ok := r.catalog.label(groupKey); ok {
+			return l
+		}
 	}
 	return defaultLabel(groupKey, r.snap.Load().name)
 }
 
 // IconPath returns the API path of a group's icon ("" when it has none):
 // the icon of a Steam depot's app or of an Xbox package or PlayStation
-// title ("/cache/icons/<namespace>/<id>").
+// title ("/cache/icons/<namespace>/<id>"; Windows updates and Epic builds
+// have none).
 func (r *Registry) IconPath(groupKey string) string {
 	if depot, ok := steamDepotID(groupKey); ok {
 		if _, app, ok := r.steam.label(depot); ok && app != 0 {
 			return "/cache/icons/steam/" + strconv.FormatUint(uint64(app), 10)
 		}
+		return ""
+	}
+	if _, fixed := productLabels[groupKey]; fixed {
 		return ""
 	}
 	if _, icon, ok := r.catalog.label(groupKey); ok && icon {

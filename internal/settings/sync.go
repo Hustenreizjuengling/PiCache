@@ -311,7 +311,7 @@ var syncRules = func() map[string]bool {
 		"downloadCache.allowPrivateUpstreams", "downloadCache.cacheIpv4", "downloadCache.cacheIpv6",
 		"downloadCache.disabledServices", "downloadCache.dnsTtl", "downloadCache.domainsSource",
 		"downloadCache.enabled", "downloadCache.nocacheClients", "downloadCache.psnNames", "downloadCache.steamNames",
-		"downloadCache.updateIntervalHours", "downloadCache.xboxNames",
+		"downloadCache.updateIntervalHours", "downloadCache.windowsNames", "downloadCache.xboxNames",
 		"cache.activeStoreId", "cache.maxAgeDays", "cache.maxConcurrentFills", "cache.maxFillsPerClient",
 		"cache.maxSizeBytes", "cache.minFreeBytes", "cache.readAheadSlices", "cache.sliceSizeBytes",
 		"logs.anonymizeClientIps", "logs.cacheLogRetentionHours", "logs.flushSeconds", "logs.hideDomains",

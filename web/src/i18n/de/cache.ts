@@ -679,7 +679,7 @@ const de: Messages<typeof en> = {
   'settings.privateUpstreamsWarn':
     'Jeder, der den Cache nutzen kann, kann PiCache Daten von Geräten in deinem Netzwerk abrufen lassen. Schalte das nach dem Testen wieder aus.',
   'settings.namesTitle': 'Namen in der Bibliothek',
-  'settings.namesText': 'Wie Inhalte im Cache benannt werden. Steamworks-Laufzeitpakete und Microsoft-365-Updatekanäle werden benannt, ohne dass jemand gefragt wird.',
+  'settings.namesText': 'Wie Inhalte im Cache benannt werden. Ohne jemanden zu fragen, benennt PiCache, was die Download-Adressen verraten (Spiele von Blizzard, Riot, Ubisoft, Rockstar, Final Fantasy XIV und den übrigen Diensten, Steamworks-Laufzeitpakete, Microsoft-365-Updatekanäle, die Windows-Version eines Updates), und Epic-Spiele nach ihrem gecachten Manifest.',
   'settings.steamNames': 'Namen und Icons von Steam-Spielen abrufen',
   'settings.steamNamesHelp':
     'Zeigt das Spiel, den Workshop-Inhalt oder den DLC statt der Steam-Depot-Nummer. PiCache fragt dazu api.steamcmd.net, einen Drittanbieter-Spiegel der Steam-App-Informationen, nach den Depots, die dein Netzwerk herunterlädt, und lädt die Icons von Steams Servern. Beide sehen die öffentliche Adresse dieses Geräts und welche Spiele heruntergeladen werden.',
@@ -688,7 +688,10 @@ const de: Messages<typeof en> = {
     'Zeigt das Spiel oder die App statt des Paketnamens (zum Beispiel „Forza Horizon 5“ statt „624 F8 B84 B80“). PiCache fragt dazu Microsofts öffentlichen Produktkatalog nach den Paketen, die dein Netzwerk herunterlädt, und lädt die Icons von Microsofts Bildservern. Microsoft sieht die öffentliche Adresse dieses Geräts und welche Spiele und Apps heruntergeladen werden.',
   'settings.psnNames': 'Namen und Icons aus dem PlayStation Store abrufen',
   'settings.psnNamesHelp':
-    'Zeigt das PS4-Spiel statt seiner Titel-ID (CUSA…). PiCache fragt dazu den PlayStation Store nach den Titeln, die dein Netzwerk herunterlädt, und lädt die Icons von dort. Sony sieht die öffentliche Adresse dieses Geräts und welche Spiele heruntergeladen werden. PS5-Titel (PPSA…) sind dort nicht verzeichnet und behalten ihre ID.',
+    'Zeigt das PS4- oder PS5-Spiel statt seiner Titel-ID (CUSA…, PPSA…). PiCache fragt dazu den PlayStation Store nach den Titeln, die dein Netzwerk herunterlädt, und lädt die Icons von Sonys Bildservern. Sony sieht die öffentliche Adresse dieses Geräts und welche Spiele heruntergeladen werden.',
+  'settings.windowsNames': 'Namen von Windows-Updates abrufen',
+  'settings.windowsNamesHelp':
+    'Zeigt den Titel eines Windows-Updates (zum Beispiel „2025-09 Cumulative Update for Windows 11, version 25H2 for x64-based Systems (KB5065426)“) statt seiner KB-Nummer und Windows-Version. PiCache fragt dazu den Microsoft Update Catalog nach den Updates, die dein Netzwerk herunterlädt. Microsoft sieht die öffentliche Adresse dieses Geräts und welche Updates heruntergeladen werden. Von Microsoft zurückgezogene Updates behalten ihre KB-Nummer.',
   'settings.retentionTitle': 'Aufbewahrung',
   'settings.retentionText': 'Wann Inhalte aus dem Cache entfernt werden. Angeheftete Inhalte bleiben immer.',
   'settings.maxAge': 'Inhalte entfernen, die nicht genutzt wurden seit',

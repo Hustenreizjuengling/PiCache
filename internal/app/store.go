@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,6 +102,47 @@ func (a *App) cachedPath(ctx context.Context, service, groupKey string) (string,
 	return page.Items[0].Path, nil
 }
 
+// cachedHead returns the first bytes (at most limit, from the first slice)
+// of a cached object of a group whose path ends with suffix; nil when none
+// has that slice cached (services.ContentLookup).
+func (a *App) cachedHead(ctx context.Context, service, groupKey, suffix string, limit int) ([]byte, error) {
+	st := a.store.Load()
+	if st == nil {
+		return nil, errors.New("no cache store is online")
+	}
+	page, err := st.Objects(ctx, cachestore.ObjectQuery{Service: service, GroupKey: groupKey, Search: suffix, Limit: 10})
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range page.Items {
+		if !strings.HasSuffix(o.Path, suffix) {
+			continue
+		}
+		h, ok, err := st.Head(ctx, o.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !h.Has(0) {
+			continue
+		}
+		r, err := st.ReadSlice(ctx, o.ID, h.Gen, 0)
+		if errors.Is(err, cachestore.ErrSliceMissing) || errors.Is(err, cachestore.ErrStale) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		b := make([]byte, min(int64(limit), r.Size()))
+		n, err := r.ReadAt(b, 0)
+		_ = r.Close()
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+	return nil, nil
+}
+
 // storeMu is held only to publish a store, so closeState never waits for a
 // store that is being opened.
 func (a *App) reconcileStore(ctx context.Context) {
@@ -122,11 +165,12 @@ func (a *App) reconcileStore(ctx context.Context) {
 	}
 	if cur == nil || cur.ID() != storeID || cur.Root() != root {
 		st, err := a.openStore(ctx, cachestore.Options{
-			Root:      root,
-			IndexPath: filepath.Join(a.paths.CacheIndexDir, storeID+".db"),
-			StoreID:   storeID,
-			GroupKey:  func(svc, host, path string) string { return services.GroupFor(svc, host, path).Key },
-			Log:       a.log,
+			Root:       root,
+			IndexPath:  filepath.Join(a.paths.CacheIndexDir, storeID+".db"),
+			StoreID:    storeID,
+			GroupKey:   func(svc, host, path string) string { return services.GroupFor(svc, host, path).Key },
+			GroupRules: services.GroupRules,
+			Log:        a.log,
 		})
 		if err != nil {
 			a.logStoreErr("cannot open cache store", target, root, err)

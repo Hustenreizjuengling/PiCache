@@ -1234,7 +1234,7 @@
         "tags": [
           "Cache store (library, maintenance)"
         ],
-        "description": "Request: –\n\nResponse: (1.2.0) the stored icon of an Xbox / Microsoft Store package (source xbox, id = the package name of the group key xbox:<package>) or a PS4 title (source psn, id = CUSA…) (services.CatalogIcon): Content-Type: image/jpeg or image/png, Cache-Control: private, max-age=86400; 404 not_found for another source, while downloadCache.xboxNames / psnNames is off or none is stored, 400 id for an empty or longer than 128-byte ID",
+        "description": "Request: –\n\nResponse: (1.2.0) the stored icon of an Xbox / Microsoft Store package (source xbox, id = the package name of the group key xbox:<package>) or a PlayStation title (source psn, id = CUSA… or, since 1.3.0, PPSA…) (services.CatalogIcon): Content-Type: image/jpeg or image/png, Cache-Control: private, max-age=86400; 404 not_found for another source, while downloadCache.xboxNames / psnNames is off or none is stored, 400 id for an empty or longer than 128-byte ID",
         "parameters": [
           {
             "name": "source",
@@ -13638,6 +13638,9 @@
               "psnNames": {
                 "type": "boolean"
               },
+              "windowsNames": {
+                "type": "boolean"
+              },
               "updateIntervalHours": {
                 "type": "integer"
               },
@@ -13669,7 +13672,8 @@
               "allowPrivateUpstreams",
               "steamNames",
               "xboxNames",
-              "psnNames"
+              "psnNames",
+              "windowsNames"
             ]
           },
           "cache": {

@@ -162,8 +162,7 @@ func New(ctx context.Context, d *db.DB, set *settings.Store, fetch *http.Client,
 	if err := r.steam.load(ctx); err != nil {
 		return nil, err
 	}
-	r.catalog = newCatalogNames(d, r.log, func() bool { return set.Get().DownloadCache.XboxNames },
-		func() bool { return set.Get().DownloadCache.PSNNames })
+	r.catalog = newCatalogNames(d, r.log, func() settings.DownloadCache { return set.Get().DownloadCache })
 	if err := r.catalog.load(ctx); err != nil {
 		return nil, err
 	}
