@@ -5,6 +5,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-20
+
 ### Changed
 
 - **Steamworks redistributables are named after their component** in the
@@ -1738,7 +1740,8 @@ First release.
   Docker installations update with
   `docker compose pull && docker compose up -d`.
 
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v0.17.0...v1.0.0
