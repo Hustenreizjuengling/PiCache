@@ -33,21 +33,24 @@ func emptyApp(app int) string { return fmt.Sprintf(`{"data":{"%d":{}},"status":"
 
 // steamEnv is a loaded registry with Steam names on and a fake mirror: app
 // 2567870 (with a shared depot of app 228980, a DLC depot and its workshop
-// depot) and app 228980; every other app does not exist.
+// depot) and app 228980 (with an icon); every other app does not exist.
 func steamEnv(t *testing.T) (*Registry, *testEnv, *[]time.Duration) {
 	t.Helper()
 	r, e := loadedRegistry(t)
 	e.cdn.set(infoPath(2567870), fakeResp{status: http.StatusOK, body: `{"data":{"2567870":{
 		"common":{"name":"Chained Together","type":"Game","icon":"` + testIconHash + `"},
 		"depots":{
-			"228990":{"config":{"oslist":"windows"},"depotfromapp":"228980","sharedinstall":"1"},
+			"229100":{"config":{"oslist":"windows"},"depotfromapp":"228980","sharedinstall":"1"},
 			"2567871":{"manifests":{"public":{"gid":"7557936190977295836","size":"8159666216"}}},
 			"2567872":{"dlcappid":"4948760"},
 			"branches":{"public":{"buildid":"25325926"}},
 			"privatebranches":"1",
 			"workshopdepot":"2567870"}}},"status":"success"}`})
 	e.cdn.set(infoPath(228980), fakeResp{status: http.StatusOK, body: `{"data":{"228980":{
-		"common":{"name":"Steamworks Common Redistributables","type":"Tool"},"depots":{"228990":{}}}},"status":"success"}`})
+		"common":{"name":"Steamworks Common Redistributables","type":"Tool","icon":"` + testIconHash + `"},
+		"depots":{"228990":{},"229003":{},"229100":{}}}},"status":"success"}`})
+	e.cdn.set("/steamcommunity/public/images/apps/228980/"+testIconHash+".jpg",
+		fakeResp{status: http.StatusOK, body: testJPEG(t, 32, 32)})
 	e.cdn.set("/steamcommunity/public/images/apps/2567870/"+testIconHash+".jpg",
 		fakeResp{status: http.StatusOK, body: testJPEG(t, 32, 32)})
 	for _, app := range []int{1, 2, 3, 2567871, 2567872} {
@@ -134,15 +137,15 @@ func TestSteamNamesResolve(t *testing.T) {
 	}
 	// A shared depot names its owner, which is asked for its name (not the
 	// depot's neighbours).
-	if l := r.Label("steam:depot:228990"); l != "Steam depot 228990" {
+	if l := r.Label("steam:depot:229100"); l != "Steam depot 229100" {
 		t.Fatalf("owner not asked yet: %q", l)
 	}
 	r.steam.resolve(ctx, <-r.steam.queue)
-	if l := r.Label("steam:depot:228990"); l != "Steamworks Common Redistributables" {
+	if l := r.Label("steam:depot:229100"); l != "Steamworks Common Redistributables" {
 		t.Fatalf("shared depot = %q", l)
 	}
-	if e.cdn.count(infoPath(228980)) != 1 || e.infoRequests() != 3 || r.IconPath("steam:depot:228990") != "" {
-		t.Fatalf("info requests %v, icon %q", e.cdn.hits, r.IconPath("steam:depot:228990"))
+	if e.cdn.count(infoPath(228980)) != 1 || e.infoRequests() != 3 || r.IconPath("steam:depot:229100") != "/cache/icons/steam/228980" {
+		t.Fatalf("info requests %v, icon %q", e.cdn.hits, r.IconPath("steam:depot:229100"))
 	}
 	if len(r.steam.queue) != 0 {
 		t.Fatal("a resolved depot is queued again")
@@ -270,6 +273,48 @@ func TestSteamNamesUntrusted(t *testing.T) {
 	r.steam.dayStart = time.Now()
 	if err := r.steam.wait(ctx); err != errSteamBudget {
 		t.Fatalf("budget: %v", err)
+	}
+}
+
+// The Steamworks redistributables keep their built-in label (the component);
+// only the app's name and icon are looked up, without a walk, also for a
+// depot stored as not found before.
+func TestSteamNamesRedists(t *testing.T) {
+	r, e, _ := steamEnv(t)
+	ctx := context.Background()
+	key, want := "steam:depot:229033", "PhysX 9.14.0702 · Steamworks Common Redistributables"
+	if err := r.steam.store(ctx, nil, map[uint32]steamDepot{229033: {at: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	if l := r.Label(key); l != want || len(r.steam.queue) != 1 {
+		t.Fatalf("before the lookup: %q, queued %d", l, len(r.steam.queue))
+	}
+	r.steam.resolve(ctx, <-r.steam.queue)
+	if l := r.Label(key); l != want || r.IconPath(key) != "/cache/icons/steam/228980" {
+		t.Fatalf("after the lookup: %q, icon %q", l, r.IconPath(key))
+	}
+	if e.infoRequests() != 1 || e.cdn.count(infoPath(228980)) != 1 || len(r.steam.queue) != 0 {
+		t.Fatalf("info requests %v, queued %d", e.cdn.hits, len(r.steam.queue))
+	}
+	// The app's other depots cost no request; search finds each component
+	// once, also by the app's name.
+	if l := r.Label("steam:depot:229003"); l != ".NET Framework 4.0 Client Profile · Steamworks Common Redistributables" ||
+		r.IconPath("steam:depot:229003") == "" || len(r.steam.queue) != 0 {
+		t.Fatalf("sibling: %q, queued %d", l, len(r.steam.queue))
+	}
+	// (229100: a depot of the app without a built-in label.)
+	keys := r.SearchLabels("steamworks")
+	if len(keys) != len(steamRedists)+1 || len(slices.Compact(slices.Clone(keys))) != len(keys) || !slices.Contains(keys, "steam:depot:229100") {
+		t.Fatalf("search = %v", keys)
+	}
+	if keys := r.SearchLabels("physx 9.14"); !slices.Equal(keys, []string{key}) {
+		t.Fatalf("search = %v", keys)
+	}
+	// Off: the built-in label stays, nothing is queued and no icon is shown.
+	setSteamNames(t, e, false)
+	if l := r.Label("steam:depot:228981"); l != "Visual C++ 2005 · Steamworks Common Redistributables" ||
+		r.IconPath(key) != "" || len(r.steam.queue) != 0 {
+		t.Fatalf("off: %q %q", l, r.IconPath(key))
 	}
 }
 

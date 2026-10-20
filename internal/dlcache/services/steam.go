@@ -30,7 +30,9 @@ import (
 // one lists the depot as its own, as its workshop depot or as a shared
 // depot, which names its owner (depotfromapp; that app is then asked for
 // its name). Every answer stores all depots the app lists, so the other
-// depots of a game cost no request. The icon (Steam's 32×32 JPEG) is
+// depots of a game cost no request. The depots of the Steamworks
+// redistributables are known (steamRedists: no walk; their built-in label
+// names the component, only the app's icon is looked up). The icon (Steam's 32×32 JPEG) is
 // fetched from Steam's CDN, must decode as a JPEG of at most 256×256 pixels
 // and is kept in picache.db; the web UI loads it from PiCache (GET
 // /cache/icons/steam/{app}), never from Steam (CSP img-src 'self').
@@ -235,7 +237,7 @@ func (s *steamNames) label(depot uint32) (label string, iconApp uint32, ok bool)
 	// Unknown or stale; a shared depot whose owner was not asked yet; an
 	// icon not fetched yet (a failure pauses the worker, a broken icon
 	// clears its hash).
-	if !known || stale(d.at, d.app != 0, now) || (d.app != 0 && a.at.IsZero()) ||
+	if needsFind(depot, d, known, now) || (d.app != 0 && a.at.IsZero()) ||
 		(a.name != "" && a.iconHash != "" && !a.icon) {
 		s.enqueue(depot)
 	}
@@ -261,6 +263,16 @@ func stale(at time.Time, found bool, now time.Time) bool {
 		return now.Sub(at) > steamFound
 	}
 	return now.Sub(at) > steamNotFound
+}
+
+// needsFind reports whether the app of a depot must be found (again): it is
+// unknown or stale, or a Steamworks redistributable stored before it was
+// known (e.g. as not found).
+func needsFind(depot uint32, d steamDepot, known bool, now time.Time) bool {
+	if _, redist := steamRedists[depot]; redist && known && d.app != steamRedistApp {
+		return true
+	}
+	return !known || stale(d.at, d.app != 0, now)
 }
 
 // enqueue queues a depot for the worker (dropped when the queue is full).
@@ -335,32 +347,8 @@ func (s *steamNames) resolve(ctx context.Context, depot uint32) {
 	s.mu.RLock()
 	d, known := s.depots[depot]
 	s.mu.RUnlock()
-	if !known || stale(d.at, d.app != 0, now) {
-		found := false
-		for i := uint32(0); i < steamWalk && i < depot && !found; i++ {
-			app := depot - i
-			s.mu.RLock()
-			a, asked := s.apps[app]
-			s.mu.RUnlock()
-			// An app asked within the not-found period already gave its
-			// depots: ask it again only when older (a depot added since).
-			if !asked || now.Sub(a.at) > steamNotFound {
-				if err := s.fetchApp(ctx, app); err != nil {
-					s.fail(err)
-					return
-				}
-			}
-			s.mu.RLock()
-			d, found = s.depots[depot]
-			found = found && d.app != 0 && !stale(d.at, true, s.now())
-			s.mu.RUnlock()
-		}
-		if !found {
-			if err := s.store(ctx, nil, map[uint32]steamDepot{depot: {at: s.now()}}); err != nil {
-				s.fail(err)
-			}
-			return
-		}
+	if needsFind(depot, d, known, now) && !s.find(ctx, depot, now) {
+		return
 	}
 	s.mu.RLock()
 	d = s.depots[depot]
@@ -384,6 +372,43 @@ func (s *steamNames) resolve(ctx context.Context, depot uint32) {
 			s.fail(err)
 		}
 	}
+}
+
+// find stores the app of a depot: a Steamworks redistributable's is known,
+// otherwise the apps <depot>, <depot>-1, … are asked. false: not found or
+// failed.
+func (s *steamNames) find(ctx context.Context, depot uint32, now time.Time) bool {
+	if _, redist := steamRedists[depot]; redist {
+		if err := s.store(ctx, nil, map[uint32]steamDepot{depot: {app: steamRedistApp, at: now}}); err != nil {
+			s.fail(err)
+			return false
+		}
+		return true
+	}
+	for i := uint32(0); i < steamWalk && i < depot; i++ {
+		app := depot - i
+		s.mu.RLock()
+		a, asked := s.apps[app]
+		s.mu.RUnlock()
+		// An app asked within the not-found period already gave its
+		// depots: ask it again only when older (a depot added since).
+		if !asked || now.Sub(a.at) > steamNotFound {
+			if err := s.fetchApp(ctx, app); err != nil {
+				s.fail(err)
+				return false
+			}
+		}
+		s.mu.RLock()
+		d, found := s.depots[depot]
+		s.mu.RUnlock()
+		if found && d.app != 0 && !stale(d.at, true, s.now()) {
+			return true
+		}
+	}
+	if err := s.store(ctx, nil, map[uint32]steamDepot{depot: {at: s.now()}}); err != nil {
+		s.fail(err)
+	}
+	return false
 }
 
 // fail pauses the worker and logs at most hourly.

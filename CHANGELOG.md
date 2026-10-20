@@ -5,6 +5,18 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Steamworks redistributables are named after their component** in the
+  Library, e.g. ".NET Framework 4.0 Client Profile · Steamworks Common
+  Redistributables" instead of just "Steamworks Common Redistributables"
+  or "Steam depot 229003". The 26 depots of app 228980 (Visual C++
+  2005–2022, DirectX June 2010, .NET Framework 3.5–4.8, XNA 3.0–4.0,
+  OpenAL, PhysX) are built in, so this works even with Steam names off and
+  costs no lookup; Library search finds them by component (".net",
+  "physx", …). With Steam names on they show the app's icon, and the PhysX
+  and XNA depots, which the lookup could not find before, are named too.
+
 ## [1.1.0] - 2026-10-20
 
 ### Added

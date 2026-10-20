@@ -16,7 +16,7 @@ func TestGroupFor(t *testing.T) {
 	}{
 		{"steam chunk", "steam", "cache1-fra1.steamcontent.com",
 			"/depot/228990/chunk/0123456789abcdef0123456789abcdef01234567",
-			"steam:depot:228990", "Steam depot 228990", ""},
+			"steam:depot:228990", "DirectX (June 2010) · Steamworks Common Redistributables", ""},
 		{"steam chunk upper-case hex", "steam", "cache1-fra1.steamcontent.com",
 			"/depot/1521/chunk/0123456789ABCDEF0123456789ABCDEF01234567",
 			"steam:depot:1521", "Steam depot 1521", ""},
@@ -138,16 +138,16 @@ func TestHumanise(t *testing.T) {
 func TestLabels(t *testing.T) {
 	r, e := loadedRegistry(t)
 	ctx := context.Background()
-	if got := r.Label("steam:depot:228990"); got != "Steam depot 228990" {
+	if got := r.Label("steam:depot:1521"); got != "Steam depot 1521" {
 		t.Fatalf("default label = %q", got)
 	}
-	if err := r.SetLabel(ctx, "steam:depot:228990", "  Steamworks Redistributables "); err != nil {
+	if err := r.SetLabel(ctx, "steam:depot:1521", "  Half-Life 2 Content "); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.Label("steam:depot:228990"); got != "Steamworks Redistributables" {
+	if got := r.Label("steam:depot:1521"); got != "Half-Life 2 Content" {
 		t.Fatalf("user label = %q", got)
 	}
-	if l, ok := r.UserLabel("steam:depot:228990"); !ok || l != "Steamworks Redistributables" {
+	if l, ok := r.UserLabel("steam:depot:1521"); !ok || l != "Half-Life 2 Content" {
 		t.Fatalf("UserLabel = %q, %v", l, ok)
 	}
 	if l, ok := r.UserLabel("riot:lol"); ok || l != "" {
@@ -166,8 +166,15 @@ func TestLabels(t *testing.T) {
 	}
 
 	// Search: user labels and built-in product labels, case-insensitive.
-	if keys := r.SearchLabels("REDIST"); !slices.Equal(keys, []string{"steam:depot:228990"}) {
+	if keys := r.SearchLabels("HALF-LIFE"); !slices.Equal(keys, []string{"steam:depot:1521"}) {
 		t.Fatalf("search user label = %q", keys)
+	}
+	// The Steamworks redistributables are named after their component.
+	if got := r.Label("steam:depot:229003"); got != ".NET Framework 4.0 Client Profile · Steamworks Common Redistributables" {
+		t.Fatalf("redistributable = %q", got)
+	}
+	if keys := r.SearchLabels(".net framework 4.0"); !slices.Equal(keys, []string{"steam:depot:229002", "steam:depot:229003"}) {
+		t.Fatalf("search redistributables = %q", keys)
 	}
 	keys := r.SearchLabels("call of duty")
 	if !slices.Contains(keys, "blizzard:cerberus-b-live") || !slices.Contains(keys, "blizzard:auks") || slices.Contains(keys, "blizzard:wow") {
@@ -186,16 +193,16 @@ func TestLabels(t *testing.T) {
 
 	// Persisted; "" removes.
 	r2 := e.registry(t)
-	if got := r2.Label("steam:depot:228990"); got != "Steamworks Redistributables" {
+	if got := r2.Label("steam:depot:1521"); got != "Half-Life 2 Content" {
 		t.Fatalf("label after restart = %q", got)
 	}
-	if err := r2.SetLabel(ctx, "steam:depot:228990", ""); err != nil {
+	if err := r2.SetLabel(ctx, "steam:depot:1521", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := r2.Label("steam:depot:228990"); got != "Steam depot 228990" {
+	if got := r2.Label("steam:depot:1521"); got != "Steam depot 1521" {
 		t.Fatalf("label after removal = %q", got)
 	}
-	if _, ok := r2.UserLabel("steam:depot:228990"); ok {
+	if _, ok := r2.UserLabel("steam:depot:1521"); ok {
 		t.Fatal("removed label still reported as a user label")
 	}
 

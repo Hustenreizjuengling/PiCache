@@ -2,6 +2,7 @@ package services
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -74,6 +75,41 @@ var blizzardProducts = map[string]string{
 	"configs":         "Battle.net configs (shared)",
 }
 
+// steamRedistApp is Steamworks Common Redistributables: Steam installs its
+// depots (DirectX, .NET, Visual C++, …) along with the games that need them.
+const steamRedistApp = 228980
+
+// steamRedists names its depots after the install scripts Valve ships with
+// the app (_CommonRedist\<component>\<version>\installscript.vdf).
+var steamRedists = map[uint32]string{
+	228981: "Visual C++ 2005",
+	228982: "Visual C++ 2008",
+	228983: "Visual C++ 2010",
+	228984: "Visual C++ 2012",
+	228985: "Visual C++ 2013",
+	228986: "Visual C++ 2015",
+	228987: "Visual C++ 2017",
+	228988: "Visual C++ 2019",
+	228989: "Visual C++ 2022",
+	228990: "DirectX (June 2010)",
+	229000: ".NET Framework 3.5",
+	229001: ".NET Framework 3.5 Client Profile",
+	229002: ".NET Framework 4.0",
+	229003: ".NET Framework 4.0 Client Profile",
+	229004: ".NET Framework 4.5.2",
+	229005: ".NET Framework 4.6",
+	229006: ".NET Framework 4.7",
+	229007: ".NET Framework 4.8",
+	229010: "XNA Framework 3.0",
+	229011: "XNA Framework 3.1",
+	229012: "XNA Framework 4.0",
+	229020: "OpenAL 2.0.7.0",
+	229030: "PhysX 8.09.04",
+	229031: "PhysX 9.12.1031",
+	229032: "PhysX 9.13.1220",
+	229033: "PhysX 9.14.0702",
+}
+
 var riotProducts = map[string]string{
 	"lol":           "League of Legends",
 	"valorant":      "VALORANT",
@@ -130,6 +166,9 @@ var productLabels = func() map[string]string {
 	}
 	for k, v := range wargamingProducts {
 		m["wg:"+k] = v
+	}
+	for depot, v := range steamRedists {
+		m["steam:depot:"+strconv.FormatUint(uint64(depot), 10)] = v + " · Steamworks Common Redistributables"
 	}
 	return m
 }()
