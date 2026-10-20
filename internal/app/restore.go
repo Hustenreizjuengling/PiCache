@@ -59,7 +59,7 @@ var restoreSectionMap = []restoreSection{
 // neverRestoredTables are kept live by every restore (accounts, sessions,
 // tokens, the audit log, the process's own state and caches).
 var neverRestoredTables = []string{"auth_users", "auth_sessions", "auth_tokens", "auth_audit", "app_meta", "schema_migrations",
-	"proxy_noslice_hosts", "services_steam_apps", "services_steam_depots"}
+	"proxy_noslice_hosts", "services_steam_apps", "services_steam_depots", "services_catalog"}
 
 // groupLinkTables are the links of the group-linked sections to client
 // groups (the only references between sections): table → group column.

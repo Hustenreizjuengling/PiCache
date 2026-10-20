@@ -86,6 +86,20 @@ var storeOpenTimeout = 30 * time.Second
 
 // reconcileStore opens, switches or closes the active store to match the
 // active target and its guard status. Calls are serialised by reconcileMu;
+// cachedPath returns the path of a cached object of a group ("" when there
+// is none) for the store names; an error while no store is online.
+func (a *App) cachedPath(ctx context.Context, service, groupKey string) (string, error) {
+	st := a.store.Load()
+	if st == nil {
+		return "", errors.New("no cache store is online")
+	}
+	page, err := st.Objects(ctx, cachestore.ObjectQuery{Service: service, GroupKey: groupKey, Limit: 1})
+	if err != nil || len(page.Items) == 0 {
+		return "", err
+	}
+	return page.Items[0].Path, nil
+}
+
 // storeMu is held only to publish a store, so closeState never waits for a
 // store that is being opened.
 func (a *App) reconcileStore(ctx context.Context) {

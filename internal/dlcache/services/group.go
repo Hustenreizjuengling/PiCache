@@ -110,6 +110,17 @@ var steamRedists = map[uint32]string{
 	229033: "PhysX 9.14.0702",
 }
 
+// officeChannels names the update channels of Microsoft 365 Apps by the
+// GUID in their Office CDN path (officecdn.microsoft.com/pr/<guid>/, the
+// CDNBaseUrl of an installation).
+var officeChannels = map[string]string{
+	"492350f6-3a01-4f97-b9c0-c7c6ddf67d60": "Current Channel",
+	"64256afe-f5d9-4f86-8936-8840a6a4f5be": "Current Channel (Preview)",
+	"55336b82-a18d-4dd6-b5f6-9e5095c314a6": "Monthly Enterprise Channel",
+	"7ffbc6bf-bc32-4f92-8982-f9dd17fd3114": "Semi-Annual Enterprise Channel",
+	"b8f9b850-328d-4355-9145-c59439a0c4cf": "Semi-Annual Enterprise Channel (Preview)",
+}
+
 var riotProducts = map[string]string{
 	"lol":           "League of Legends",
 	"valorant":      "VALORANT",
@@ -169,6 +180,9 @@ var productLabels = func() map[string]string {
 	}
 	for depot, v := range steamRedists {
 		m["steam:depot:"+strconv.FormatUint(uint64(depot), 10)] = v + " · Steamworks Common Redistributables"
+	}
+	for guid, v := range officeChannels {
+		m["win:office:"+guid] = "Microsoft 365 Apps · " + v
 	}
 	return m
 }()

@@ -5,6 +5,32 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Store names in the Library** (**Cache settings → Names in the
+  Library**, one switch each, off by default): Xbox and Microsoft Store
+  downloads show the game or app and its icon ("Forza Horizon 5" instead of
+  "624 F8 B84 B80"; `downloadCache.xboxNames`), PS4 downloads the game
+  instead of its title ID ("Destiny 2" instead of "CUSA05042";
+  `downloadCache.psnNames`). PiCache asks Microsoft's public product
+  catalog and the PlayStation Store; each sees this machine's public
+  address and which games and apps are downloaded. Per store at most one
+  request per second and 2000 per day, results kept in picache.db (never
+  restored), icons served by PiCache itself
+  (`GET /api/v1/cache/icons/{xbox|psn}/{id}`). Library search also finds
+  them by name; a name you set yourself still wins. PS5 titles are not
+  listed in the PlayStation Store's catalog and keep their ID.
+
+### Changed
+
+- **Microsoft 365 update channels are named** in the Library ("Microsoft
+  365 Apps · Current Channel" instead of "Microsoft 365 Apps (492350f6…)")
+  for Current Channel and its Preview, Monthly Enterprise Channel and
+  Semi-Annual Enterprise Channel and its Preview; built in, nothing is
+  looked up.
+- The Steam name lookups share their request budget code with the store
+  names (no change in behaviour).
+
 ## [1.1.1] - 2026-10-20
 
 ### Changed

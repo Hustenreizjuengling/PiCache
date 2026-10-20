@@ -41,8 +41,9 @@ func (r *Registry) loadLabels(ctx context.Context) (map[string]string, error) {
 // Label returns the display label for a group key: user override, else the
 // built-in product label (Blizzard, Riot, the Steamworks redistributables,
 // …), else the name of a Steam depot's app (while downloadCache.steamNames
-// is on), else the rule default. Never blocks on the network (an unknown
-// depot is only queued).
+// is on) or the store name of an Xbox package or PlayStation title (while
+// downloadCache.xboxNames / psnNames is on), else the rule default. Never
+// blocks on the network (an unknown group is only queued).
 func (r *Registry) Label(groupKey string) string {
 	if l, ok := (*r.labels.Load())[groupKey]; ok {
 		return l
@@ -53,19 +54,34 @@ func (r *Registry) Label(groupKey string) string {
 		if _, fixed := productLabels[groupKey]; ok && !fixed {
 			return l
 		}
+	} else if l, _, ok := r.catalog.label(groupKey); ok {
+		return l
 	}
 	return defaultLabel(groupKey, r.snap.Load().name)
 }
 
 // IconPath returns the API path of a group's icon ("" when it has none):
-// the icon of a Steam depot's app.
+// the icon of a Steam depot's app or of an Xbox package or PlayStation
+// title ("/cache/icons/<namespace>/<id>").
 func (r *Registry) IconPath(groupKey string) string {
 	if depot, ok := steamDepotID(groupKey); ok {
 		if _, app, ok := r.steam.label(depot); ok && app != 0 {
 			return "/cache/icons/steam/" + strconv.FormatUint(uint64(app), 10)
 		}
+		return ""
+	}
+	if _, icon, ok := r.catalog.label(groupKey); ok && icon {
+		ns, id, _ := strings.Cut(groupKey, ":")
+		return "/cache/icons/" + ns + "/" + id
 	}
 	return ""
+}
+
+// CatalogIcon returns the stored icon (JPEG or PNG) of an Xbox package or
+// PlayStation title group; ok=false while its source is off or there is
+// none.
+func (r *Registry) CatalogIcon(ctx context.Context, groupKey string) (icon []byte, ok bool, err error) {
+	return r.catalog.icon(ctx, groupKey)
 }
 
 // SteamIcon returns the stored icon (JPEG) of a Steam app; ok=false while
@@ -91,9 +107,9 @@ func (r *Registry) Labels(keys []string) map[string]string {
 }
 
 // SearchLabels returns the group keys whose user label, built-in product
-// label or Steam app name (where no product label is built in) contains q
-// (case-insensitive), for Library search by name. The result is sorted and
-// bounded.
+// label, Steam app or store name (where no product label is built in)
+// contains q (case-insensitive), for Library search by name. The result is
+// sorted and bounded.
 func (r *Registry) SearchLabels(q string) []string {
 	q = strings.ToLower(strings.TrimSpace(q))
 	if q == "" {
@@ -113,6 +129,11 @@ func (r *Registry) SearchLabels(q string) []string {
 	}
 	for _, depot := range r.steam.search(q) {
 		k := "steam:depot:" + strconv.FormatUint(uint64(depot), 10)
+		if _, fixed := productLabels[k]; user[k] == "" && !fixed {
+			out = append(out, k)
+		}
+	}
+	for _, k := range r.catalog.search(q) {
 		if _, fixed := productLabels[k]; user[k] == "" && !fixed {
 			out = append(out, k)
 		}

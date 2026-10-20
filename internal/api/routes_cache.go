@@ -44,6 +44,7 @@ func (s *Server) registerCacheRoutes() {
 	s.route("GET /api/v1/cache/groups", permRead, s.cacheGroups)
 	s.route("GET /api/v1/cache/groups/detail", permRead, s.cacheGroupDetail)
 	s.route("GET /api/v1/cache/icons/steam/{app}", permRead, s.cacheSteamIcon)
+	s.route("GET /api/v1/cache/icons/{source}/{id}", permRead, s.cacheCatalogIcon)
 	s.route("GET /api/v1/cache/objects", permRead, s.cacheObjects)
 	s.route("DELETE /api/v1/cache/objects/{id}", permAdmin, s.cacheDeleteObject)
 	s.route("POST /api/v1/cache/objects/{id}/pin", permAdmin, s.cachePinObject)
@@ -217,12 +218,43 @@ func (s *Server) cacheSteamIcon(w http.ResponseWriter, r *http.Request) error {
 	if !found {
 		return apperr.NotFound("icon", r.PathValue("app"))
 	}
-	w.Header().Set("Content-Type", "image/jpeg")
+	writeIcon(w, icon, "image/jpeg")
+	return nil
+}
+
+// cacheCatalogIcon serves the stored icon of an Xbox / Microsoft Store
+// package (source xbox) or PlayStation title (psn), a JPEG or PNG checked
+// when it was fetched; 404 while that source's names are off or there is
+// none. Browsers may keep it a day.
+func (s *Server) cacheCatalogIcon(w http.ResponseWriter, r *http.Request) error {
+	source, id := r.PathValue("source"), r.PathValue("id")
+	if source != "xbox" && source != "psn" {
+		return apperr.NotFound("icon source", source)
+	}
+	if id == "" || len(id) > 128 {
+		return apperr.Invalid("id", "invalid package or title id")
+	}
+	if s.d.Services == nil {
+		return apperr.NotFound("icon", id)
+	}
+	icon, found, err := s.d.Services.CatalogIcon(r.Context(), source+":"+id)
+	if err != nil {
+		return err
+	}
+	ct := http.DetectContentType(icon)
+	if !found || (ct != "image/jpeg" && ct != "image/png") {
+		return apperr.NotFound("icon", id)
+	}
+	writeIcon(w, icon, ct)
+	return nil
+}
+
+func writeIcon(w http.ResponseWriter, icon []byte, contentType string) {
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Set("Content-Length", strconv.Itoa(len(icon)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(icon)
-	return nil
 }
 
 func (s *Server) cacheObjects(w http.ResponseWriter, r *http.Request) error {

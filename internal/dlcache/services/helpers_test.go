@@ -56,14 +56,30 @@ func (f *fakeCDN) count(path string) int {
 	return f.hits[path]
 }
 
+// total returns the number of requests.
+func (f *fakeCDN) total() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.hits {
+		n += c
+	}
+	return n
+}
+
 func (f *fakeCDN) RoundTrip(req *http.Request) (*http.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.down {
 		return nil, io.ErrUnexpectedEOF
 	}
-	f.hits[req.URL.Path]++
-	r, ok := f.files[req.URL.Path]
+	// A file set for "<path>?<query>" answers that query only.
+	key := req.URL.Path
+	if _, ok := f.files[key+"?"+req.URL.RawQuery]; ok && req.URL.RawQuery != "" {
+		key += "?" + req.URL.RawQuery
+	}
+	f.hits[key]++
+	r, ok := f.files[key]
 	if !ok {
 		r = fakeResp{status: http.StatusNotFound, body: "not found"}
 	}

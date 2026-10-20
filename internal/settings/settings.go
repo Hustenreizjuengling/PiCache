@@ -272,6 +272,11 @@ type DownloadCache struct {
 	// SteamNames looks up the app names and icons of Steam depots
 	// (api.steamcmd.net, Steam's CDN; off by default: it sends data out).
 	SteamNames bool `json:"steamNames"`
+	// XboxNames and PSNNames look up the store names and icons of Xbox /
+	// Microsoft Store packages (displaycatalog.mp.microsoft.com) and PS4
+	// titles (store.playstation.com); off by default: they send data out.
+	XboxNames bool `json:"xboxNames"`
+	PSNNames  bool `json:"psnNames"`
 }
 
 // Cache configures the slice store and retention.

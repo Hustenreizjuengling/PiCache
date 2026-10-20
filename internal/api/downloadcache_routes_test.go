@@ -319,3 +319,47 @@ func TestCacheSteamIcon(t *testing.T) {
 		t.Fatalf("unknown app: %d", w.Code)
 	}
 }
+
+// GET /cache/icons/{source}/{id} serves a stored store icon only while that
+// source's names are on.
+func TestCacheCatalogIcon(t *testing.T) {
+	e := newDownloadCacheEnv(t)
+	ctx := context.Background()
+	png := []byte("\x89PNG\r\n\x1a\n not decoded here")
+	if _, err := e.db.W.ExecContext(ctx, `INSERT INTO services_catalog (group_key, name, icon, fetched_at)
+		VALUES ('psn:CUSA05042', 'Destiny 2', ?, 1), ('xbox:Microsoft.624F8B84B80', 'Forza Horizon 5', ?, 1)`,
+		png, []byte("\xFF\xD8\xFF\xE0 jpeg")); err != nil {
+		t.Fatal(err)
+	}
+	get := func(source, id string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/v1/cache/icons/"+source+"/"+id, nil)
+		r.SetPathValue("source", source)
+		r.SetPathValue("id", id)
+		w := httptest.NewRecorder()
+		if err := e.srv.cacheCatalogIcon(w, r); err != nil {
+			writeError(w, r, e.srv.log, err)
+		}
+		return w
+	}
+	dcWantError(t, get("psn", strings.Repeat("x", 129)), http.StatusBadRequest, "id", "invalid package or title id")
+	for _, c := range [][2]string{{"psn", "CUSA05042"}, {"epic", "x"}, {"steam", "1"}} {
+		if w := get(c[0], c[1]); w.Code != http.StatusNotFound {
+			t.Fatalf("%v off/unknown: %d", c, w.Code)
+		}
+	}
+	if _, err := e.srv.d.Settings.Update(ctx, func(a *settings.All) error {
+		a.DownloadCache.PSNNames = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := get("psn", "CUSA05042")
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/png" ||
+		w.Header().Get("Cache-Control") != "private, max-age=86400" || w.Body.String() != string(png) {
+		t.Fatalf("icon: %d %v %q", w.Code, w.Header(), w.Body)
+	}
+	// Each source has its own switch.
+	if w := get("xbox", "Microsoft.624F8B84B80"); w.Code != http.StatusNotFound {
+		t.Fatalf("xbox while off: %d", w.Code)
+	}
+}

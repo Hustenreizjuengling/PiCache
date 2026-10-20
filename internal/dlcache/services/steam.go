@@ -9,14 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"image/jpeg"
-	"io"
 	"log/slog"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/db"
@@ -55,17 +52,13 @@ const (
 	steamInfoURL  = "https://api.steamcmd.net/v1/info/%d"
 	steamIconURL  = "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/%d/%s.jpg"
 	steamWalk     = 24 // apps asked per depot: <depot> down to <depot>-23
-	steamGap      = time.Second
-	steamPerDay   = 2000
 	steamQueue    = 256
-	steamTimeout  = 15 * time.Second
 	steamMaxBody  = 1 << 20
 	steamMaxIcon  = 64 << 10
 	steamMaxPixel = 256
 	steamMaxName  = 128
 	steamFound    = 90 * 24 * time.Hour
 	steamNotFound = 7 * 24 * time.Hour
-	steamPause    = 10 * time.Minute
 	steamMaxDepot = 20_000
 	steamMaxApps  = 10_000
 	steamMaxList  = 1024 // depots taken from one app
@@ -97,53 +90,28 @@ type steamApp struct {
 
 // steamNames resolves Steam depots to app names (see above).
 type steamNames struct {
+	fetcher // the requests to api.steamcmd.net and Steam's CDN
 	db      *db.DB
 	log     *slog.Logger
 	enabled func() bool
 
-	client    atomic.Pointer[http.Client]
-	userAgent atomic.Pointer[string]
-
 	// Replaced in tests.
 	infoURL func(app uint32) string
 	iconURL func(app uint32, hash string) string
-	now     func() time.Time
-	sleep   func(ctx context.Context, d time.Duration) bool
 
-	mu       sync.RWMutex
-	depots   map[uint32]steamDepot
-	apps     map[uint32]steamApp
-	queued   map[uint32]bool
-	queue    chan uint32
-	last     time.Time // the last request
-	dayStart time.Time
-	dayCount int
-	pausedTo time.Time
-	lastErr  time.Time // the last logged error
-	requests atomic.Int64
+	mu     sync.RWMutex
+	depots map[uint32]steamDepot
+	apps   map[uint32]steamApp
+	queued map[uint32]bool
+	queue  chan uint32
 }
 
 func newSteamNames(d *db.DB, log *slog.Logger, enabled func() bool) *steamNames {
-	return &steamNames{db: d, log: log, enabled: enabled,
+	return &steamNames{fetcher: newFetcher("Steam name", log), db: d, log: log, enabled: enabled,
 		infoURL: func(app uint32) string { return fmt.Sprintf(steamInfoURL, app) },
 		iconURL: func(app uint32, hash string) string { return fmt.Sprintf(steamIconURL, app, hash) },
-		now:     time.Now, sleep: sleepCtx,
-		depots: map[uint32]steamDepot{}, apps: map[uint32]steamApp{}, queued: map[uint32]bool{},
+		depots:  map[uint32]steamDepot{}, apps: map[uint32]steamApp{}, queued: map[uint32]bool{},
 		queue: make(chan uint32, steamQueue)}
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
 }
 
 // load reads the stored depots and apps (the newest first, within the
@@ -192,19 +160,6 @@ func (s *steamNames) load(ctx context.Context) error {
 	s.depots, s.apps = depots, apps
 	s.mu.Unlock()
 	return nil
-}
-
-// SetSteamClient sets the HTTP client of the Steam name lookups (nil: none
-// are made) and the User-Agent they send.
-func (r *Registry) SetSteamClient(c *http.Client, userAgent string) {
-	if c != nil {
-		cc := *c
-		cc.Timeout = steamTimeout
-		cc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-		c = &cc
-	}
-	r.steam.client.Store(c)
-	r.steam.userAgent.Store(&userAgent)
 }
 
 // steamDepotID returns the depot of a "steam:depot:<id>" group key.
@@ -339,8 +294,6 @@ func (s *steamNames) run(ctx context.Context) {
 	}
 }
 
-var errSteamBudget = errors.New("the daily budget of Steam lookups is used up")
-
 // resolve finds the app of a depot, its name and icon.
 func (s *steamNames) resolve(ctx context.Context, depot uint32) {
 	now := s.now()
@@ -409,84 +362,6 @@ func (s *steamNames) find(ctx context.Context, depot uint32, now time.Time) bool
 		s.fail(err)
 	}
 	return false
-}
-
-// fail pauses the worker and logs at most hourly.
-func (s *steamNames) fail(err error) {
-	now := s.now()
-	s.mu.Lock()
-	s.pausedTo = now.Add(steamPause)
-	logIt := now.Sub(s.lastErr) >= time.Hour
-	if logIt {
-		s.lastErr = now
-	}
-	s.mu.Unlock()
-	if logIt && !errors.Is(err, context.Canceled) {
-		s.log.Warn("Steam name lookup failed; retrying later", slog.Any("err", err))
-	}
-}
-
-// wait keeps the request budget: one per steamGap, steamPerDay per day, and
-// the pause after a failure.
-func (s *steamNames) wait(ctx context.Context) error {
-	s.mu.Lock()
-	now := s.now()
-	if now.Sub(s.dayStart) >= 24*time.Hour {
-		s.dayStart, s.dayCount = now, 0
-	}
-	if s.dayCount >= steamPerDay {
-		s.mu.Unlock()
-		return errSteamBudget
-	}
-	next := s.last.Add(steamGap)
-	if s.pausedTo.After(next) {
-		next = s.pausedTo
-	}
-	s.dayCount++
-	if next.Before(now) {
-		next = now
-	}
-	s.last = next
-	s.mu.Unlock()
-	if !s.sleep(ctx, next.Sub(now)) {
-		return ctx.Err()
-	}
-	s.requests.Add(1)
-	return nil
-}
-
-// get fetches url (at most limit bytes).
-func (s *steamNames) get(ctx context.Context, url string, limit int64) ([]byte, error) {
-	c := s.client.Load()
-	if c == nil {
-		return nil, errors.New("no HTTP client")
-	}
-	if err := s.wait(ctx); err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	if ua := s.userAgent.Load(); ua != nil && *ua != "" {
-		req.Header.Set("User-Agent", *ua)
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: HTTP %d", req.URL.Host, resp.StatusCode)
-	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("%s: the answer is larger than %d bytes", req.URL.Host, limit)
-	}
-	return b, nil
 }
 
 // picsApp is the part of an app's info that is used.

@@ -282,6 +282,18 @@
           disabled={readOnly}
           bind:checked={() => !!l.steamNames, (v) => (l.steamNames = v)}
         />
+        <Toggle
+          id="cache-field-xboxNames" label={t('cache.settings.xboxNames')}
+          description={t('cache.settings.xboxNamesHelp')}
+          disabled={readOnly}
+          bind:checked={() => !!l.xboxNames, (v) => (l.xboxNames = v)}
+        />
+        <Toggle
+          id="cache-field-psnNames" label={t('cache.settings.psnNames')}
+          description={t('cache.settings.psnNamesHelp')}
+          disabled={readOnly}
+          bind:checked={() => !!l.psnNames, (v) => (l.psnNames = v)}
+        />
       </div>
     </Panel>
 

@@ -633,6 +633,10 @@ export interface DownloadCacheSettings {
   allowPrivateUpstreams: boolean
   /** Look up Steam app names and icons (1.1.0; absent from older servers). */
   steamNames?: boolean
+  /** Look up Xbox / Microsoft Store package names and icons (1.2.0). */
+  xboxNames?: boolean
+  /** Look up PS4 title names and icons in the PlayStation Store (1.2.0). */
+  psnNames?: boolean
 }
 
 /** settings.Cache */

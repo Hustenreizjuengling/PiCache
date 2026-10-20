@@ -126,6 +126,8 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
   { route: CACHE, anchor: 'cache-set-clients', field: 'cache-field-nocacheClients', title: 'cache.settings.nocache', help: 'cache.settings.nocacheHelp', context: 'cache.settings.clientsTitle' },
   { route: CACHE, anchor: 'cache-set-clients', field: 'cache-field-allowPrivateUpstreams', title: 'cache.settings.privateUpstreams', help: 'cache.settings.privateUpstreamsHelp', context: 'cache.settings.clientsTitle' },
   { route: CACHE, anchor: 'cache-set-names', field: 'cache-field-steamNames', title: 'cache.settings.steamNames', help: 'cache.settings.steamNamesHelp', context: 'cache.settings.namesTitle' },
+  { route: CACHE, anchor: 'cache-set-names', field: 'cache-field-xboxNames', title: 'cache.settings.xboxNames', help: 'cache.settings.xboxNamesHelp', context: 'cache.settings.namesTitle' },
+  { route: CACHE, anchor: 'cache-set-names', field: 'cache-field-psnNames', title: 'cache.settings.psnNames', help: 'cache.settings.psnNamesHelp', context: 'cache.settings.namesTitle' },
   { route: CACHE, anchor: 'cache-set-retention', field: 'cache-field-maxAgeDays', title: 'cache.settings.maxAge', help: 'cache.settings.maxAgeHelp', context: 'cache.settings.retentionTitle' },
   { route: CACHE, anchor: 'cache-set-retention', field: 'cache-field-maxSizeBytes', title: 'cache.settings.maxSize', help: 'cache.settings.maxSizeHelp', context: 'cache.settings.retentionTitle' },
   { route: CACHE, anchor: 'cache-set-retention', field: 'cache-field-minFreeBytes', title: 'cache.settings.minFree', help: 'cache.settings.minFreeHelp', context: 'cache.settings.retentionTitle' },

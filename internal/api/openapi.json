@@ -1227,6 +1227,73 @@
         "x-picache-destructive": false
       }
     },
+    "/api/v1/cache/icons/{source}/{id}": {
+      "get": {
+        "operationId": "getCacheIconsStore",
+        "summary": "The icon of an Xbox package or PlayStation title",
+        "tags": [
+          "Cache store (library, maintenance)"
+        ],
+        "description": "Request: –\n\nResponse: (1.2.0) the stored icon of an Xbox / Microsoft Store package (source xbox, id = the package name of the group key xbox:<package>) or a PS4 title (source psn, id = CUSA…) (services.CatalogIcon): Content-Type: image/jpeg or image/png, Cache-Control: private, max-age=86400; 404 not_found for another source, while downloadCache.xboxNames / psnNames is off or none is stored, 400 id for an empty or longer than 128-byte ID",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "xbox",
+                "psn"
+              ]
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The icon of an Xbox package or PlayStation title.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "R",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
     "/api/v1/cache/groups/pin": {
       "post": {
         "operationId": "postCacheGroupsPin",
@@ -13565,6 +13632,12 @@
               "steamNames": {
                 "type": "boolean"
               },
+              "xboxNames": {
+                "type": "boolean"
+              },
+              "psnNames": {
+                "type": "boolean"
+              },
               "updateIntervalHours": {
                 "type": "integer"
               },
@@ -13594,7 +13667,9 @@
               "disabledServices",
               "nocacheClients",
               "allowPrivateUpstreams",
-              "steamNames"
+              "steamNames",
+              "xboxNames",
+              "psnNames"
             ]
           },
           "cache": {

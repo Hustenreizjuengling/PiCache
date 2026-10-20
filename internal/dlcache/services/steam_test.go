@@ -60,7 +60,7 @@ func steamEnv(t *testing.T) (*Registry, *testEnv, *[]time.Duration) {
 		e.cdn.set(infoPath(app), fakeResp{status: http.StatusOK, body: emptyApp(app)})
 	}
 	setSteamNames(t, e, true)
-	r.SetSteamClient(e.cdn.client(), "PiCache/test")
+	r.SetLookupClient(e.cdn.client(), "PiCache/test")
 	var slept []time.Duration
 	r.steam.sleep = func(ctx context.Context, d time.Duration) bool {
 		slept = append(slept, d)
@@ -117,12 +117,12 @@ func TestSteamNamesResolve(t *testing.T) {
 	if err != nil || !ok || !bytes.HasPrefix(icon, []byte{0xFF, 0xD8}) {
 		t.Fatalf("icon: %v %v %d bytes", ok, err, len(icon))
 	}
-	// One request per steamGap (the test clock stands still while waiting).
+	// One request per lookupGap (the test clock stands still while waiting).
 	if len(*slept) != 3 {
 		t.Fatalf("waits = %v", *slept)
 	}
 	for i, d := range *slept {
-		if want := time.Duration(i) * steamGap; d > want || d < want-100*time.Millisecond {
+		if want := time.Duration(i) * lookupGap; d > want || d < want-100*time.Millisecond {
 			t.Fatalf("waits = %v", *slept)
 		}
 	}
@@ -230,7 +230,7 @@ func TestSteamNamesUntrusted(t *testing.T) {
 	*slept = nil
 	e.cdn.set(infoPath(2567871), fakeResp{status: http.StatusOK, body: `{"status":"error"}`})
 	r.steam.resolve(ctx, 2567871)
-	if len(*slept) != 1 || (*slept)[0] < steamPause-time.Minute {
+	if len(*slept) != 1 || (*slept)[0] < lookupPause-time.Minute {
 		t.Fatalf("the next request did not wait for the pause: %v", *slept)
 	}
 	if _, known := r.steam.depots[2567871]; known {
@@ -269,9 +269,9 @@ func TestSteamNamesUntrusted(t *testing.T) {
 	}
 
 	// The daily budget.
-	r.steam.dayCount = steamPerDay
+	r.steam.dayCount = lookupPerDay
 	r.steam.dayStart = time.Now()
-	if err := r.steam.wait(ctx); err != errSteamBudget {
+	if err := r.steam.wait(ctx); err != errLookupBudget {
 		t.Fatalf("budget: %v", err)
 	}
 }

@@ -58,6 +58,13 @@ var migrations = []string{
 		kind       TEXT    NOT NULL DEFAULT '',
 		fetched_at INTEGER NOT NULL
 	);`,
+	// v3 (1.2.0): the store names cache (catalog.go).
+	`CREATE TABLE services_catalog (
+		group_key  TEXT    PRIMARY KEY,
+		name       TEXT    NOT NULL DEFAULT '',
+		icon       BLOB,
+		fetched_at INTEGER NOT NULL
+	) WITHOUT ROWID;`,
 }
 
 // customService is a row of services_custom; its host patterns are its

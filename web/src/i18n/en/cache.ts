@@ -656,10 +656,16 @@ export default {
   'settings.privateUpstreamsWarn':
     'Anyone who can use the cache may make PiCache fetch from devices in your network. Turn this off again when you are done testing.',
   'settings.namesTitle': 'Names in the Library',
-  'settings.namesText': 'How cached content is named.',
+  'settings.namesText': 'How cached content is named. Steamworks redistributables and Microsoft 365 update channels are named without asking anyone.',
   'settings.steamNames': 'Look up Steam game names and icons',
   'settings.steamNamesHelp':
     'Shows the game, workshop content or DLC instead of the Steam depot number. PiCache asks api.steamcmd.net, a third-party mirror of Steam’s app information, about the depots your network downloads and fetches the icons from Steam’s servers. Both see this machine’s public address and which games are being downloaded.',
+  'settings.xboxNames': 'Look up Xbox and Microsoft Store names and icons',
+  'settings.xboxNamesHelp':
+    'Shows the game or app instead of the package name (for example “Forza Horizon 5” instead of “624 F8 B84 B80”). PiCache asks Microsoft’s public product catalog about the packages your network downloads and fetches the icons from Microsoft’s image servers. Microsoft sees this machine’s public address and which games and apps are being downloaded.',
+  'settings.psnNames': 'Look up PlayStation names and icons',
+  'settings.psnNamesHelp':
+    'Shows the PS4 game instead of its title ID (CUSA…). PiCache asks the PlayStation Store about the titles your network downloads and fetches their icons from it. Sony sees this machine’s public address and which games are being downloaded. PS5 titles (PPSA…) are not listed there and keep their ID.',
   'settings.retentionTitle': 'Retention',
   'settings.retentionText': 'When cached content is removed. Pinned content is always kept.',
   'settings.maxAge': 'Remove content not used for',

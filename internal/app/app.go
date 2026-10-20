@@ -422,8 +422,11 @@ func (a *App) build(ctx context.Context) (err error) {
 	if a.services, err = services.New(ctx, a.cdb, a.set, fetch, a.paths.CacheDomainsDir, log); err != nil {
 		return fmt.Errorf("services: %w", err)
 	}
-	// Steam names (downloadCache.steamNames) go out directly like RDAP.
-	a.services.SetSteamClient(newWhoisClient(lookup46), "PiCache/"+version.Version)
+	// Steam and store names (downloadCache.steamNames, xboxNames, psnNames)
+	// go out directly like RDAP; an Xbox package's publisher is read from
+	// the file name of one of its cached objects.
+	a.services.SetLookupClient(newWhoisClient(lookup46), "PiCache/"+version.Version)
+	a.services.SetPathLookup(a.cachedPath)
 	// The DHCP tables exist on every installation (backups, restores); the
 	// server is switched on in the web UI (not with PICACHE_DHCP=off).
 	if a.dhcp, err = dhcp.New(ctx, dhcp.Deps{
