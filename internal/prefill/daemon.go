@@ -129,19 +129,28 @@ type Daemon struct {
 	wake    chan struct{}
 	restart context.CancelFunc
 
-	mu       sync.Mutex
-	settings prefillapi.Settings
-	hist     history
-	cacheSt  prefillapi.Cache
-	hosts    map[string]*prefillapi.Host
-	run      *jobRun
-	nextID   int64
-	stopping bool
+	mu         sync.Mutex
+	settings   prefillapi.Settings
+	hist       history
+	cacheSt    prefillapi.Cache
+	hosts      map[string]*prefillapi.Host
+	run        *jobRun
+	nextID     int64
+	stopping   bool
+	restarting bool
 }
 
-// Run starts the service and blocks until ctx ends. It also ends, once
-// no job and no sign-in runs, when the binary was replaced by an update:
-// systemd starts the new one (Restart=always).
+// ErrRestart: the binary was replaced by an update; the caller exits with
+// ExitRestart and systemd starts the new binary.
+var ErrRestart = errors.New("the picache binary was updated: restart")
+
+// ExitRestart is the exit code for ErrRestart (systemd restarts the unit
+// on it: Restart=on-failure).
+const ExitRestart = 75
+
+// Run starts the service and blocks until ctx ends. It also ends with
+// ErrRestart, once no job and no sign-in runs, when the binary was
+// replaced by an update.
 func Run(ctx context.Context, cfg Config) error {
 	d, err := newDaemon(cfg)
 	if err != nil {
@@ -188,6 +197,13 @@ func Run(ctx context.Context, cfg Config) error {
 	wg.Wait()
 	_ = os.Remove(cfg.Socket)
 	d.cache.close()
+	d.mu.Lock()
+	restart := d.restarting
+	d.mu.Unlock()
+	if restart {
+		d.log.Info("prefill service stopped to start the updated binary")
+		return ErrRestart
+	}
 	d.log.Info("prefill service stopped")
 	return nil
 }

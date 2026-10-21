@@ -34,3 +34,8 @@ func linkCount(fs.FileInfo) (uint64, bool) { return 0, false }
 func userFreeBytes(string) (uint64, bool) { return 0, false }
 
 func syncDir(string) {}
+
+// SystemPrefillHost has no systemd outside Linux.
+func SystemPrefillHost() PrefillHost {
+	return PrefillHost{CheckPrivileges: func() error { return errors.New("the prefill service needs Linux with systemd") }}
+}

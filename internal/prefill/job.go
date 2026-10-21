@@ -156,7 +156,9 @@ func (d *Daemon) scheduler(ctx context.Context) {
 		running := d.run != nil
 		d.mu.Unlock()
 		if !running && binaryReplaced() && d.steam.idle() {
-			d.log.Info("the picache binary was updated: the prefill service restarts")
+			d.mu.Lock()
+			d.restarting = true
+			d.mu.Unlock()
 			d.restart()
 			return
 		}

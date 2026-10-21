@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/hustenreizjuengling/picache/internal/config"
+	"github.com/hustenreizjuengling/picache/internal/prefill"
 	"github.com/hustenreizjuengling/picache/internal/update"
 	"github.com/hustenreizjuengling/picache/internal/version"
 )
@@ -266,8 +267,15 @@ func updateApplyPending() int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	log := newLogger(cfg)
+	// The prefill service switched on or off in the web UI (first: it takes
+	// seconds, an update minutes).
+	po := update.PrefillOptions{DataDir: cfg.DataDir, UnitFile: prefillUnitFor(bin), Host: update.SystemPrefillHost(), Log: log}
+	if err := update.PrefillApplyPending(ctx, po); err != nil {
+		fmt.Fprintln(os.Stderr, "update apply-pending: prefill:", err)
+	}
 	o := update.Options{BinPath: bin, DataDir: cfg.DataDir, Current: version.Version,
-		Host: update.SystemHost(localHealth), Log: newLogger(cfg)}
+		Host: update.SystemHost(localHealth), Log: log}
 	if err := update.ApplyPending(ctx, newReleaseClient(), o); err != nil {
 		fmt.Fprintln(os.Stderr, "update apply-pending:", err)
 		return 1
@@ -318,4 +326,9 @@ func confirm(question string) error {
 		fmt.Println()
 	}
 	return errDeclined
+}
+
+// prefillUnitFor is the prefill service's unit with ExecStart naming bin.
+func prefillUnitFor(bin string) string {
+	return strings.Replace(prefill.UnitFile, "ExecStart="+prefill.UnitBinary+" ", "ExecStart="+bin+" ", 1)
 }

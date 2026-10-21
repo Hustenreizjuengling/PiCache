@@ -380,7 +380,7 @@ func TestLockedRoutesSyncClassification(t *testing.T) {
 		"PUT /api/v1/system/tls", "DELETE /api/v1/system/tls", "POST /api/v1/system/tls/local-ca", "POST /api/v1/system/restore",
 		"DELETE /api/v1/system/backups/scheduled/files/{name}", "DELETE /api/v1/logs/queries", "DELETE /api/v1/stats",
 		"DELETE /api/v1/clients/known", "POST /api/v1/clients/known/flush", "PUT /api/v1/system/listeners",
-		"DELETE /api/v1/network/ports/device", "PUT /api/v1/prefill/settings", "PUT /api/v1/prefill/steam/selection",
+		"DELETE /api/v1/network/ports/device", "PUT /api/v1/prefill/settings", "PUT /api/v1/prefill/steam/selection", "PUT /api/v1/prefill/service",
 	}
 	e := newK1Env(t)
 	for _, r := range e.srv.routes {

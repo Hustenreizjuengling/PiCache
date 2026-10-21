@@ -180,8 +180,11 @@ type Deps struct {
 	// Prefill is the prefill service's socket (nil: GET /prefill reports
 	// it as not configured, the other prefill endpoints answer 503).
 	Prefill Prefill
-	UI      http.Handler // embedded web UI
-	Log     *slog.Logger
+	// PrefillHost switches the prefill service on or off through the root
+	// helper (nil: PUT /prefill/service answers 503).
+	PrefillHost PrefillHost
+	UI          http.Handler // embedded web UI
+	Log         *slog.Logger
 }
 
 // Server is the API + UI HTTP handler.

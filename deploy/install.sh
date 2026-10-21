@@ -662,6 +662,7 @@ write_update_dropins() {
 PathExists=
 PathExists=$DATA_DIR/update-requests/request
 PathExists=$DATA_DIR/update-requests/.claim
+PathExists=$DATA_DIR/prefill-requests/request
 EOF
 	cat >"$svc_dir/$PATHS_DROPIN" <<EOF
 # Written by install.sh for PICACHE_DATA_DIR=$DATA_DIR; rewritten on every run.

@@ -3190,6 +3190,16 @@ changes:
   health check warned after an update that the local CA does not cover
   such a name, no new CA is needed.
 
+### Upgrading to 1.4.1
+
+Nothing to do. The prefill is switched on in the web UI now (Cache →
+Prefill); `picache-update.path` also watches its requests (an update from
+the web UI installs the new path unit; with a custom `PICACHE_DATA_DIR`
+run the one-line installer once, which rewrites the path drop-in). If you
+ran `sudo picache prefill enable` with 1.4.0, the service could not start
+(its state directory was refused); the update replaces its unit and binary
+and it starts by itself.
+
 ### Upgrading to 1.4.0
 
 1.4.0 has no database migration and changes no unit of PiCache. New is
@@ -3597,20 +3607,26 @@ network. PiCache's web UI talks to it over the Unix socket
 root. The token is never sent to PiCache and is never in PiCache's
 databases, backups, support bundles or logs.
 
-**Turning it on.** The installer and the Debian package install the unit
-but leave it off. On the PiCache host:
+**Turning it on.** Open **Cache → Prefill** and choose **Switch the
+prefill on**. PiCache's update helper (the root helper that installs
+updates from the web UI) installs the service when the host has none yet,
+starts it and checks that it keeps running; when it does not, the page
+shows why (systemd's view and the service's last log lines). Then choose
+**Sign in with the Steam app**, scan the code with the Steam app on your
+phone (the shield, Steam Guard → scan a QR code) and confirm the sign-in of
+`PiCache Prefill (<host name>)`. Choose your games and either start a run
+(**Prefill now**) or switch the schedule on. **Switch off** stops the
+service again (the sign-in and the selection stay).
+
+Without the update helper (the Debian package, `install.sh
+--without-updater`) switch it on on the host once:
 
 ```sh
 sudo picache prefill enable
 ```
 
-It installs the unit when the host has none yet (an update from the web
-UI replaces installed units but never adds one), enables and starts it
-and waits until it answers. Then open **Cache → Prefill**, choose **Sign
-in with the Steam app**, scan the code with the Steam app on your phone
-(the shield, Steam Guard → scan a QR code) and confirm the sign-in of
-`PiCache Prefill (<host name>)`. Choose your games and either start a run
-(**Prefill now**) or switch the schedule on.
+It installs the unit when the host has none, enables and starts it and
+waits until it answers (else it prints the service's last log lines).
 
 **What it does.** A run signs in to Steam, reads the current version of
 every chosen game (the depots of the platforms and languages you choose
@@ -3630,7 +3646,7 @@ sign-in with your account's devices (Steam Guard), where you can end it
 too. Steam rejects a token after a password change, and when it expires
 (the page shows the date): the page then says so and offers a new sign-in.
 
-**Turning it off.**
+**Turning it off** on the host:
 
 ```sh
 sudo picache prefill disable            # stop it; the sign-in and the selection stay
@@ -3760,7 +3776,7 @@ flag or a `PICACHE_*_LISTEN` variable wins over them.
 | `picache db salvage --out FILE [--force]` | Copy every readable row of a damaged `picache.db` into the new file `FILE` (PiCache stopped; the source is never modified). Exit code `3` when rows were lost or skipped. Root or the service user. |
 | `picache prefill [serve]` | Run the prefill service (started by `picache-prefill.service`; never as root) ([Prefill](#prefill)). |
 | `picache prefill status` | Print the prefill service's status as JSON, through its socket. Root or PiCache's user. |
-| `picache prefill enable` | Root only. Install `picache-prefill.service` if the host has none, then enable and start it. |
+| `picache prefill enable` | Root only. Install `picache-prefill.service` if the host has none, then enable and start it (the web UI does the same through the update helper). |
 | `picache prefill disable [--forget]` | Root only. Stop and disable the prefill service; `--forget` also deletes its state (its Steam sign-in: sign out in the web UI first, which revokes it at Steam). |
 | `picache help` | Print the usage. |
 

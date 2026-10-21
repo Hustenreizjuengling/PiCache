@@ -105,7 +105,9 @@ func openStore(dir string) (*store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	fi, err := os.Lstat(dir)
+	// systemd's StateDirectory= with DynamicUser=yes is a symbolic link
+	// (/var/lib/<name> -> private/<name>): the directory it names counts.
+	fi, err := os.Stat(dir)
 	if err != nil {
 		return nil, err
 	}

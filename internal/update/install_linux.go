@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -183,4 +184,33 @@ func syncDir(dir string) {
 		_ = d.Sync()
 		d.Close()
 	}
+}
+
+// SystemPrefillHost is the real host of PrefillApplyPending.
+func SystemPrefillHost() PrefillHost {
+	return PrefillHost{
+		CheckPrivileges: func() error {
+			if os.Geteuid() != 0 {
+				return errors.New("must be run as root (sudo)")
+			}
+			return nil
+		},
+		Systemctl: systemctl,
+		Journal:   journal,
+		UnitDir:   systemdUnitDir(),
+		Strict:    true,
+	}
+}
+
+// journal returns the last lines a unit logged since t (best effort).
+func journal(ctx context.Context, unit string, since time.Time) string {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, systemBinary("journalctl"), "-u", unit, "--since", "@"+strconv.FormatInt(since.Add(-time.Second).Unix(), 10),
+		"-n", "15", "-o", "cat", "--no-pager")
+	cmd.Env = helperEnv
+	out := &cappedBuffer{max: 8 << 10}
+	cmd.Stdout, cmd.Stderr = out, out
+	_ = cmd.Run()
+	return out.String()
 }

@@ -33,7 +33,8 @@
     {
       interval: () => {
         const st = pf.data?.status
-        return st?.job || st?.steam.login?.state === 'waiting' ? 1_500 : 10_000
+        const fast = st?.job || st?.steam.login?.state === 'waiting' || pf.data?.setup?.state === 'running'
+        return fast ? 1_500 : 10_000
       },
     },
   )
@@ -53,10 +54,10 @@
   {:else if !pf.data}
     <Skeleton height="160px" />
   {:else if !pf.data.running || !status}
-    <Setup state={pf.data} onretry={refresh} />
+    <Setup info={pf.data} onchanged={refresh} />
     <Transparency status={undefined} />
   {:else}
-    <Status {status} onchanged={refresh} />
+    <Status {status} mode={pf.data.mode} onchanged={refresh} />
     <SteamAccount {status} onchanged={refresh} />
     {#if status.steam.account}
       <SteamGames {status} onchanged={refresh} />

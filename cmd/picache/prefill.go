@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -68,6 +69,9 @@ func prefillServe() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := prefill.Run(ctx, cfg); err != nil {
+		if errors.Is(err, prefill.ErrRestart) {
+			return prefill.ExitRestart
+		}
 		log.Error("picache prefill exited with error", "err", err)
 		return 1
 	}

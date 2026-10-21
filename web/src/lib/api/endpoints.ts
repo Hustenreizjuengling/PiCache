@@ -511,6 +511,8 @@ const prefill = {
   startJob: (force = false, o?: ReqOpts) => http.post<T.PrefillJob>('/prefill/jobs', { force }, o),
   cancelJob: (o?: ReqOpts) => http.del('/prefill/jobs/current', o),
   history: (o?: ReqOpts) => http.get<{ jobs: T.PrefillJob[] }>('/prefill/history', o),
+  /** Asks the root helper to switch the service on or off (202; 409 without the helper). */
+  setService: (enabled: boolean, o?: ReqOpts) => http.put<T.PrefillSetup>('/prefill/service', { enabled }, o),
 }
 
 // ---------------------------------------------------------------- cache store, proxy, downloads

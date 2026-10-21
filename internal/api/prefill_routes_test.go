@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json/v2"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/prefill/prefillapi"
+	"github.com/hustenreizjuengling/picache/internal/update"
 )
 
 // fakePrefill answers like the prefill service.
@@ -34,13 +37,57 @@ func (f *fakePrefill) Do(_ context.Context, method, path string, body any) (pref
 	return prefillapi.Response{Status: http.StatusNoContent}, nil
 }
 
+// fakePrefillHost is the root helper's queue.
+type fakePrefillHost struct {
+	mode     string
+	status   *update.PrefillStatus
+	requests []string
+}
+
+func (h *fakePrefillHost) Mode(context.Context) string   { return h.mode }
+func (h *fakePrefillHost) Status() *update.PrefillStatus { return h.status }
+func (h *fakePrefillHost) Request(_ context.Context, enable bool, by string) (*update.PrefillStatus, error) {
+	if h.mode != update.ModeHelper {
+		return nil, apperr.Conflict("the prefill service is switched on the host here")
+	}
+	h.requests = append(h.requests, fmt.Sprint(enable, " ", by))
+	h.status = &update.PrefillStatus{State: update.StateRunning, Action: "enable"}
+	return h.status, nil
+}
+
 func newPrefillEnv(t *testing.T, f *fakePrefill) (*coreEnv, string) {
 	t.Helper()
 	e := newCoreEnv(t)
 	d := e.srv.d
 	d.Prefill = f
+	d.PrefillHost = &fakePrefillHost{mode: update.ModeHelper}
 	e.srv = New(d)
 	return e, e.provisionAndLogin(t)
+}
+
+func TestPrefillService(t *testing.T) {
+	e, session := newPrefillEnv(t, &fakePrefill{})
+	h := e.srv.d.PrefillHost.(*fakePrefillHost)
+	w := e.do("GET", "/api/v1/prefill", "", session)
+	var st PrefillState
+	coreDecode(t, w, &st)
+	if st.Mode != update.ModeHelper || st.Setup != nil || st.Installed {
+		t.Fatalf("state %+v", st)
+	}
+	coreWantError(t, e.do("PUT", "/api/v1/prefill/service", `{}`, session), http.StatusBadRequest, "invalid", "enabled")
+	w = e.do("PUT", "/api/v1/prefill/service", `{"enabled":true}`, session)
+	if w.Code != http.StatusAccepted || len(h.requests) != 1 || h.requests[0] != "true admin" {
+		t.Fatalf("enable %d %s %v", w.Code, w.Body, h.requests)
+	}
+	coreDecode(t, e.do("GET", "/api/v1/prefill", "", session), &st)
+	if st.Setup == nil || st.Setup.State != update.StateRunning {
+		t.Fatalf("setup %+v", st.Setup)
+	}
+	if !slices.Contains(e.auditActions(t), "prefill.service.enable") {
+		t.Error("not audited")
+	}
+	h.mode = update.ModePackage
+	coreWantError(t, e.do("PUT", "/api/v1/prefill/service", `{"enabled":false}`, session), http.StatusConflict, "conflict", "")
 }
 
 func TestPrefillRoutes(t *testing.T) {
@@ -105,7 +152,7 @@ func TestPrefillRoutes(t *testing.T) {
 	f.down = true
 	w = e.do("GET", "/api/v1/prefill", "", session)
 	coreDecode(t, w, &st)
-	if w.Code != 200 || st.Running || !strings.Contains(st.Error, "sudo picache prefill enable") {
+	if w.Code != 200 || st.Running || !strings.Contains(st.Error, "switch it on under Cache") {
 		t.Fatalf("down state %+v", st)
 	}
 	coreWantError(t, e.do("GET", "/api/v1/prefill/history", "", session), http.StatusServiceUnavailable, "unavailable", "")

@@ -284,6 +284,8 @@ echo "PICACHE_DATA_DIR=/srv/pdata" >>/etc/picache/picache.env
 sh /src/deploy/install.sh --binary /tmp/picache >/dev/null
 grep -qx "PathExists=/srv/pdata/update-requests/request" /etc/systemd/system/picache-update.path.d/50-picache-paths.conf ||
 	fail "update path drop-in missing"
+grep -qx "PathExists=/srv/pdata/prefill-requests/request" /etc/systemd/system/picache-update.path.d/50-picache-paths.conf ||
+	fail "update path drop-in lacks the prefill requests"
 grep -qx "PathExists=" /etc/systemd/system/picache-update.path.d/50-picache-paths.conf || fail "default update paths not dropped"
 grep -qx "ReadWritePaths=-/srv/pdata" /etc/systemd/system/picache-update.service.d/50-picache-paths.conf ||
 	fail "update service drop-in missing"

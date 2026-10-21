@@ -6,12 +6,12 @@
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
-  import { api, type PrefillStatus } from '$lib/api'
+  import { api, type PrefillState, type PrefillStatus } from '$lib/api'
   import { formatBytes, formatDateTime, formatPercent, formatRelative } from '$lib/format'
   import { session } from '$lib/session.svelte'
   import { Button, Chip, KeyValue, Meter, Notice, Panel, confirm, toast } from '$lib/ui'
 
-  let { status, onchanged }: { status: PrefillStatus; onchanged: () => void } = $props()
+  let { status, mode, onchanged }: { status: PrefillStatus; mode: PrefillState['mode']; onchanged: () => void } = $props()
 
   const job = $derived(status.job)
   const selected = $derived(status.settings.steam.apps.length)
@@ -54,6 +54,18 @@
     }
   }
 
+  // Switching the service off through the root helper (the sign-in and
+  // the selection stay).
+  async function switchOff() {
+    const ok = await confirm({
+      title: t('cache.prefill.status.offTitle'),
+      message: t('cache.prefill.status.offText'),
+      confirmLabel: t('cache.prefill.status.off'),
+      action: () => api.prefill.setService(false),
+    })
+    if (ok) onchanged()
+  }
+
   async function checkCache() {
     checking = true
     try {
@@ -82,6 +94,9 @@
     {:else}
       <Button icon="download" variant="primary" loading={busy} disabled={!canStart} onclick={() => start(false)}>{t('cache.prefill.status.start')}</Button>
       <Button icon="refresh" disabled={!canStart || busy} onclick={() => start(true)}>{t('cache.prefill.status.force')}</Button>
+      {#if mode === 'helper'}
+        <Button icon="power" variant="ghost" disabled={!session.isAdmin} onclick={switchOff}>{t('cache.prefill.status.off')}</Button>
+      {/if}
     {/if}
   {/snippet}
   <div class="stack">

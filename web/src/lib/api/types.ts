@@ -3609,6 +3609,20 @@ export interface PrefillState {
   /** Why the service is not reachable. */
   error: string
   status: PrefillStatus | null
+  /** How the service is switched on: helper (the button of the web UI), package, docker, manual (a command on the host). */
+  mode: 'helper' | 'package' | 'docker' | 'manual'
+  /** The last switch request through the root helper. */
+  setup: PrefillSetup | null
+}
+
+/** A request to the root helper to switch the prefill service on or off. */
+export interface PrefillSetup {
+  state: 'running' | 'succeeded' | 'failed'
+  action: 'enable' | 'disable'
+  startedAt: string
+  finishedAt?: string
+  /** The outcome; for a failed start also systemd's view and the service's journal (several lines). */
+  message: string
 }
 
 export interface PrefillStatus {

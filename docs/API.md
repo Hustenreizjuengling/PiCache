@@ -439,11 +439,11 @@ The download services come from the cache-domains lists (uklans/cache-domains) p
 
 ## Prefill — `routes_prefill.go`
 
-The prefill service (`picache prefill`, ARCHITECTURE 20) runs as a process of its own; these endpoints pass the admin's requests to its Unix socket (`PICACHE_PREFILL_SOCKET`). Bodies are checked against the types first (unknown members refused). No answer ever carries a store token. While the service does not run, every endpoint but `GET /prefill` answers 503 `unavailable` ("the prefill service is not running: … `sudo picache prefill enable`").
+The prefill service (`picache prefill`, ARCHITECTURE 20) runs as a process of its own; these endpoints pass the admin's requests to its Unix socket (`PICACHE_PREFILL_SOCKET`). Bodies are checked against the types first (unknown members refused). No answer ever carries a store token. While the service does not run, every endpoint but `GET /prefill` and `PUT /prefill/service` answers 503 `unavailable` ("the prefill service is not running: switch it on under Cache → Prefill …").
 
 | Method & path | P | Request | Response |
 |---|---|---|---|
-| GET `/prefill` | A | `?checkCache=true` runs the cache heartbeat first | `{installed, running, socket, error, status: {version, started, cache {url, ok, instanceId, error, checkedAt}, settings, steam {deviceName, account {name, steamId, deviceName, since, expires, error}\|null, login {state: waiting\|done\|failed\|expired\|cancelled, challengeUrl, scanned, started, error}\|null}, job: Job\|null, nextRun, hosts [{host, protocol, purpose: steam-directory\|steam-cm\|cache, lastUsed}]}\|null}` (always 200) |
+| GET `/prefill` | A | `?checkCache=true` runs the cache heartbeat first | `{installed, running, socket, error, mode: helper\|package\|docker\|manual (how the service is switched on; 1.4.1), setup: Setup\|null (1.4.1), status: {version, started, cache {url, ok, instanceId, error, checkedAt}, settings, steam {deviceName, account {name, steamId, deviceName, since, expires, error}\|null, login {state: waiting\|done\|failed\|expired\|cancelled, challengeUrl, scanned, started, error}\|null}, job: Job\|null, nextRun, hosts [{host, protocol, purpose: steam-directory\|steam-cm\|cache, lastUsed}]}\|null}` (always 200) |
 | GET `/prefill/settings` | A | – | `{schedule {enabled, days [0–6, 0 = Sunday], start "HH:MM", end "HH:MM"}, maxMbps (0 = no limit), connections (1–32), steam {os [windows\|macos\|linux], languages [Steam language names], apps [app ID]}}` |
 | PUT `/prefill/settings` | A | the whole settings | the settings, normalised (400 with the reason) |
 | POST `/prefill/steam/login` | A | – | `login` (`waiting` with the `challengeUrl` the QR code encodes; 409 while signed in) |
@@ -454,8 +454,9 @@ The prefill service (`picache prefill`, ARCHITECTURE 20) runs as a process of it
 | POST `/prefill/jobs` | A | `{force?}` or no body | 202 `Job` (409 while a job runs or with nothing to do) |
 | DELETE `/prefill/jobs/current` | A | – | 204 (404 when none runs) |
 | GET `/prefill/history` | A | – | `{jobs: [Job]}` (newest first, ≤ 20) |
+| PUT `/prefill/service` | A | `{enabled:bool}` | (1.4.1) 202 `Setup` = `{state: running\|succeeded\|failed, action: enable\|disable, startedAt, finishedAt?, message}`: the root helper installs the unit when the host has none and starts it, or stops it; `message` of a failed start holds systemd's view and the service's last log lines; 409 without the helper (`mode` other than `helper`) or while a request runs |
 
-`Job`: `{id, trigger: manual|schedule, state: running|done|failed|cancelled|stopped, started, finished, error, current, apps [{service, id, name, state: pending|running|done|current|failed, bytes, total, error}], bytes, fromCache, total, hosts [string]}`. `PUT /prefill/settings` and `PUT /prefill/steam/selection` are locked by `PICACHE_CONFIG_LOCKED`; the others are exempt. Audit: `prefill.settings`, `prefill.steam.selection`, `prefill.steam.login`, `prefill.steam.logout`, `prefill.job.start`, `prefill.job.cancel`.
+`Job`: `{id, trigger: manual|schedule, state: running|done|failed|cancelled|stopped, started, finished, error, current, apps [{service, id, name, state: pending|running|done|current|failed, bytes, total, error}], bytes, fromCache, total, hosts [string]}`. `PUT /prefill/settings`, `PUT /prefill/steam/selection` and `PUT /prefill/service` are locked by `PICACHE_CONFIG_LOCKED`; the others are exempt. Audit: `prefill.settings`, `prefill.steam.selection`, `prefill.steam.login`, `prefill.steam.logout`, `prefill.job.start`, `prefill.job.cancel`, `prefill.service.enable`, `prefill.service.disable`.
 
 ## Cache store (library, maintenance) — `routes_cache.go`
 

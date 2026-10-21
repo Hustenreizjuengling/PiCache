@@ -1,38 +1,77 @@
 <!--
   @component
-  The prefill service does not run: what it is, and how to start it (the
-  systemd unit, or the second container in Docker). An installed service
-  that does not answer shows why.
+  The prefill service does not run: switch it on here (the root helper
+  installs the unit when needed, enables and starts it; a start that fails
+  shows systemd's view and the service's journal), or, without the helper
+  (Debian package, Docker, --without-updater), the command for the host.
 -->
 <script lang="ts">
   import { t } from '$i18n/index.svelte'
-  import type { PrefillState } from '$lib/api'
-  import { Button, CopyButton, Notice, Panel } from '$lib/ui'
+  import { api, type PrefillState } from '$lib/api'
+  import { session } from '$lib/session.svelte'
+  import { Button, CopyButton, Notice, Panel, Spinner, toast } from '$lib/ui'
 
-  let { state, onretry }: { state: PrefillState; onretry: () => void } = $props()
+  let { info, onchanged }: { info: PrefillState; onchanged: () => void } = $props()
 
-  const COMMAND = 'sudo picache prefill enable'
+  const setup = $derived(info.setup)
+  const busy = $derived(setup?.state === 'running')
+  const failed = $derived(setup?.state === 'failed' && setup.action === 'enable')
+  const command = $derived(
+    info.mode === 'docker' ? 'docker compose --profile prefill up -d' : 'sudo picache prefill enable',
+  )
+
+  let sending = $state(false)
+  async function enable() {
+    sending = true
+    try {
+      await api.prefill.setService(true)
+      onchanged()
+    } catch (err) {
+      toast.error(err)
+    } finally {
+      sending = false
+    }
+  }
 </script>
 
 <Panel title={t('cache.prefill.title')} description={t('cache.prefill.description')}>
   {#snippet actions()}
-    <Button icon="refresh" onclick={onretry}>{t('cache.prefill.setup.check')}</Button>
+    {#if info.mode === 'helper'}
+      <Button icon="power" variant="primary" loading={sending || busy} disabled={!session.isAdmin} onclick={enable}>
+        {failed ? t('cache.prefill.setup.retry') : t('cache.prefill.setup.enable')}
+      </Button>
+    {:else}
+      <Button icon="refresh" onclick={onchanged}>{t('cache.prefill.setup.check')}</Button>
+    {/if}
   {/snippet}
   <div class="stack">
-    <Notice tone={state.installed ? 'warn' : 'info'} title={state.installed ? t('cache.prefill.setup.notAnswering') : t('cache.prefill.setup.notRunning')}>
-      {#if state.installed && state.error}{state.error}{:else}{t('cache.prefill.setup.why')}{/if}
-    </Notice>
-    <p>{t('cache.prefill.setup.systemd')}</p>
-    <div class="code">
-      <pre class="mono">{COMMAND}</pre>
-      <span class="copy"><CopyButton text={COMMAND} label={t('cache.prefill.setup.copy')} /></span>
-    </div>
-    <p class="muted small">{t('cache.prefill.setup.docker')}</p>
-    <p class="muted small">{t('cache.prefill.setup.socket', { socket: state.socket || '/run/picache-prefill/prefill.sock' })}</p>
+    {#if busy}
+      <p class="row strong" role="status"><Spinner size={18} />{t('cache.prefill.setup.running')}</p>
+    {:else if failed && setup}
+      <Notice tone="fail" title={t('cache.prefill.setup.failed')}>
+        <pre class="mono report">{setup.message}</pre>
+      </Notice>
+    {:else if info.installed && info.error}
+      <Notice tone="warn" title={t('cache.prefill.setup.notAnswering')}>{info.error}</Notice>
+    {/if}
+    <p>{t('cache.prefill.setup.why')}</p>
+    {#if info.mode === 'helper'}
+      <p class="muted small">{t('cache.prefill.setup.helper')}</p>
+    {:else}
+      <p>{info.mode === 'docker' ? t('cache.prefill.setup.docker') : t('cache.prefill.setup.host')}</p>
+      <div class="code">
+        <pre class="mono">{command}</pre>
+        <span class="copy"><CopyButton text={command} label={t('cache.prefill.setup.copy')} /></span>
+      </div>
+    {/if}
   </div>
 </Panel>
 
 <style>
+  .strong {
+    font-weight: 600;
+    gap: var(--sp-2);
+  }
   .code {
     position: relative;
   }
@@ -45,6 +84,13 @@
     background: var(--surface-2);
     font-size: var(--fs-sm);
     white-space: pre;
+  }
+  pre.report {
+    margin-top: var(--sp-2);
+    padding: var(--sp-2);
+    max-height: 240px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .copy {
     position: absolute;

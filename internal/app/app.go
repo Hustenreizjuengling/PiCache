@@ -572,7 +572,8 @@ func (a *App) build(ctx context.Context) (err error) {
 		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
 		Parental: a.parental, Network: a.network, Ports: a.portsAPI(), DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, AppLog: a.appLog, Diag: a,
 		Encrypted: a, Listeners: a, Sync: a.sync, Prefill: prefillapi.NewClient(a.cfg.PrefillSocket),
-		UI: webui.Handler(), Log: log,
+		PrefillHost: &prefillHost{dataDir: a.cfg.DataDir, updates: a.updates, log: log, now: time.Now},
+		UI:          webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})
 	// Every component migrated: record the schema with this version, so

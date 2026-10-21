@@ -5,6 +5,28 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The prefill is switched on in the web UI.** Cache → Prefill has the
+  button **Switch the prefill on**: PiCache's update helper installs the
+  service when the host has none yet, starts it and checks that it keeps
+  running; when it does not, the page shows why, with systemd's view and
+  the service's last log lines. **Switch off** stops it again (the Steam
+  sign-in and the selection stay). `sudo picache prefill enable` is left
+  for installations without the update helper (the Debian package,
+  `--without-updater`).
+
+### Fixed
+
+- The prefill service did not start under systemd: it refused its state
+  directory, which `DynamicUser=yes` reaches through a symbolic link
+  (`/var/lib/picache-prefill`), and then restarted every 5 seconds.
+  `sudo picache prefill enable` reported "does not answer". After the
+  update it starts by itself; it now gives up after six failed starts in
+  ten minutes instead of restarting forever, and leaves out two sandbox
+  options an unprivileged LXC container may not grant (`ProtectClock=`,
+  `ProcSubset=`).
+
 ## [1.4.0] - 2026-10-21
 
 ### Added

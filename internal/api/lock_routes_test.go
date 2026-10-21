@@ -95,8 +95,9 @@ var expectedClasses = func() map[string]routeClass {
 		"DELETE /api/v1/clients/known", "PUT /api/v1/system/listeners",
 		// 1.1.0: forgetting a device's port check results.
 		"DELETE /api/v1/network/ports/device",
-		// 1.4.0: the prefill service's settings and game selection.
-		"PUT /api/v1/prefill/settings", "PUT /api/v1/prefill/steam/selection")
+		// 1.4.0: the prefill service's settings and game selection; 1.4.1:
+		// switching the service on or off.
+		"PUT /api/v1/prefill/settings", "PUT /api/v1/prefill/steam/selection", "PUT /api/v1/prefill/service")
 	add(destroy,
 		"POST /api/v1/system/restore", "POST /api/v1/dhcp/reset", "DELETE /api/v1/dhcp/leases",
 		"POST /api/v1/cache/services/{service}/purge", "POST /api/v1/cache/groups/delete", "POST /api/v1/storage/targets/{id}/init",

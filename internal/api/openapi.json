@@ -13164,7 +13164,7 @@
         "tags": [
           "Prefill"
         ],
-        "description": "Request: –\n\nResponse: PrefillState (always 200: installed, running and the service's status; error says why it is not reachable)",
+        "description": "Request: –\n\nResponse: PrefillState (always 200: installed, running and the service's status; error says why it is not reachable; mode says how the service is switched on, setup the last switch request through the root helper)",
         "parameters": [
           {
             "name": "checkCache",
@@ -13692,6 +13692,72 @@
         ],
         "x-picache-permission": "A",
         "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/service": {
+      "put": {
+        "operationId": "putPrefillService",
+        "summary": "Switch the prefill service on or off",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: {enabled:bool}\n\nResponse: 202 PrefillSetup (the root helper installs the unit when the host has none, enables and starts it, or stops and disables it; 409 without the helper (mode other than helper) or while a request runs)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillSetup"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "locked",
         "x-picache-destructive": false
       }
     }
@@ -22239,6 +22305,25 @@
                 "type": "null"
               }
             ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "helper",
+              "package",
+              "docker",
+              "manual"
+            ]
+          },
+          "setup": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PrefillSetup"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -22246,7 +22331,9 @@
           "running",
           "socket",
           "error",
-          "status"
+          "status",
+          "mode",
+          "setup"
         ]
       },
       "PrefillStatus": {
@@ -22737,6 +22824,43 @@
           "fromCache",
           "total",
           "hosts"
+        ]
+      },
+      "PrefillSetup": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "succeeded",
+              "failed"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "enable",
+              "disable"
+            ]
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "action",
+          "startedAt",
+          "message"
         ]
       }
     }

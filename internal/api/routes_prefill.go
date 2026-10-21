@@ -9,6 +9,7 @@ import (
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
 	"github.com/hustenreizjuengling/picache/internal/prefill/prefillapi"
+	"github.com/hustenreizjuengling/picache/internal/update"
 )
 
 // The prefill endpoints pass the admin's requests on to the prefill
@@ -23,6 +24,18 @@ type Prefill interface {
 	Socket() string
 }
 
+// PrefillHost switches the prefill service on or off through the root
+// helper (app.prefillHost).
+type PrefillHost interface {
+	// Mode: helper (switched from the web UI), package, docker, manual.
+	Mode(ctx context.Context) string
+	// Status is the last request's state (nil: none).
+	Status() *update.PrefillStatus
+	// Request queues enable or disable (apperr.Conflict without the
+	// helper or while a request runs).
+	Request(ctx context.Context, enable bool, by string) (*update.PrefillStatus, error)
+}
+
 // PrefillState is GET /prefill: whether the service runs, and its status.
 type PrefillState struct {
 	// Installed: the socket exists. Running: the service answered.
@@ -31,6 +44,11 @@ type PrefillState struct {
 	Socket    string             `json:"socket"`
 	Error     string             `json:"error"`
 	Status    *prefillapi.Status `json:"status"`
+	// Mode says how the service is switched on: helper (the button of the
+	// web UI), package, docker or manual (a command on the host).
+	Mode string `json:"mode"`
+	// Setup is the last switch request through the helper.
+	Setup *update.PrefillStatus `json:"setup"`
 }
 
 // prefillWait bounds the calls that talk to Steam (sign-in, game list).
@@ -48,10 +66,38 @@ func (s *Server) registerPrefillRoutes() {
 	s.route("POST /api/v1/prefill/jobs", permAdmin, s.prefillStartJob, routeExempt)
 	s.route("DELETE /api/v1/prefill/jobs/current", permAdmin, s.prefillCancelJob, routeExempt)
 	s.route("GET /api/v1/prefill/history", permAdmin, s.prefillHistory)
+	s.route("PUT /api/v1/prefill/service", permAdmin, s.prefillSetService)
 }
 
-var errPrefillNotRunning = apperr.Unavailable("the prefill service is not running: start it on the host with " +
-	"`sudo picache prefill enable` (docs/DEPLOYMENT.md, Prefill)")
+// prefillSetService asks the root helper to switch the prefill service on
+// or off (202 with the request's state).
+func (s *Server) prefillSetService(w http.ResponseWriter, r *http.Request) error {
+	if s.d.PrefillHost == nil {
+		return apperr.Unavailable("the prefill service cannot be switched here")
+	}
+	var in struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	if in.Enabled == nil {
+		return apperr.Invalid("enabled", "required")
+	}
+	st, err := s.d.PrefillHost.Request(r.Context(), *in.Enabled, principal(r).Username)
+	if err != nil {
+		return err
+	}
+	action := "prefill.service.disable"
+	if *in.Enabled {
+		action = "prefill.service.enable"
+	}
+	s.audit(r, action, "", nil)
+	return writeJSON(w, http.StatusAccepted, st)
+}
+
+var errPrefillNotRunning = apperr.Unavailable("the prefill service is not running: switch it on under Cache → Prefill " +
+	"(or on the host: `sudo picache prefill enable`, docs/DEPLOYMENT.md, Prefill)")
 
 // prefillCall sends one request and decodes a 2xx answer into out (nil:
 // no body). An error answer becomes the apperr of its code.
@@ -95,7 +141,11 @@ func (s *Server) prefillCall(ctx context.Context, method, path string, body, out
 }
 
 func (s *Server) prefillState(w http.ResponseWriter, r *http.Request) error {
-	st := PrefillState{}
+	st := PrefillState{Mode: update.ModeManual}
+	if s.d.PrefillHost != nil {
+		st.Mode = s.d.PrefillHost.Mode(r.Context())
+		st.Setup = s.d.PrefillHost.Status()
+	}
 	if s.d.Prefill == nil {
 		st.Error = "not configured"
 		return ok(w, st)

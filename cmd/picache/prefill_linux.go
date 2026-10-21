@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hustenreizjuengling/picache/internal/prefill"
 	"github.com/hustenreizjuengling/picache/internal/prefill/prefillapi"
 )
 
@@ -47,8 +46,7 @@ func prefillEnable(args []string) int {
 			fmt.Fprintln(os.Stderr, "picache prefill enable: cannot find this binary:", err)
 			return 1
 		}
-		unit := strings.Replace(prefill.UnitFile, "ExecStart="+prefill.UnitBinary+" ", "ExecStart="+exe+" ", 1)
-		if err := writeUnitFile(prefillUnitDir, prefillUnit, []byte(unit)); err != nil {
+		if err := writeUnitFile(prefillUnitDir, prefillUnit, []byte(prefillUnitFor(exe))); err != nil {
 			fmt.Fprintln(os.Stderr, "picache prefill enable:", err)
 			return 1
 		}
@@ -75,7 +73,18 @@ func prefillEnable(args []string) int {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	fmt.Fprintln(os.Stderr, "picache prefill enable: the service was started but does not answer; see: journalctl -u picache-prefill")
+	fmt.Fprintln(os.Stderr, "picache prefill enable: the service was started but does not answer. Its last log lines:")
+	jctx, jcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer jcancel()
+	cmd := exec.CommandContext(jctx, "/usr/bin/journalctl", "-u", prefillUnit, "-n", "15", "-o", "cat", "--no-pager")
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "SYSTEMD_PAGER=", "SYSTEMD_COLORS=0"}
+	if out, err := cmd.CombinedOutput(); err == nil {
+		for l := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+			fmt.Fprintln(os.Stderr, "  "+escapeControls(l))
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "(see: journalctl -u picache-prefill)")
+	}
 	return 1
 }
 
