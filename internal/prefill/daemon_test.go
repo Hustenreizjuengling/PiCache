@@ -355,7 +355,11 @@ func TestWindow(t *testing.T) {
 
 func TestPeerAllowed(t *testing.T) {
 	d := &Daemon{cfg: Config{ClientUIDs: []int{4242}}}
-	for uid, want := range map[int]bool{0: true, os.Getuid(): true, 4242: true, 4243: os.Getuid() == 4243, -1: false} {
+	cases := map[int]bool{0: true, 4242: true, 4243: os.Getuid() == 4243, -1: false}
+	if u := os.Getuid(); u >= 0 { // -1 outside Unix
+		cases[u] = true
+	}
+	for uid, want := range cases {
 		if got := d.peerAllowed(context.WithValue(context.Background(), ctxKeyPeer{}, uid)); got != want {
 			t.Errorf("uid %d: %v", uid, got)
 		}
