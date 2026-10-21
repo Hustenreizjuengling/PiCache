@@ -58,11 +58,17 @@ func (d *Daemon) handler() http.Handler {
 		return reply(w, d.currentSettings())
 	})
 	h("PUT /v1/settings", func(w http.ResponseWriter, r *http.Request) error {
-		var s prefillapi.Settings
-		if err := decode(r, &s); err != nil {
+		var in prefillapi.Settings
+		if err := decode(r, &in); err != nil {
 			return err
 		}
-		s, err := d.setSettings(s)
+		// The game selections change only through their own routes: a
+		// page that saves the other settings from an older view must not
+		// undo a selection saved meanwhile.
+		s, err := d.updateSettings(func(cur *prefillapi.Settings) {
+			in.Steam.Apps, in.BattleNet.Products, in.Epic.Apps = cur.Steam.Apps, cur.BattleNet.Products, cur.Epic.Apps
+			*cur = in
+		})
 		if err != nil {
 			return err
 		}
@@ -73,9 +79,7 @@ func (d *Daemon) handler() http.Handler {
 		if err := decode(r, &sel); err != nil {
 			return err
 		}
-		s := d.currentSettings()
-		s.Steam.Apps = sel.Apps
-		s, err := d.setSettings(s)
+		s, err := d.updateSettings(func(cur *prefillapi.Settings) { cur.Steam.Apps = sel.Apps })
 		if err != nil {
 			return err
 		}
@@ -119,9 +123,7 @@ func (d *Daemon) handler() http.Handler {
 		if err := decode(r, &sel); err != nil {
 			return err
 		}
-		s := d.currentSettings()
-		s.BattleNet.Products = sel.Products
-		s, err := d.setSettings(s)
+		s, err := d.updateSettings(func(cur *prefillapi.Settings) { cur.BattleNet.Products = sel.Products })
 		if err != nil {
 			return err
 		}
@@ -158,9 +160,7 @@ func (d *Daemon) handler() http.Handler {
 		if err := decode(r, &sel); err != nil {
 			return err
 		}
-		s := d.currentSettings()
-		s.Epic.Apps = sel.Apps
-		s, err := d.setSettings(s)
+		s, err := d.updateSettings(func(cur *prefillapi.Settings) { cur.Epic.Apps = sel.Apps })
 		if err != nil {
 			return err
 		}

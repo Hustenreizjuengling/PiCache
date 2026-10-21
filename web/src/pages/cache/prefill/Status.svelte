@@ -14,8 +14,14 @@
   let { status, mode, onchanged }: { status: PrefillStatus; mode: PrefillState['mode']; onchanged: () => void } = $props()
 
   const job = $derived(status.job)
-  const selected = $derived(status.settings.steam.apps.length)
-  const canStart = $derived(session.canOperate && !job && !!status.steam.account && selected > 0)
+  // Like the service: a store counts with games chosen and, where it needs
+  // one, a sign-in.
+  const ready = $derived(
+    (!!status.steam.account && status.settings.steam.apps.length > 0) ||
+      status.settings.battleNet.products.length > 0 ||
+      (!!status.epic.account && status.settings.epic.apps.length > 0),
+  )
+  const canStart = $derived(session.canOperate && !job && ready)
 
   let busy = $state(false)
   let checking = $state(false)
@@ -118,7 +124,7 @@
         {/snippet}
       </Notice>
     {/if}
-    {#if !job && status.steam.account && selected === 0}
+    {#if !job && !ready}
       <p class="muted small">{t('cache.prefill.status.nothingSelected')}</p>
     {/if}
     {#if job}

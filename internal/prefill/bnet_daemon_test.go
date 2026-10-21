@@ -108,9 +108,14 @@ func TestDaemonBattleNetFlow(t *testing.T) {
 		t.Fatalf("second job %+v, %d requests", j, bnetRequests(fs, "wow"))
 	}
 
-	// Another language is another download.
+	// Another language is another download. The settings (sent from an
+	// older view, without the selection) leave the selection alone.
 	set.BattleNet.Locale = "enUS"
-	e.call("PUT", "/v1/settings", set, nil, 200)
+	var got prefillapi.Settings
+	e.call("PUT", "/v1/settings", set, &got, 200)
+	if !slices.Equal(got.BattleNet.Products, []string{"s1", "wow"}) || got.BattleNet.Locale != "enUS" {
+		t.Fatalf("settings %+v", got.BattleNet)
+	}
 	e.call("GET", "/v1/battlenet/products", nil, &ps, 200)
 	if byCode("wow").Current {
 		t.Error("current in another language")

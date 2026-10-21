@@ -450,14 +450,17 @@ func (d *Daemon) currentSettings() prefillapi.Settings {
 	return cloneSettings(d.settings)
 }
 
-// setSettings validates, stores and applies settings.
-func (d *Daemon) setSettings(s prefillapi.Settings) (prefillapi.Settings, error) {
+// updateSettings changes the settings in one step (read, change, check,
+// store), so concurrent changes of different parts never undo each other.
+func (d *Daemon) updateSettings(change func(*prefillapi.Settings)) (prefillapi.Settings, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s := cloneSettings(d.settings)
+	change(&s)
 	s, err := validateSettings(s)
 	if err != nil {
 		return s, invalid(err.Error())
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	if err := d.st.save(fileSettings, s); err != nil {
 		return s, err
 	}

@@ -1,7 +1,8 @@
 <!--
   @component
   A store's games with a check box each: which ones the prefill downloads.
-  The selection is edited here and saved explicitly. Each game shows its
+  A change is saved shortly after the last click (and when the tab is
+  left); the filter only narrows the view, never the selection. Each game shows its
   size or version (when the store says) and whether its current version is
   already in the cache. Used by the Steam, Battle.net and Epic tabs.
 -->
@@ -22,7 +23,7 @@
   import { t, tn } from '$i18n/index.svelte'
   import { formatBytes, formatDate, formatNumber, formatRelative } from '$lib/format'
   import { session } from '$lib/session.svelte'
-  import { Button, Chip, EmptyState, Input, Notice, Panel, Table, toast, type Column } from '$lib/ui'
+  import { Button, Chip, EmptyState, Icon, Input, Notice, Panel, Table, toast, type Column } from '$lib/ui'
 
   interface Props {
     title: string
@@ -48,9 +49,60 @@
   let { title, description, store, rows, saved, loading, loadError, readError, updated, sizes = false, onretry, onread, onsave }: Props =
     $props()
 
-  let draft = $state<string[] | undefined>(undefined)
-  const checked = $derived(draft ?? saved)
-  const dirty = $derived(draft !== undefined && (draft.length !== saved.length || draft.some((id) => !saved.includes(id))))
+  // The selection is saved as it changes: pending holds it from the click
+  // until the saved one (the status) shows it.
+  let pending = $state<string[] | undefined>(undefined)
+  const checked = $derived(pending ?? saved)
+  let queued = $state(false)
+  let saving = $state(false)
+  let savedOnce = $state(false)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let again = false
+
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((id) => b.includes(id))
+
+  function change(ids: string[]) {
+    pending = ids
+    queued = true
+    clearTimeout(timer)
+    timer = setTimeout(() => void flush(), 500)
+  }
+
+  async function flush() {
+    clearTimeout(timer)
+    timer = undefined
+    if (saving) {
+      again = true
+      return
+    }
+    queued = false
+    const ids = pending
+    if (!ids) return
+    saving = true
+    try {
+      await onsave(ids)
+      savedOnce = true
+    } catch (err) {
+      toast.error(err)
+      pending = undefined
+    } finally {
+      saving = false
+      if (again) {
+        again = false
+        void flush()
+      }
+    }
+  }
+
+  // Once the status shows the saved selection, it is the source again.
+  $effect(() => {
+    if (pending && !saving && !queued && same(pending, saved)) pending = undefined
+  })
+
+  // Leaving the tab saves what still waits.
+  $effect(() => () => {
+    if (timer) void flush()
+  })
 
   let filter = $state('')
   const shown = $derived.by(() => {
@@ -69,21 +121,6 @@
       toast.error(err)
     } finally {
       reading = false
-    }
-  }
-
-  let saving = $state(false)
-  async function save() {
-    if (!draft) return
-    saving = true
-    try {
-      await onsave(draft)
-      draft = undefined
-      toast.success(t('cache.prefill.games.saved'))
-    } catch (err) {
-      toast.error(err)
-    } finally {
-      saving = false
     }
   }
 
@@ -130,6 +167,11 @@
         {tn('cache.prefill.games.chosen', checked.length, { count: formatNumber(checked.length) })}
       {/if}
       {#if updated}· {t('cache.prefill.games.updated', { time: formatRelative(updated) })}{/if}
+      {#if queued || saving}
+        · <span class="saving">{t('cache.prefill.games.saving')}</span>
+      {:else if savedOnce}
+        · <span class="done"><Icon name="check" size={14} /> {t('cache.prefill.games.saved')}</span>
+      {/if}
     </span>
   </div>
   {#if readError}
@@ -142,7 +184,8 @@
     {columns}
     sort={{ key: 'name', desc: false }}
     selectable={session.isAdmin}
-    bind:checked={() => checked, (v) => (draft = v.map(String))}
+    keepHidden
+    bind:checked={() => checked, (v) => change(v.map(String))}
     checkLabel={(g) => t('cache.prefill.games.select', { name: g.name })}
     loading={loading && !rows}
     error={loadError}
@@ -153,12 +196,6 @@
       <EmptyState compact icon="gamepad" title={filter ? t('cache.prefill.games.noMatch') : t('cache.prefill.games.empty')} />
     {/snippet}
   </Table>
-  {#if dirty}
-    <div class="save">
-      <Button variant="ghost" onclick={() => (draft = undefined)}>{t('cache.prefill.games.discard')}</Button>
-      <Button variant="primary" icon="check" loading={saving} onclick={save}>{t('cache.prefill.games.save')}</Button>
-    </div>
-  {/if}
 </Panel>
 
 <style>
@@ -181,11 +218,10 @@
     font-size: var(--fs-xs);
     color: var(--text-3);
   }
-  .save {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--sp-2);
-    padding: var(--sp-3) var(--sp-4);
-    border-top: 1px solid var(--line);
+  .done {
+    color: var(--ok);
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
   }
 </style>

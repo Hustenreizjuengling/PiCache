@@ -5,6 +5,21 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Prefill: **Prefill now** stayed greyed out unless Steam was signed in
+  with games chosen; it now counts every store (Battle.net games, or
+  Steam and Epic games with their sign-in).
+- Prefill: chosen games got lost. Filtering the list (to find the next
+  game) dropped the games already ticked, the selection had to be saved
+  with a button at the very end of the list, and switching the store tab
+  discarded it. A tick is now saved right away (the list says "Saving …"
+  and "Selection saved"), and the filter only narrows the view.
+- Prefill: changing the region, the language, the schedule or Steam's
+  platforms right after ticking games could undo the new selection (the
+  page saved its older copy of all settings). The service now keeps the
+  selection when other settings are saved.
+
 ## [1.5.0] - 2026-10-21
 
 ### Added

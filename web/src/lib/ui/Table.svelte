@@ -20,7 +20,8 @@
   Sticky header: give the table a `maxHeight` so it scrolls inside.
   Selection: `selectable` adds a checkbox column (and "select all" for the
   rows shown) bound to `checked`, the keys of the checked rows; keys of rows
-  that are no longer shown (deleted, filtered out) are dropped. Pages offer
+  that are no longer shown (deleted, filtered out) are dropped, unless
+  `keepHidden` is set (a selection kept apart from a filtered view). Pages offer
   it to principals who may change the rows only (a BulkBar acts on them).
 -->
 <script lang="ts" generics="T">
@@ -59,6 +60,8 @@
     selectable?: boolean
     /** Keys of the checked rows. */
     checked?: (string | number)[]
+    /** Keeps the keys of rows that are not shown (a filtered list). */
+    keepHidden?: boolean
     /** Accessible name of a row's checkbox (e.g. "Select rule ads.example.com"). */
     checkLabel?: (row: T) => string
   }
@@ -83,6 +86,7 @@
     rowClass,
     selectable = false,
     checked = $bindable([]),
+    keepHidden = false,
     checkLabel,
   }: Props = $props()
 
@@ -147,7 +151,7 @@
 
   // Checked rows that are no longer shown are no longer selected.
   $effect(() => {
-    if (!selectable || !rows) return
+    if (!selectable || keepHidden || !rows) return
     const shown = new Set(rows.map(key))
     if (checked.some((k) => !shown.has(k))) checked = checked.filter((k) => shown.has(k))
   })
