@@ -5,6 +5,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-22
+
 ### Added
 
 - Prefill: the page says when the prefill service ended unexpectedly
@@ -1953,7 +1955,8 @@ First release.
   Docker installations update with
   `docker compose pull && docker compose up -d`.
 
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.4.0...v1.4.1
