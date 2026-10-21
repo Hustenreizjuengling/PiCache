@@ -511,6 +511,8 @@ const prefill = {
   startJob: (force = false, o?: ReqOpts) => http.post<T.PrefillJob>('/prefill/jobs', { force }, o),
   cancelJob: (o?: ReqOpts) => http.del('/prefill/jobs/current', o),
   history: (o?: ReqOpts) => http.get<{ jobs: T.PrefillJob[] }>('/prefill/history', o),
+  /** The service's last log lines (its own file), oldest first. */
+  log: (lines = 300, o?: ReqOpts) => http.get<{ lines: string[] }>('/prefill/log', { ...o, query: { lines: String(lines) } }),
   battleNetProducts: (refresh = false, o?: ReqOpts) =>
     http.get<T.PrefillBattleNetProducts>('/prefill/battlenet/products', {
       ...o,

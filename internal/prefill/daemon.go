@@ -43,8 +43,12 @@ type Config struct {
 	ClientUIDs []int
 	// DeviceName is how a sign-in appears in the store's device list.
 	DeviceName string
-	Version    string
-	Log        *slog.Logger
+	// CrashFile writes Go's output of a fatal error into the state
+	// directory as well (picache prefill sets it; not in tests: it is
+	// process-wide).
+	CrashFile bool
+	Version   string
+	Log       *slog.Logger
 
 	// Tests replace these.
 	now   func() time.Time
@@ -56,11 +60,12 @@ type Config struct {
 // ConfigFromEnv reads the PICACHE_PREFILL_* variables.
 func ConfigFromEnv(version string, log *slog.Logger) (Config, error) {
 	c := Config{
-		StateDir: os.Getenv("PICACHE_PREFILL_STATE_DIR"),
-		Socket:   os.Getenv("PICACHE_PREFILL_SOCKET"),
-		CacheURL: os.Getenv("PICACHE_PREFILL_CACHE"),
-		Version:  version,
-		Log:      log,
+		StateDir:  os.Getenv("PICACHE_PREFILL_STATE_DIR"),
+		Socket:    os.Getenv("PICACHE_PREFILL_SOCKET"),
+		CacheURL:  os.Getenv("PICACHE_PREFILL_CACHE"),
+		Version:   version,
+		Log:       log,
+		CrashFile: true,
 	}
 	if c.StateDir == "" {
 		// systemd's StateDirectory= (DynamicUser: /var/lib/private/…).
@@ -146,6 +151,9 @@ type Daemon struct {
 
 	preMu sync.Mutex // a leaf lock: taken last
 	pre   prefilledRec
+
+	flog  *fileLogger
+	exits []prefillapi.Exit // guarded by mu
 }
 
 // ErrRestart: the binary was replaced by an update; the caller exits with
@@ -167,6 +175,14 @@ func Run(ctx context.Context, cfg Config) error {
 	ctx, d.restart = context.WithCancel(ctx)
 	defer d.restart()
 	defer d.st.close()
+	defer d.flog.close()
+	if cfg.CrashFile {
+		if err := d.st.captureCrashes(); err != nil {
+			d.log.Warn("crash output not captured", "err", err)
+		}
+	}
+	d.previousRun()
+	defer d.endRun()
 	ln, err := listenSocket(cfg.Socket)
 	if err != nil {
 		return err
@@ -221,7 +237,6 @@ func newDaemon(cfg Config) (*Daemon, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	log := cfg.Log.With("component", "prefill")
 	base, err := parseCacheURL(cfg.CacheURL)
 	if err != nil {
 		return nil, fmt.Errorf("PICACHE_PREFILL_CACHE: %w", err)
@@ -230,12 +245,19 @@ func newDaemon(cfg Config) (*Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("state directory: %w", err)
 	}
+	// The log also goes into log.txt in the state directory (the page and
+	// the support bundle show its end).
+	flog, err := st.openLog()
+	if err != nil {
+		cfg.Log.Warn("the prefill log file cannot be written", "err", err)
+	}
+	log := slog.New(&logHandler{base: cfg.Log.Handler(), file: flog}).With("component", "prefill")
 	now := cfg.now
 	if now == nil {
 		now = time.Now
 	}
 	d := &Daemon{
-		cfg: cfg, log: log, st: st, now: now,
+		cfg: cfg, log: log, st: st, now: now, flog: flog,
 		started: now(),
 		wake:    make(chan struct{}, 1),
 		hosts:   map[string]*prefillapi.Host{},
@@ -431,6 +453,12 @@ func (d *Daemon) status() prefillapi.Status {
 	})
 	st.Steam = d.steam.status()
 	st.Epic = d.epic.status()
+	d.mu.Lock()
+	st.Exits = slices.Clone(d.exits)
+	d.mu.Unlock()
+	if st.Exits == nil {
+		st.Exits = []prefillapi.Exit{}
+	}
 	return st
 }
 

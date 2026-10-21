@@ -22,6 +22,7 @@
   import Status from './prefill/Status.svelte'
   import SteamAccount from './prefill/SteamAccount.svelte'
   import SteamGames from './prefill/SteamGames.svelte'
+  import ServiceLog from './prefill/ServiceLog.svelte'
   import SteamOptions from './prefill/SteamOptions.svelte'
   import Transparency from './prefill/Transparency.svelte'
 
@@ -98,6 +99,7 @@
     </Tabs>
     <Schedule {status} onchanged={refresh} />
     <Jobs running={jobId} />
+    <ServiceLog />
     <Transparency {status} />
   {/if}
 </div>

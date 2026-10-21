@@ -3637,6 +3637,17 @@ export interface PrefillStatus {
   nextRun: string | null
   /** Every destination the service talked to since it started. */
   hosts: PrefillHost[]
+  /** The last runs that did not end by themselves, newest first. */
+  exits: PrefillExit[]
+}
+
+/** A run of the prefill service that did not end by itself: crashed (Go's output in detail) or killed from outside. */
+export interface PrefillExit {
+  kind: 'crash' | 'killed'
+  version: string
+  started: string
+  at: string
+  detail?: string
 }
 
 export interface PrefillCache {

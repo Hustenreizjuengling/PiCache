@@ -73,46 +73,61 @@ func parseBinaryManifest(b []byte) (*Manifest, error) {
 		return nil, fmt.Errorf("%w: no manifest header", errManifest)
 	}
 	headerSize := binary.LittleEndian.Uint32(b[4:])
-	sizeUncompressed := binary.LittleEndian.Uint32(b[8:])
 	storedAs := b[36]
-	if headerSize < 41 || uint64(headerSize) > uint64(len(b)) || sizeUncompressed > maxDecompressed {
+	if headerSize < 41 || uint64(headerSize) > uint64(len(b)) {
 		return nil, fmt.Errorf("%w: header", errManifest)
 	}
-	body := b[headerSize:]
+	// Only the meta and the chunk data list are read, straight from the
+	// (decompressed) stream (also of manifests whose file names are
+	// encrypted, storedAs bit 2: their chunk list is not): the file list after them, the bulk of a large
+	// game's manifest, is never held in memory. The whole file was checked
+	// against the manifest API's SHA-1 before.
+	var src io.Reader = bytes.NewReader(b[headerSize:])
 	if storedAs&1 != 0 {
-		zr, err := zlib.NewReader(bytes.NewReader(body))
+		zr, err := zlib.NewReader(src)
 		if err != nil {
 			return nil, fmt.Errorf("epic: manifest: %w", err)
 		}
-		d, err := io.ReadAll(io.LimitReader(zr, maxDecompressed+1))
-		if err != nil {
-			return nil, fmt.Errorf("epic: manifest: %w", err)
-		}
-		if len(d) > maxDecompressed {
-			return nil, errManifest
-		}
-		sum := sha1.Sum(d)
-		if !bytes.Equal(sum[:], b[16:36]) {
-			return nil, errors.New("epic: the manifest body does not match its checksum")
-		}
-		body = d
+		defer zr.Close()
+		src = io.LimitReader(zr, maxDecompressed)
 	}
-	r := &reader{b: body}
+	section := func(what string, limit uint32) ([]byte, error) {
+		var sz [4]byte
+		if _, err := io.ReadFull(src, sz[:]); err != nil {
+			return nil, fmt.Errorf("%w: %s: %v", errManifest, what, err)
+		}
+		n := binary.LittleEndian.Uint32(sz[:])
+		if n < 9 || n > limit {
+			return nil, fmt.Errorf("%w: %s of %d bytes", errManifest, what, n)
+		}
+		buf := make([]byte, n)
+		copy(buf, sz[:])
+		if _, err := io.ReadFull(src, buf[4:]); err != nil {
+			return nil, fmt.Errorf("%w: %s: %v", errManifest, what, err)
+		}
+		return buf, nil
+	}
 	// Meta: size, data version, feature level; the rest is skipped.
-	metaStart := r.off
-	metaSize := r.u32()
-	r.u8()
-	m := &Manifest{FeatureLevel: r.u32()}
-	if r.err != nil || metaSize < 9 || uint64(metaStart)+uint64(metaSize) > uint64(len(body)) {
+	meta, err := section("meta", 16<<20)
+	if err != nil {
+		return nil, err
+	}
+	mr := &reader{b: meta, off: 4}
+	mr.u8()
+	m := &Manifest{FeatureLevel: mr.u32()}
+	if mr.err != nil {
 		return nil, fmt.Errorf("%w: meta", errManifest)
 	}
-	r.off = metaStart + int(metaSize)
 	// Chunk data list.
-	cdlStart := r.off
-	cdlSize := r.u32()
+	cdl, err := section("chunk list", maxDecompressed)
+	if err != nil {
+		return nil, err
+	}
+	r := &reader{b: cdl, off: 4}
 	r.u8()
 	count := r.u32()
-	if r.err != nil || uint64(cdlStart)+uint64(cdlSize) > uint64(len(body)) {
+	cdlSize := uint32(len(cdl))
+	if r.err != nil {
 		return nil, fmt.Errorf("%w: chunk list", errManifest)
 	}
 	per := uint64(16 + 8 + 20 + 1 + 4 + 8)

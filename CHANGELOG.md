@@ -5,6 +5,27 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Prefill: the page says when the prefill service ended unexpectedly
+  (crashed, or was ended by the system, usually at its memory limit) and
+  shows the service's own log on request (**Service log**), so a problem
+  can be seen without a shell on the host. The support bundle now carries
+  the prefill service's status, its unexpected ends and its last log
+  lines (`prefill.json`, without the accounts).
+
+### Fixed
+
+- Prefill: Epic games showed an ID such as `b65e183e8f20…` instead of
+  their name, and DLC could show up as games. A large library ran into
+  Epic's rate limit while the names were looked up. The names are now
+  kept and looked up only for new games, a few at a time, with retries;
+  a name that is still missing is looked up again a few minutes later.
+- Prefill: the service could be ended for using too much memory with
+  large games. It now keeps to a soft memory limit below its unit's
+  limit, reads only the part of an Epic manifest it needs, and no longer
+  reserves memory for a Battle.net manifest before reading it.
+
 ## [1.5.1] - 2026-10-21
 
 ### Fixed

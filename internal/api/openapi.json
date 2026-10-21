@@ -13695,6 +13695,75 @@
         "x-picache-destructive": false
       }
     },
+    "/api/v1/prefill/log": {
+      "get": {
+        "operationId": "getPrefillLog",
+        "summary": "The prefill service's last log lines",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: `?lines=N` (1–1000, default 1000)\n\nResponse: {lines: [string]} (oldest first; the service's log file in its state directory, with token-like words cut)",
+        "parameters": [
+          {
+            "name": "lines",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "description": "How many of the last lines (1–1000)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The last log lines.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "lines"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
     "/api/v1/prefill/service": {
       "put": {
         "operationId": "putPrefillService",
@@ -22815,6 +22884,42 @@
               "account",
               "login"
             ]
+          },
+          "exits": {
+            "type": "array",
+            "description": "The last runs that did not end by themselves, newest first (at most 10): crash (Go's output in detail) or killed (ended from outside, for example by the kernel at the memory limit).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "crash",
+                    "killed"
+                  ]
+                },
+                "version": {
+                  "type": "string"
+                },
+                "started": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "version",
+                "started",
+                "at"
+              ]
+            }
           }
         },
         "required": [
@@ -22826,7 +22931,8 @@
           "job",
           "nextRun",
           "hosts",
-          "epic"
+          "epic",
+          "exits"
         ]
       },
       "PrefillCache": {

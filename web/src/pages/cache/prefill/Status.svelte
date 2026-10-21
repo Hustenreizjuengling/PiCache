@@ -5,7 +5,7 @@
   ("Prefill now", or everything again with force) and cancels it.
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, type PrefillState, type PrefillStatus } from '$lib/api'
   import { formatBytes, formatDateTime, formatPercent, formatRelative } from '$lib/format'
   import { session } from '$lib/session.svelte'
@@ -22,6 +22,11 @@
       (!!status.epic.account && status.settings.epic.apps.length > 0),
   )
   const canStart = $derived(session.canOperate && !job && ready)
+
+  // Unexpected ends of the last 7 days: the newest is shown.
+  const WEEK = 7 * 24 * 3600 * 1000
+  const exits = $derived(status.exits.filter((e) => Date.now() - Date.parse(e.at) < WEEK))
+  const lastExit = $derived(exits[0])
 
   let busy = $state(false)
   let checking = $state(false)
@@ -124,6 +129,22 @@
         {/snippet}
       </Notice>
     {/if}
+    {#if lastExit}
+      <Notice
+        tone="warn"
+        title={t(lastExit.kind === 'crash' ? 'cache.prefill.exit.titleCrash' : 'cache.prefill.exit.titleKilled', {
+          time: formatDateTime(lastExit.at),
+        })}
+      >
+        {lastExit.kind === 'crash' ? t('cache.prefill.exit.crashText') : t('cache.prefill.exit.killedText')}
+        {#if exits.length > 1}
+          {tn('cache.prefill.exit.count', exits.length, { count: exits.length })}
+        {/if}
+        {#if lastExit.detail}
+          <pre class="crash">{lastExit.detail}</pre>
+        {/if}
+      </Notice>
+    {/if}
     {#if !job && !ready}
       <p class="muted small">{t('cache.prefill.status.nothingSelected')}</p>
     {/if}
@@ -164,5 +185,14 @@
   }
   .strong {
     font-weight: 600;
+  }
+  .crash {
+    margin: var(--sp-2) 0 0;
+    max-height: 200px;
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    white-space: pre-wrap;
+    word-break: break-all;
   }
 </style>

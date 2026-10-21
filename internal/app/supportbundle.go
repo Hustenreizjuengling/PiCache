@@ -178,6 +178,9 @@ func (a *App) SupportBundle(ctx context.Context, includeClientNames bool) ([]byt
 	if err := addJSON("host.json", a.HostInfo(), true); err != nil {
 		return nil, err
 	}
+	if err := addJSON("prefill.json", a.bundlePrefill(ctx, sc), true); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -263,6 +266,10 @@ Redaction rules:
     values of username, user and by are redacted, without client names also
     name, hostname, clientName, sni, host, qname, domain, groups and mac;
     secrets were never logged.
+  prefill.json: the prefill service's status without its accounts (names,
+    IDs and sign-in codes are left out; the account names become name-<n>
+    in its log lines), its last unexpected ends and its last log lines; it
+    never holds a token there.
   Never included: accounts, sessions, tokens, the audit log, the query log,
     cache and SNI events, leases, reservations, clients, groups, filter lists
     and rules, storage targets, notification channels, backups and keys.

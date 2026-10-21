@@ -66,6 +66,9 @@ type Server struct {
 	hits      map[string]bool
 	refreshes int
 	seq       int
+	catFail   int // the next catalog requests that fail
+	catStatus int
+	catalogs  int
 }
 
 // Account is the fake account.
@@ -107,6 +110,21 @@ func (s *Server) ConfirmAfter(n int) {
 	s.mu.Lock()
 	s.confirmAt, s.polls = n, 0
 	s.mu.Unlock()
+}
+
+// FailCatalog makes the next n catalog requests fail with status (429:
+// rate limited).
+func (s *Server) FailCatalog(n, status int) {
+	s.mu.Lock()
+	s.catFail, s.catStatus = n, status
+	s.mu.Unlock()
+}
+
+// CatalogRequests counts the catalog requests.
+func (s *Server) CatalogRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.catalogs
 }
 
 // Revoke makes Epic refuse a refresh token.
@@ -306,6 +324,12 @@ func (s *Server) catalog(w http.ResponseWriter, r *http.Request) {
 	ids := strings.Split(r.URL.Query().Get("id"), ",")
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.catalogs++
+	if s.catFail > 0 {
+		s.catFail--
+		epicError(w, s.catStatus, "errors.com.epicgames.common.throttled")
+		return
+	}
 	out := map[string]any{}
 	for _, a := range s.apps {
 		if a.Namespace != r.PathValue("ns") || !slices.Contains(ids, a.CatalogItemID) {

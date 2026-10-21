@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/hustenreizjuengling/picache/internal/apperr"
@@ -66,6 +67,7 @@ func (s *Server) registerPrefillRoutes() {
 	s.route("POST /api/v1/prefill/jobs", permAdmin, s.prefillStartJob, routeExempt)
 	s.route("DELETE /api/v1/prefill/jobs/current", permAdmin, s.prefillCancelJob, routeExempt)
 	s.route("GET /api/v1/prefill/history", permAdmin, s.prefillHistory)
+	s.route("GET /api/v1/prefill/log", permAdmin, s.prefillLog)
 	s.route("PUT /api/v1/prefill/service", permAdmin, s.prefillSetService)
 	s.route("GET /api/v1/prefill/battlenet/products", permAdmin, s.prefillBattleNetProducts)
 	s.route("PUT /api/v1/prefill/battlenet/selection", permAdmin, s.prefillBattleNetSelection)
@@ -356,6 +358,24 @@ func (s *Server) prefillCancelJob(w http.ResponseWriter, r *http.Request) error 
 	}
 	s.audit(r, "prefill.job.cancel", "", nil)
 	return noContent(w)
+}
+
+// prefillLog is the end of the service's own log (its file in the state
+// directory, which survives a crash).
+func (s *Server) prefillLog(w http.ResponseWriter, r *http.Request) error {
+	path := "/v1/log"
+	if v := r.URL.Query().Get("lines"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			return apperr.Invalid("lines", "lines must be 1 to 1000")
+		}
+		path += "?lines=" + strconv.Itoa(n)
+	}
+	var out prefillapi.Log
+	if err := s.prefillCall(r.Context(), http.MethodGet, path, nil, &out); err != nil {
+		return err
+	}
+	return ok(w, out)
 }
 
 func (s *Server) prefillHistory(w http.ResponseWriter, r *http.Request) error {

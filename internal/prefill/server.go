@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,19 @@ func (d *Daemon) handler() http.Handler {
 			cancel()
 		}
 		return reply(w, d.status())
+	})
+	h("GET /v1/log", func(w http.ResponseWriter, r *http.Request) error {
+		n := maxLogLines
+		if v := r.URL.Query().Get("lines"); v != "" {
+			if k, err := strconv.Atoi(v); err == nil && k > 0 && k < n {
+				n = k
+			}
+		}
+		lines := d.flog.tail(n)
+		if lines == nil {
+			lines = []string{}
+		}
+		return reply(w, prefillapi.Log{Lines: lines})
 	})
 	h("GET /v1/settings", func(w http.ResponseWriter, r *http.Request) error {
 		return reply(w, d.currentSettings())

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hustenreizjuengling/picache/internal/prefill/epic"
 	"github.com/hustenreizjuengling/picache/internal/prefill/prefillapi"
 )
 
@@ -111,10 +112,15 @@ type epicAccount struct {
 	Error          string    `json:"error,omitempty"`
 }
 
-// epicGames is epic-apps.json: the account's games as last read.
+// epicGames is epic-apps.json: the account's games as last read, and the
+// catalog's answers about them (by catalog item ID), so the catalog is
+// asked only about new items. Incomplete: the catalog did not answer for
+// some (read again sooner).
 type epicGames struct {
-	Updated time.Time    `json:"updated"`
-	Apps    []epicAppRec `json:"apps"`
+	Updated    time.Time                `json:"updated"`
+	Apps       []epicAppRec             `json:"apps"`
+	Catalog    map[string]epic.ItemInfo `json:"catalog,omitempty"`
+	Incomplete bool                     `json:"incomplete,omitempty"`
 }
 
 type epicAppRec struct {

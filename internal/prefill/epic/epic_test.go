@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -133,9 +134,12 @@ func TestFakeSignInAndLibrary(t *testing.T) {
 	if k := fs.Killed(); len(k) != 1 || !strings.HasPrefix(k[0], "at-98f7") {
 		t.Errorf("the device client's session was not ended: %v", k)
 	}
-	games, err := c.Games(ctx, s)
+	games, known, err := c.Games(ctx, s, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(known) != 4 || known["item2"].Game || !known["item1"].Game || known["item1"].Title != "Alpha Game" {
+		t.Fatalf("catalog answers %+v", known)
 	}
 	if len(games) != 2 || games[0].Name != "Alpha Game" || games[1].Name != "beta" {
 		t.Fatalf("games %+v", games)
@@ -153,5 +157,54 @@ func TestFakeSignInAndLibrary(t *testing.T) {
 	}
 	if err := c.Kill(ctx, s2.AccessToken); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The catalog's answers are kept: a second reading asks for nothing; a
+// rate limit is waited out; a catalog that keeps failing leaves the games
+// named by their app names, with a CatalogError.
+func TestCatalogCacheAndRetry(t *testing.T) {
+	fs := epictest.New([]epictest.App{
+		{AppName: "b65e183e8f204281b8eb1bbbb6f7a98a", Namespace: "ns1", CatalogItemID: "item1", Title: "Alpha Game", BuildVersion: "1.0"},
+		{AppName: "Beta", Namespace: "ns2", CatalogItemID: "item2", Title: "Beta Game", BuildVersion: "2.0"},
+		{AppName: "BetaDLC", Namespace: "ns2", CatalogItemID: "item3", Title: "Beta DLC", BuildVersion: "2.0", DLC: "item2"},
+	})
+	defer fs.Close()
+	c := epic.New(epic.Options{AccountURL: fs.URL(), LauncherURL: fs.URL(), CatalogURL: fs.URL()})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	fs.ConfirmAfter(1)
+	l, err := c.StartDeviceLogin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := l.Poll(ctx)
+	if err != nil || s == nil {
+		t.Fatalf("sign-in %v %v", s, err)
+	}
+	names := func(gs []epic.Game) string {
+		var n []string
+		for _, g := range gs {
+			n = append(n, g.Name)
+		}
+		return strings.Join(n, ",")
+	}
+	// Rate limited twice: waited out.
+	fs.FailCatalog(2, 429)
+	games, known, err := c.Games(ctx, s, nil)
+	if err != nil || names(games) != "Alpha Game,Beta Game" {
+		t.Fatalf("games %s %v", names(games), err)
+	}
+	before := fs.CatalogRequests()
+	games, _, err = c.Games(ctx, s, known)
+	if err != nil || names(games) != "Alpha Game,Beta Game" || fs.CatalogRequests() != before {
+		t.Fatalf("second reading: %s %v, %d catalog requests", names(games), err, fs.CatalogRequests()-before)
+	}
+	// Failing for good: app names, a CatalogError, nothing kept.
+	fs.FailCatalog(100, 503)
+	games, known, err = c.Games(ctx, s, nil)
+	var ce *epic.CatalogError
+	if !errors.As(err, &ce) || ce.Missing != 3 || len(known) != 0 || names(games) != "b65e183e8f204281b8eb1bbbb6f7a98a,Beta,BetaDLC" {
+		t.Fatalf("failing catalog: %s %+v %v", names(games), known, err)
 	}
 }

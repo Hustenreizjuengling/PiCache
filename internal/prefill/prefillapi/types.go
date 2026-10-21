@@ -23,6 +23,33 @@ type Status struct {
 	NextRun *time.Time `json:"nextRun"`
 	// Hosts lists every destination the service talks to and why.
 	Hosts []Host `json:"hosts"`
+	// Exits are the last runs that did not end by themselves, newest
+	// first (at most 10).
+	Exits []Exit `json:"exits"`
+}
+
+// Exit kinds.
+const (
+	// ExitCrash: the service crashed (Detail is Go's output).
+	ExitCrash = "crash"
+	// ExitKilled: it was ended from outside without a chance to stop
+	// (the kernel at its memory limit, a hard stop, a power cut).
+	ExitKilled = "killed"
+)
+
+// Exit is a run that did not end by itself.
+type Exit struct {
+	Kind    string    `json:"kind"`
+	Version string    `json:"version"`
+	Started time.Time `json:"started"`
+	// At is when it ended: the crash, else the last line of its log.
+	At     time.Time `json:"at"`
+	Detail string    `json:"detail,omitempty"`
+}
+
+// Log is GET /v1/log: the service's last log lines, oldest first.
+type Log struct {
+	Lines []string `json:"lines"`
 }
 
 // Cache is the download cache the prefill fills, checked with the

@@ -10,7 +10,11 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net"
+	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -300,7 +304,7 @@ func TestSupportBundle(t *testing.T) {
 	files := readZip(t, b)
 	names := slices.Sorted(maps.Keys(files))
 	if want := []string{"MANIFEST.txt", "databases.json", "dhcp.json", "health.json", "host.json", "listeners.json",
-		"log.ndjson", "network-check.json", "settings.json", "version.json"}; !slices.Equal(names, want) {
+		"log.ndjson", "network-check.json", "prefill.json", "settings.json", "version.json"}; !slices.Equal(names, want) {
 		t.Fatalf("files %v", names)
 	}
 	m := files["MANIFEST.txt"]
@@ -527,6 +531,48 @@ func TestScrubUpstreamHashPort(t *testing.T) {
 	for in, want := range map[string]string{"abc.resolver.example.net#5353": "abc.resolver.example.net", "[fd00::53]#5335": "fd00::53"} {
 		if got := upstreamHost(in); got != want {
 			t.Errorf("upstreamHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// prefill.json: the service's status and log without its accounts.
+func TestSupportBundlePrefill(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix sockets")
+	}
+	a := bundleApp(t)
+	sock := filepath.Join(t.TempDir(), "p.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skip(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"version":"v1.5.2","steam":{"deviceName":"PiCache Prefill (x)","account":{"name":"gamerkonto","steamId":"76561198000000001"},
+			"login":{"state":"waiting","challengeUrl":"https://s.team/q/1/2"}},"epic":{"account":{"name":"EpicName","accountId":"0123456789abcdef0123456789abcdef"},
+			"login":{"state":"waiting","verificationUrl":"https://www.epicgames.com/activate?userCode=ABCD","userCode":"ABCD"}},
+			"exits":[{"kind":"killed","version":"v1.5.1","started":"2026-10-21T20:00:00Z","at":"2026-10-21T20:30:00Z"}],"hosts":[]}`)
+	})
+	mux.HandleFunc("GET /v1/log", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"lines":["2026-10-21T20:00:00Z INFO signed in to Steam account=gamerkonto","2026-10-21T20:01:00Z INFO job"]}`)
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln)
+	defer srv.Close()
+	a.cfg.PrefillSocket = sock
+	b, err := a.SupportBundle(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := readZip(t, b)["prefill.json"]
+	for _, secret := range []string{"gamerkonto", "76561198000000001", "EpicName", "0123456789abcdef0123456789abcdef", "s.team", "ABCD"} {
+		if strings.Contains(p, secret) {
+			t.Errorf("prefill.json contains %q:\n%s", secret, p)
+		}
+	}
+	for _, want := range []string{`"running": true`, `"killed"`, "signed in to Steam account=name-", "INFO job"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prefill.json lacks %q:\n%s", want, p)
 		}
 	}
 }

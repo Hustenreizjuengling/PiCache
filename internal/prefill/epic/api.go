@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Asset is an installable build of the account (the launcher's library
@@ -87,14 +89,83 @@ var (
 
 const maxGames = 5000
 
+// ItemInfo is what the catalog said about an item; the service keeps it,
+// so a library is looked up once, not on every reading.
+type ItemInfo struct {
+	Title string    `json:"title"`
+	Game  bool      `json:"game"`
+	At    time.Time `json:"at"`
+}
+
+const (
+	itemInfoMaxAge  = 30 * 24 * time.Hour
+	catalogParallel = 4
+	catalogAttempts = 4
+)
+
+// CatalogError says that the catalog did not answer for some items: their
+// games are listed by their app name (and DLC may show) until a later
+// reading names them.
+type CatalogError struct {
+	Missing int
+	Err     error
+}
+
+func (e *CatalogError) Error() string {
+	return fmt.Sprintf("Epic's catalog did not name %d of the games (%v); they are listed by their app name until a later reading", e.Missing, e.Err)
+}
+
+func (e *CatalogError) Unwrap() error { return e.Err }
+
+// retryable: a rate limit, a server error or no answer.
+func retryable(err error) bool {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Status == 429 || e.Status >= 500
+	}
+	return err != nil
+}
+
+// catalogWithRetry reads one namespace's items, waiting 1, 2, 4 s between
+// attempts when Epic limits the rate or fails.
+func (c *Client) catalogWithRetry(ctx context.Context, s *Session, ns string, ids []string) (map[string]CatalogItem, error) {
+	var last error
+	for attempt := range catalogAttempts {
+		if attempt > 0 {
+			t := time.NewTimer(time.Duration(1<<(attempt-1)) * time.Second)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return nil, ctx.Err()
+			case <-t.C:
+			}
+		}
+		items, err := c.Catalog(ctx, s, ns, ids)
+		if err == nil {
+			return items, nil
+		}
+		last = err
+		if !retryable(err) || ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, last
+}
+
 // Games lists the account's games: its Windows builds without Unreal
-// Engine content, plugins, mods and DLC, named from the catalog.
-func (c *Client) Games(ctx context.Context, s *Session) ([]Game, error) {
+// Engine content, plugins, mods and DLC, named from the catalog. known
+// holds earlier catalog answers by catalog item ID; the rest is looked up
+// (a few namespaces at a time). It returns the games and the catalog
+// answers to keep; a *CatalogError when some could not be looked up.
+func (c *Client) Games(ctx context.Context, s *Session, known map[string]ItemInfo) ([]Game, map[string]ItemInfo, error) {
 	assets, err := c.Assets(ctx, s)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	now := time.Now()
+	infos := map[string]ItemInfo{}
 	byNS := map[string][]Asset{}
+	lookup := map[string][]string{}
 	seen := map[string]bool{}
 	for _, a := range assets {
 		if a.AppName == "" || a.Namespace == "" || slices.Contains(skipNamespaces, a.Namespace) || seen[a.AppName] {
@@ -102,27 +173,53 @@ func (c *Client) Games(ctx context.Context, s *Session) ([]Game, error) {
 		}
 		seen[a.AppName] = true
 		byNS[a.Namespace] = append(byNS[a.Namespace], a)
+		if in, ok := known[a.CatalogItemID]; ok && now.Sub(in.At) < itemInfoMaxAge {
+			infos[a.CatalogItemID] = in
+		} else if !slices.Contains(lookup[a.Namespace], a.CatalogItemID) {
+			lookup[a.Namespace] = append(lookup[a.Namespace], a.CatalogItemID)
+		}
 		if len(seen) >= maxGames {
 			break
 		}
 	}
+	var mu sync.Mutex
+	var failed []error
+	missing := 0
+	sem := make(chan struct{}, catalogParallel)
+	var wg sync.WaitGroup
+	for ns, ids := range lookup {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			items, err := c.catalogWithRetry(ctx, s, ns, ids)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				c.log().Debug("epic catalog not read", "namespace", ns, "err", err)
+				failed = append(failed, err)
+				missing += len(ids)
+				return
+			}
+			for _, id := range ids {
+				it, ok := items[id]
+				// An item the catalog does not know is kept as a game
+				// with no title (it has a build, so it may be one).
+				infos[id] = ItemInfo{Title: strings.TrimSpace(it.Title), Game: !ok || isGame(it), At: now}
+			}
+		})
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	var out []Game
-	for ns, list := range byNS {
-		ids := make([]string, 0, len(list))
+	for _, list := range byNS {
 		for _, a := range list {
-			ids = append(ids, a.CatalogItemID)
-		}
-		items, err := c.Catalog(ctx, s, ns, ids)
-		if err != nil {
-			// Unnamed rather than missing.
-			c.log().Debug("epic catalog not read", "namespace", ns, "err", err)
-		}
-		for _, a := range list {
-			it, ok := items[a.CatalogItemID]
-			if ok && !isGame(it) {
+			in, ok := infos[a.CatalogItemID]
+			if ok && !in.Game {
 				continue
 			}
-			name := strings.TrimSpace(it.Title)
+			name := in.Title
 			if name == "" {
 				name = a.AppName
 			}
@@ -132,7 +229,10 @@ func (c *Client) Games(ctx context.Context, s *Session) ([]Game, error) {
 	slices.SortFunc(out, func(a, b Game) int {
 		return cmp.Or(cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), cmp.Compare(a.AppName, b.AppName))
 	})
-	return out, nil
+	if len(failed) > 0 {
+		return out, infos, &CatalogError{Missing: missing, Err: failed[0]}
+	}
+	return out, infos, nil
 }
 
 func (c *Client) log() interface{ Debug(string, ...any) } {

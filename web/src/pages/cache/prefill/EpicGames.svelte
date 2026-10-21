@@ -39,7 +39,7 @@
   saved={status.settings.epic.apps}
   loading={apps.loading}
   loadError={apps.error ? errorText(apps.error) : undefined}
-  readError={apps.data?.error || undefined}
+  readError={apps.data?.error ? (apps.data.error.startsWith("Epic's catalog did not name") ? t('cache.prefill.epic.namesMissing') : apps.data.error) : undefined}
   updated={apps.data?.updated}
   onretry={() => apps.refresh()}
   onread={read}

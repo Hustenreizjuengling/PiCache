@@ -15,7 +15,8 @@ import (
 
 const (
 	maxManifestEntries = 16 << 20
-	maxTags            = 4096
+	maxInstallEntries  = 1 << 20 // install manifests are small (≤ 4 MB)
+	maxTags            = 1024
 	maxTagName         = 256
 )
 
@@ -73,7 +74,10 @@ func ParseDownload(r io.Reader) (*Download, error) {
 	if n > maxManifestEntries || tags > maxTags || flagBytes > 8 {
 		return nil, fmt.Errorf("%w: %d entries, %d tags", errManifest, n, tags)
 	}
-	d := &Download{N: int(n), Keys: make([]Key, n), Sizes: make([]uint64, n)}
+	// The lists grow as entries arrive: a header's count is not trusted
+	// with the memory before the data is there.
+	first := min(int(n), 1<<16)
+	d := &Download{N: int(n), Keys: make([]Key, 0, first), Sizes: make([]uint64, 0, first)}
 	size := 16 + 6 + flagBytes
 	if checksum {
 		size += 4
@@ -83,8 +87,8 @@ func ParseDownload(r io.Reader) (*Download, error) {
 		if _, err := io.ReadFull(br, e); err != nil {
 			return nil, fmt.Errorf("%w: entry %d: %v", errManifest, i, err)
 		}
-		copy(d.Keys[i][:], e)
-		d.Sizes[i] = readU40(e[16:])
+		d.Keys = append(d.Keys, Key(e[:16]))
+		d.Sizes = append(d.Sizes, readU40(e[16:]))
 	}
 	var err error
 	if d.Tags, err = readTags(br, tags, d.N); err != nil {
@@ -133,10 +137,10 @@ func ParseInstall(r io.Reader) (*Install, error) {
 	}
 	tags := int(binary.BigEndian.Uint16(h[4:]))
 	n := binary.BigEndian.Uint32(h[6:])
-	if n > maxManifestEntries || tags > maxTags {
+	if n > maxInstallEntries || tags > maxTags {
 		return nil, fmt.Errorf("%w: %d entries, %d tags", errManifest, n, tags)
 	}
-	in := &Install{N: int(n), CKeys: make([]Key, n)}
+	in := &Install{N: int(n), CKeys: make([]Key, 0, min(int(n), 1<<16))}
 	var err error
 	if in.Tags, err = readTags(br, tags, in.N); err != nil {
 		return nil, err
@@ -151,7 +155,7 @@ func ParseInstall(r io.Reader) (*Install, error) {
 		if _, err := io.ReadFull(br, e[:]); err != nil {
 			return nil, fmt.Errorf("%w: install entry %d: %v", errManifest, i, err)
 		}
-		copy(in.CKeys[i][:], e[:16])
+		in.CKeys = append(in.CKeys, Key(e[:16]))
 	}
 	return in, nil
 }

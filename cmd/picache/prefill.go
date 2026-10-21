@@ -61,6 +61,9 @@ func prefillServe() int {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
+	// A soft limit below the unit's MemoryMax: the GC works harder before
+	// the kernel ends the service for a large manifest.
+	setMemoryLimit(log)
 	cfg, err := prefill.ConfigFromEnv(version.Get().Version, log)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "picache prefill: configuration error:", err)

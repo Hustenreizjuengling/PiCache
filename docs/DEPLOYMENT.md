@@ -3678,6 +3678,15 @@ lasts about 23 days without use and is renewed daily while the service
 runs. When a store no longer accepts the sign-in, the page says so and
 offers a new one.
 
+**When it stops unexpectedly.** The service notices at its next start
+that its last run did not end by itself: a crash (Go's error message) or
+an end from outside, typically by the system when the service reached its
+memory limit (`MemoryMax=512M`). The page shows the newest such end of the
+last week; **Service log → Show** lists the service's last log lines (a
+file in its state directory that survives restarts), and the support
+bundle carries both (`prefill.json`, without your accounts). systemd
+restarts the service by itself (at most six times in ten minutes).
+
 **Turning it off** on the host:
 
 ```sh

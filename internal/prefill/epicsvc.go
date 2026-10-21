@@ -25,6 +25,7 @@ const (
 	epicRefreshAhead = 10 * time.Minute // renew the access token this early
 	epicKeepAlive    = 24 * time.Hour   // renew the session at least daily
 	epicAppsMaxAge   = 12 * time.Hour   // read the games again after this
+	epicRetryNames   = 10 * time.Minute // sooner when the catalog did not name all
 	epicLoginTimeout = 10 * time.Minute // a device code lives 600 s
 	epicMaxManifest  = 64 << 20         // one manifest download
 )
@@ -354,7 +355,8 @@ func (e *epicService) gameList(ctx context.Context, refresh bool) (prefillapi.Ep
 		return prefillapi.EpicApps{Apps: []prefillapi.EpicApp{}}, err
 	}
 	e.mu.Lock()
-	stale := e.games.Updated.IsZero() || e.d.now().Sub(e.games.Updated) > epicAppsMaxAge
+	age := e.d.now().Sub(e.games.Updated)
+	stale := e.games.Updated.IsZero() || age > epicAppsMaxAge || e.games.Incomplete && age > epicRetryNames
 	e.mu.Unlock()
 	if refresh || stale {
 		actx, cancel := context.WithTimeout(ctx, appsTimeout)
@@ -375,23 +377,33 @@ func (e *epicService) refreshApps(ctx context.Context) (epicGames, error) {
 	if err != nil {
 		return epicGames{}, err
 	}
-	games, err := e.client().Games(ctx, sess)
-	if err != nil {
+	e.mu.Lock()
+	known := e.games.Catalog
+	e.mu.Unlock()
+	games, catalog, err := e.client().Games(ctx, sess, known)
+	var ce *epic.CatalogError
+	if err != nil && !errors.As(err, &ce) {
 		if epic.Rejected(err) {
 			e.markAccount(sess.RefreshToken, "Epic no longer accepts the sign-in ("+err.Error()+"): sign in again")
 		}
 		return epicGames{}, err
 	}
-	rec := epicGames{Updated: e.d.now(), Apps: make([]epicAppRec, 0, len(games))}
+	rec := epicGames{Updated: e.d.now(), Apps: make([]epicAppRec, 0, len(games)), Catalog: catalog, Incomplete: ce != nil}
 	for _, g := range games {
 		rec.Apps = append(rec.Apps, epicAppRec{AppName: g.AppName, Name: g.Name, Namespace: g.Namespace, CatalogItemID: g.CatalogItemID, BuildVersion: g.BuildVersion})
 	}
-	if err := e.d.st.save(fileEpicApps, rec); err != nil {
-		return rec, err
+	if serr := e.d.st.save(fileEpicApps, rec); serr != nil {
+		return rec, serr
 	}
 	e.mu.Lock()
 	e.games = rec
 	e.mu.Unlock()
+	if ce != nil {
+		// The list is usable: the games the catalog did not name show
+		// their app names until the next reading.
+		e.d.log.Warn("epic catalog incomplete", "missing", ce.Missing, "err", ce.Err)
+		return rec, ce
+	}
 	return rec, nil
 }
 
@@ -431,7 +443,8 @@ func (e *epicService) prefill(ctx context.Context, r *jobRun, set prefillapi.Set
 	}
 	e.d.setCurrent(r, "Epic: reading the selected games")
 	recs, err := e.refreshApps(ctx)
-	if err != nil {
+	var ce *epic.CatalogError
+	if err != nil && !errors.As(err, &ce) {
 		return fmt.Errorf("Epic: %w", err)
 	}
 	var games []epicAppRec
