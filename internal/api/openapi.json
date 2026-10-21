@@ -35,6 +35,10 @@
       "name": "Download cache services & SNI"
     },
     {
+      "name": "Prefill",
+      "description": "The prefill service (picache prefill): Steam sign-in by QR code, the account's games, jobs that download the selected games through the download cache. PiCache passes these requests to the service's Unix socket; no store token ever crosses it."
+    },
+    {
       "name": "Filtering"
     },
     {
@@ -13152,6 +13156,544 @@
         },
         "x-picache-extra": true
       }
+    },
+    "/api/v1/prefill": {
+      "get": {
+        "operationId": "getPrefill",
+        "summary": "Prefill service state",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: PrefillState (always 200: installed, running and the service's status; error says why it is not reachable)",
+        "parameters": [
+          {
+            "name": "checkCache",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true: run the cache heartbeat first."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prefill service state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/settings": {
+      "get": {
+        "operationId": "getPrefillSettings",
+        "summary": "Prefill settings",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: PrefillSettings",
+        "responses": {
+          "200": {
+            "description": "Prefill settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      },
+      "put": {
+        "operationId": "putPrefillSettings",
+        "summary": "Change the prefill settings",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: PrefillSettings (whole)\n\nResponse: PrefillSettings (normalised)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrefillSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Change the prefill settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "locked",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/steam/login": {
+      "post": {
+        "operationId": "postPrefillSteamLogin",
+        "summary": "Start a Steam sign-in by QR code",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: PrefillSteamLogin (state waiting with the challenge URL the QR code encodes; 409 when already signed in)",
+        "responses": {
+          "200": {
+            "description": "Start a Steam sign-in by QR code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillSteamLogin"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      },
+      "delete": {
+        "operationId": "deletePrefillSteamLogin",
+        "summary": "Cancel the pending Steam sign-in",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: 204",
+        "responses": {
+          "204": {
+            "description": "No content."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/steam/logout": {
+      "post": {
+        "operationId": "postPrefillSteamLogout",
+        "summary": "Sign out of Steam",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: 204 (the token is revoked at Steam when possible and deleted)",
+        "responses": {
+          "204": {
+            "description": "No content."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/steam/apps": {
+      "get": {
+        "operationId": "getPrefillSteamApps",
+        "summary": "The Steam account's games",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: PrefillSteamApps (error is set when Steam could not be read; the last list is returned then)",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true: read the games from Steam again."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Steam account's games.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillSteamApps"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/steam/selection": {
+      "put": {
+        "operationId": "putPrefillSteamSelection",
+        "summary": "Choose the Steam games to prefill",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: {apps: [app ID]}\n\nResponse: {apps} (sorted)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrefillSelection"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Choose the Steam games to prefill.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillSelection"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "locked",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/jobs": {
+      "post": {
+        "operationId": "postPrefillJob",
+        "summary": "Start a prefill job",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: {force?} (force: download current games too) or no body\n\nResponse: 202 PrefillJob (409 while a job runs)",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "force": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Start a prefill job.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/jobs/current": {
+      "delete": {
+        "operationId": "deletePrefillJob",
+        "summary": "Cancel the running prefill job",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: 204 (404 when none runs)",
+        "responses": {
+          "204": {
+            "description": "No content."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/history": {
+      "get": {
+        "operationId": "getPrefillHistory",
+        "summary": "The last prefill jobs",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: {jobs: [PrefillJob]} (newest first, at most 20)",
+        "responses": {
+          "200": {
+            "description": "The last prefill jobs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jobs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PrefillJob"
+                      }
+                    }
+                  },
+                  "required": [
+                    "jobs"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
     }
   },
   "components": {
@@ -21671,6 +22213,530 @@
           "ip",
           "port",
           "opened"
+        ]
+      },
+      "PrefillState": {
+        "type": "object",
+        "properties": {
+          "installed": {
+            "type": "boolean"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "socket": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PrefillStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "installed",
+          "running",
+          "socket",
+          "error",
+          "status"
+        ]
+      },
+      "PrefillStatus": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "started": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cache": {
+            "$ref": "#/components/schemas/PrefillCache"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/PrefillSettings"
+          },
+          "steam": {
+            "type": "object",
+            "properties": {
+              "deviceName": {
+                "type": "string"
+              },
+              "account": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/PrefillSteamAccount"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "login": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/PrefillSteamLogin"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "deviceName",
+              "account",
+              "login"
+            ]
+          },
+          "job": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PrefillJob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextRun": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "protocol": {
+                  "type": "string",
+                  "enum": [
+                    "https",
+                    "wss",
+                    "http",
+                    "ws"
+                  ]
+                },
+                "purpose": {
+                  "type": "string",
+                  "enum": [
+                    "steam-directory",
+                    "steam-cm",
+                    "cache"
+                  ]
+                },
+                "lastUsed": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "host",
+                "protocol",
+                "purpose",
+                "lastUsed"
+              ]
+            }
+          }
+        },
+        "required": [
+          "version",
+          "started",
+          "cache",
+          "settings",
+          "steam",
+          "job",
+          "nextRun",
+          "hosts"
+        ]
+      },
+      "PrefillCache": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "instanceId": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "checkedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "url",
+          "ok",
+          "instanceId",
+          "error",
+          "checkedAt"
+        ]
+      },
+      "PrefillSettings": {
+        "type": "object",
+        "properties": {
+          "schedule": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 6
+                }
+              },
+              "start": {
+                "type": "string",
+                "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+              },
+              "end": {
+                "type": "string",
+                "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+              }
+            },
+            "required": [
+              "enabled",
+              "days",
+              "start",
+              "end"
+            ]
+          },
+          "maxMbps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "connections": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
+          },
+          "steam": {
+            "type": "object",
+            "properties": {
+              "os": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "windows",
+                    "macos",
+                    "linux"
+                  ]
+                }
+              },
+              "languages": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "apps": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            },
+            "required": [
+              "os",
+              "languages",
+              "apps"
+            ]
+          }
+        },
+        "required": [
+          "schedule",
+          "maxMbps",
+          "connections",
+          "steam"
+        ]
+      },
+      "PrefillSteamAccount": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "steamId": {
+            "type": "string"
+          },
+          "deviceName": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "steamId",
+          "deviceName",
+          "since",
+          "expires",
+          "error"
+        ]
+      },
+      "PrefillSteamLogin": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "done",
+              "failed",
+              "expired",
+              "cancelled"
+            ]
+          },
+          "challengeUrl": {
+            "type": "string"
+          },
+          "started": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "challengeUrl",
+          "started",
+          "error"
+        ]
+      },
+      "PrefillSteamApps": {
+        "type": "object",
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "selected": {
+                  "type": "boolean"
+                },
+                "prefilled": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "current": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "bytes",
+                "selected",
+                "prefilled",
+                "current"
+              ]
+            }
+          },
+          "updated": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "apps",
+          "updated",
+          "error"
+        ]
+      },
+      "PrefillSelection": {
+        "type": "object",
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 2000
+          }
+        },
+        "required": [
+          "apps"
+        ]
+      },
+      "PrefillJob": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "schedule"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "done",
+              "failed",
+              "cancelled",
+              "stopped"
+            ]
+          },
+          "started": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          },
+          "current": {
+            "type": "string"
+          },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "service": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "running",
+                    "done",
+                    "current",
+                    "failed"
+                  ]
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "total": {
+                  "type": "integer"
+                },
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "service",
+                "id",
+                "name",
+                "state",
+                "bytes",
+                "total",
+                "error"
+              ]
+            }
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "fromCache": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "trigger",
+          "state",
+          "started",
+          "finished",
+          "error",
+          "current",
+          "apps",
+          "bytes",
+          "fromCache",
+          "total",
+          "hosts"
         ]
       }
     }

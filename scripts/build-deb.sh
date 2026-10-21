@@ -46,7 +46,7 @@ i386) bin=picache-linux-386 ;;
 esac
 [ -f "$dist/$bin" ] || die "$dist/$bin is missing"
 
-units="picache.service picache-storage.service picache-storage.path picache-shared-mounts.service"
+units="picache.service picache-storage.service picache-storage.path picache-shared-mounts.service picache-prefill.service"
 stage=$dist/deb-$arch
 rm -rf "$stage"
 trap 'rm -rf "$stage"' EXIT

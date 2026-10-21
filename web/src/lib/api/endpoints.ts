@@ -484,6 +484,35 @@ const downloadCache = {
   sni: (o?: ReqOpts) => http.get<T.SniStats>('/download-cache/sni', o),
 }
 
+// ---------------------------------------------------------------- prefill
+
+// Sign-ins and game lists talk to Steam: up to a few minutes.
+const PREFILL_LONG = 400_000
+
+const prefill = {
+  /** Always 200: installed, running, the service's status. */
+  state: (checkCache = false, o?: ReqOpts) =>
+    http.get<T.PrefillState>('/prefill', { ...o, query: checkCache ? { checkCache: 'true' } : undefined }),
+  settings: (o?: ReqOpts) => http.get<T.PrefillSettings>('/prefill/settings', o),
+  saveSettings: (s: T.PrefillSettings, o?: ReqOpts) => http.put<T.PrefillSettings>('/prefill/settings', s, o),
+  /** Starts a QR sign-in (409 when signed in). */
+  steamLogin: (o?: ReqOpts) => http.post<T.PrefillSteamLogin>('/prefill/steam/login', undefined, { ...o, timeoutMs: PREFILL_LONG }),
+  steamCancelLogin: (o?: ReqOpts) => http.del('/prefill/steam/login', o),
+  /** Revokes the sign-in at Steam (when possible) and deletes it. */
+  steamLogout: (o?: ReqOpts) => http.post<void>('/prefill/steam/logout', undefined, { ...o, timeoutMs: PREFILL_LONG }),
+  steamApps: (refresh = false, o?: ReqOpts) =>
+    http.get<T.PrefillSteamApps>('/prefill/steam/apps', {
+      ...o,
+      query: refresh ? { refresh: 'true' } : undefined,
+      timeoutMs: PREFILL_LONG,
+    }),
+  steamSelect: (apps: number[], o?: ReqOpts) => http.put<{ apps: number[] }>('/prefill/steam/selection', { apps }, o),
+  /** 409 while a job runs. */
+  startJob: (force = false, o?: ReqOpts) => http.post<T.PrefillJob>('/prefill/jobs', { force }, o),
+  cancelJob: (o?: ReqOpts) => http.del('/prefill/jobs/current', o),
+  history: (o?: ReqOpts) => http.get<{ jobs: T.PrefillJob[] }>('/prefill/history', o),
+}
+
 // ---------------------------------------------------------------- cache store, proxy, downloads
 
 const cache = {
@@ -648,6 +677,7 @@ export const api = {
   dhcp,
   filter,
   downloadCache,
+  prefill,
   cache,
   storage,
   logs,

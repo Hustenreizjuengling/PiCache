@@ -19,7 +19,7 @@ BIN=/usr/bin/picache
 UNIT_DIR=/usr/lib/systemd/system
 umask 022
 
-PKG_UNITS="picache.service picache-storage.path picache-storage.service picache-shared-mounts.service"
+PKG_UNITS="picache.service picache-storage.path picache-storage.service picache-shared-mounts.service picache-prefill.service"
 
 # refuse_older NEW refuses the upgrade to the older package version NEW:
 # the installed version may have migrated the database, which NEW then

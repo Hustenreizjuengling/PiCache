@@ -43,7 +43,7 @@ const (
 
 // unitNames are the units an update may replace (deploy/systemd/<name>).
 var unitNames = []string{"picache.service", "picache-update.service", "picache-update.path", "picache-storage.service",
-	"picache-storage.path", "picache-shared-mounts.service"}
+	"picache-storage.path", "picache-shared-mounts.service", "picache-prefill.service"}
 
 // errNoUnits: the unit step does not run in this update.
 var errNoUnits = errors.New("no unit files in this update")

@@ -58,6 +58,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # owner and mode (PiCache never chowns). They are copied via their parent
 # directory because COPY of a directory itself does not keep its mode.
 RUN install -d -m 0750 /out/state/data /out/state/cache && install -d -m 0755 /out/srv/picache
+# The prefill service (docker-compose.yml, profile prefill) runs as
+# 65533:65533: its state (the store sign-ins) only it can read, and the
+# directory of its socket, which PiCache (65532) reaches.
+RUN install -d -m 0700 /out/prefill/var/lib/picache-prefill && install -d -m 0755 /out/prefill/run/picache-prefill
 # License texts that go with every copy, for /usr/share/doc/picache (root,
 # world-readable). Modes are set here because COPY --chmod would also apply
 # the file mode to the directory it creates.
@@ -80,6 +84,7 @@ LABEL org.opencontainers.image.title="PiCache" \
 COPY --from=build /out/picache /picache
 COPY --from=build --chown=65532:65532 /out/state/ /
 COPY --from=build /out/srv/ /srv/
+COPY --from=build --chown=65533:65533 /out/prefill/ /
 COPY --from=build /out/doc/ /usr/share/doc/
 ENV PICACHE_DATA_DIR=/data \
     PICACHE_CACHE_DIR=/cache \

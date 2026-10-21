@@ -42,7 +42,7 @@ Contents: [Download](#download) · [Build from source](#build-from-source) ·
 [Port conflicts](#port-conflicts) · [Persistent data](#persistent-data) ·
 [Backup and restore](#backup-and-restore) · [Updates](#updates) ·
 [Uninstall](#uninstall) · [Cache storage](#cache-storage) ·
-[Environment variables](#environment-variables) · [CLI](#cli-reference) ·
+[Prefill](#prefill) · [Environment variables](#environment-variables) · [CLI](#cli-reference) ·
 [Troubleshooting](#troubleshooting)
 
 ---
@@ -3190,6 +3190,16 @@ changes:
   health check warned after an update that the local CA does not cover
   such a name, no new CA is needed.
 
+### Upgrading to 1.4.0
+
+1.4.0 has no database migration and changes no unit of PiCache. New is
+the unit `picache-prefill.service` of the [prefill](#prefill), which is
+off: the installer and the Debian package install it, an update from the
+web UI does not (it never adds units). Turn the prefill on with `sudo
+picache prefill enable` when you want it. Going back to 1.3 leaves the
+unit and the state directory behind; `sudo picache prefill disable
+--forget` before going back removes the state.
+
 ### Going back to an earlier version
 
 A version before 0.17.0 refuses the `picache.db` of 0.17.0 (settings
@@ -3570,6 +3580,91 @@ CIFS/NFS mounts and propagation changes.
 
 ---
 
+## Prefill
+
+The prefill downloads the games you choose into the download cache before
+anyone in your network needs them: at night, through the cache, signed in
+without a password. 1.4.0 supports Steam (Battle.net and Epic follow). You
+use it under **Cache → Prefill** in the web UI; the details are in
+[ARCHITECTURE.md](ARCHITECTURE.md#20-prefill-internalprefill-picache-prefill-140).
+
+**Why a service of its own.** Signing in to Steam gives a sign-in token
+that can download your games. It stays with the prefill service: a process
+of its own (`picache-prefill.service`) under a user of its own
+(`DynamicUser=yes`), without any capability and without a port in your
+network. PiCache's web UI talks to it over the Unix socket
+`/run/picache-prefill/prefill.sock`, which accepts only PiCache's user and
+root. The token is never sent to PiCache and is never in PiCache's
+databases, backups, support bundles or logs.
+
+**Turning it on.** The installer and the Debian package install the unit
+but leave it off. On the PiCache host:
+
+```sh
+sudo picache prefill enable
+```
+
+It installs the unit when the host has none yet (an update from the web
+UI replaces installed units but never adds one), enables and starts it
+and waits until it answers. Then open **Cache → Prefill**, choose **Sign
+in with the Steam app**, scan the code with the Steam app on your phone
+(the shield, Steam Guard → scan a QR code) and confirm the sign-in of
+`PiCache Prefill (<host name>)`. Choose your games and either start a run
+(**Prefill now**) or switch the schedule on.
+
+**What it does.** A run signs in to Steam, reads the current version of
+every chosen game (the depots of the platforms and languages you choose
+under *Schedule and limits*; Windows and English by default), and asks
+the cache for its manifest and every chunk, with the content server's name
+as `Host` and Steam's user agent, exactly like a Steam client whose DNS
+points at the cache. The cache fetches what it does not have; the service
+reads and drops the data. A game whose current version was prefilled
+before is skipped (**Download everything again** forces it). A scheduled
+run starts at the beginning of its window (the host's time zone) and stops
+at its end; the next window continues. The page lists every host the
+service talked to: Steam's server list (`api.steampowered.com`), a Steam
+server (`*.steamserver.net`, WebSocket over TLS) and your cache.
+
+**Signing out** revokes the token at Steam and deletes it. Steam lists the
+sign-in with your account's devices (Steam Guard), where you can end it
+too. Steam rejects a token after a password change, and when it expires
+(the page shows the date): the page then says so and offers a new sign-in.
+
+**Turning it off.**
+
+```sh
+sudo picache prefill disable            # stop it; the sign-in and the selection stay
+sudo picache prefill disable --forget   # also delete its state (sign out in the web UI first)
+```
+
+`install.sh --uninstall` stops and removes the unit; `--purge` (and `apt
+purge picache`) also delete the state directory
+`/var/lib/private/picache-prefill`.
+
+**Settings** (`/etc/picache/prefill.env`, then `sudo systemctl restart
+picache-prefill`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `PICACHE_PREFILL_CACHE` | `http://127.0.0.1:80` | The download cache to fill: `http://host[:port]`, nothing else. Set it when `PICACHE_CACHE_LISTEN` does not listen on loopback (for example `http://192.168.1.5:80`). |
+| `PICACHE_PREFILL_SOCKET` | `/run/picache-prefill/prefill.sock` | The socket (at most 107 bytes). PiCache reads the same variable from `picache.env`. |
+| `PICACHE_PREFILL_STATE_DIR` | the unit's `StateDirectory` | Where the state files are kept. |
+| `PICACHE_PREFILL_CLIENT_USER` / `PICACHE_PREFILL_CLIENT_UID` | `picache` | The user (or comma-separated user IDs) besides root that may use the socket: PiCache's. |
+| `PICACHE_PREFILL_DEBUG` | – | `1`: debug log. |
+
+**Docker.** The compose file has the service `picache-prefill` (the same
+image, profile `prefill`): `docker compose --profile prefill up -d`. It
+runs as 65533:65533 with every capability dropped and a read-only root,
+keeps its state in the volume `picache-prefill-state` and shares the socket
+with PiCache through the volume `picache-prefill-run`. With bridge
+networking, set `PICACHE_PREFILL_CACHE` to the PiCache container
+(`http://picache:80`) and put both containers in one network.
+
+**Limits.** Only downloads over plain HTTP are cached (Steam serves its
+content servers over HTTP; Steam's clients use them through a cache
+too). Password-protected beta branches are not prefilled. The prefill
+needs Linux (the socket's peer credentials).
+
 ## Environment variables
 
 Bootstrap settings are read at start from `PICACHE_*` environment variables.
@@ -3619,6 +3714,7 @@ empty host means all addresses. `off`, `none` or `-` disables the listener.
 | `PICACHE_ENV_FILE` | `/etc/picache/picache.env` | Env file to read instead of the default. Unlike the default file, it must exist. |
 | `PICACHE_TOKEN` | – | CLI only (`picache logs`, `status`, `pause`, `resume`, `explain`, `lists`, `allow`, `deny`, `query`, `config`): the API token. Read from the environment only, never from the env file ([From the command line](#from-the-command-line)). |
 | `PICACHE_URL` | the local web listener | CLI only: the PiCache URL of the API commands. |
+| `PICACHE_PREFILL_SOCKET` | `/run/picache-prefill/prefill.sock` | The socket of the prefill service ([Prefill](#prefill), which also lists the service's own variables). |
 | `GOMEMLIMIT` | 60 % of the memory limit | Go's soft memory limit. By default PiCache sets 60 % of the lowest memory limit of its cgroup and the cgroups above it (a `MemoryMax=` drop-in for `picache.service`, the memory limit of a container; cgroup v2 or v1), or of the RAM. The entry budget of the blocklists follows the same limit. |
 
 `picache serve` also accepts flags that override the environment:
@@ -3662,6 +3758,10 @@ flag or a `PICACHE_*_LISTEN` variable wins over them.
 | `picache listeners --reset` | Forget the listeners saved in the web UI; the next start uses the `PICACHE_*_LISTEN` variables and the defaults ([Listeners](#saved-listeners)). Root or the service user. |
 | `picache db check` | Check `picache.db` read-only (also while PiCache runs): integrity, foreign keys, schema versions, the settings document. Exit code `3` when problems are found ([Recovering a damaged picache.db](#recovering-a-damaged-picachedb)). Root or the service user. |
 | `picache db salvage --out FILE [--force]` | Copy every readable row of a damaged `picache.db` into the new file `FILE` (PiCache stopped; the source is never modified). Exit code `3` when rows were lost or skipped. Root or the service user. |
+| `picache prefill [serve]` | Run the prefill service (started by `picache-prefill.service`; never as root) ([Prefill](#prefill)). |
+| `picache prefill status` | Print the prefill service's status as JSON, through its socket. Root or PiCache's user. |
+| `picache prefill enable` | Root only. Install `picache-prefill.service` if the host has none, then enable and start it. |
+| `picache prefill disable [--forget]` | Root only. Stop and disable the prefill service; `--forget` also deletes its state (its Steam sign-in: sign out in the web UI first, which revokes it at Steam). |
 | `picache help` | Print the usage. |
 
 Exit codes: `0` success, `1` error or unhealthy, `2` usage or configuration

@@ -14,6 +14,7 @@ import (
 	_ "golang.org/x/net/idna"
 	_ "golang.org/x/net/proxy"
 	_ "golang.org/x/net/publicsuffix"
+	_ "golang.org/x/net/websocket"
 	_ "golang.org/x/sync/errgroup"
 	_ "golang.org/x/sync/singleflight"
 	_ "golang.org/x/sys/unix"

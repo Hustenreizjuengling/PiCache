@@ -5,6 +5,41 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Prefill: Steam games into the cache before anyone needs them.**
+  Under **Cache → Prefill** you sign in to Steam with a QR code that you
+  scan and confirm in the Steam app; no password or Steam Guard code is
+  typed anywhere. Choose your games, then start a run or let a schedule
+  bring them up to date at night (days, a time window, a download limit,
+  parallel downloads, platforms and languages). A run downloads the
+  current version of every chosen game through the cache, like a Steam
+  client whose DNS points at the cache, and skips games whose version is
+  already there; the cache then serves the first download in your
+  network at LAN speed. The page shows the progress, the last 20 runs and
+  every host the service talked to.
+- **The prefill is a service of its own.** `picache-prefill.service`
+  runs under its own user (systemd `DynamicUser`), without any capability
+  and without a network port. It keeps the Steam sign-in in its own
+  state directory; PiCache talks to it over a Unix socket that admits only
+  PiCache's user and root, and never sees the token, so it is in no
+  backup, support bundle or log either. Signing out revokes the sign-in
+  at Steam. It is installed but off: `sudo picache prefill enable` turns
+  it on (and installs the unit after an update from the web UI, which
+  adds no units), `sudo picache prefill disable [--forget]` turns it off.
+  In Docker it is the service `picache-prefill` of the compose file
+  (`docker compose --profile prefill up -d`).
+- The Steam part is written for PiCache, without a Steam library, so
+  every request it sends can be read in `internal/prefill/steam`. It
+  follows Steam's own clients: its sessions use a login ID of their own,
+  so the prefill never signs your Steam client out. Battle.net and Epic
+  follow in later releases.
+
+### Changed
+
+- ARCHITECTURE no longer lists online game-name lookups as a non-goal:
+  the Library's store names (1.2.0, 1.3.0) are such lookups, opt-in.
+
 ## [1.3.0] - 2026-10-21
 
 ### Added

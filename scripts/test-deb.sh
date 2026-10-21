@@ -179,7 +179,7 @@ echo "$out" | grep -q 'Setup token:   sudo picache setup-token' || fail "the sum
 echo "$out" | grep -q 'PiCache is running.' || fail "not started: $out"
 [ "$(status)" = "install ok installed" ] || fail "status $(status)"
 check_mode /usr/bin/picache 755 root:root
-for u in picache.service picache-storage.service picache-storage.path picache-shared-mounts.service; do
+for u in picache.service picache-storage.service picache-storage.path picache-shared-mounts.service picache-prefill.service; do
 	check_mode "/usr/lib/systemd/system/$u" 644 root:root
 	sed 's#/usr/local/bin/picache#/usr/bin/picache#g' "/src/deploy/systemd/$u" | cmp -s - "/usr/lib/systemd/system/$u" ||
 		fail "$u is not the unit of deploy/systemd with /usr/bin/picache"
@@ -199,7 +199,7 @@ uid=$(echo "$entry" | cut -d: -f3)
 [ "$uid" -lt 1000 ] || fail "not a system account: $entry"
 case $entry in */nologin) ;; *) fail "login shell: $entry" ;; esac
 grep -q '^enable picache.service' /tmp/systemctl.log || fail "picache.service not enabled"
-if grep -q 'picache-storage.path\|picache-update' /tmp/systemctl.log; then fail "host-apply or update units enabled"; fi
+if grep -q 'picache-storage.path\|picache-update\|picache-prefill' /tmp/systemctl.log; then fail "host-apply, update or prefill units enabled"; fi
 wait_healthy
 token=$(/usr/bin/picache setup-token 2>/dev/null) || fail "no setup token"
 if echo "$out" | grep -qF "$token"; then fail "the setup token was printed"; fi

@@ -3596,3 +3596,121 @@ export interface ConfigExport {
     'dns-settings'?: { dns: Partial<DnsSettings>; filter: Partial<FilterSettings> }
   }
 }
+
+// ---------------------------------------------------------------- prefill
+
+/** GET /prefill: whether the prefill service runs, and its status. */
+export interface PrefillState {
+  /** The socket exists (the service is installed and was started). */
+  installed: boolean
+  /** The service answered. */
+  running: boolean
+  socket: string
+  /** Why the service is not reachable. */
+  error: string
+  status: PrefillStatus | null
+}
+
+export interface PrefillStatus {
+  version: string
+  started: string
+  cache: PrefillCache
+  settings: PrefillSettings
+  steam: { deviceName: string; account: PrefillSteamAccount | null; login: PrefillSteamLogin | null }
+  /** The running job. */
+  job: PrefillJob | null
+  nextRun: string | null
+  /** Every destination the service talked to since it started. */
+  hosts: PrefillHost[]
+}
+
+export interface PrefillCache {
+  url: string
+  ok: boolean
+  instanceId: string
+  error: string
+  checkedAt: string | null
+}
+
+export interface PrefillHost {
+  host: string
+  protocol: 'https' | 'wss' | 'http' | 'ws'
+  purpose: 'steam-directory' | 'steam-cm' | 'cache'
+  lastUsed: string | null
+}
+
+export type PrefillOS = 'windows' | 'macos' | 'linux'
+
+export interface PrefillSettings {
+  schedule: {
+    enabled: boolean
+    /** Weekdays the window starts on, 0 = Sunday. */
+    days: number[]
+    /** "HH:MM"; an end at or before the start ends the next day. */
+    start: string
+    end: string
+  }
+  /** 0 = no limit. */
+  maxMbps: number
+  /** Parallel downloads, 1–32. */
+  connections: number
+  steam: { os: PrefillOS[]; languages: string[]; apps: number[] }
+}
+
+export interface PrefillSteamAccount {
+  name: string
+  steamId: string
+  /** How the sign-in appears in the account's Steam Guard device list. */
+  deviceName: string
+  since: string
+  expires: string | null
+  /** The last failure to use the sign-in. */
+  error: string
+}
+
+export interface PrefillSteamLogin {
+  state: 'waiting' | 'done' | 'failed' | 'expired' | 'cancelled'
+  /** What the QR code encodes (it changes while the sign-in waits). */
+  challengeUrl: string
+  /** The code was scanned; the app asks for the confirmation. */
+  scanned: boolean
+  started: string
+  error: string
+}
+
+export interface PrefillSteamApp {
+  id: number
+  name: string
+  /** Download size of the depots a job would fetch (0: unknown). */
+  bytes: number
+  selected: boolean
+  prefilled: string | null
+  /** The last prefill is still the current version. */
+  current: boolean
+}
+
+export interface PrefillSteamApps {
+  apps: PrefillSteamApp[]
+  updated: string | null
+  /** Steam could not be read (the last list is shown). */
+  error: string
+}
+
+export type PrefillJobState = 'running' | 'done' | 'failed' | 'cancelled' | 'stopped'
+export type PrefillAppState = 'pending' | 'running' | 'done' | 'current' | 'failed'
+
+export interface PrefillJob {
+  id: number
+  trigger: 'manual' | 'schedule'
+  state: PrefillJobState
+  started: string
+  finished: string | null
+  error: string
+  current: string
+  apps: { service: string; id: string; name: string; state: PrefillAppState; bytes: number; total: number; error: string }[]
+  /** Read through the cache; fromCache of it was already there. */
+  bytes: number
+  fromCache: number
+  total: number
+  hosts: string[]
+}

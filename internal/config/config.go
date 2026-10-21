@@ -98,6 +98,11 @@ type Config struct {
 
 	MountRoot string // PICACHE_MOUNT_ROOT: the only place NAS stores may live, default /srv/picache
 
+	// PrefillSocket (PICACHE_PREFILL_SOCKET) is the Unix socket of the
+	// prefill service (picache prefill, its own unit and user), default
+	// /run/picache-prefill/prefill.sock.
+	PrefillSocket string
+
 	// MemoryLimit is the memory PiCache may use in bytes (the cgroup v2
 	// limit, else MemTotal rounded up to the machine's nominal size,
 	// filter.NominalMemory; 0 = unknown). Not an environment variable:
@@ -166,17 +171,18 @@ func (c *Config) Paths() Paths {
 // are used; elsewhere (development) directories relative to the working dir.
 func defaults() Config {
 	c := Config{
-		DNSListen:    []string{":53"},
-		CacheListen:  []string{":80"},
-		SNIListen:    []string{":443"},
-		WebListen:    []string{":8080"},
-		WebTLSListen: []string{":8443"},
-		DoTListen:    []string{":853"},
-		ListenerLock: map[string]string{},
-		LogLevel:     slog.LevelInfo,
-		LogFormat:    "text",
-		AdminUser:    "admin",
-		MountRoot:    "/srv/picache",
+		DNSListen:     []string{":53"},
+		CacheListen:   []string{":80"},
+		SNIListen:     []string{":443"},
+		WebListen:     []string{":8080"},
+		WebTLSListen:  []string{":8443"},
+		DoTListen:     []string{":853"},
+		ListenerLock:  map[string]string{},
+		LogLevel:      slog.LevelInfo,
+		LogFormat:     "text",
+		AdminUser:     "admin",
+		MountRoot:     "/srv/picache",
+		PrefillSocket: "/run/picache-prefill/prefill.sock",
 
 		DestructiveAPI: true,
 	}
@@ -315,6 +321,7 @@ func (c *Config) applyEnv(getenv func(string) string, secrets bool) error {
 	str("PICACHE_ADMIN_USER", &c.AdminUser)
 	str("PICACHE_MASTER_KEY_FILE", &c.MasterKeyFile)
 	str("PICACHE_MOUNT_ROOT", &c.MountRoot)
+	str("PICACHE_PREFILL_SOCKET", &c.PrefillSocket)
 
 	if v := getenv("PICACHE_LOG_LEVEL"); v != "" {
 		lvl, err := parseLevel(v)

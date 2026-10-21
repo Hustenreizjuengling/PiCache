@@ -15,7 +15,7 @@ BIN=/usr/bin/picache
 UNIT_DIR=/usr/lib/systemd/system
 umask 022
 
-PKG_UNITS="picache.service picache-storage.path picache-storage.service picache-shared-mounts.service"
+PKG_UNITS="picache.service picache-storage.path picache-storage.service picache-shared-mounts.service picache-prefill.service"
 
 # pkg_paths reads the data directory and the mount root like read_paths,
 # an invalid value as the default (removing the package never fails on it).

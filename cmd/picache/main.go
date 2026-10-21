@@ -20,6 +20,8 @@
 //	                                      API commands (a token from PICACHE_TOKEN or --token-file)
 //	picache restore <file>                stage a backup for the next start
 //	picache listeners --reset             use the environment and default listeners again
+//	picache prefill [serve|status]        run the prefill service (its own unit and user) or print its status
+//	picache prefill enable|disable        (root) install, enable and start it, or stop it
 package main
 
 import (
@@ -122,6 +124,8 @@ func run(args []string) int {
 		return restoreCmd(args)
 	case "listeners":
 		return listenersCmd(args)
+	case "prefill":
+		return prefillCmd(args)
 	case "help":
 		fmt.Println(strings.TrimSpace(usage))
 		return 0
@@ -192,6 +196,14 @@ commands:
                                 download-cache, notifications, storage); restart PiCache to apply it
   listeners --reset             forget the listeners saved in the web UI: the next start uses the
                                 PICACHE_*_LISTEN variables and the defaults
+  prefill [serve]               run the prefill service (picache-prefill.service, its own user;
+                                never as root): PICACHE_PREFILL_CACHE (default http://127.0.0.1:80),
+                                PICACHE_PREFILL_SOCKET, PICACHE_PREFILL_STATE_DIR
+  prefill status                print the prefill service's status as JSON (through its socket)
+  prefill enable                (root) install the unit picache-prefill.service if the host has none,
+                                then enable and start it
+  prefill disable [--forget]    (root) stop and disable the prefill service; --forget also deletes its
+                                state (sign out in the web UI first: that revokes the sign-in)
   status [--watch] [--interval 5s] [--json]
                                 queries, blocked share, cache hits, health and top clients
                                 (--watch redraws every interval until Ctrl-C)

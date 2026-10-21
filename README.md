@@ -104,6 +104,10 @@ underneath: one process, one configuration database.
   lists, on a local disk or an SMB/NFS NAS; HTTPS is passed through by
   SNI, never decrypted. Steam finds the cache by itself; prefill tools
   work. The UI shows what was downloaded and how much bandwidth was saved.
+- Prefill (off until you enable it): downloads the Steam games you choose
+  into the cache at night, signed in with a QR code from the Steam app (no
+  password anywhere). It runs as a service of its own under its own user,
+  so the sign-in never reaches PiCache ([DEPLOYMENT.md](docs/DEPLOYMENT.md#prefill)).
 
 **Operation**
 
@@ -711,6 +715,8 @@ Konto oder Telemetrie.
   FRITZ!Box), optionaler DHCP-Server, Checkliste für den Einstieg.
 - **Download-Cache** (optional) für Steam, Epic, Battle.net, Xbox,
   Windows Update und mehr, auf SSD oder NAS; HTTPS wird nie entschlüsselt.
+  Optional lädt das **Prefill** deine Steam-Spiele nachts vor, angemeldet
+  per QR-Code aus der Steam-App, ohne Passwort, als eigener Dienst.
 - **Betrieb:** Admins und Betrachter, Zwei-Faktor-Anmeldung, API-Tokens,
   Sicherungen (automatische Sicherungen sind anfangs **aus**: unter
   **System → Sicherung & Wiederherstellung → Automatisch sichern**

@@ -88,7 +88,7 @@ for a in $deb_arches; do
 	mkdir "$x"
 	dpkg-deb -x "$deb" "$x"
 	cmp -s "$x/usr/bin/picache" "$dist/$bin" || fail "$a: usr/bin/picache is not $bin"
-	for u in picache.service picache-storage.service picache-storage.path picache-shared-mounts.service; do
+	for u in picache.service picache-storage.service picache-storage.path picache-shared-mounts.service picache-prefill.service; do
 		sed 's#/usr/local/bin/picache#/usr/bin/picache#g' "$root/deploy/systemd/$u" >"$tmp/unit"
 		cmp -s "$x/usr/lib/systemd/system/$u" "$tmp/unit" || fail "$a: usr/lib/systemd/system/$u differs from deploy/systemd/$u"
 	done

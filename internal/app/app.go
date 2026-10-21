@@ -41,6 +41,7 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/notify"
 	"github.com/hustenreizjuengling/picache/internal/ntp"
 	"github.com/hustenreizjuengling/picache/internal/portcheck"
+	"github.com/hustenreizjuengling/picache/internal/prefill/prefillapi"
 	"github.com/hustenreizjuengling/picache/internal/secrets"
 	"github.com/hustenreizjuengling/picache/internal/settings"
 	"github.com/hustenreizjuengling/picache/internal/storage"
@@ -570,7 +571,7 @@ func (a *App) build(ctx context.Context) (err error) {
 		Clients: a.clients, Services: a.services, Proxy: a.proxy, SNI: a.sni, Storage: a.storage,
 		Logs: a.logs, Runtime: a, Updates: a.updates, Notify: a.notify, Backups: a.backups,
 		Parental: a.parental, Network: a.network, Ports: a.portsAPI(), DHCP: a.dhcp, TLS: a.webTLS, WebAccess: a.web, AppLog: a.appLog, Diag: a,
-		Encrypted: a, Listeners: a, Sync: a.sync,
+		Encrypted: a, Listeners: a, Sync: a.sync, Prefill: prefillapi.NewClient(a.cfg.PrefillSocket),
 		UI: webui.Handler(), Log: log,
 	})
 	a.storeState.Store(&api.StoreState{TargetID: a.set.Get().Cache.ActiveStoreID, Reason: "starting"})

@@ -177,8 +177,11 @@ type Deps struct {
 	// Sync is the follower sync (nil: GET /system/sync and POST
 	// /system/sync/run answer 503).
 	Sync SyncManager
-	UI   http.Handler // embedded web UI
-	Log  *slog.Logger
+	// Prefill is the prefill service's socket (nil: GET /prefill reports
+	// it as not configured, the other prefill endpoints answer 503).
+	Prefill Prefill
+	UI      http.Handler // embedded web UI
+	Log     *slog.Logger
 }
 
 // Server is the API + UI HTTP handler.
@@ -262,6 +265,7 @@ func New(d Deps) *Server {
 	s.registerUpstreamRoutes()
 	s.registerFilterRoutes()
 	s.registerDownloadCacheRoutes()
+	s.registerPrefillRoutes()
 	s.registerCacheRoutes()
 	s.registerProxyRoutes()
 	s.registerStorageRoutes()

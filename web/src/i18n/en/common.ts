@@ -22,6 +22,7 @@ export default {
   'nav.cache': 'Cache',
   'nav.downloads': 'Downloads',
   'nav.library': 'Library',
+  'nav.prefill': 'Prefill',
   'nav.services': 'Services',
   'nav.storage': 'Storage',
   'nav.cacheSettings': 'Cache settings',

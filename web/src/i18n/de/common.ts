@@ -23,6 +23,7 @@ const de: Messages<typeof en> = {
   'nav.cache': 'Cache',
   'nav.downloads': 'Downloads',
   'nav.library': 'Bibliothek',
+  'nav.prefill': 'Prefill',
   'nav.services': 'Dienste',
   'nav.storage': 'Speicher',
   'nav.cacheSettings': 'Cache-Einstellungen',

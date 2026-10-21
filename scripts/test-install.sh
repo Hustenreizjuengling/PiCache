@@ -167,6 +167,9 @@ grep -qx "SystemCallFilter=adjtimex" "$unit" || fail "unit lacks adjtimex"
 	fail "adjtimex is not allowed after ~@privileged"
 if grep -q '^ProtectClock=' "$unit"; then fail "ProtectClock would refuse adjtimex"; fi
 grep -qx "LogsDirectory=picache" "$unit" && grep -qx "LogsDirectoryMode=0750" "$unit" || fail "unit lacks the log directory"
+# The prefill service is installed but not enabled (sudo picache prefill enable).
+check_mode /usr/local/lib/systemd/system/picache-prefill.service 644 root:root
+if grep -q 'picache-prefill' /tmp/systemctl.log; then fail "the prefill service was enabled or started by the installer"; fi
 grep -q '^#PICACHE_NTP_LISTEN=:123' /etc/picache/picache.env || fail "env template lacks the NTP example"
 grep -q '^#PICACHE_LOG_FILE=/var/log/picache/picache.log' /etc/picache/picache.env || fail "env template lacks the log file example"
 [ ! -e /etc/picache/nightly.enabled ] || fail "nightly marker written without --nightly"
@@ -447,7 +450,7 @@ touch /usr/local/bin/picache.prev # left by `picache update`
 touch /usr/local/lib/systemd/system/picache.service.prev /usr/local/lib/systemd/system/picache-update.path.prev
 sh /src/deploy/install.sh --uninstall
 [ ! -e /usr/local/bin/picache ] || fail "binary left behind"
-for u in picache.service picache-storage.service picache-storage.path picache-update.service picache-update.path; do
+for u in picache.service picache-prefill.service picache-storage.service picache-storage.path picache-update.service picache-update.path; do
 	[ ! -e "/usr/local/lib/systemd/system/$u" ] || fail "$u left behind"
 done
 [ ! -e /etc/picache/host-apply.enabled ] || fail "host-apply marker left behind"

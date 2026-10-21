@@ -1081,10 +1081,10 @@ do_uninstall() {
 	read_paths
 	remove_updater
 	cleanup_dhcp
-	for unit in picache-storage.path picache-storage.service picache.service "$SHARED_MOUNTS_UNIT"; do
+	for unit in picache-prefill.service picache-storage.path picache-storage.service picache.service "$SHARED_MOUNTS_UNIT"; do
 		systemctl disable --now "$unit" >/dev/null 2>&1 || true
 	done
-	for unit in picache.service picache-storage.service picache-storage.path "$SHARED_MOUNTS_UNIT"; do
+	for unit in picache.service picache-prefill.service picache-storage.service picache-storage.path "$SHARED_MOUNTS_UNIT"; do
 		rm -f "$UNIT_DIR/$unit"
 	done
 	for d in picache-storage.path.d picache-storage.service.d; do
@@ -1224,6 +1224,9 @@ unmount it and run --uninstall --purge again. Nothing else was deleted."
 		rm -rf -- "$dir" || kept="$kept $dir"
 	done
 	rm -rf -- "$CONF_DIR" || kept="$kept $CONF_DIR"
+	# The prefill service's state (DynamicUser): its store sign-ins.
+	rm -rf -- /var/lib/private/picache-prefill || kept="$kept /var/lib/private/picache-prefill"
+	rm -f -- /var/lib/picache-prefill
 	if [ -n "$mount_root" ] && [ -d "$mount_root" ]; then
 		# Empty mount points only: never delete files below the mount root.
 		for d in "$mount_root"/*; do
@@ -1234,7 +1237,7 @@ unmount it and run --uninstall --purge again. Nothing else was deleted."
 		fi
 	fi
 	purge_account "$kept" "$unchecked"
-	say "Deleted: the configuration, the data, the cache and the log files in their default paths."
+	say "Deleted: the configuration, the data, the cache, the log files and the prefill sign-ins in their default paths."
 	if [ -n "$kept$unchecked" ]; then
 		say "Kept (custom paths, mount points or with something mounted below; delete them yourself if no longer needed):"
 		for k in $kept; do
@@ -1406,6 +1409,8 @@ main() {
 
 	install -d -m 0755 "$UNIT_DIR"
 	install_unit picache.service
+	# The prefill service is installed but off: sudo picache prefill enable.
+	install_unit picache-prefill.service
 	if [ -e /etc/systemd/system/picache.service ]; then
 		warn "/etc/systemd/system/picache.service exists and overrides the installed unit;
 remove it unless you maintain it on purpose (use drop-ins for local changes)."

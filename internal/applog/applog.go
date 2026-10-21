@@ -69,7 +69,7 @@ const AppComponent = "app"
 // "component" of a logger's With), AppComponent for records without one.
 var Components = []string{
 	"api", AppComponent, "auth", "backup", "cachestore", "clients", "dhcp", "dns", "filter", "logs", "network",
-	"notify", "ntp", "parental", "portcheck", "proxy", "services", "settings", "sni", "storage", "sync", "update", "upstream", "web-access",
+	"notify", "ntp", "parental", "portcheck", "prefill", "proxy", "services", "settings", "sni", "storage", "sync", "update", "upstream", "web-access",
 	"web-tls",
 }
 

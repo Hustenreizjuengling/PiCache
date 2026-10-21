@@ -77,6 +77,8 @@ services:
       #   target: /srv/picache
       #   bind:
       #     propagation: rslave
+      # The socket of the prefill service (profile prefill, below).
+      - picache-prefill-run:/run/picache-prefill
     # environment:
     #   # Time zone for the time of scheduled backups (default UTC).
     #   TZ: "Europe/Berlin"
@@ -119,9 +121,45 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Prefill (Cache -> Prefill in the web UI): downloads the games you choose
+  # through the cache. Off unless started with its profile:
+  #   docker compose --profile prefill up -d
+  # It holds the store sign-ins, so it runs apart from PiCache: its own
+  # container and user (65533), no capability, no port; PiCache reaches it
+  # through the socket volume. Updated with PiCache (same image).
+  picache-prefill:
+    image: ghcr.io/hustenreizjuengling/picache:latest
+    container_name: picache-prefill
+    profiles: [prefill]
+    command: ["prefill"]
+    restart: unless-stopped
+    # Host networking: the cache at 127.0.0.1:80 and Steam's servers.
+    network_mode: host
+    user: "65533:65533"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      # PiCache's user in its container may use the socket.
+      PICACHE_PREFILL_CLIENT_UID: "65532"
+      # The download cache (PICACHE_CACHE_LISTEN of PiCache).
+      PICACHE_PREFILL_CACHE: "http://127.0.0.1:80"
+    volumes:
+      - picache-prefill-state:/var/lib/picache-prefill
+      - picache-prefill-run:/run/picache-prefill
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   picache-data:
   picache-cache:
+  picache-prefill-state:
+  picache-prefill-run:
 
 # secrets:
 #   picache_admin_password:

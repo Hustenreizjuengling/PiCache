@@ -42,6 +42,7 @@ export const routes: RouteDef[] = [
 
   { path: '/cache/downloads', section: 'cache', title: 'common.nav.downloads', icon: 'download', load: () => import('./pages/cache/Downloads.svelte') },
   { path: '/cache/library', section: 'cache', title: 'common.nav.library', icon: 'layers', load: () => import('./pages/cache/Library.svelte') },
+  { path: '/cache/prefill', section: 'cache', title: 'common.nav.prefill', icon: 'gamepad', load: () => import('./pages/cache/Prefill.svelte') },
   { path: '/cache/services', section: 'cache', title: 'common.nav.services', icon: 'grid', load: () => import('./pages/cache/Services.svelte') },
   { path: '/cache/storage', section: 'cache', title: 'common.nav.storage', icon: 'drive', load: () => import('./pages/cache/Storage.svelte') },
   { path: '/cache/settings', section: 'cache', title: 'common.nav.cacheSettings', icon: 'sliders', load: () => import('./pages/cache/CacheSettings.svelte') },

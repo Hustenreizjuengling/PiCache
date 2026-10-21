@@ -47,7 +47,11 @@ var expectedClasses = func() map[string]routeClass {
 		// internal update the configuration lock does not apply to).
 		"POST /api/v1/system/sync/run",
 		// 0.17.0: the DNSSEC test changes no configuration.
-		"POST /api/v1/dns/dnssec/test")
+		"POST /api/v1/dns/dnssec/test",
+		// 1.4.0: the prefill service's sign-ins and jobs are no PiCache
+		// configuration.
+		"POST /api/v1/prefill/steam/login", "DELETE /api/v1/prefill/steam/login", "POST /api/v1/prefill/steam/logout",
+		"POST /api/v1/prefill/jobs", "DELETE /api/v1/prefill/jobs/current")
 	add(routeClass{lock: lockPause}, "POST /api/v1/dns/blocking")
 	add(none,
 		"POST /api/v1/auth/setup", "POST /api/v1/auth/login", "POST /api/v1/auth/logout", "POST /api/v1/dns/lookup",
@@ -90,7 +94,9 @@ var expectedClasses = func() map[string]routeClass {
 		// next start.
 		"DELETE /api/v1/clients/known", "PUT /api/v1/system/listeners",
 		// 1.1.0: forgetting a device's port check results.
-		"DELETE /api/v1/network/ports/device")
+		"DELETE /api/v1/network/ports/device",
+		// 1.4.0: the prefill service's settings and game selection.
+		"PUT /api/v1/prefill/settings", "PUT /api/v1/prefill/steam/selection")
 	add(destroy,
 		"POST /api/v1/system/restore", "POST /api/v1/dhcp/reset", "DELETE /api/v1/dhcp/leases",
 		"POST /api/v1/cache/services/{service}/purge", "POST /api/v1/cache/groups/delete", "POST /api/v1/storage/targets/{id}/init",
