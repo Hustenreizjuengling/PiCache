@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"regexp"
 	"slices"
 	"sync"
 	"time"
@@ -19,11 +20,14 @@ import (
 //
 //	settings.json   schedule, limits, the Steam selection
 //	steam.json      the Steam sign-in: account, refresh token, machine ID
+//	epic.json       the Epic sign-in: account, launcher session
+//	epic-apps.json  the Epic account's games as last read
+//	battlenet.json  the Battle.net products' versions as last read
 //	steam-apps.json the account's games as last read from Steam
 //	prefilled.json  per app the depot manifests last downloaded completely
 //	history.json    the last jobs
 //
-// Only steam.json holds a secret. Nothing of it leaves the service: the
+// Only steam.json and epic.json hold secrets. Nothing of it leaves the service: the
 // socket API reports the account name and the token's expiry only.
 
 const (
@@ -32,6 +36,9 @@ const (
 	fileSteamApps = "steam-apps.json"
 	filePrefilled = "prefilled.json"
 	fileHistory   = "history.json"
+	fileEpic      = "epic.json"
+	fileEpicApps  = "epic-apps.json"
+	fileBattleNet = "battlenet.json"
 
 	maxStateFile = 16 << 20
 	historyLen   = 20
@@ -84,7 +91,53 @@ type prefilledRec map[string]prefilledApp
 
 type prefilledApp struct {
 	At        time.Time         `json:"at"`
-	Manifests map[string]uint64 `json:"manifests"`
+	Manifests map[string]uint64 `json:"manifests,omitempty"`
+	// Version and Hash identify a Battle.net or Epic build (the version
+	// name; the build config or manifest hash).
+	Version string `json:"version,omitempty"`
+	Hash    string `json:"hash,omitempty"`
+}
+
+// epicAccount is epic.json: the launcher session of the Epic sign-in.
+type epicAccount struct {
+	Name           string    `json:"name"`
+	AccountID      string    `json:"accountId"`
+	AccessToken    string    `json:"accessToken"`
+	AccessExpires  time.Time `json:"accessExpires"`
+	RefreshToken   string    `json:"refreshToken"`
+	RefreshExpires time.Time `json:"refreshExpires"`
+	Since          time.Time `json:"since"`
+	Refreshed      time.Time `json:"refreshed,omitzero"`
+	Error          string    `json:"error,omitempty"`
+}
+
+// epicGames is epic-apps.json: the account's games as last read.
+type epicGames struct {
+	Updated time.Time    `json:"updated"`
+	Apps    []epicAppRec `json:"apps"`
+}
+
+type epicAppRec struct {
+	AppName       string `json:"appName"`
+	Name          string `json:"name"`
+	Namespace     string `json:"namespace"`
+	CatalogItemID string `json:"catalogItemId"`
+	BuildVersion  string `json:"buildVersion"`
+}
+
+// bnetVersions is battlenet.json: the products' versions as last read.
+type bnetVersions struct {
+	Updated  time.Time        `json:"updated"`
+	Region   string           `json:"region"`
+	Products []bnetVersionRec `json:"products"`
+}
+
+type bnetVersionRec struct {
+	Code          string `json:"code"`
+	Version       string `json:"version,omitempty"`
+	BuildConfig   string `json:"buildConfig,omitempty"`
+	ProductConfig string `json:"productConfig,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // history is history.json, newest first.
@@ -201,8 +254,19 @@ func defaultSettings() prefillapi.Settings {
 		Schedule:    prefillapi.Schedule{Days: []int{0, 1, 2, 3, 4, 5, 6}, Start: "03:00", End: "07:00"},
 		Connections: 8,
 		Steam:       prefillapi.SteamSettings{OS: []string{"windows"}, Languages: []string{"english"}, Apps: []uint32{}},
+		BattleNet:   prefillapi.BattleNetSettings{Region: "eu", Locale: "enUS", Products: []string{}},
+		Epic:        prefillapi.EpicSettings{Apps: []string{}},
 	}
 }
+
+// Battle.net's regions and the locales of its installs.
+var (
+	battleNetRegions = []string{"eu", "us", "kr", "tw"}
+	battleNetLocales = []string{"deDE", "enGB", "enUS", "esES", "esMX", "frFR", "itIT", "jaJP", "koKR", "plPL", "ptBR", "ptPT",
+		"ruRU", "thTH", "trTR", "zhCN", "zhTW"}
+	productCodeRE = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
+	epicAppRE     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+)
 
 // Steam's language names (the "language" of a depot's config).
 var steamLanguages = []string{
@@ -260,10 +324,34 @@ func validateSettings(s prefillapi.Settings) (prefillapi.Settings, error) {
 	if len(s.Steam.Apps) > maxSelected {
 		return s, fmt.Errorf("steam.apps: at most %d", maxSelected)
 	}
+	if !slices.Contains(battleNetRegions, s.BattleNet.Region) {
+		return s, fmt.Errorf("battleNet.region: %q is not eu, us, kr or tw", s.BattleNet.Region)
+	}
+	if !slices.Contains(battleNetLocales, s.BattleNet.Locale) {
+		return s, fmt.Errorf("battleNet.locale: %q is not a Battle.net locale", s.BattleNet.Locale)
+	}
+	if len(s.BattleNet.Products) > maxSelected {
+		return s, fmt.Errorf("battleNet.products: at most %d", maxSelected)
+	}
+	for _, p := range s.BattleNet.Products {
+		if !productCodeRE.MatchString(p) {
+			return s, fmt.Errorf("battleNet.products: %q is not a product code", p)
+		}
+	}
+	if len(s.Epic.Apps) > maxSelected {
+		return s, fmt.Errorf("epic.apps: at most %d", maxSelected)
+	}
+	for _, a := range s.Epic.Apps {
+		if !epicAppRE.MatchString(a) {
+			return s, fmt.Errorf("epic.apps: %q is not an app name", a)
+		}
+	}
 	s.Schedule.Days = sortedUnique(s.Schedule.Days)
 	s.Steam.OS = sortedUnique(s.Steam.OS)
 	s.Steam.Languages = sortedUnique(s.Steam.Languages)
 	s.Steam.Apps = sortedUnique(s.Steam.Apps)
+	s.BattleNet.Products = sortedUnique(s.BattleNet.Products)
+	s.Epic.Apps = sortedUnique(s.Epic.Apps)
 	return s, nil
 }
 

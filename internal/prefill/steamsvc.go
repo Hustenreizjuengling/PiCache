@@ -51,7 +51,6 @@ type steamService struct {
 	acct  *steamAccount
 	login *loginRun
 	games steamApps
-	pre   prefilledRec
 
 	appsMu sync.Mutex // one refresh of the games at a time
 }
@@ -63,7 +62,7 @@ type loginRun struct {
 }
 
 func newSteamService(d *Daemon, conn steamConnector) *steamService {
-	s := &steamService{d: d, conn: conn, pre: prefilledRec{}}
+	s := &steamService{d: d, conn: conn}
 	var a steamAccount
 	if err := d.st.load(fileSteam, &a); err != nil {
 		d.log.Warn("steam.json is unreadable: signed out of Steam", "err", err)
@@ -73,9 +72,6 @@ func newSteamService(d *Daemon, conn steamConnector) *steamService {
 	if err := d.st.load(fileSteamApps, &s.games); err != nil {
 		d.log.Warn("steam-apps.json is unreadable: the games are read again", "err", err)
 		s.games = steamApps{}
-	}
-	if err := d.st.load(filePrefilled, &s.pre); err != nil || s.pre == nil {
-		s.pre = prefilledRec{}
 	}
 	return s
 }
@@ -89,6 +85,13 @@ func (s *steamService) signedIn() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.acct != nil
+}
+
+func (s *steamService) label() string { return "Steam" }
+
+// ready: signed in and games chosen.
+func (s *steamService) ready(set prefillapi.Settings) bool {
+	return len(set.Steam.Apps) > 0 && s.signedIn()
 }
 
 // idle reports that no sign-in waits.
@@ -453,6 +456,7 @@ func appRec(g steam.Game) steamAppRec {
 
 func (s *steamService) appList() prefillapi.SteamApps {
 	set := s.d.currentSettings()
+	pre := s.d.prefilled()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := prefillapi.SteamApps{Apps: make([]prefillapi.SteamApp, 0, len(s.games.Apps))}
@@ -465,7 +469,7 @@ func (s *steamService) appList() prefillapi.SteamApps {
 		for _, d := range r.Depots {
 			a.Bytes += d.Bytes
 		}
-		if p, ok := s.pre[preKey(r.ID)]; ok {
+		if p, ok := pre[preKey(r.ID)]; ok {
 			at := p.At
 			a.Prefilled = &at
 			a.Current = maps.Equal(p.Manifests, manifestsOf(r))
@@ -530,9 +534,7 @@ func (s *steamService) prefill(ctx context.Context, r *jobRun, set prefillapi.Se
 		}
 		id := strconv.FormatUint(uint64(g.ID), 10)
 		rec := appRec(g)
-		s.mu.Lock()
-		p, done := s.pre[preKey(g.ID)]
-		s.mu.Unlock()
+		p, done := s.d.prefilled()[preKey(g.ID)]
 		if done && !r.force && maps.Equal(p.Manifests, manifestsOf(rec)) {
 			s.d.updateApp(r, "steam", id, func(ja *prefillapi.JobApp) { ja.State = prefillapi.AppCurrent; ja.Total = 0 })
 			continue
@@ -551,13 +553,7 @@ func (s *steamService) prefill(ctx context.Context, r *jobRun, set prefillapi.Se
 			s.d.updateApp(r, "steam", id, func(ja *prefillapi.JobApp) { ja.State, ja.Error = prefillapi.AppFailed, err.Error() })
 			continue
 		}
-		s.mu.Lock()
-		s.pre[preKey(g.ID)] = prefilledApp{At: s.d.now(), Manifests: manifestsOf(rec)}
-		pre := maps.Clone(s.pre)
-		s.mu.Unlock()
-		if err := s.d.st.save(filePrefilled, pre); err != nil {
-			s.d.log.Warn("prefilled.json could not be written", "err", err)
-		}
+		s.d.markPrefilled(preKey(g.ID), prefilledApp{At: s.d.now(), Manifests: manifestsOf(rec)})
 		s.d.updateApp(r, "steam", id, func(ja *prefillapi.JobApp) { ja.State = prefillapi.AppDone })
 	}
 	return nil

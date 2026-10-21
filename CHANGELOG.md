@@ -5,6 +5,39 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Prefill for Battle.net and Epic Games.** Cache → Prefill now has a tab
+  per store next to Steam:
+  - **Battle.net** needs no sign-in (Blizzard's downloads are public).
+    Choose your region and the language your games are installed in, then
+    the games: World of Warcraft (also Classic), Overwatch 2, Diablo II, III
+    and IV, Hearthstone, StarCraft, Warcraft, Call of Duty and more (35
+    games; not Sea of Thieves and The Witcher 3, whose builds are
+    encrypted). A run reads the current version from Blizzard and asks the
+    cache for exactly the files the Battle.net app downloads for a Windows
+    install in that language and region, chosen by the build's tags like
+    the app does. A game is downloaded again when Blizzard has a new build,
+    or when you change the language or region.
+  - **Epic Games** signs in with Epic's own device code: scan the QR code
+    with your phone (or open the link), sign in on Epic's page and confirm
+    the code. Nothing is typed into PiCache. The sign-in stays with the
+    prefill service (renewed daily, about 23 days without use), and signing
+    out ends it at Epic. A run downloads the Windows build of every chosen
+    game; a game is downloaded again when Epic has a new build.
+  - The Epic Games Launcher itself downloads over HTTPS since version
+    20.0.3, which no cache can see: [GUIDES.md](docs/GUIDES.md#epic-games-launcher-through-the-cache)
+    shows the launcher setting that makes it use the cache.
+- The page "What the prefill service does" lists Blizzard's version service
+  and Epic's account and launcher services when the service talked to them.
+
+### Changed
+
+- The game lists of all three stores look alike: a search field, the
+  version or size, and whether the current version is already in the cache.
+  Steam's platforms and languages moved to a panel of their own on the
+  Steam tab.
+
 ## [1.4.1] - 2026-10-21
 
 ### Changed

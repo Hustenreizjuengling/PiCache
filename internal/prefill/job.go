@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -29,11 +30,27 @@ type jobRun struct {
 	conns  int
 }
 
+// provider is one store of the prefill: Steam, Battle.net, Epic.
+type provider interface {
+	// ready reports whether a job would download something of it under
+	// set (a sign-in where one is needed, and a selection). It must not
+	// lock Daemon.mu.
+	ready(set prefillapi.Settings) bool
+	// prefill downloads its chosen games through the cache.
+	prefill(ctx context.Context, r *jobRun, set prefillapi.Settings) error
+	// idle reports that no sign-in waits.
+	idle() bool
+	// label names the store in messages.
+	label() string
+}
+
+func (d *Daemon) providers() []provider { return []provider{d.steam, d.bnet, d.epic} }
+
 // startJob starts a job unless one runs. deadline, if not zero, ends it
 // (the schedule window).
 func (d *Daemon) startJob(trigger string, force bool, window, deadline time.Time) (prefillapi.Job, error) {
-	// Before d.mu: steamService locks its own mutex first, then d.mu.
-	signedIn := d.steam.signedIn()
+	// Before d.mu: the providers lock their own mutexes first, then d.mu.
+	work := d.hasWork()
 	d.mu.Lock()
 	if d.stopping {
 		d.mu.Unlock()
@@ -44,9 +61,9 @@ func (d *Daemon) startJob(trigger string, force bool, window, deadline time.Time
 		d.mu.Unlock()
 		return j, conflict("a job is already running")
 	}
-	if len(d.settings.Steam.Apps) == 0 || !signedIn {
+	if !work {
 		d.mu.Unlock()
-		return prefillapi.Job{}, conflict("nothing to prefill: sign in and choose games first")
+		return prefillapi.Job{}, conflict("nothing to prefill: choose games first (and sign in where the store needs it)")
 	}
 	d.nextID++
 	set := cloneSettings(d.settings)
@@ -83,7 +100,23 @@ func (d *Daemon) execute(ctx context.Context, r *jobRun, set prefillapi.Settings
 	err := d.checkCache(ctx)
 	if err == nil {
 		d.setCurrent(r, "")
-		err = d.steam.prefill(ctx, r, set)
+		// Every store in turn; one that fails does not stop the others.
+		var errs []string
+		for _, p := range d.providers() {
+			if ctx.Err() != nil {
+				break
+			}
+			if !p.ready(set) {
+				continue
+			}
+			if perr := p.prefill(ctx, r, set); perr != nil && ctx.Err() == nil {
+				d.log.Warn("prefill of a store failed", "store", p.label(), "err", perr)
+				errs = append(errs, perr.Error())
+			}
+		}
+		if len(errs) > 0 {
+			err = errors.New(strings.Join(errs, "; "))
+		}
 	}
 	if ctx.Err() != nil {
 		err = context.Cause(ctx)
@@ -155,13 +188,14 @@ func (d *Daemon) scheduler(ctx context.Context) {
 		last := d.hist.LastWindow
 		running := d.run != nil
 		d.mu.Unlock()
-		if !running && binaryReplaced() && d.steam.idle() {
+		if !running && binaryReplaced() && d.allIdle() {
 			d.mu.Lock()
 			d.restarting = true
 			d.mu.Unlock()
 			d.restart()
 			return
 		}
+		d.epic.maintain(ctx)
 		wait := time.Minute
 		if start, end, ok := window(sched, now); ok {
 			if !now.Before(start) {
@@ -186,13 +220,25 @@ func (d *Daemon) scheduler(ctx context.Context) {
 	}
 }
 
-// hasWork reports whether a job would download anything: a sign-in and
-// a selection.
+// hasWork reports whether a job would download anything.
 func (d *Daemon) hasWork() bool {
-	d.mu.Lock()
-	n := len(d.settings.Steam.Apps)
-	d.mu.Unlock()
-	return n > 0 && d.steam.signedIn()
+	set := d.currentSettings()
+	for _, p := range d.providers() {
+		if p.ready(set) {
+			return true
+		}
+	}
+	return false
+}
+
+// allIdle reports that no sign-in waits.
+func (d *Daemon) allIdle() bool {
+	for _, p := range d.providers() {
+		if !p.idle() {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneJob(j prefillapi.Job) prefillapi.Job {

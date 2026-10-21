@@ -1,13 +1,12 @@
 <!--
   @component
-  Settings of the prefill service: the time window of scheduled jobs (the
-  host's time zone; a job stops at the window's end and the next window
-  continues), the download rate and parallel downloads, and which Steam
-  depots count: platforms and languages. Saved together.
+  Settings of the prefill service for every store: the time window of
+  scheduled jobs (the host's time zone; a job stops at the window's end and
+  the next window continues), the download rate and parallel downloads.
 -->
 <script lang="ts">
   import { i18n, t } from '$i18n/index.svelte'
-  import { api, type PrefillOS, type PrefillSettings, type PrefillStatus } from '$lib/api'
+  import { api, type PrefillSettings, type PrefillStatus } from '$lib/api'
   import { session } from '$lib/session.svelte'
   import { Button, Checkbox, Field, Input, Panel, Toggle, toast } from '$lib/ui'
 
@@ -29,23 +28,6 @@
   const DAYS = [1, 2, 3, 4, 5, 6, 0]
   const dayName = $derived((d: number) =>
     new Intl.DateTimeFormat(i18n.tag, { weekday: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(2026, 9, 18 + d))),
-  )
-
-  const OS: PrefillOS[] = ['windows', 'macos', 'linux']
-
-  // Steam's language names and their BCP 47 tags (for the display names).
-  const LANGUAGES: Record<string, string> = {
-    arabic: 'ar', brazilian: 'pt-BR', bulgarian: 'bg', czech: 'cs', danish: 'da', dutch: 'nl', english: 'en',
-    finnish: 'fi', french: 'fr', german: 'de', greek: 'el', hungarian: 'hu', indonesian: 'id', italian: 'it',
-    japanese: 'ja', koreana: 'ko', latam: 'es-419', norwegian: 'no', polish: 'pl', portuguese: 'pt-PT',
-    romanian: 'ro', russian: 'ru', schinese: 'zh-Hans', spanish: 'es-ES', swedish: 'sv', tchinese: 'zh-Hant',
-    thai: 'th', turkish: 'tr', ukrainian: 'uk', vietnamese: 'vi',
-  }
-  const languageNames = $derived(new Intl.DisplayNames([i18n.tag], { type: 'language' }))
-  const languages = $derived(
-    Object.entries(LANGUAGES)
-      .map(([id, tag]) => ({ id, label: languageNames.of(tag) ?? id }))
-      .sort((a, b) => a.label.localeCompare(b.label, i18n.tag)),
   )
 
   function toggle<T>(list: T[], v: T, on: boolean): T[] {
@@ -110,29 +92,6 @@
       </Field>
     </div>
 
-    <fieldset class="checks">
-      <legend>{t('cache.prefill.settings.os')}</legend>
-      {#each OS as os (os)}
-        <Checkbox
-          label={t(`cache.prefill.settings.osName.${os}`)}
-          checked={s.steam.os.includes(os)}
-          disabled={readOnly}
-          onchange={(v) => edit((d) => (d.steam.os = toggle(d.steam.os, os, v)))}
-        />
-      {/each}
-    </fieldset>
-    <fieldset class="checks languages">
-      <legend>{t('cache.prefill.settings.languages')}</legend>
-      <p class="muted small hint">{t('cache.prefill.settings.languagesHelp')}</p>
-      {#each languages as lang (lang.id)}
-        <Checkbox
-          label={lang.label}
-          checked={s.steam.languages.includes(lang.id)}
-          disabled={readOnly}
-          onchange={(v) => edit((d) => (d.steam.languages = toggle(d.steam.languages, lang.id, v)))}
-        />
-      {/each}
-    </fieldset>
   </div>
   {#if dirty}
     <div class="save">
@@ -163,14 +122,6 @@
     font-weight: 600;
     margin-bottom: var(--sp-2);
     padding: 0;
-  }
-  .hint {
-    grid-column: 1 / -1;
-    margin: 0;
-  }
-  .languages {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   }
   .save {
     display: flex;

@@ -107,6 +107,65 @@ func (d *Daemon) handler() http.Handler {
 		}
 		return reply(w, apps)
 	})
+	h("GET /v1/battlenet/products", func(w http.ResponseWriter, r *http.Request) error {
+		p, err := d.bnet.products(r.Context(), r.URL.Query().Get("refresh") == "true")
+		if err != nil {
+			return err
+		}
+		return reply(w, p)
+	})
+	h("PUT /v1/battlenet/selection", func(w http.ResponseWriter, r *http.Request) error {
+		var sel prefillapi.BattleNetSelection
+		if err := decode(r, &sel); err != nil {
+			return err
+		}
+		s := d.currentSettings()
+		s.BattleNet.Products = sel.Products
+		s, err := d.setSettings(s)
+		if err != nil {
+			return err
+		}
+		return reply(w, prefillapi.BattleNetSelection{Products: s.BattleNet.Products})
+	})
+	h("POST /v1/epic/login", func(w http.ResponseWriter, r *http.Request) error {
+		l, err := d.epic.beginLogin(r.Context())
+		if err != nil {
+			return err
+		}
+		return reply(w, l)
+	})
+	h("DELETE /v1/epic/login", func(w http.ResponseWriter, r *http.Request) error {
+		d.epic.cancelLogin()
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	})
+	h("POST /v1/epic/logout", func(w http.ResponseWriter, r *http.Request) error {
+		if err := d.epic.logout(r.Context()); err != nil {
+			return err
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	})
+	h("GET /v1/epic/apps", func(w http.ResponseWriter, r *http.Request) error {
+		apps, err := d.epic.gameList(r.Context(), r.URL.Query().Get("refresh") == "true")
+		if err != nil {
+			return err
+		}
+		return reply(w, apps)
+	})
+	h("PUT /v1/epic/selection", func(w http.ResponseWriter, r *http.Request) error {
+		var sel prefillapi.EpicSelection
+		if err := decode(r, &sel); err != nil {
+			return err
+		}
+		s := d.currentSettings()
+		s.Epic.Apps = sel.Apps
+		s, err := d.setSettings(s)
+		if err != nil {
+			return err
+		}
+		return reply(w, prefillapi.EpicSelection{Apps: s.Epic.Apps})
+	})
 	h("POST /v1/jobs", func(w http.ResponseWriter, r *http.Request) error {
 		var in prefillapi.StartJob
 		if r.ContentLength != 0 {

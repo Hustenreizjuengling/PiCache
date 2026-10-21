@@ -117,57 +117,103 @@ type result struct {
 // body (at most limit bytes) is returned; otherwise it is dropped. lim, if
 // not nil, limits the rate in bytes per second.
 func (c *cacheClient) get(ctx context.Context, host, path, userAgent string, lim *rate.Limiter, keep bool, limit int64) (result, []byte, error) {
+	var body []byte
+	var read func(io.Reader) error
+	if keep {
+		read = func(r io.Reader) error {
+			b, err := io.ReadAll(io.LimitReader(r, limit+1))
+			if err != nil {
+				return err
+			}
+			if int64(len(b)) > limit {
+				return fmt.Errorf("answer larger than %d bytes", limit)
+			}
+			body = b
+			return nil
+		}
+	}
+	res, err := c.stream(ctx, fetchReq{host: host, path: path, userAgent: userAgent, lim: lim}, read)
+	if err != nil {
+		return res, nil, err
+	}
+	return res, body, nil
+}
+
+// fetchReq is one download through the cache.
+type fetchReq struct {
+	host, path, userAgent string
+	// rng, if set, is the one range requested: "bytes=a-b".
+	rng string
+	lim *rate.Limiter
+}
+
+// stream downloads q through the cache. read, if not nil, reads the body
+// (it may stop early); the rest is read and dropped, so the cache always
+// gets the whole answer.
+func (c *cacheClient) stream(ctx context.Context, q fetchReq, read func(io.Reader) error) (result, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+host+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+q.host+q.path, nil)
 	if err != nil {
-		return result{}, nil, err
+		return result{}, err
 	}
-	req.Header.Set("User-Agent", userAgent)
+	// An empty User-Agent sends none (the Battle.net agent sends none).
+	req.Header.Set("User-Agent", q.userAgent)
 	req.Header.Set("Accept", "*/*")
+	if q.rng != "" {
+		req.Header.Set("Range", q.rng)
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return result{}, nil, err
+		return result{}, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && (q.rng == "" || resp.StatusCode != http.StatusPartialContent) {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		msg := strings.TrimSpace(string(bytes.ToValidUTF8(b, nil)))
 		if resp.StatusCode == http.StatusForbidden && resp.Header.Get(processedByHeader) == "" {
-			return result{}, nil, fmt.Errorf("%w (%s)", errCacheRefused, msg)
+			return result{}, fmt.Errorf("%w (%s)", errCacheRefused, msg)
 		}
-		return result{}, nil, &statusError{code: resp.StatusCode, msg: msg}
+		return result{}, &statusError{code: resp.StatusCode, msg: msg}
 	}
+	cr := &countReader{ctx: ctx, r: resp.Body, lim: q.lim}
 	res := result{hit: strings.EqualFold(resp.Header.Get(cacheStatusHeader), "HIT")}
-	var buf bytes.Buffer
-	p := make([]byte, readChunk)
-	for {
-		n, rerr := resp.Body.Read(p)
-		if n > 0 {
-			res.bytes += int64(n)
-			if keep {
-				if res.bytes > limit {
-					return res, nil, fmt.Errorf("answer larger than %d bytes", limit)
-				}
-				buf.Write(p[:n])
-			}
-			if lim != nil {
-				if err := lim.WaitN(ctx, n); err != nil {
-					return res, nil, err
-				}
-			}
-		}
-		if rerr == io.EOF {
-			break
-		}
-		if rerr != nil {
-			return res, nil, rerr
+	if read != nil {
+		err = read(cr)
+	}
+	if err == nil {
+		_, err = io.CopyBuffer(io.Discard, cr, make([]byte, readChunk))
+	}
+	res.bytes = cr.n
+	if err != nil {
+		return res, err
+	}
+	if resp.ContentLength >= 0 && cr.n != resp.ContentLength {
+		return res, io.ErrUnexpectedEOF
+	}
+	return res, nil
+}
+
+// countReader counts what is read and keeps to the rate limit.
+type countReader struct {
+	ctx context.Context
+	r   io.Reader
+	lim *rate.Limiter
+	n   int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	if len(p) > readChunk {
+		p = p[:readChunk]
+	}
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	if n > 0 && c.lim != nil {
+		if werr := c.lim.WaitN(c.ctx, n); werr != nil {
+			return n, werr
 		}
 	}
-	if resp.ContentLength >= 0 && res.bytes != resp.ContentLength {
-		return res, nil, io.ErrUnexpectedEOF
-	}
-	return res, buf.Bytes(), nil
+	return n, err
 }
 
 // statusError is a non-200 answer that came through the cache.

@@ -43,7 +43,10 @@ type env struct {
 	done   chan error
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
+
+// newEnvWith starts the service; mod changes its configuration.
+func newEnvWith(t *testing.T, mod func(*Config)) *env {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("the prefill service needs Linux (SO_PEERCRED)")
@@ -58,6 +61,9 @@ func newEnv(t *testing.T) *env {
 		DeviceName: "PiCache Prefill (test)", Version: "test",
 		Log:   slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		steam: fakeSteam{fs},
+	}
+	if mod != nil {
+		mod(&cfg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &env{t: t, fs: fs, c: prefillapi.NewClient(sock), dir: dir, cancel: cancel, done: make(chan error, 1)}
@@ -109,6 +115,15 @@ func (e *env) call(method, path string, body, out any, want int) {
 			e.t.Fatalf("%s %s: %v", method, path, err)
 		}
 	}
+}
+
+// loadState reads a state file of the service.
+func (e *env) loadState(name string, v any) error {
+	b, err := os.ReadFile(filepath.Join(e.dir, "state", name))
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
 }
 
 func (e *env) status() prefillapi.Status {

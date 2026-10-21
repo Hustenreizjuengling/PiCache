@@ -51,7 +51,9 @@ var expectedClasses = func() map[string]routeClass {
 		// 1.4.0: the prefill service's sign-ins and jobs are no PiCache
 		// configuration.
 		"POST /api/v1/prefill/steam/login", "DELETE /api/v1/prefill/steam/login", "POST /api/v1/prefill/steam/logout",
-		"POST /api/v1/prefill/jobs", "DELETE /api/v1/prefill/jobs/current")
+		"POST /api/v1/prefill/jobs", "DELETE /api/v1/prefill/jobs/current",
+		// 1.5.0: the Epic sign-in.
+		"POST /api/v1/prefill/epic/login", "DELETE /api/v1/prefill/epic/login", "POST /api/v1/prefill/epic/logout")
 	add(routeClass{lock: lockPause}, "POST /api/v1/dns/blocking")
 	add(none,
 		"POST /api/v1/auth/setup", "POST /api/v1/auth/login", "POST /api/v1/auth/logout", "POST /api/v1/dns/lookup",
@@ -97,7 +99,9 @@ var expectedClasses = func() map[string]routeClass {
 		"DELETE /api/v1/network/ports/device",
 		// 1.4.0: the prefill service's settings and game selection; 1.4.1:
 		// switching the service on or off.
-		"PUT /api/v1/prefill/settings", "PUT /api/v1/prefill/steam/selection", "PUT /api/v1/prefill/service")
+		"PUT /api/v1/prefill/settings", "PUT /api/v1/prefill/steam/selection", "PUT /api/v1/prefill/service",
+		// 1.5.0: the Battle.net and Epic selections.
+		"PUT /api/v1/prefill/battlenet/selection", "PUT /api/v1/prefill/epic/selection")
 	add(destroy,
 		"POST /api/v1/system/restore", "POST /api/v1/dhcp/reset", "DELETE /api/v1/dhcp/leases",
 		"POST /api/v1/cache/services/{service}/purge", "POST /api/v1/cache/groups/delete", "POST /api/v1/storage/targets/{id}/init",

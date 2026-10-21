@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -48,6 +49,8 @@ type Config struct {
 	// Tests replace these.
 	now   func() time.Time
 	steam steamConnector
+	epic  epicConnector
+	bnet  bnetConnector
 }
 
 // ConfigFromEnv reads the PICACHE_PREFILL_* variables.
@@ -123,6 +126,8 @@ type Daemon struct {
 	st    *store
 	cache *cacheClient
 	steam *steamService
+	bnet  *bnetService
+	epic  *epicService
 	now   func() time.Time
 
 	started time.Time
@@ -138,6 +143,9 @@ type Daemon struct {
 	nextID     int64
 	stopping   bool
 	restarting bool
+
+	preMu sync.Mutex // a leaf lock: taken last
+	pre   prefilledRec
 }
 
 // ErrRestart: the binary was replaced by an update; the caller exits with
@@ -191,6 +199,7 @@ func Run(ctx context.Context, cfg Config) error {
 		<-r.done
 	}
 	d.steam.shutdown()
+	d.epic.shutdown()
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(sctx)
@@ -262,8 +271,41 @@ func newDaemon(cfg Config) (*Daemon, error) {
 	if conn == nil {
 		conn = liveSteam{}
 	}
+	d.pre = prefilledRec{}
+	if err := st.load(filePrefilled, &d.pre); err != nil || d.pre == nil {
+		d.pre = prefilledRec{}
+	}
 	d.steam = newSteamService(d, conn)
+	bconn := cfg.bnet
+	if bconn == nil {
+		bconn = liveBattleNet{}
+	}
+	d.bnet = newBattleNetService(d, bconn)
+	econn := cfg.epic
+	if econn == nil {
+		econn = liveEpic{}
+	}
+	d.epic = newEpicService(d, econn)
 	return d, nil
+}
+
+// prefilled returns a copy of prefilled.json.
+func (d *Daemon) prefilled() prefilledRec {
+	d.preMu.Lock()
+	defer d.preMu.Unlock()
+	return maps.Clone(d.pre)
+}
+
+// markPrefilled records a complete download of key ("steam:<app>",
+// "battlenet:<product>", "epic:<app>").
+func (d *Daemon) markPrefilled(key string, p prefilledApp) {
+	d.preMu.Lock()
+	d.pre[key] = p
+	cp := maps.Clone(d.pre)
+	d.preMu.Unlock()
+	if err := d.st.save(filePrefilled, cp); err != nil {
+		d.log.Warn("prefilled.json could not be written", "err", err)
+	}
 }
 
 // listenSocket creates the Unix socket. An old socket file left by a
@@ -388,6 +430,7 @@ func (d *Daemon) status() prefillapi.Status {
 		return 0
 	})
 	st.Steam = d.steam.status()
+	st.Epic = d.epic.status()
 	return st
 }
 
@@ -396,6 +439,8 @@ func cloneSettings(s prefillapi.Settings) prefillapi.Settings {
 	s.Steam.OS = slices.Clone(s.Steam.OS)
 	s.Steam.Languages = slices.Clone(s.Steam.Languages)
 	s.Steam.Apps = slices.Clone(s.Steam.Apps)
+	s.BattleNet.Products = slices.Clone(s.BattleNet.Products)
+	s.Epic.Apps = slices.Clone(s.Epic.Apps)
 	return s
 }
 

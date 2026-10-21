@@ -13760,6 +13760,347 @@
         "x-picache-lock": "locked",
         "x-picache-destructive": false
       }
+    },
+    "/api/v1/prefill/battlenet/products": {
+      "get": {
+        "operationId": "getPrefillBattleNetProducts",
+        "summary": "The Battle.net games",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: PrefillBattleNetProducts (every known product with its current version in the chosen region; error is set when Battle.net could not be read)",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true: read the store now."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Battle.net games.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillBattleNetProducts"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/battlenet/selection": {
+      "put": {
+        "operationId": "putPrefillBattleNetSelection",
+        "summary": "Choose the Battle.net games to prefill",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: {products: [code]}\n\nResponse: {products} (sorted)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrefillBattleNetSelection"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Choose the Battle.net games to prefill.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillBattleNetSelection"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "locked",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/epic/login": {
+      "post": {
+        "operationId": "postPrefillEpicLogin",
+        "summary": "Start an Epic sign-in by device code",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: PrefillEpicLogin (waiting with the verification URL the QR code encodes and the code to confirm; 409 while signed in)",
+        "responses": {
+          "200": {
+            "description": "Start an Epic sign-in by device code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillEpicLogin"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      },
+      "delete": {
+        "operationId": "deletePrefillEpicLogin",
+        "summary": "Cancel the pending Epic sign-in",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: 204",
+        "responses": {
+          "204": {
+            "description": "No content."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/epic/logout": {
+      "post": {
+        "operationId": "postPrefillEpicLogout",
+        "summary": "Sign out of Epic",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: 204 (the sign-in is ended at Epic when possible, then deleted; 404 when not signed in)",
+        "responses": {
+          "204": {
+            "description": "No content."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "exempt",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/epic/apps": {
+      "get": {
+        "operationId": "getPrefillEpicApps",
+        "summary": "The Epic account's games",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: –\n\nResponse: PrefillEpicApps (409 when not signed in; error set when Epic could not be read, with the last list)",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true: read the store now."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Epic account's games.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillEpicApps"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "none",
+        "x-picache-destructive": false
+      }
+    },
+    "/api/v1/prefill/epic/selection": {
+      "put": {
+        "operationId": "putPrefillEpicSelection",
+        "summary": "Choose the Epic games to prefill",
+        "tags": [
+          "Prefill"
+        ],
+        "description": "Request: {apps: [app name]}\n\nResponse: {apps} (sorted)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrefillEpicSelection"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Choose the Epic games to prefill.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrefillEpicSelection"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-picache-permission": "A",
+        "x-picache-lock": "locked",
+        "x-picache-destructive": false
+      }
     }
   },
   "components": {
@@ -22424,6 +22765,9 @@
                   "enum": [
                     "steam-directory",
                     "steam-cm",
+                    "battlenet-versions",
+                    "epic-account",
+                    "epic-launcher",
                     "cache"
                   ]
                 },
@@ -22442,6 +22786,35 @@
                 "lastUsed"
               ]
             }
+          },
+          "epic": {
+            "type": "object",
+            "properties": {
+              "account": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/PrefillEpicAccount"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "login": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/PrefillEpicLogin"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "account",
+              "login"
+            ]
           }
         },
         "required": [
@@ -22452,7 +22825,8 @@
           "steam",
           "job",
           "nextRun",
-          "hosts"
+          "hosts",
+          "epic"
         ]
       },
       "PrefillCache": {
@@ -22561,13 +22935,57 @@
               "languages",
               "apps"
             ]
+          },
+          "battleNet": {
+            "type": "object",
+            "properties": {
+              "region": {
+                "type": "string",
+                "enum": [
+                  "eu",
+                  "us",
+                  "kr",
+                  "tw"
+                ]
+              },
+              "locale": {
+                "type": "string"
+              },
+              "products": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "region",
+              "locale",
+              "products"
+            ]
+          },
+          "epic": {
+            "type": "object",
+            "properties": {
+              "apps": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "apps"
+            ]
           }
         },
         "required": [
           "schedule",
           "maxMbps",
           "connections",
-          "steam"
+          "steam",
+          "battleNet",
+          "epic"
         ]
       },
       "PrefillSteamAccount": {
@@ -22861,6 +23279,233 @@
           "action",
           "startedAt",
           "message"
+        ]
+      },
+      "PrefillBattleNetProducts": {
+        "type": "object",
+        "properties": {
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "selected": {
+                  "type": "boolean"
+                },
+                "prefilled": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "current": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "type": "string",
+                  "description": "why the version could not be read, or why the product cannot be prefilled (absent otherwise)"
+                }
+              },
+              "required": [
+                "code",
+                "name",
+                "version",
+                "selected",
+                "prefilled",
+                "current"
+              ]
+            }
+          },
+          "updated": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "products",
+          "updated",
+          "error"
+        ]
+      },
+      "PrefillBattleNetSelection": {
+        "type": "object",
+        "properties": {
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9_]{1,40}$"
+            },
+            "maxItems": 2000
+          }
+        },
+        "required": [
+          "products"
+        ]
+      },
+      "PrefillEpicAccount": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "accountId",
+          "since",
+          "expires",
+          "error"
+        ]
+      },
+      "PrefillEpicLogin": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "done",
+              "failed",
+              "expired",
+              "cancelled"
+            ]
+          },
+          "verificationUrl": {
+            "type": "string"
+          },
+          "userCode": {
+            "type": "string"
+          },
+          "started": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "verificationUrl",
+          "userCode",
+          "started",
+          "expires",
+          "error"
+        ]
+      },
+      "PrefillEpicApps": {
+        "type": "object",
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "selected": {
+                  "type": "boolean"
+                },
+                "prefilled": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "current": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "version",
+                "selected",
+                "prefilled",
+                "current"
+              ]
+            }
+          },
+          "updated": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "apps",
+          "updated",
+          "error"
+        ]
+      },
+      "PrefillEpicSelection": {
+        "type": "object",
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]{1,128}$"
+            },
+            "maxItems": 2000
+          }
+        },
+        "required": [
+          "apps"
         ]
       }
     }

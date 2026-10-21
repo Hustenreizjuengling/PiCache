@@ -59,7 +59,7 @@ func TestLiveCache(t *testing.T) {
 	}
 	hosts := serverHosts(servers)
 	t.Logf("content servers %v", hosts)
-	s := &steamService{d: d, pre: prefilledRec{}}
+	s := &steamService{d: d}
 	for pass := 1; pass <= 2; pass++ {
 		r := &jobRun{conns: 8, job: prefillapi.Job{Apps: []prefillapi.JobApp{{Service: "steam", ID: "1007"}}}}
 		start := time.Now()

@@ -443,20 +443,27 @@ The prefill service (`picache prefill`, ARCHITECTURE 20) runs as a process of it
 
 | Method & path | P | Request | Response |
 |---|---|---|---|
-| GET `/prefill` | A | `?checkCache=true` runs the cache heartbeat first | `{installed, running, socket, error, mode: helper\|package\|docker\|manual (how the service is switched on; 1.4.1), setup: Setup\|null (1.4.1), status: {version, started, cache {url, ok, instanceId, error, checkedAt}, settings, steam {deviceName, account {name, steamId, deviceName, since, expires, error}\|null, login {state: waiting\|done\|failed\|expired\|cancelled, challengeUrl, scanned, started, error}\|null}, job: Job\|null, nextRun, hosts [{host, protocol, purpose: steam-directory\|steam-cm\|cache, lastUsed}]}\|null}` (always 200) |
-| GET `/prefill/settings` | A | – | `{schedule {enabled, days [0–6, 0 = Sunday], start "HH:MM", end "HH:MM"}, maxMbps (0 = no limit), connections (1–32), steam {os [windows\|macos\|linux], languages [Steam language names], apps [app ID]}}` |
+| GET `/prefill` | A | `?checkCache=true` runs the cache heartbeat first | `{installed, running, socket, error, mode: helper\|package\|docker\|manual (how the service is switched on; 1.4.1), setup: Setup\|null (1.4.1), status: {version, started, cache {url, ok, instanceId, error, checkedAt}, settings, steam {deviceName, account {name, steamId, deviceName, since, expires, error}\|null, login {state: waiting\|done\|failed\|expired\|cancelled, challengeUrl, scanned, started, error}\|null}, epic {account {name, accountId, since, expires, error}\|null, login {state, verificationUrl, userCode, started, expires, error}\|null} (1.5.0), job: Job\|null, nextRun, hosts [{host, protocol, purpose: steam-directory\|steam-cm\|battlenet-versions\|epic-account\|epic-launcher\|cache, lastUsed}]}\|null}` (always 200) |
+| GET `/prefill/settings` | A | – | `{schedule {enabled, days [0–6, 0 = Sunday], start "HH:MM", end "HH:MM"}, maxMbps (0 = no limit), connections (1–32), steam {os [windows\|macos\|linux], languages [Steam language names], apps [app ID]}, battleNet {region: eu\|us\|kr\|tw, locale (enUS, deDE, …), products [code]}, epic {apps [app name]}}` (`battleNet` and `epic` 1.5.0) |
 | PUT `/prefill/settings` | A | the whole settings | the settings, normalised (400 with the reason) |
 | POST `/prefill/steam/login` | A | – | `login` (`waiting` with the `challengeUrl` the QR code encodes; 409 while signed in) |
 | DELETE `/prefill/steam/login` | A | – | 204 |
 | POST `/prefill/steam/logout` | A | – | 204 (the token is revoked at Steam when possible, then deleted; 404 when not signed in) |
 | GET `/prefill/steam/apps` | A | `?refresh=true` reads Steam now | `{apps [{id, name, bytes, selected, prefilled, current}], updated, error}` (409 when not signed in; `error` set when Steam could not be read, with the last list) |
 | PUT `/prefill/steam/selection` | A | `{apps:[app ID]}` (≤ 2000) | `{apps}` (sorted, unique) |
+| GET `/prefill/battlenet/products` | A | `?refresh=true` asks Blizzard's version service now | (1.5.0) `{products [{code, name, version, selected, prefilled, current, error?}], updated, error}`: every product the prefill offers with its current version in the chosen region (`error` per product: not offered in the region, encrypted; at the top: the version service could not be read, with the last list) |
+| PUT `/prefill/battlenet/selection` | A | `{products:[code]}` (≤ 2000) | (1.5.0) `{products}` (sorted, unique) |
+| POST `/prefill/epic/login` | A | – | (1.5.0) `login` (`waiting` with Epic's `verificationUrl` the QR code encodes and the `userCode`; 409 while signed in) |
+| DELETE `/prefill/epic/login` | A | – | (1.5.0) 204 |
+| POST `/prefill/epic/logout` | A | – | (1.5.0) 204 (the session is ended at Epic when possible, then deleted; 404 when not signed in) |
+| GET `/prefill/epic/apps` | A | `?refresh=true` reads Epic now | (1.5.0) `{apps [{id (app name), name, version, selected, prefilled, current}], updated, error}` (409 when not signed in) |
+| PUT `/prefill/epic/selection` | A | `{apps:[app name]}` (≤ 2000) | (1.5.0) `{apps}` (sorted, unique) |
 | POST `/prefill/jobs` | A | `{force?}` or no body | 202 `Job` (409 while a job runs or with nothing to do) |
 | DELETE `/prefill/jobs/current` | A | – | 204 (404 when none runs) |
 | GET `/prefill/history` | A | – | `{jobs: [Job]}` (newest first, ≤ 20) |
 | PUT `/prefill/service` | A | `{enabled:bool}` | (1.4.1) 202 `Setup` = `{state: running\|succeeded\|failed, action: enable\|disable, startedAt, finishedAt?, message}`: the root helper installs the unit when the host has none and starts it, or stops it; `message` of a failed start holds systemd's view and the service's last log lines; 409 without the helper (`mode` other than `helper`) or while a request runs |
 
-`Job`: `{id, trigger: manual|schedule, state: running|done|failed|cancelled|stopped, started, finished, error, current, apps [{service, id, name, state: pending|running|done|current|failed, bytes, total, error}], bytes, fromCache, total, hosts [string]}`. `PUT /prefill/settings`, `PUT /prefill/steam/selection` and `PUT /prefill/service` are locked by `PICACHE_CONFIG_LOCKED`; the others are exempt. Audit: `prefill.settings`, `prefill.steam.selection`, `prefill.steam.login`, `prefill.steam.logout`, `prefill.job.start`, `prefill.job.cancel`, `prefill.service.enable`, `prefill.service.disable`.
+`Job`: `{id, trigger: manual|schedule, state: running|done|failed|cancelled|stopped, started, finished, error, current, apps [{service: steam|battlenet|epic, id, name, state: pending|running|done|current|failed, bytes, total, error}], bytes, fromCache, total, hosts [string]}`. `PUT /prefill/settings`, the three `PUT …/selection` and `PUT /prefill/service` are locked by `PICACHE_CONFIG_LOCKED`; the others are exempt. Audit: `prefill.settings`, `prefill.steam.selection`, `prefill.steam.login`, `prefill.steam.logout`, `prefill.battlenet.selection`, `prefill.epic.selection`, `prefill.epic.login`, `prefill.epic.logout`, `prefill.job.start`, `prefill.job.cancel`, `prefill.service.enable`, `prefill.service.disable`.
 
 ## Cache store (library, maintenance) — `routes_cache.go`
 

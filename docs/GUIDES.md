@@ -8,7 +8,8 @@ marked *not verified on a real device*.
 Contents: [Moving from another DNS filter](#moving-from-another-dns-filter) ·
 [Unbound as a local recursive resolver](#unbound-as-a-local-recursive-resolver) ·
 [Filtering away from home](#filtering-away-from-home) ·
-[Home Assistant](#home-assistant) · [Firewall rules](#firewall-rules)
+[Home Assistant](#home-assistant) · [Firewall rules](#firewall-rules) ·
+[Epic Games Launcher through the cache](#epic-games-launcher-through-the-cache)
 
 See also [DEPLOYMENT.md](DEPLOYMENT.md) (installation),
 [ROUTERS.md](ROUTERS.md) (router settings) and [DEVICES.md](DEVICES.md)
@@ -864,3 +865,61 @@ Speedport, Vodafone Station) have no rules for outgoing traffic by port. The
 FRITZ!Box can block "network applications" (a port list) per access profile
 (*Internet → Filters → Lists → Network applications*) for the devices of a
 profile; *not verified on a real device*.
+
+---
+
+## Epic Games Launcher through the cache
+
+Since version 20.0.3 (June 2026) the Epic Games Launcher downloads only over
+HTTPS. PiCache passes HTTPS through without caching (it cannot see inside),
+so the launcher downloads every game from the Internet again, even after the
+[prefill](DEPLOYMENT.md#prefill) put it into the cache. The cache page shows
+this as "went over HTTPS" for Epic Games. Steam and Battle.net are not
+affected: they download over HTTP and use the cache by themselves.
+
+The community's workaround makes the launcher use HTTP again. It is a
+setting of the launcher on each Windows PC, not of PiCache, and Epic may
+remove it with any update. *Not verified on a real device*; reported to
+work with launcher 20.2.4 and 20.2.9 (September 2026).
+
+1. Quit the Epic Games Launcher (also in the notification area).
+2. Open Notepad **as administrator** and open
+   `C:\ProgramData\Epic\EpicGamesLauncher\Data\EMS\EpicGamesLauncher\Engine.ini`.
+3. Add at the end:
+
+   ```ini
+   [Launcher]
+   ForceNonSslCdn=true
+   [HTTP]
+   ForceNonSslCdn=true
+   bUseSslCdn=false
+   [Portal.BuildPatch]
+   bForceNonSSL=true
+   ```
+
+4. Save and start the launcher.
+
+The launcher downloads this file again from Epic at every start, which
+removes the lines; they only work for the start right after you added them.
+To keep them, run a small batch file instead of the launcher's own shortcut
+(as administrator; adjust the launcher's path when it is installed
+elsewhere):
+
+```bat
+@echo off
+set "INI=C:\ProgramData\Epic\EpicGamesLauncher\Data\EMS\EpicGamesLauncher\Engine.ini"
+>>"%INI%" echo [Launcher]
+>>"%INI%" echo ForceNonSslCdn=true
+>>"%INI%" echo [HTTP]
+>>"%INI%" echo ForceNonSslCdn=true
+>>"%INI%" echo bUseSslCdn=false
+>>"%INI%" echo [Portal.BuildPatch]
+>>"%INI%" echo bForceNonSSL=true
+start "" "C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe"
+```
+
+Check it on the cache page: after a download in the launcher, Epic Games
+should show traffic over HTTP and hits. The `%LOCALAPPDATA%` `Engine.ini`
+that older guides name is ignored by current launchers. legendary (which
+Heroic uses) downloads over HTTP with `--no-https`, or `disable_https = true`
+in its configuration; *not verified on a real device*.

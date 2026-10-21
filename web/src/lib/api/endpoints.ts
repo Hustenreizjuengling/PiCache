@@ -511,6 +511,21 @@ const prefill = {
   startJob: (force = false, o?: ReqOpts) => http.post<T.PrefillJob>('/prefill/jobs', { force }, o),
   cancelJob: (o?: ReqOpts) => http.del('/prefill/jobs/current', o),
   history: (o?: ReqOpts) => http.get<{ jobs: T.PrefillJob[] }>('/prefill/history', o),
+  battleNetProducts: (refresh = false, o?: ReqOpts) =>
+    http.get<T.PrefillBattleNetProducts>('/prefill/battlenet/products', {
+      ...o,
+      query: refresh ? { refresh: 'true' } : undefined,
+      timeoutMs: PREFILL_LONG,
+    }),
+  battleNetSelect: (products: string[], o?: ReqOpts) =>
+    http.put<{ products: string[] }>('/prefill/battlenet/selection', { products }, o),
+  /** Starts an Epic sign-in by device code (409 when signed in). */
+  epicLogin: (o?: ReqOpts) => http.post<T.PrefillEpicLogin>('/prefill/epic/login', undefined, { ...o, timeoutMs: PREFILL_LONG }),
+  epicCancelLogin: (o?: ReqOpts) => http.del('/prefill/epic/login', o),
+  epicLogout: (o?: ReqOpts) => http.post<void>('/prefill/epic/logout', undefined, { ...o, timeoutMs: PREFILL_LONG }),
+  epicApps: (refresh = false, o?: ReqOpts) =>
+    http.get<T.PrefillEpicApps>('/prefill/epic/apps', { ...o, query: refresh ? { refresh: 'true' } : undefined, timeoutMs: PREFILL_LONG }),
+  epicSelect: (apps: string[], o?: ReqOpts) => http.put<{ apps: string[] }>('/prefill/epic/selection', { apps }, o),
   /** Asks the root helper to switch the service on or off (202; 409 without the helper). */
   setService: (enabled: boolean, o?: ReqOpts) => http.put<T.PrefillSetup>('/prefill/service', { enabled }, o),
 }

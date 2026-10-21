@@ -67,6 +67,95 @@ func (s *Server) registerPrefillRoutes() {
 	s.route("DELETE /api/v1/prefill/jobs/current", permAdmin, s.prefillCancelJob, routeExempt)
 	s.route("GET /api/v1/prefill/history", permAdmin, s.prefillHistory)
 	s.route("PUT /api/v1/prefill/service", permAdmin, s.prefillSetService)
+	s.route("GET /api/v1/prefill/battlenet/products", permAdmin, s.prefillBattleNetProducts)
+	s.route("PUT /api/v1/prefill/battlenet/selection", permAdmin, s.prefillBattleNetSelection)
+	s.route("POST /api/v1/prefill/epic/login", permAdmin, s.prefillEpicLogin, routeExempt)
+	s.route("DELETE /api/v1/prefill/epic/login", permAdmin, s.prefillEpicCancelLogin, routeExempt)
+	s.route("POST /api/v1/prefill/epic/logout", permAdmin, s.prefillEpicLogout, routeExempt)
+	s.route("GET /api/v1/prefill/epic/apps", permAdmin, s.prefillEpicApps)
+	s.route("PUT /api/v1/prefill/epic/selection", permAdmin, s.prefillEpicSelection)
+}
+
+func (s *Server) prefillBattleNetProducts(w http.ResponseWriter, r *http.Request) error {
+	ctx, cancel := context.WithTimeout(r.Context(), prefillWait)
+	defer cancel()
+	path := "/v1/battlenet/products"
+	if r.URL.Query().Get("refresh") == "true" {
+		path += "?refresh=true"
+	}
+	var out prefillapi.BattleNetProducts
+	if err := s.prefillCall(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return err
+	}
+	return ok(w, out)
+}
+
+func (s *Server) prefillBattleNetSelection(w http.ResponseWriter, r *http.Request) error {
+	var in prefillapi.BattleNetSelection
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	var out prefillapi.BattleNetSelection
+	if err := s.prefillCall(r.Context(), http.MethodPut, "/v1/battlenet/selection", in, &out); err != nil {
+		return err
+	}
+	s.audit(r, "prefill.battlenet.selection", "", map[string]int{"products": len(out.Products)})
+	return ok(w, out)
+}
+
+func (s *Server) prefillEpicLogin(w http.ResponseWriter, r *http.Request) error {
+	ctx, cancel := context.WithTimeout(r.Context(), prefillWait)
+	defer cancel()
+	var out prefillapi.EpicLogin
+	if err := s.prefillCall(ctx, http.MethodPost, "/v1/epic/login", nil, &out); err != nil {
+		return err
+	}
+	s.audit(r, "prefill.epic.login", "", nil)
+	return ok(w, out)
+}
+
+func (s *Server) prefillEpicCancelLogin(w http.ResponseWriter, r *http.Request) error {
+	if err := s.prefillCall(r.Context(), http.MethodDelete, "/v1/epic/login", nil, nil); err != nil {
+		return err
+	}
+	return noContent(w)
+}
+
+func (s *Server) prefillEpicLogout(w http.ResponseWriter, r *http.Request) error {
+	ctx, cancel := context.WithTimeout(r.Context(), prefillWait)
+	defer cancel()
+	if err := s.prefillCall(ctx, http.MethodPost, "/v1/epic/logout", nil, nil); err != nil {
+		return err
+	}
+	s.audit(r, "prefill.epic.logout", "", nil)
+	return noContent(w)
+}
+
+func (s *Server) prefillEpicApps(w http.ResponseWriter, r *http.Request) error {
+	ctx, cancel := context.WithTimeout(r.Context(), prefillWait)
+	defer cancel()
+	path := "/v1/epic/apps"
+	if r.URL.Query().Get("refresh") == "true" {
+		path += "?refresh=true"
+	}
+	var out prefillapi.EpicApps
+	if err := s.prefillCall(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return err
+	}
+	return ok(w, out)
+}
+
+func (s *Server) prefillEpicSelection(w http.ResponseWriter, r *http.Request) error {
+	var in prefillapi.EpicSelection
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	var out prefillapi.EpicSelection
+	if err := s.prefillCall(r.Context(), http.MethodPut, "/v1/epic/selection", in, &out); err != nil {
+		return err
+	}
+	s.audit(r, "prefill.epic.selection", "", map[string]int{"apps": len(out.Apps)})
+	return ok(w, out)
 }
 
 // prefillSetService asks the root helper to switch the prefill service on

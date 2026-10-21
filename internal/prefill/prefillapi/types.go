@@ -17,6 +17,7 @@ type Status struct {
 	Cache    Cache     `json:"cache"`
 	Settings Settings  `json:"settings"`
 	Steam    Steam     `json:"steam"`
+	Epic     Epic      `json:"epic"`
 	// Job is the running job, null when none runs.
 	Job     *Job       `json:"job"`
 	NextRun *time.Time `json:"nextRun"`
@@ -38,7 +39,7 @@ type Cache struct {
 type Host struct {
 	Host     string     `json:"host"`
 	Protocol string     `json:"protocol"` // https, wss, http
-	Purpose  string     `json:"purpose"`  // steam-directory, steam-cm, cache
+	Purpose  string     `json:"purpose"`  // steam-directory, steam-cm, battlenet-versions, epic-account, epic-launcher, cache
 	LastUsed *time.Time `json:"lastUsed"`
 }
 
@@ -48,8 +49,28 @@ type Settings struct {
 	// MaxMbps limits the download rate of a job (0: no limit).
 	MaxMbps int `json:"maxMbps"`
 	// Connections is the number of parallel downloads (1–32).
-	Connections int           `json:"connections"`
-	Steam       SteamSettings `json:"steam"`
+	Connections int               `json:"connections"`
+	Steam       SteamSettings     `json:"steam"`
+	BattleNet   BattleNetSettings `json:"battleNet"`
+	Epic        EpicSettings      `json:"epic"`
+}
+
+// BattleNetSettings choose what a Battle.net job downloads (no sign-in:
+// Blizzard's content is public).
+type BattleNetSettings struct {
+	// Region is the patch region whose versions and CDN are used: eu, us,
+	// kr or tw.
+	Region string `json:"region"`
+	// Locale is the language of the installs (enUS, deDE, …).
+	Locale string `json:"locale"`
+	// Products are the chosen product codes (wow, pro, fenris, …).
+	Products []string `json:"products"`
+}
+
+// EpicSettings choose what an Epic job downloads.
+type EpicSettings struct {
+	// Apps are the chosen apps (the launcher's app names).
+	Apps []string `json:"apps"`
 }
 
 // Schedule is the time window of scheduled jobs (the host's time zone).
@@ -109,6 +130,84 @@ type SteamLogin struct {
 	Scanned bool      `json:"scanned"`
 	Started time.Time `json:"started"`
 	Error   string    `json:"error"`
+}
+
+// Epic is the Epic part of the status.
+type Epic struct {
+	Account *EpicAccount `json:"account"`
+	Login   *EpicLogin   `json:"login"`
+}
+
+// EpicAccount is the signed-in Epic account. Its tokens never leave the
+// service.
+type EpicAccount struct {
+	Name      string     `json:"name"`
+	AccountID string     `json:"accountId"`
+	Since     time.Time  `json:"since"`
+	Expires   *time.Time `json:"expires"`
+	Error     string     `json:"error"`
+}
+
+// EpicLogin is a pending device-code sign-in: the user opens
+// VerificationURL (shown as a QR code), signs in at Epic and confirms
+// UserCode.
+type EpicLogin struct {
+	// State: waiting, done, failed, expired, cancelled.
+	State           string     `json:"state"`
+	VerificationURL string     `json:"verificationUrl"`
+	UserCode        string     `json:"userCode"`
+	Started         time.Time  `json:"started"`
+	Expires         *time.Time `json:"expires"`
+	Error           string     `json:"error"`
+}
+
+// BattleNetProducts is GET /v1/battlenet/products.
+type BattleNetProducts struct {
+	Products []BattleNetProduct `json:"products"`
+	Updated  *time.Time         `json:"updated"`
+	Error    string             `json:"error"`
+}
+
+// BattleNetProduct is one Battle.net game.
+type BattleNetProduct struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+	// Version is the current version in the chosen region ("" until read).
+	Version   string     `json:"version"`
+	Selected  bool       `json:"selected"`
+	Prefilled *time.Time `json:"prefilled"`
+	Current   bool       `json:"current"`
+	// Error says why the version could not be read (or the product cannot
+	// be prefilled).
+	Error string `json:"error,omitempty"`
+}
+
+// EpicApps is GET /v1/epic/apps.
+type EpicApps struct {
+	Apps    []EpicApp  `json:"apps"`
+	Updated *time.Time `json:"updated"`
+	Error   string     `json:"error"`
+}
+
+// EpicApp is one game of the Epic account.
+type EpicApp struct {
+	// ID is the launcher's app name.
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Version   string     `json:"version"`
+	Selected  bool       `json:"selected"`
+	Prefilled *time.Time `json:"prefilled"`
+	Current   bool       `json:"current"`
+}
+
+// BattleNetSelection is PUT /v1/battlenet/selection.
+type BattleNetSelection struct {
+	Products []string `json:"products"`
+}
+
+// EpicSelection is PUT /v1/epic/selection.
+type EpicSelection struct {
+	Apps []string `json:"apps"`
 }
 
 // SteamApps is GET /v1/steam/apps.
@@ -173,7 +272,7 @@ const (
 
 // JobApp is one app of a job.
 type JobApp struct {
-	Service string `json:"service"` // steam
+	Service string `json:"service"` // steam, battlenet, epic
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	State   string `json:"state"`

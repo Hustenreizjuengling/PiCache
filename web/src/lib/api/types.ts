@@ -3631,6 +3631,7 @@ export interface PrefillStatus {
   cache: PrefillCache
   settings: PrefillSettings
   steam: { deviceName: string; account: PrefillSteamAccount | null; login: PrefillSteamLogin | null }
+  epic: { account: PrefillEpicAccount | null; login: PrefillEpicLogin | null }
   /** The running job. */
   job: PrefillJob | null
   nextRun: string | null
@@ -3649,7 +3650,7 @@ export interface PrefillCache {
 export interface PrefillHost {
   host: string
   protocol: 'https' | 'wss' | 'http' | 'ws'
-  purpose: 'steam-directory' | 'steam-cm' | 'cache'
+  purpose: 'steam-directory' | 'steam-cm' | 'battlenet-versions' | 'epic-account' | 'epic-launcher' | 'cache'
   lastUsed: string | null
 }
 
@@ -3669,6 +3670,38 @@ export interface PrefillSettings {
   /** Parallel downloads, 1–32. */
   connections: number
   steam: { os: PrefillOS[]; languages: string[]; apps: number[] }
+  battleNet: { region: 'eu' | 'us' | 'kr' | 'tw'; locale: string; products: string[] }
+  epic: { apps: string[] }
+}
+
+export interface PrefillEpicAccount {
+  name: string
+  accountId: string
+  since: string
+  expires: string | null
+  error: string
+}
+
+/** A pending Epic sign-in: open verificationUrl (the QR code), sign in at Epic, confirm userCode. */
+export interface PrefillEpicLogin {
+  state: 'waiting' | 'done' | 'failed' | 'expired' | 'cancelled'
+  verificationUrl: string
+  userCode: string
+  started: string
+  expires: string | null
+  error: string
+}
+
+export interface PrefillBattleNetProducts {
+  products: { code: string; name: string; version: string; selected: boolean; prefilled: string | null; current: boolean; error?: string }[]
+  updated: string | null
+  error: string
+}
+
+export interface PrefillEpicApps {
+  apps: { id: string; name: string; version: string; selected: boolean; prefilled: string | null; current: boolean }[]
+  updated: string | null
+  error: string
 }
 
 export interface PrefillSteamAccount {

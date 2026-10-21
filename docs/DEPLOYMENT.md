@@ -3190,6 +3190,15 @@ changes:
   health check warned after an update that the local CA does not cover
   such a name, no new CA is needed.
 
+### Upgrading to 1.5.0
+
+Nothing to do. A running prefill service restarts by itself with the new
+binary once it is idle; Cache → Prefill then has the tabs **Battle.net** and
+**Epic Games** next to Steam. The Steam sign-in, the selection, the
+schedule and the history stay. Epic's own launcher downloads over HTTPS:
+see [Epic Games Launcher through the
+cache](GUIDES.md#epic-games-launcher-through-the-cache).
+
 ### Upgrading to 1.4.1
 
 Nothing to do. The prefill is switched on in the web UI now (Cache →
@@ -3594,12 +3603,13 @@ CIFS/NFS mounts and propagation changes.
 
 The prefill downloads the games you choose into the download cache before
 anyone in your network needs them: at night, through the cache, signed in
-without a password. 1.4.0 supports Steam (Battle.net and Epic follow). You
-use it under **Cache → Prefill** in the web UI; the details are in
+without a password. It supports Steam (since 1.4.0), Battle.net and Epic
+Games (since 1.5.0). You use it under **Cache → Prefill** in the web UI;
+the details are in
 [ARCHITECTURE.md](ARCHITECTURE.md#20-prefill-internalprefill-picache-prefill-140).
 
-**Why a service of its own.** Signing in to Steam gives a sign-in token
-that can download your games. It stays with the prefill service: a process
+**Why a service of its own.** Signing in to Steam or Epic gives a sign-in
+token that can download your games. It stays with the prefill service: a process
 of its own (`picache-prefill.service`) under a user of its own
 (`DynamicUser=yes`), without any capability and without a port in your
 network. PiCache's web UI talks to it over the Unix socket
@@ -3611,12 +3621,21 @@ databases, backups, support bundles or logs.
 prefill on**. PiCache's update helper (the root helper that installs
 updates from the web UI) installs the service when the host has none yet,
 starts it and checks that it keeps running; when it does not, the page
-shows why (systemd's view and the service's last log lines). Then choose
-**Sign in with the Steam app**, scan the code with the Steam app on your
-phone (the shield, Steam Guard → scan a QR code) and confirm the sign-in of
-`PiCache Prefill (<host name>)`. Choose your games and either start a run
-(**Prefill now**) or switch the schedule on. **Switch off** stops the
-service again (the sign-in and the selection stay).
+shows why (systemd's view and the service's last log lines). Then, per
+store tab:
+
+- **Steam**: choose **Sign in with the Steam app**, scan the code with the
+  Steam app on your phone (the shield, Steam Guard → scan a QR code) and
+  confirm the sign-in of `PiCache Prefill (<host name>)`.
+- **Battle.net**: no sign-in (Blizzard's downloads are public). Choose your
+  region and the language your games are installed in.
+- **Epic Games**: choose **Sign in with Epic**, scan the code with your
+  phone (or open the link) and confirm the code on Epic's page, signed in
+  to your Epic account there. Nothing is typed into PiCache.
+
+Choose your games and either start a run (**Prefill now**) or switch the
+schedule on. **Switch off** stops the service again (the sign-ins and the
+selection stay).
 
 Without the update helper (the Debian package, `install.sh
 --without-updater`) switch it on on the host once:
@@ -3628,23 +3647,36 @@ sudo picache prefill enable
 It installs the unit when the host has none, enables and starts it and
 waits until it answers (else it prints the service's last log lines).
 
-**What it does.** A run signs in to Steam, reads the current version of
-every chosen game (the depots of the platforms and languages you choose
-under *Schedule and limits*; Windows and English by default), and asks
-the cache for its manifest and every chunk, with the content server's name
-as `Host` and Steam's user agent, exactly like a Steam client whose DNS
-points at the cache. The cache fetches what it does not have; the service
-reads and drops the data. A game whose current version was prefilled
-before is skipped (**Download everything again** forces it). A scheduled
-run starts at the beginning of its window (the host's time zone) and stops
-at its end; the next window continues. The page lists every host the
-service talked to: Steam's server list (`api.steampowered.com`), a Steam
-server (`*.steamserver.net`, WebSocket over TLS) and your cache.
+**What it does.** A run goes through the stores in turn. For each chosen
+game it reads the current version and asks the cache for the files a fresh
+install downloads, with the CDN's name as `Host` and the store client's
+user agent, exactly like a game client whose DNS points at the cache:
 
-**Signing out** revokes the token at Steam and deletes it. Steam lists the
-sign-in with your account's devices (Steam Guard), where you can end it
-too. Steam rejects a token after a password change, and when it expires
-(the page shows the date): the page then says so and offers a new sign-in.
+- **Steam**: the depots of the platforms and languages you choose (Windows
+  and English by default), their manifests and every chunk.
+- **Battle.net**: the build's configs, manifests and indexes, then the
+  files of a Windows install in your language and region (chosen by the
+  manifests' tags, like the Battle.net app), as ranges of its archives.
+- **Epic Games**: the Windows build's manifest and every chunk.
+
+The cache fetches what it does not have; the service reads and drops the
+data. A game whose current version was prefilled before is skipped
+(**Download everything again** forces it); for Battle.net another language
+or region counts as new. A scheduled run starts at the beginning of its
+window (the host's time zone) and stops at its end; the next window
+continues. The page lists every host the service talked to: Steam's server
+list (`api.steampowered.com`) and servers (`*.steamserver.net`, WebSocket
+over TLS), Blizzard's version service (`distribution.version.battle.net`,
+`*.version.battle.net`), Epic's account and launcher services
+(`*.ol.epicgames.com`) and your cache.
+
+**Signing out** revokes the token at Steam (or ends the session at Epic)
+and deletes it. Steam lists the sign-in with your account's devices (Steam
+Guard), where you can end it too. Steam rejects a token after a password
+change, and when it expires (the page shows the date); Epic's sign-in
+lasts about 23 days without use and is renewed daily while the service
+runs. When a store no longer accepts the sign-in, the page says so and
+offers a new one.
 
 **Turning it off** on the host:
 
@@ -3676,10 +3708,16 @@ with PiCache through the volume `picache-prefill-run`. With bridge
 networking, set `PICACHE_PREFILL_CACHE` to the PiCache container
 (`http://picache:80`) and put both containers in one network.
 
-**Limits.** Only downloads over plain HTTP are cached (Steam serves its
-content servers over HTTP; Steam's clients use them through a cache
-too). Password-protected beta branches are not prefilled. The prefill
-needs Linux (the socket's peer credentials).
+**Limits.** Only downloads over plain HTTP are cached. Steam and
+Battle.net clients download over HTTP and use the cache by themselves; the
+Epic Games Launcher downloads over HTTPS since version 20.0.3 and needs a
+setting on each PC to use the cache ([Epic Games Launcher through the
+cache](GUIDES.md#epic-games-launcher-through-the-cache)). Password-protected
+Steam beta branches are not prefilled. Battle.net: only installs (not
+updates of an older install), and not Sea of Thieves or The Witcher 3,
+whose builds are encrypted; Blizzard's games are large (World of Warcraft
+about 130 GB, Diablo IV with high-resolution textures about 170 GB). The
+prefill needs Linux (the socket's peer credentials).
 
 ## Environment variables
 
@@ -3777,7 +3815,7 @@ flag or a `PICACHE_*_LISTEN` variable wins over them.
 | `picache prefill [serve]` | Run the prefill service (started by `picache-prefill.service`; never as root) ([Prefill](#prefill)). |
 | `picache prefill status` | Print the prefill service's status as JSON, through its socket. Root or PiCache's user. |
 | `picache prefill enable` | Root only. Install `picache-prefill.service` if the host has none, then enable and start it (the web UI does the same through the update helper). |
-| `picache prefill disable [--forget]` | Root only. Stop and disable the prefill service; `--forget` also deletes its state (its Steam sign-in: sign out in the web UI first, which revokes it at Steam). |
+| `picache prefill disable [--forget]` | Root only. Stop and disable the prefill service; `--forget` also deletes its state (its Steam and Epic sign-ins: sign out in the web UI first, which revokes them at the store). |
 | `picache help` | Print the usage. |
 
 Exit codes: `0` success, `1` error or unhealthy, `2` usage or configuration
