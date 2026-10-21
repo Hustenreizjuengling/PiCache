@@ -369,6 +369,36 @@ func TestPeerAllowed(t *testing.T) {
 	}
 }
 
+// systemd's StateDirectory= with DynamicUser=yes is a symbolic link.
+func TestStoreSymlinkedDir(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "private", "picache-prefill")
+	if err := os.MkdirAll(priv, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "picache-prefill")
+	if err := os.Symlink("private/picache-prefill", link); err != nil {
+		t.Skip("no symbolic links:", err)
+	}
+	st, err := openStore(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	if err := st.save(fileSettings, defaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(priv, fileSettings)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openStore(filepath.Join(dir, "file")); err == nil {
+		t.Error("a file was accepted as the state directory")
+	}
+}
+
 func TestCacheURL(t *testing.T) {
 	for raw, want := range map[string]string{
 		"http://127.0.0.1":      "http://127.0.0.1:80",
