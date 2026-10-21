@@ -5,6 +5,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-21
+
 ### Fixed
 
 - Prefill: **Prefill now** stayed greyed out unless Steam was signed in
@@ -1930,7 +1932,8 @@ First release.
   Docker installations update with
   `docker compose pull && docker compose up -d`.
 
-[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Hustenreizjuengling/PiCache/compare/v1.3.0...v1.4.0
