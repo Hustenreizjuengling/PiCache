@@ -204,7 +204,7 @@ func TestDaemonSteamFlow(t *testing.T) {
 	want := append(steamtest.ChunkPaths(testApps()[100].Depots[0]), steamtest.ChunkPaths(testApps()[200].Depots[0])...)
 	var chunks []string
 	for _, rq := range reqs {
-		if rq.UserAgent != steam.UserAgent || rq.Host != "cache1.example" {
+		if rq.UserAgent != steam.UserAgent || rq.Host != "cache1.example" || !rq.Prefill {
 			t.Errorf("request %+v", rq)
 		}
 		if strings.Contains(rq.Path, "/chunk/") {

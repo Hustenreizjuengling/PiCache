@@ -2752,6 +2752,17 @@ export interface ProxyStats {
   errors: number
   passThrough: boolean
   steamHostsRefused?: string[]
+  /** clients passed through uncached while the download cache was off, most recent first */
+  passedWhileOff?: OffClient[]
+}
+
+/** proxy.OffClient */
+export interface OffClient {
+  clientIp: string
+  clientName?: string
+  service: string
+  requests: number
+  last: string
 }
 
 /** proxy.NoSliceHost */

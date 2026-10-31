@@ -99,7 +99,7 @@ func TestSNIAllowed(t *testing.T) {
 	for sni, want := range map[string]string{
 		"us.cdn.blizzard.com":        "blizzard",
 		"origin-a.akamaihd.net":      "origin",
-		"trigger.cache-domains.test": "", // disabled
+		"trigger.cache-domains.test": "test", // disabled: still tunnelled
 		"www.example.com":            "",
 		"cdn.blizzard.com":           "",
 		"lancache.steamcontent.com":  "steam",

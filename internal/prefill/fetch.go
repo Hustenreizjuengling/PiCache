@@ -25,6 +25,11 @@ const (
 	heartbeatPath     = "/lancache-heartbeat"
 	processedByHeader = "X-LanCache-Processed-By"
 	cacheStatusHeader = "X-Upstream-Cache-Status"
+	// prefillHeader marks the requests as the prefill service's: PiCache's
+	// cache refuses them (403) when it would store nothing (the download
+	// cache or the store's service is off, no store is online) instead of
+	// passing them through, and never sends the header on.
+	prefillHeader = "X-Picache-Prefill"
 
 	fetchTimeout  = 10 * time.Minute
 	headerTimeout = 2 * time.Minute
@@ -32,8 +37,8 @@ const (
 	maxErrorBody  = 512
 )
 
-// errCacheRefused is a 403 of the cache (the download cache is off, or the
-// host is not a download service).
+// errCacheRefused is a 403 of the cache (the download cache is off, the
+// host is not a download service, or nothing would be stored).
 var errCacheRefused = errors.New("the download cache refused the request")
 
 // cacheClient sends requests to the cache at base.
@@ -160,6 +165,7 @@ func (c *cacheClient) stream(ctx context.Context, q fetchReq, read func(io.Reade
 	// An empty User-Agent sends none (the Battle.net agent sends none).
 	req.Header.Set("User-Agent", q.userAgent)
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set(prefillHeader, "1")
 	if q.rng != "" {
 		req.Header.Set("Range", q.rng)
 	}

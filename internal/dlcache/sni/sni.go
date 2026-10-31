@@ -173,10 +173,6 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		s.refuse(ip, "", err.Error())
 		return
 	}
-	if s.d.Settings != nil && !s.d.Settings.Get().DownloadCache.Enabled {
-		s.refuse(ip, name, "the download cache is disabled")
-		return
-	}
 	service, ok := "", false
 	if s.d.Services != nil {
 		service, ok = s.d.Services.SNIAllowed(name)

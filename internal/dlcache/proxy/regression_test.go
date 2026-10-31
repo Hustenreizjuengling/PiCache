@@ -15,31 +15,48 @@ import (
 	"github.com/hustenreizjuengling/picache/internal/settings"
 )
 
-// TestDownloadCacheDisabled: with the download cache off (the default) the
-// cache proxy answers only the heartbeat; nothing is fetched or stored.
+// TestDownloadCacheDisabled: with the download cache off (the default)
+// nothing is stored, but a client that still sends here (an old DNS answer
+// of the cache; Steam until it restarts) gets its download passed through
+// instead of an error. Hosts of no download service and the prefill
+// service are refused.
 func TestDownloadCacheDisabled(t *testing.T) {
 	h := newHarness(t)
-	h.origin.set("/f", &originObj{data: testData(3000)})
+	data := testData(3000)
+	h.origin.set("/f", &originObj{data: data})
+	h.origin.set("/depot/7/chunk/x", &originObj{data: []byte("chunk")})
 	h.updateSettings(func(a *settings.All) { a.DownloadCache.Enabled = false })
-	for _, tc := range []struct{ method, host, uri string }{
-		{"GET", testHost, "/f"},
-		{"HEAD", testHost, "/f"},
-		{"POST", testHost, "/f"},
-		{"GET", "attacker.example", "/depot/7/chunk/x"},
+	steamUA := hdr("User-Agent", "Valve/Steam HTTP Client 1.0")
+	for _, tc := range []struct {
+		method, host, uri string
+		h                 http.Header
+		want              string
+	}{
+		{"GET", testHost, "/f", nil, string(data)},
+		{"HEAD", testHost, "/f", nil, ""},
+		{"POST", testHost, "/f", nil, string(data)},
+		{"GET", "steam-cdn.example", "/depot/7/chunk/x", steamUA, "chunk"},
 	} {
-		req := hdr("User-Agent", "Valve/Steam HTTP Client 1.0")
-		resp, _ := h.get(tc.method, tc.host, tc.uri, req)
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("%s %s%s: status %d, want 403", tc.method, tc.host, tc.uri, resp.StatusCode)
-		}
-		// A browser sent here by a blocking reply of this server's
-		// address gets its connection closed while the cache is off too.
-		if !resp.Close {
-			t.Fatalf("%s %s%s: 403 without Connection: close: %v", tc.method, tc.host, tc.uri, resp.Header)
+		resp, body := h.get(tc.method, tc.host, tc.uri, tc.h)
+		if resp.StatusCode != http.StatusOK || string(body) != tc.want || resp.Header.Get(cacheStatusHeader) != statusPass {
+			t.Fatalf("%s %s%s: status %d %q, %q", tc.method, tc.host, tc.uri, resp.StatusCode, resp.Header.Get(cacheStatusHeader), body)
 		}
 	}
-	if n := len(h.origin.requests()); n != 0 {
-		t.Fatalf("%d upstream requests while the download cache is disabled", n)
+	upstream := len(h.origin.requests())
+	// A host of no download service: refused, its connection closed (a
+	// browser sent here by a blocking reply of this server's address).
+	resp, _ := h.get("GET", "unknown.example", "/f", nil)
+	if resp.StatusCode != http.StatusForbidden || !resp.Close {
+		t.Fatalf("unknown host: %d close=%v", resp.StatusCode, resp.Close)
+	}
+	// The prefill service would download for nothing: refused.
+	resp, body := h.get("GET", testHost, "/f", hdr(prefillHeader, "1"))
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get(processedByHeader) != "" ||
+		!strings.Contains(string(body), "the download cache is disabled") {
+		t.Fatalf("prefill: %d %q", resp.StatusCode, body)
+	}
+	if n := len(h.origin.requests()); n != upstream {
+		t.Fatalf("%d upstream requests for refused ones", n-upstream)
 	}
 	if h.store.object(testService, "/f") != nil || h.store.object("steam", "/depot/7/chunk/x") != nil {
 		t.Fatal("content stored while the download cache is disabled")
@@ -47,12 +64,54 @@ func TestDownloadCacheDisabled(t *testing.T) {
 	if resp, _ := h.get("GET", "10.0.0.5", heartbeatPath, nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("heartbeat: %d", resp.StatusCode)
 	}
-	if st := h.s.Stats(); st.Refused != 4 || st.Requests != 0 {
+	st := h.s.Stats()
+	if st.Refused != 2 || st.Requests != 5 || len(st.PassedWhileOff) != 2 {
 		t.Fatalf("stats %+v", st)
 	}
+	if o := st.PassedWhileOff[0]; o.Service != "steam" || o.ClientIP != "127.0.0.1" || o.ClientName != "tester" || o.Requests != 1 || o.Last.IsZero() {
+		t.Fatalf("newest client %+v", o)
+	}
+	if o := st.PassedWhileOff[1]; o.Service != testService || o.Requests != 3 {
+		t.Fatalf("older client %+v", o)
+	}
 	h.updateSettings(func(a *settings.All) { a.DownloadCache.Enabled = true })
-	if resp, body := h.get("GET", testHost, "/f", nil); resp.StatusCode != http.StatusOK || len(body) != 3000 {
-		t.Fatalf("enabled again: %d", resp.StatusCode)
+	if resp, body := h.get("GET", testHost, "/f", nil); resp.StatusCode != http.StatusOK || len(body) != 3000 ||
+		resp.Header.Get(cacheStatusHeader) == statusPass {
+		t.Fatalf("enabled again: %d %s", resp.StatusCode, resp.Header.Get(cacheStatusHeader))
+	}
+}
+
+// TestPrefillNeverPassedThrough: a request of the prefill service that
+// would be passed through uncached (its service is switched off, no store
+// is online) is refused; the header never reaches the origin.
+func TestPrefillNeverPassedThrough(t *testing.T) {
+	h := newHarness(t)
+	h.origin.set("/p", &originObj{data: testData(100)})
+	for _, tc := range []struct {
+		name, host, why string
+		noStore         bool
+	}{
+		{"service off", "off.example", "does not store " + testService, false},
+		{"no store", testHost, "no cache store is online", true},
+	} {
+		h.switched.Store(tc.noStore)
+		resp, body := h.get("GET", tc.host, "/p", hdr(prefillHeader, "1"))
+		if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), tc.why) {
+			t.Fatalf("%s: %d %q", tc.name, resp.StatusCode, body)
+		}
+		// Others are still passed through.
+		if resp, _ := h.get("GET", tc.host, "/p", nil); resp.StatusCode != http.StatusOK || resp.Header.Get(cacheStatusHeader) != statusPass {
+			t.Fatalf("%s, other client: %d", tc.name, resp.StatusCode)
+		}
+	}
+	h.switched.Store(false)
+	if resp, _ := h.get("GET", testHost, "/p", hdr(prefillHeader, "1")); resp.StatusCode != http.StatusOK || resp.Header.Get(cacheStatusHeader) != statusMiss {
+		t.Fatalf("prefill with a store: %d %s", resp.StatusCode, resp.Header.Get(cacheStatusHeader))
+	}
+	for _, r := range h.origin.requests() {
+		if r.header.Get(prefillHeader) != "" {
+			t.Fatal("the prefill header was sent upstream")
+		}
 	}
 }
 

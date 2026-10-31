@@ -5,6 +5,31 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Turning the download cache off no longer breaks downloads that are running
+  or about to start. Steam keeps using a cache it found until it restarts, and
+  other devices remember the cache's address until their DNS answer expires.
+  PiCache refused their requests with 403 (and the HTTPS relay closed their
+  connections), so Steam reported that it had no Internet connection. Now
+  PiCache passes them on from the Internet without storing anything. The same
+  applies to the HTTPS relay for a single service that was switched off.
+
+### Added
+
+- While the download cache is off, the cache settings page lists the devices
+  that still download through PiCache (device, service, requests, last time),
+  with the hint to restart Steam so it downloads directly.
+  `GET /api/v1/cache/proxy/stats` reports them as `passedWhileOff`.
+- docs/GUIDES.md: comparing downloads with and without the cache.
+
+### Changed
+
+- Prefill: the service marks its requests (`X-PiCache-Prefill`), and the cache
+  refuses them when it would store nothing (the download cache or the game's
+  service is off, no store is online) instead of passing them through. So a
+  prefill never downloads for nothing.
+
 ## [1.5.2] - 2026-10-22
 
 ### Added

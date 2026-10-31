@@ -21033,6 +21033,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "passedWhileOff": {
+            "type": "array",
+            "description": "Clients whose requests were passed through uncached while the download cache was off (they still use an old answer of the cache's DNS; Steam until it restarts), the most recent first, at most 20.",
+            "items": {
+              "$ref": "#/components/schemas/proxy.OffClient"
+            }
           }
         },
         "required": [
@@ -23612,6 +23619,33 @@
         },
         "required": [
           "apps"
+        ]
+      },
+      "proxy.OffClient": {
+        "type": "object",
+        "properties": {
+          "clientIp": {
+            "type": "string"
+          },
+          "clientName": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "requests": {
+            "type": "integer"
+          },
+          "last": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "clientIp",
+          "service",
+          "requests",
+          "last"
         ]
       }
     }

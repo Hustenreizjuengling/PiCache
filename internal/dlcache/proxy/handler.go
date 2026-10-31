@@ -36,8 +36,9 @@ const (
 var errClientGone = errors.New("client gone")
 
 // serveHTTP is the request pipeline of ARCHITECTURE 8.2 (steps 1–9). While
-// the download cache is disabled, only the heartbeat is answered (like the SNI
-// pass-through, nothing is proxied or stored).
+// the download cache is disabled, nothing is stored: requests of download
+// services are passed through (clients that still use an old answer of the
+// cache's DNS keep working), except those of the prefill service.
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Now().Add(s.tm.write))
@@ -54,14 +55,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		s.heartbeat(w, r)
 		return
 	}
-	if !s.settings().DownloadCache.Enabled {
-		s.stats.refused.Add(1)
-		// Browsers sent here by a blocking reply of this server's address
-		// arrive while the download cache is off too (the default): close
-		// their connections like those of a host that is not a download
-		// service (below).
-		w.Header().Set("Connection", "close")
-		http.Error(w, "forbidden: the download cache is disabled", http.StatusForbidden)
+	cacheOn := s.settings().DownloadCache.Enabled
+	prefill := r.Header.Get(prefillHeader) != ""
+	if !cacheOn && prefill {
+		s.refusePrefill(w, "the download cache is disabled")
 		return
 	}
 	s.stats.requests.Add(1) // heartbeats are not counted
@@ -107,10 +104,28 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if prefill && cacheOn && (!enabled || s.store() == nil) {
+		why := "no cache store is online"
+		if !enabled {
+			why = "the download cache does not store " + service + " (the service is switched off)"
+		}
+		s.refusePrefill(w, why)
+		return
+	}
+
 	rq := s.newRequest(w, r, rc, ip, host, service)
 	rq.keyPath = keyPath
 	defer rq.finish()
 	switch {
+	case !cacheOn:
+		// A client that still sends here after the download cache was
+		// turned off (an old DNS answer, or Steam, which keeps the cache it
+		// found until it restarts) gets its download from the origin,
+		// uncached, instead of an error.
+		if !rq.acct.noLog {
+			s.stats.passedWhileOff(rq.ip, rq.clientName(), service, rq.start)
+		}
+		rq.passThrough()
 	case !enabled, services.IsBypassPath(r.URL.Path), !cacheMethod, !canonical:
 		rq.passThrough()
 	default:
@@ -122,6 +137,15 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		rq.serveCache(st)
 	}
+}
+
+// refusePrefill answers a request of PiCache's prefill service
+// (prefillHeader) that would store nothing: passed through, it would
+// download for nothing. The 403 without the processed-by header ends its
+// job.
+func (s *Server) refusePrefill(w http.ResponseWriter, why string) {
+	s.stats.refused.Add(1)
+	http.Error(w, "forbidden: "+why, http.StatusForbidden)
 }
 
 // heartbeat answers the probe of prefill tools and monitoring on the

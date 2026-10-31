@@ -9,7 +9,8 @@ Contents: [Moving from another DNS filter](#moving-from-another-dns-filter) ·
 [Unbound as a local recursive resolver](#unbound-as-a-local-recursive-resolver) ·
 [Filtering away from home](#filtering-away-from-home) ·
 [Home Assistant](#home-assistant) · [Firewall rules](#firewall-rules) ·
-[Epic Games Launcher through the cache](#epic-games-launcher-through-the-cache)
+[Epic Games Launcher through the cache](#epic-games-launcher-through-the-cache) ·
+[Downloads with and without the cache](#downloads-with-and-without-the-cache)
 
 See also [DEPLOYMENT.md](DEPLOYMENT.md) (installation),
 [ROUTERS.md](ROUTERS.md) (router settings) and [DEVICES.md](DEVICES.md)
@@ -923,3 +924,38 @@ should show traffic over HTTP and hits. The `%LOCALAPPDATA%` `Engine.ini`
 that older guides name is ignored by current launchers. legendary (which
 Heroic uses) downloads over HTTP with `--no-https`, or `disable_https = true`
 in its configuration; *not verified on a real device*.
+
+---
+
+## Downloads with and without the cache
+
+To see what the cache brings, download the same game once with the download
+cache on and once with it off (Cache → Cache settings → **Turn off the
+download cache**).
+
+Turning it off does not cut running downloads. PiCache stops answering the
+download hosts with its own address, but devices can still remember that
+address for a while:
+
+- **Steam** asks for `lancache.steamcontent.com` and keeps the cache it found
+  until Steam restarts.
+- **Other devices** keep it until their DNS answer expires (the "DNS answer
+  lifetime" in the cache settings, 60 seconds by default).
+
+PiCache passes their downloads on from the Internet without storing them
+(before 1.5.3 it refused them, and Steam reported that it had no connection).
+While that happens, the cache settings page lists these devices under **These
+devices still download through PiCache**.
+
+For a fair comparison without the cache, the download has to go straight to
+the Internet:
+
+1. Turn the download cache off.
+2. Quit Steam completely (Steam → Exit, also in the notification area) and
+   start it again.
+3. Start the download. The cache settings page should no longer list the PC.
+
+For the run with the cache, turn it on again and restart Steam the same way,
+so it finds the cache again. The first download with the cache fills it (as
+fast as your Internet connection); only the second one, or one after a
+[prefill](DEPLOYMENT.md#prefill), comes from the cache.

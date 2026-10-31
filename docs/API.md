@@ -496,7 +496,7 @@ All return 503 `unavailable` when no store is online (except `/cache/state`).
 |---|---|---|---|
 | GET `/cache/live` | R | – | `[]proxy.ActiveDownload` (per client + content, for the overview) |
 | GET `/cache/active` | R | – | `[]proxy.Transfer` (individual requests) |
-| GET `/cache/proxy/stats` | R | – | `proxy.Stats` |
+| GET `/cache/proxy/stats` | R | – | `proxy.Stats` (`passedWhileOff?: [{clientIp, clientName?, service, requests:int, last:time}]` (1.5.3): clients whose requests were passed through uncached while the download cache was off, the most recent first, at most 20, since the start) |
 | GET `/cache/noslice` | R | – | `[]proxy.NoSliceHost` |
 | DELETE `/cache/noslice/{host}` | A | – | 204 |
 

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"cmp"
+	"net/netip"
 	"slices"
 	"strconv"
 	"sync"
@@ -10,12 +11,13 @@ import (
 )
 
 const (
-	rateWindowSecs   = 10               // rate window of live transfers and downloads
-	downloadLinger   = 30 * time.Second // aggregated downloads stay this long after their last request
-	maxDownloads     = 4096
-	maxTransfers     = 8192 // live requests tracked (the listener caps connections at 4096)
-	maxSteamRefused  = 20
-	maxTransferLabel = 256
+	rateWindowSecs    = 10               // rate window of live transfers and downloads
+	downloadLinger    = 30 * time.Second // aggregated downloads stay this long after their last request
+	maxDownloads      = 4096
+	maxTransfers      = 8192 // live requests tracked (the listener caps connections at 4096)
+	maxSteamRefused   = 20
+	maxPassedWhileOff = 20
+	maxTransferLabel  = 256
 )
 
 // counters are the live statistics.
@@ -24,6 +26,31 @@ type counters struct {
 
 	mu    sync.Mutex
 	steam []string // recent hosts refused although the Steam User-Agent was used, newest first
+	off   []OffClient
+}
+
+// passedWhileOff records a request passed through while the download cache
+// was off, per client and service (the most recent first).
+func (c *counters) passedWhileOff(ip netip.Addr, name, service string, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := OffClient{ClientIP: ip.String(), ClientName: name, Service: service}
+	if i := slices.IndexFunc(c.off, func(o OffClient) bool { return o.ClientIP == e.ClientIP && o.Service == service }); i >= 0 {
+		e.Requests = c.off[i].Requests
+		c.off = slices.Delete(c.off, i, i+1)
+	}
+	e.Requests++
+	e.Last = at.UTC()
+	c.off = slices.Insert(c.off, 0, e)
+	if len(c.off) > maxPassedWhileOff {
+		c.off = c.off[:maxPassedWhileOff]
+	}
+}
+
+func (c *counters) offClients() []OffClient {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.off)
 }
 
 func (c *counters) steamRefused(host string) {

@@ -145,6 +145,21 @@ type Stats struct {
 	Errors            int64    `json:"errors"`
 	PassThrough       bool     `json:"passThrough"`                 // no store available
 	SteamHostsRefused []string `json:"steamHostsRefused,omitempty"` // recent refused hosts with Steam UA (last 20)
+	// PassedWhileOff are the clients whose requests were passed through
+	// uncached while the download cache was off (they still use an old
+	// answer of the cache's DNS; Steam until it restarts), the most recent
+	// first, at most 20.
+	PassedWhileOff []OffClient `json:"passedWhileOff,omitempty"`
+}
+
+// OffClient is a client that sent requests while the download cache was
+// off, per service.
+type OffClient struct {
+	ClientIP   string    `json:"clientIp"`
+	ClientName string    `json:"clientName,omitempty"`
+	Service    string    `json:"service"`
+	Requests   int64     `json:"requests"`
+	Last       time.Time `json:"last"`
 }
 
 // NoSliceHost is a host that answered range requests without range support.
@@ -309,6 +324,7 @@ func (s *Server) Stats() Stats {
 		Errors:            s.stats.errors.Load(),
 		PassThrough:       s.store() == nil,
 		SteamHostsRefused: s.stats.steamHosts(),
+		PassedWhileOff:    s.stats.offClients(),
 	}
 }
 

@@ -76,7 +76,8 @@ const de: Messages<typeof en> = {
 
   // Download-Cache aus (Downloads-Seite)
   'off.title': 'Der Download-Cache ist aus',
-  'off.text': 'Downloads laufen nur über PiCache, wenn der Download-Cache an ist. Bis dahin bleibt diese Seite leer.',
+  'off.text':
+    'Downloads werden nur gespeichert, wenn der Download-Cache an ist. Geräte, die nach dem Ausschalten noch an PiCache schicken (Steam bis zu seinem Neustart), werden ohne Speichern weitergeleitet und erscheinen hier noch.',
   'off.open': 'Cache-Einstellungen öffnen',
 
   // Downloads
@@ -648,7 +649,14 @@ const de: Messages<typeof en> = {
   'settings.turnOff': 'Download-Cache ausschalten',
   'settings.turnOffTitle': 'Download-Cache ausschalten?',
   'settings.turnOffText':
-    'Geräte laden wieder direkt aus dem Internet. Die Inhalte im Cache bleiben erhalten und werden genutzt, wenn du den Download-Cache wieder anschaltest.',
+    'Geräte laden wieder direkt aus dem Internet. Wer noch an PiCache schickt (Steam bis zu seinem Neustart, andere Geräte, bis ihre DNS-Antwort abläuft), wird ohne Speichern weitergeleitet, damit kein Download abbricht. Die Inhalte im Cache bleiben erhalten und werden genutzt, wenn du den Download-Cache wieder anschaltest.',
+  'settings.stillUsingTitle': 'Diese Geräte laden noch über PiCache',
+  'settings.stillUsingText':
+    'Der Download-Cache ist aus, aber diese Geräte schicken ihre Downloads noch an PiCache. Sie werden ohne Speichern aus dem Internet weitergereicht, damit nichts abbricht – laufen also noch über dieses Gerät.',
+  'settings.stillUsingRequests.one': '{count} Anfrage',
+  'settings.stillUsingRequests.other': '{count} Anfragen',
+  'settings.stillUsingSteam':
+    'Steam merkt sich den Cache, bis es neu startet. Beende Steam ganz und starte es neu, dann lädt es direkt aus dem Internet. Andere Geräte wechseln von selbst, sobald ihre DNS-Antwort abläuft.',
   'settings.turnedOn': 'Download-Cache angeschaltet',
   'settings.turnedOff': 'Download-Cache ausgeschaltet',
   'settings.notReady': 'Der Download-Cache ist an, aber Download-Hosts werden nicht umgeleitet',

@@ -91,6 +91,8 @@ type Logon struct {
 // Request records a content request.
 type Request struct {
 	Host, Path, UserAgent string
+	// Prefill: the request carried the prefill service's marker.
+	Prefill bool
 }
 
 // New starts a fake Steam with the account and apps.
@@ -214,7 +216,7 @@ func (s *Server) depot(id uint32) (Depot, bool) {
 
 func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	s.requests = append(s.requests, Request{Host: r.Host, Path: r.URL.Path, UserAgent: r.UserAgent()})
+	s.requests = append(s.requests, Request{Host: r.Host, Path: r.URL.Path, UserAgent: r.UserAgent(), Prefill: r.Header.Get("X-Picache-Prefill") == "1"})
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/depot/"), "/")
 	id, _ := strconv.ParseUint(parts[0], 10, 32)
 	host, _, _ := strings.Cut(r.Host, ":")

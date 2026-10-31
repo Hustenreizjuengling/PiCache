@@ -7,10 +7,10 @@
   sections (downloadCache, cache) are saved together from the bar at the bottom.
 -->
 <script lang="ts">
-  import { t } from '$i18n/index.svelte'
+  import { t, tn } from '$i18n/index.svelte'
   import { api, resource } from '$lib/api'
   import { errorText } from '$lib/errors'
-  import { formatBytes } from '$lib/format'
+  import { formatBytes, formatRelative } from '$lib/format'
   import { href } from '$lib/router.svelte'
   import { session } from '$lib/session.svelte'
   import { settingsForm } from '$lib/settings.svelte'
@@ -32,11 +32,14 @@
   } from '$lib/ui'
   import EnableChecks from './settings/EnableChecks.svelte'
   import ListField from './settings/ListField.svelte'
+  import { serviceCatalog } from './shared/catalog.svelte'
   import { formatBinary, isIPOrCIDR, isRFC1918, isULA } from './shared/util'
 
   const dl = settingsForm('downloadCache')
   const cache = settingsForm('cache')
   const ips = resource((signal) => api.dns.cacheIps({ signal }), { interval: 30_000 })
+  const proxy = resource((signal) => api.cache.proxyStats({ signal }), { interval: 30_000 })
+  const catalog = serviceCatalog()
 
   const readOnly = $derived(!session.isAdmin)
   const loaded = $derived(!!dl.draft && !!cache.draft)
@@ -45,6 +48,14 @@
   const saving = $derived(dl.saving || cache.saving)
   const enabled = $derived(!!dl.saved?.enabled)
   const activeSliceSize = $derived(appStatus.overview.data?.store.sliceSize ?? 0)
+  // Devices that still sent downloads here in the last 30 minutes although
+  // the download cache is off (an old DNS answer; Steam until it restarts):
+  // they are passed through uncached.
+  const OFF_RECENT_MS = 30 * 60_000
+  const stillUsing = $derived(
+    enabled ? [] : (proxy.data?.passedWhileOff ?? []).filter((o) => Date.now() - Date.parse(o.last) < OFF_RECENT_MS),
+  )
+  const steamStillUsing = $derived(stillUsing.some((o) => o.service === 'steam'))
 
   const GB = 1e9
   const SLICE_SIZES = [18, 19, 20, 21, 22, 23, 24, 25, 26].map((e) => 2 ** e) // 256 KiB … 64 MiB
@@ -143,6 +154,7 @@
       }
       toast.success(on ? t('cache.settings.turnedOn') : t('cache.settings.turnedOff'))
       void ips.refresh()
+      void proxy.refresh()
       return true
     } finally {
       switching = false
@@ -218,6 +230,21 @@
             {#each ips.data.ipv4 as ip (ip)}<span class="ip mono">{ip}</span>{/each}
             {#if ips.data.warning ?? ips.data.reason}<span class="warn"> · {ips.data.warning ?? ips.data.reason}</span>{/if}
           </p>
+        {/if}
+        {#if stillUsing.length}
+          <Notice tone="warn" title={t('cache.settings.stillUsingTitle')}>
+            <p>{t('cache.settings.stillUsingText')}</p>
+            <ul class="still">
+              {#each stillUsing as o (o.clientIp + '|' + o.service)}
+                <li>
+                  <strong>{o.clientName || o.clientIp}</strong>
+                  {#if o.clientName}<span class="mono subtle">{o.clientIp}</span>{/if}
+                  · {catalog.name(o.service)} · {tn('cache.settings.stillUsingRequests', o.requests)} · {formatRelative(o.last)}
+                </li>
+              {/each}
+            </ul>
+            {#if steamStillUsing}<p>{t('cache.settings.stillUsingSteam')}</p>{/if}
+          </Notice>
         {/if}
         {#if dl.dirty}<p class="subtle small">{t('cache.settings.saveFirst')}</p>{/if}
       </div>
@@ -469,6 +496,13 @@
   }
   .warn {
     color: var(--warning);
+  }
+  .still {
+    margin: var(--sp-2) 0;
+    padding-left: var(--sp-4);
+  }
+  .still .mono {
+    margin-left: var(--sp-1);
   }
   .savebar {
     position: sticky;

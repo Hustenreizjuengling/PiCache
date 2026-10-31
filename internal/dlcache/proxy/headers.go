@@ -14,6 +14,10 @@ const (
 	// carries the instance ID for loop detection.
 	processedByHeader = "X-LanCache-Processed-By"
 	cacheStatusHeader = "X-Upstream-Cache-Status"
+	// prefillHeader marks the requests of PiCache's prefill service
+	// (internal/prefill sends it): they are refused instead of passed
+	// through when nothing would be stored. Never sent upstream.
+	prefillHeader = "X-Picache-Prefill"
 	// maxStoredHeaderBytes and maxStoredHeaderNames bound the headers
 	// recorded with an object (the store's limits).
 	maxStoredHeaderBytes = 4 << 10
@@ -47,6 +51,7 @@ var neverForwarded = map[string]bool{
 	"Forwarded":               true,
 	"X-Real-Ip":               true,
 	"X-Lancache-Processed-By": true, // processedByHeader, canonical form
+	prefillHeader:             true,
 }
 
 // storedDenied are upstream response headers never recorded with an object

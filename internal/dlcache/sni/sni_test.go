@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -174,13 +175,21 @@ func TestRelayEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRealTLSThroughRelay also runs with the download cache off: a client
+// that still uses an old DNS answer of the cache is relayed, not cut off.
 func TestRealTLSThroughRelay(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		t.Run(fmt.Sprintf("cache on %v", on), func(t *testing.T) { testRealTLSThroughRelay(t, on) })
+	}
+}
+
+func testRealTLSThroughRelay(t *testing.T, cacheOn bool) {
 	up := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "hello over "+r.TLS.ServerName)
 	}))
 	up.StartTLS()
 	defer up.Close()
-	ts := startServer(t, newSettings(t, nil), fakeAllowlist{"example.com": "test"}, fakeClients{}, up.Listener.Addr().String())
+	ts := startServer(t, newSettings(t, func(a *settings.All) { a.DownloadCache.Enabled = cacheOn }), fakeAllowlist{"example.com": "test"}, fakeClients{}, up.Listener.Addr().String())
 
 	pool := x509.NewCertPool()
 	pool.AddCert(up.Certificate())
@@ -221,7 +230,6 @@ func TestRefusedConnections(t *testing.T) {
 		{"no sni", nil, records(buildHello(padExt(10)), 4096)},
 		{"ip literal sni", nil, records(buildHello(sniExt(0, "127.0.0.1")), 4096)},
 		{"not tls", nil, []byte("GET / HTTP/1.1\r\nHost: cdn.example.com\r\n\r\n")},
-		{"download cache disabled", func(a *settings.All) { a.DownloadCache.Enabled = false }, records(buildHello(sniExt(0, "cdn.example.com")), 4096)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

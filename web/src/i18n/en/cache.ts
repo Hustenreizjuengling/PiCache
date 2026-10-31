@@ -73,7 +73,8 @@ export default {
 
   // download cache off (downloads page)
   'off.title': 'The download cache is off',
-  'off.text': 'Downloads only go through PiCache while the download cache is on. Until then this page stays empty.',
+  'off.text':
+    'Downloads are only stored while the download cache is on. Devices that still send here after it was turned off (Steam until it restarts) are passed through without storing and still show up here.',
   'off.open': 'Open cache settings',
 
   // Downloads
@@ -625,7 +626,15 @@ export default {
   'settings.turnOn': 'Turn on the download cache',
   'settings.turnOff': 'Turn off the download cache',
   'settings.turnOffTitle': 'Turn off the download cache?',
-  'settings.turnOffText': 'Devices download from the Internet directly again. Cached content is kept and used when you turn the download cache on again.',
+  'settings.turnOffText':
+    'Devices download from the Internet directly again. Devices that still send here (Steam until it restarts, others until their DNS answer expires) are passed through without storing, so no download breaks. Cached content is kept and used when you turn the download cache on again.',
+  'settings.stillUsingTitle': 'These devices still download through PiCache',
+  'settings.stillUsingText':
+    'The download cache is off, but these devices still send their downloads to PiCache. They are passed through from the Internet without storing, so nothing breaks – but they still run through this device.',
+  'settings.stillUsingRequests.one': '{count} request',
+  'settings.stillUsingRequests.other': '{count} requests',
+  'settings.stillUsingSteam':
+    'Steam keeps using the cache it found until it restarts. Quit Steam completely and start it again, then it downloads from the Internet directly. Other devices switch by themselves once their DNS answer expires.',
   'settings.turnedOn': 'Download cache turned on',
   'settings.turnedOff': 'Download cache turned off',
   'settings.notReady': 'The download cache is on, but download hosts are not redirected',

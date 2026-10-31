@@ -409,10 +409,12 @@ func (r *Registry) Classify(host, userAgent, path string) (serviceID string, ena
 	return sv.ID, sv.Enabled, true
 }
 
-// SNIAllowed reports whether sni belongs to an enabled service.
+// SNIAllowed reports whether sni belongs to a download service, enabled or
+// not: the TLS pass-through stores nothing, and a client may still use an
+// old DNS answer for a service (or the whole download cache) switched off.
 func (r *Registry) SNIAllowed(sni string) (serviceID string, ok bool) {
 	sv, found := r.snap.Load().lookup(normalizeHost(sni))
-	if !found || !sv.Enabled {
+	if !found {
 		return "", false
 	}
 	return sv.ID, true
